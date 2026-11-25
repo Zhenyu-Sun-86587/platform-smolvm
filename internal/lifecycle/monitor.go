@@ -54,7 +54,7 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		if err != nil {
 			continue
 		}
-		if custom && b.ExecutionEpoch != 0 {
+		if custom && b.RuntimeInstanceObjectID != "" {
 			// Public machine metadata cannot identify a native execution epoch.
 			e.observeNativePower(ctx, b, adapter)
 			continue

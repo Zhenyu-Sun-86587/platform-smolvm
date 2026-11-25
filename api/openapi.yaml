@@ -733,6 +733,227 @@ paths:
               description: Path of the accepted operation
               schema: {type: string}
         default: {$ref: '#/components/responses/Error'}
+  /volumes:
+    get:
+      operationId: listVolumes
+      parameters:
+      - {$ref: '#/components/parameters/Limit'}
+      - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Registered volumes owned by the principal
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VolumePage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createVolume
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, capacity_bytes, runtime_instance_id]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 128}
+                capacity_bytes: {type: integer, format: int64, minimum: 512, multipleOf: 512}
+                runtime_instance_id: {type: string}
+                lifecycle: {type: string, enum: [persistent, ephemeral], default: persistent}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /volumes/{volume}:
+    parameters:
+    - {name: volume, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getVolume
+      responses:
+        '200':
+          description: Current Worker full volume observation
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Volume'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: growVolume
+      description: Increase the block capacity of a volume with no live or unconfirmed writer. The receipt reports guest filesystem resize separately.
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [capacity_bytes]
+              properties:
+                capacity_bytes: {type: integer, format: int64, minimum: 512, multipleOf: 512}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteVolume
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /volumes/{volume}/snapshots:
+    parameters:
+    - {name: volume, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listVolumeSnapshots
+      parameters:
+      - {$ref: '#/components/parameters/Limit'}
+      - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Pinned immutable disk generations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/VolumeSnapshot'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createVolumeSnapshot
+      description: Capture the volume generation with no live or unconfirmed writer.
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /volume-snapshots/{snapshot}:
+    parameters:
+    - {name: snapshot, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: getVolumeSnapshot
+      responses:
+        '200':
+          description: Pinned volume snapshot with its parent revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VolumeSnapshot'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteVolumeSnapshot
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /volume-snapshots/{snapshot}/clones:
+    post:
+      operationId: cloneVolumeSnapshot
+      parameters:
+      - {name: snapshot, in: path, required: true, schema: {type: string}}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 128}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/volume-attachments:
+    parameters:
+    - {name: machine, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: listVolumeAttachments
+      parameters:
+      - {$ref: '#/components/parameters/Limit'}
+      - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: Volume leases and current Worker attachment status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/VolumeAttachment'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: attachVolume
+      description: Reserve a block device for the next cold launch of the stopped machine. Guest mounting is separate.
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [volume_id, device_key, expected_volume_revision, expected_generation]
+              properties:
+                volume_id: {type: string}
+                device_key: {type: string}
+                mode: {type: string, enum: [rw, ro], default: rw}
+                snapshot_id: {type: string, description: Required for immutable read-only attachments}
+                fork_policy: {type: string, enum: [clone, share_immutable, reject]}
+                capture_policy: {type: string, enum: [include, external], default: include}
+                expected_volume_revision: {type: integer, format: int64, minimum: 1}
+                expected_generation: {type: integer, format: int64, minimum: 1}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
+  /volume-attachments/{attachment}:
+    delete:
+      operationId: detachVolume
+      description: Remove the attachment reservation from the fenced stopped execution.
+      parameters:
+      - {name: attachment, in: path, required: true, schema: {type: string}}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_volume_revision, expected_generation]
+              properties:
+                expected_volume_revision: {type: integer, format: int64, minimum: 1}
+                expected_generation: {type: integer, format: int64, minimum: 1}
+      responses:
+        '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
+        default: {$ref: '#/components/responses/Error'}
   /snapshots:
     get:
       operationId: get_snapshots
@@ -2104,12 +2325,66 @@ components:
       in: query
       schema: {type: string}
   responses:
+    VolumeOperationAccepted:
+      description: Accepted operation. Follow its result for the Worker receipt.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Operation'}
     Error:
       description: Request failed
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    VolumePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Volume'}}
+        next_cursor: {type: string}
+    Volume:
+      type: object
+      required: [volume_id, name, owner_id, runtime_instance_id, runtime_bundle_id, revision, lifecycle, state]
+      properties:
+        volume_id: {type: string}
+        name: {type: string}
+        owner_id: {type: string}
+        runtime_instance_id: {type: string}
+        runtime_bundle_id: {type: string}
+        revision: {type: integer, format: int64}
+        lifecycle: {type: string, enum: [persistent, ephemeral]}
+        state: {type: string, enum: [available, changing, deleted]}
+        capacity_bytes: {type: integer, format: int64}
+        head_resource_id: {type: string}
+        generation_id: {type: string}
+        snapshots: {type: array, items: {$ref: '#/components/schemas/VolumeSnapshot'}}
+        attachments: {type: array, items: {$ref: '#/components/schemas/VolumeAttachment'}}
+    VolumeSnapshot:
+      type: object
+      required: [snapshot_id, generation_id, source_revision, capacity_bytes]
+      properties:
+        snapshot_id: {type: string}
+        volume_id: {type: string}
+        volume_revision: {type: integer, format: int64}
+        generation_id: {type: string}
+        source_revision: {type: integer, format: int64}
+        capacity_bytes: {type: integer, format: int64}
+    VolumeAttachment:
+      type: object
+      required: [attachment_id, device_key, mode, fork_policy, capture_policy, revision, state]
+      properties:
+        attachment_id: {type: string}
+        volume_id: {type: string}
+        machine_id: {type: string}
+        binding_id: {type: string}
+        instance_id: {type: string}
+        device_key: {type: string}
+        mode: {type: string, enum: [rw, ro]}
+        fork_policy: {type: string, enum: [clone, share_immutable, reject]}
+        capture_policy: {type: string, enum: [include, external]}
+        generation_id: {type: string}
+        revision: {type: integer, format: int64}
+        state: {type: string, enum: [reserved, attached, unknown]}
     Error:
       type: object
       properties:

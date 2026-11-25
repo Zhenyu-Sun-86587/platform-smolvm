@@ -80,7 +80,7 @@ func (a *Adapter) SubmitLaunch(ctx context.Context, request rt.LaunchSubmission)
 	if err := smolvm.ValidateName(request.Parameters.Name); err != nil {
 		return OperationReceipt{}, err
 	}
-	if !identifier.MatchString(request.Expected.InstanceID) || request.Expected.ExecutionEpoch != 0 || request.Expected.IncarnationID != nil ||
+	if !identifier.MatchString(request.Expected.InstanceID) || request.Expected.ExecutionEpoch < 0 || request.Expected.IncarnationID != nil ||
 		!identifier.MatchString(request.OperationID) || !validDigest(request.RequestDigest) || request.Kind != rt.Launch ||
 		request.Parameters.BootProfile != rt.SystemBootProfile {
 		return OperationReceipt{}, fmt.Errorf("%w: invalid System launch request", rt.ErrInvalid)

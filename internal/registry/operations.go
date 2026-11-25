@@ -104,7 +104,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		return Operation{}, false, fmt.Errorf("%w: operation kind is required", ErrInvalid)
 	}
 	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore")
-	if r.RuntimeInstanceID != "" && r.Kind != "create" {
+	if r.RuntimeInstanceID != "" && r.Kind != "create" && (r.Kind != rt.VolumeOperation || r.MachineID != "") {
 		return Operation{}, false, fmt.Errorf("%w: only a new machine can select a runtime instance", ErrInvalid)
 	}
 	fromSource := creates && r.Kind != "create" && r.MachineID != ""

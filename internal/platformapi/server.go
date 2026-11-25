@@ -460,6 +460,7 @@ func (s *Server) routes() {
 	s.leaseRoutes()
 	s.serviceRoutes()
 	s.snapshotRoutes()
+	s.volumeRoutes()
 	s.fullStateRoutes()
 	s.artifactRoutes()
 	s.taskRoutes()
@@ -545,7 +546,10 @@ func (s *Server) machineRoutes() {
 			}
 			req.AdmitRuntime = admission
 			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
-			req.DesiredPower = "running"
+			req.DesiredPower = "stopped"
+			if v.Start {
+				req.DesiredPower = "running"
+			}
 		} else {
 			v.BootMode = ""
 			if v.Resources.Storage == 0 {

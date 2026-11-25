@@ -115,6 +115,7 @@ type NativeObservation struct {
 	Execution              rt.ExecutionRef
 	PowerState             PowerState
 	VerifiedStandbyProfile string
+	VerifiedLaunch         bool
 }
 
 // Observation is current public-runtime evidence. Empty optional fields in an

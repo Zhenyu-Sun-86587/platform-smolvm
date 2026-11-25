@@ -170,6 +170,54 @@ export interface TokenSpec {
   scope: { access: "read" | "manage" | "tunnel"; machine_id?: string }
   expires_at?: string
 }
+export interface VolumeSpec {
+  name: string
+  capacity_bytes: number
+  runtime_instance_id: string
+  lifecycle?: "persistent" | "ephemeral"
+}
+export interface Volume extends VolumeSpec {
+  volume_id: string
+  owner_id: string
+  runtime_bundle_id: string
+  lifecycle: "persistent" | "ephemeral"
+  revision: number
+  state: "available" | "changing" | "deleted"
+  head_resource_id?: string
+  generation_id?: string
+  snapshots: VolumeSnapshot[]
+  attachments: VolumeAttachment[]
+}
+export interface VolumeSnapshot {
+  snapshot_id: string
+  generation_id: string
+  source_revision: number
+  capacity_bytes: number
+  volume_id?: string
+  volume_revision?: number
+}
+export interface VolumeAttachmentSpec {
+  volume_id: string
+  device_key: string
+  mode?: "rw" | "ro"
+  snapshot_id?: string
+  fork_policy?: "clone" | "share_immutable" | "reject"
+  capture_policy?: "include" | "external"
+  expected_volume_revision?: number
+}
+export interface VolumeAttachment extends Pick<VolumeAttachmentSpec, "device_key"> {
+  attachment_id: string
+  instance_id: string
+  mode: "rw" | "ro"
+  fork_policy: "clone" | "share_immutable" | "reject"
+  capture_policy: "include" | "external"
+  state: "reserved" | "attached" | "unknown"
+  revision: number
+  generation_id?: string
+  volume_id?: string
+  machine_id?: string
+  binding_id?: string
+}
 export interface Token extends TokenSpec {
   token_id: string
   revision: number
@@ -197,6 +245,8 @@ const segment = encodeURIComponent
 export function machine(id: string) { return "machines/" + segment(id) }
 export function task(id: string) { return "tasks/" + segment(id) }
 export function snapshot(id: string) { return "snapshots/" + segment(id) }
+export function volume(id: string) { return "volumes/" + segment(id) }
+export function volumeSnapshot(id: string) { return "volume-snapshots/" + segment(id) }
 export function service(id: string) { return "services/" + segment(id) }
 export function operation(id: string) { return "operations/" + segment(id) }
 
@@ -419,6 +469,46 @@ export class Client {
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
   getSnapshot(id: string, signal?: AbortSignal) { return this.get<Snapshot>(snapshot(id), signal) }
   listMachines(signal?: AbortSignal) { return this.pages<Machine>("machines", 100, signal) }
+  listVolumes(signal?: AbortSignal) { return this.pages<Volume>("volumes", 100, signal) }
+  createVolume(spec: VolumeSpec, options?: WriteOptions) { return this.mutate("volumes", spec, options) }
+  getVolume(id: string, signal?: AbortSignal) { return this.get<Volume>(volume(id), signal) }
+  async growVolume(id: string, capacityBytes: number, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision
+    return this.mutate(volume(id), { capacity_bytes: capacityBytes }, { ...options, method: "PATCH", revision })
+  }
+  async deleteVolume(id: string, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision
+    return this.mutate(volume(id), {}, { ...options, method: "DELETE", revision })
+  }
+  listVolumeSnapshots(id: string, signal?: AbortSignal) {
+    return this.pages<VolumeSnapshot>(volume(id) + "/snapshots", 100, signal)
+  }
+  getVolumeSnapshot(id: string, signal?: AbortSignal) {
+    return this.get<VolumeSnapshot & { volume_id: string; volume_revision: number }>(volumeSnapshot(id), signal)
+  }
+  async createVolumeSnapshot(id: string, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision
+    return this.mutate(volume(id) + "/snapshots", {}, { ...options, revision })
+  }
+  async deleteVolumeSnapshot(id: string, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getVolumeSnapshot(id, options.signal)).volume_revision
+    return this.mutate(volumeSnapshot(id), {}, { ...options, method: "DELETE", revision })
+  }
+  cloneVolumeSnapshot(id: string, name: string, options?: WriteOptions) {
+    return this.mutate(volumeSnapshot(id) + "/clones", { name }, options)
+  }
+  listVolumeAttachments(id: string, signal?: AbortSignal) {
+    return this.pages<VolumeAttachment & { volume_id: string; machine_id: string; binding_id: string }>(
+      machine(id) + "/volume-attachments", 100, signal)
+  }
+  async attachVolume(id: string, spec: VolumeAttachmentSpec, options: MachineWriteOptions = {}) {
+    const expectedVolumeRevision = spec.expected_volume_revision ?? (await this.getVolume(spec.volume_id, options.signal)).revision
+    return this.machineMutation(id, "volume-attachments", { ...spec, expected_volume_revision: expectedVolumeRevision }, options)
+  }
+  detachVolume(id: string, volumeRevision: number, options: MachineWriteOptions & { generation: number; revision: number }) {
+    return this.mutate("volume-attachments/" + segment(id),
+      { expected_volume_revision: volumeRevision, expected_generation: options.generation }, { ...options, method: "DELETE" })
+  }
   listRuntimeProfiles(signal?: AbortSignal) { return this.pages<RuntimeProfile>("runtime-profiles", 100, signal) }
   machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions) {
     return this.mutate(machine(id) + "/" + action, { expected_generation: generation }, options)
