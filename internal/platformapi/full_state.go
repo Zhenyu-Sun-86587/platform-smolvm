@@ -1,6 +1,7 @@
 package platformapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -19,8 +20,9 @@ type fullStateAction struct {
 }
 
 type forkBatchRequest struct {
-	ExpectedGeneration int64 `json:"expected_generation"`
-	RequireIndependent bool  `json:"require_independent"`
+	LifecyclePolicy    json.RawMessage `json:"lifecycle_policy,omitempty"`
+	ExpectedGeneration int64           `json:"expected_generation"`
+	RequireIndependent bool            `json:"require_independent"`
 	Children           []struct {
 		Name string `json:"name"`
 	} `json:"children"`

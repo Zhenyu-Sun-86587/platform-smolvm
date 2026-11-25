@@ -1,0 +1,128 @@
+package platformapi
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/lifecycle"
+	"sandbox-platform/internal/registry"
+)
+
+func (s *Server) policyApplicationRoutes() {
+	s.route("GET /v1/machines/{machine}/lifecycle", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		id := r.PathValue("machine")
+		if err := p.Authorize("read", id); err != nil {
+			return err
+		}
+		m, err := s.DB.GetMachine(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		supported := false
+		if m.CurrentBinding != nil {
+			if a, err := s.ForBinding(*m.CurrentBinding); err == nil {
+				if c, ok := lifecycle.PolicyClient(a, *m.CurrentBinding); ok {
+					supported = true
+					_, _ = s.Engine.ObservePolicy(r.Context(), *m.CurrentBinding, c)
+				}
+			}
+		}
+		v, err := s.DB.LifecyclePolicy(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		v.Supported = supported
+		return write(w, 200, v)
+	})
+	s.route("GET /v1/lifecycle-policy-applications/{application}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		if err := p.Authorize("admin", ""); err != nil {
+			return err
+		}
+		result, err := s.DB.PolicyApplication(r.Context(), r.PathValue("application"))
+		if err != nil {
+			return err
+		}
+		return write(w, http.StatusOK, result)
+	})
+	s.route("POST /v1/lifecycle-policy-applications", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		if err := p.Authorize("admin", ""); err != nil {
+			return err
+		}
+		var body struct {
+			Revision int64                      `json:"default_policy_revision"`
+			Machines []registry.PolicySelection `json:"machines"`
+		}
+		if err := decode(r, &body); err != nil {
+			return err
+		}
+		if body.Revision < 1 || len(body.Machines) == 0 || len(body.Machines) > 256 {
+			return registry.ErrInvalid
+		}
+		seen := map[string]bool{}
+		for _, m := range body.Machines {
+			if m.MachineID == "" || m.ExpectedRevision < 1 || seen[m.MachineID] {
+				return registry.ErrInvalid
+			}
+			seen[m.MachineID] = true
+		}
+		raw, err := s.applyMutation(r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+			id, err := registry.ReservePolicyApplication(ctx, tx, body.Revision, body.Machines, func(b registry.Binding) bool {
+				a, err := s.ForBinding(b)
+				if err != nil {
+					return false
+				}
+				_, ok := lifecycle.PolicyClient(a, b)
+				return ok
+			})
+			return registry.MutationResult{Response: lifecycle.JSON(id)}, err
+		})
+		if err != nil {
+			return err
+		}
+		var id string
+		if err = json.Unmarshal(raw, &id); err != nil {
+			return err
+		}
+		a, err := s.DB.PolicyApplication(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		// Finish immediately for healthy local Workers. The existing monitor
+		// replays each durable delivery if this HTTP request ends first.
+		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer cancel()
+		for _, target := range a.Targets {
+			if ctx.Err() != nil {
+				break
+			}
+			if target.State != "pending" {
+				continue
+			}
+			m, err := s.DB.GetMachine(ctx, target.MachineID)
+			if err != nil || m.CurrentBinding == nil {
+				continue
+			}
+			adapter, err := s.ForBinding(*m.CurrentBinding)
+			if err != nil {
+				continue
+			}
+			if c, ok := lifecycle.PolicyClient(adapter, *m.CurrentBinding); ok {
+				_, _ = s.Engine.ApplyMachinePolicy(ctx, *m.CurrentBinding, c)
+			}
+		}
+		a, err = s.DB.PolicyApplication(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		status := http.StatusOK
+		if !a.Complete {
+			status = http.StatusAccepted
+		}
+		w.Header().Set("Location", "/v1/lifecycle-policy-applications/"+id)
+		return write(w, status, a)
+	})
+}

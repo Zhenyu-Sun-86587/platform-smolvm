@@ -101,7 +101,7 @@ export function time(value?: string | null) {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString()
 }
 
-type Field = {
+export type Field = {
   name: string
   label: string
   type?: "text" | "number" | "password" | "checkbox" | "textarea" | "file"
@@ -109,6 +109,7 @@ type Field = {
   value?: string | boolean | number
   required?: boolean
   min?: number
+  max?: number
   note?: string
 }
 export type DialogConfig = {

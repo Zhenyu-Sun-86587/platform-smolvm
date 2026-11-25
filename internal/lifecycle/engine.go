@@ -373,14 +373,17 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	}
 	native, hasNative := j.Runtime.(rt.NativeControl)
 	useNative := hasNative && !bindingRuntime(j.Binding).Legacy() && rt.NativePowerCapability(op.Kind) != ""
-	if dispatched {
+	policyReplay := dispatched && op.Kind == "configure" && j.Intent.Stage == "apply_lifecycle_policy"
+	if dispatched && !policyReplay {
 		if useNative {
 			return j.reconcileNative(ctx, native)
 		}
 		return j.reconcile(ctx)
 	}
-	if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
-		return err
+	if !policyReplay {
+		if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
+			return err
+		}
 	}
 	if useNative {
 		err = j.nativePower(ctx, native)

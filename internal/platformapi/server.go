@@ -610,9 +610,10 @@ func (s *Server) machineRoutes() {
 					return auth.ErrForbidden
 				}
 				var v struct {
-					ChildName          string `json:"child_name"`
-					ExpectedGeneration int64  `json:"expected_generation"`
-					RequireIndependent bool   `json:"require_independent,omitempty"`
+					LifecyclePolicy    json.RawMessage `json:"lifecycle_policy,omitempty"`
+					ChildName          string          `json:"child_name"`
+					ExpectedGeneration int64           `json:"expected_generation"`
+					RequireIndependent bool            `json:"require_independent,omitempty"`
 				}
 				if err := decode(r, &v); err != nil {
 					return err

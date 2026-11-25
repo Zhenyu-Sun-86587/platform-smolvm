@@ -43,7 +43,8 @@ func DefaultLifecyclePolicy() LifecyclePolicy {
 }
 func (p LifecyclePolicy) WithPatch(raw json.RawMessage) (LifecyclePolicy, error) {
 	if len(raw) > 0 {
-		if raw[0] != '{' {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 || raw[0] != '{' {
 			return p, fmt.Errorf("%w: lifecycle policy must be an object", ErrInvalid)
 		}
 		decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -53,6 +54,28 @@ func (p LifecyclePolicy) WithPatch(raw json.RawMessage) (LifecyclePolicy, error)
 		}
 		if err := decoder.Decode(&struct{}{}); err != io.EOF {
 			return p, ErrInvalid
+		}
+		// An explicit null is neither a policy value nor a request to inherit
+		// a later global default. Reject it before persisting the patch.
+		var supplied map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &supplied); err != nil {
+			return p, ErrInvalid
+		}
+		for key, value := range supplied {
+			if bytes.Equal(value, []byte("null")) {
+				return p, ErrInvalid
+			}
+			if key == "wake_conditions" || key == "activity" {
+				var nested map[string]json.RawMessage
+				if err := json.Unmarshal(value, &nested); err != nil {
+					return p, ErrInvalid
+				}
+				for _, field := range nested {
+					if bytes.Equal(field, []byte("null")) {
+						return p, ErrInvalid
+					}
+				}
+			}
 		}
 	}
 	const year = 365 * 24 * 60 * 60

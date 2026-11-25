@@ -8,6 +8,7 @@ import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuContent } from "./daytona/dropdown-menu"
 import { useCollection } from "./api"
+import { policyFields, policyInput } from "./lifecycle-policy"
 import { WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
@@ -466,8 +467,9 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
   </>
 }
 
-type Lease = { lease_id: string; state: string; reason?: string; expires_at?: string; revision?: number }
+type Lease = { semantics_version?: number; execution_epoch?: number; release_reason?: string; lease_id: string; state: string; reason?: string; expires_at?: string; revision?: number }
 function Activity({ machine, actions, revision }: Context) {
+  const policy = machine.lifecycle_policy
   const base = machinePath(machine.machine_id)
   const leases = useRemote<Page<Lease>>(base + "/leases", revision)
   const metrics = useRemote<Record<string, unknown>>(base + "/metrics", revision)
@@ -483,7 +485,17 @@ function Activity({ machine, actions, revision }: Context) {
     }, { method: release ? "DELETE" : "PATCH", revision: lease.revision })
   })
   return <>
-    <Section title="Idle policy" actions={<button onClick={() => actions.dialog({
+    {policy?.supported ? <Section title="Lifecycle policy" actions={<button onClick={() => actions.dialog({
+      title: "Edit lifecycle policy", submit: "Apply", sheet: true, fields: policyFields(policy.desired),
+      act: form => actions.mutate(base, { expected_generation: machine.binding_generation,
+        expected_policy_revision: policy.desired_revision, lifecycle_policy: policyInput(form) },
+        { method: "PATCH", revision: machine.revision }),
+    })}>Configure</button>}>
+      <Details value={{ source: policy.source, default_revision: policy.default_revision, desired_revision: policy.desired_revision,
+        applied_revision: policy.applied_revision, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
+        hibernate_after_seconds: policy.applied?.hibernate_after_seconds, idle_seconds: policy.worker?.idle_ms == null ? undefined : Math.floor(policy.worker.idle_ms / 1000),
+        blockers: policy.worker?.blockers, last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
+    </Section> : <Section title="Idle policy" actions={<button onClick={() => actions.dialog({
       title: "Configure idle policy", submit: "Save",
       fields: [{ name: "enabled", label: "Automatically pause when idle", type: "checkbox", value: machine.idle_policy?.enabled },
         { name: "keep_running", label: "Keep running", type: "checkbox", value: machine.keep_running },
@@ -495,18 +507,18 @@ function Activity({ machine, actions, revision }: Context) {
       <p className="policy-note">Authenticated access wakes a hibernated machine and resumes its saved execution.</p>
       <FeatureStatus reason={capabilityReason(machine, "automatic_idle")} />
       <Details value={{ enabled: machine.idle_policy?.enabled, timeout_seconds: machine.idle_policy?.timeout_seconds, keep_running: machine.keep_running, blockers: machine.blocked_reasons, last_activity: time(machine.last_user_activity_at) }} />
-    </Section>
+    </Section>}
     <Section title="Leases" actions={<button onClick={() => actions.dialog({
       title: "Acquire keep-running lease",
       fields: [{ name: "reason", label: "Reason", required: true }, { name: "ttl_seconds", label: "Duration (seconds)", type: "number", min: 1, value: 300 }],
       act: async form => setNewLease(await actions.mutate<Record<string, unknown>>(base + "/leases", {
-        reason: str(form, "reason"), ttl_seconds: num(form, "ttl_seconds")
+        reason: str(form, "reason"), ttl_seconds: num(form, "ttl_seconds"), ...(policy?.supported ? { semantics_version: 2 } : {})
       }, { revision: machine.revision }))
     })}>Acquire lease</button>}>
       <Callout error={leases.error} />
       {newLease && <Details value={newLease} />}
       <div className="rows">{leases.data?.items.map(lease => <div className="row" key={lease.lease_id}>
-        <code>{lease.lease_id}</code><State value={lease.state} /><span>{lease.reason}</span><span>{time(lease.expires_at)}</span>
+        <code>{lease.lease_id}</code><State value={lease.state} /><span>{lease.reason}</span><span>{time(lease.expires_at)}</span><small>{lease.semantics_version === 2 ? "Expires automatically" : "Protected until released"}{lease.release_reason && " · " + lease.release_reason}</small>
         <button onClick={() => changeLease(lease, false)}>Renew</button><button onClick={() => changeLease(lease, true)}>Release</button>
       </div>)}</div>
     </Section>

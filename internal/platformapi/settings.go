@@ -18,6 +18,7 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/workerclient"
 )
 
 type settings struct {
@@ -43,6 +44,7 @@ func (s *Server) settings(ctx context.Context) (settings, error) {
 var imageRef = regexp.MustCompile(`^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$`)
 
 func (s *Server) settingsRoutes() {
+	s.policyApplicationRoutes()
 	s.route("GET /v1/system/diagnostics", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize("admin", ""); err != nil {
 			return err
@@ -216,42 +218,43 @@ type patchMachine struct {
 	} `json:"resources,omitempty"`
 }
 
+// Dispatching remains durable while the Worker is unavailable. The same
+// policy revision, expected execution and request key are retried on restart.
+func policyDeliveryError(err error) error {
+	if workerclient.RetryDelivery(err) {
+		return nil
+	}
+	return err
+}
+
 func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 	var v patchMachine
 	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
 		return err
 	}
 	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) {
-		prior, err := s.Engine.ApplyMachinePolicy(ctx, j.Binding, client)
-		if err != nil {
-			return err
-		}
-		policy, err := prior.Desired.WithPatch(v.Policy)
-		if err != nil {
-			return registry.ErrInvalid
-		}
-		if v.Idle != nil {
-			policy.AutoStandby = false
-			policy.AutoHibernate = v.Idle.Enabled
-			if v.Idle.Timeout > 0 {
-				policy.HibernateAfter = v.Idle.Timeout
+		if j.Intent.Stage != "apply_lifecycle_policy" {
+			if err := j.Stage(ctx, "apply_lifecycle_policy", ""); err != nil {
+				return err
 			}
 		}
-		if v.Keep != nil {
-			policy.KeepRunning = *v.Keep
+		prior, err := s.Engine.ApplyMachinePolicy(ctx, j.Binding, client)
+		if err != nil {
+			return policyDeliveryError(err)
+		}
+		override, source, err := registry.LifecycleOverrides(j.Op.Request)
+		if err != nil {
+			return registry.ErrInvalid
 		}
 		rev := v.ExpectedPolicyRevision
 		if rev == 0 {
 			rev = prior.DesiredRevision
 		}
-		if err = j.Stage(ctx, "apply_lifecycle_policy", ""); err != nil {
-			return err
-		}
-		if _, err = s.DB.SetLifecycleDesired(ctx, j.Op.MachineID, j.Op.ID, "override", rev, prior.DefaultRevision, policy); err != nil {
+		if _, err = s.DB.SetLifecycleDesired(ctx, j.Op.MachineID, j.Op.ID, source, rev, prior.DefaultRevision, override); err != nil {
 			return err
 		}
 		if _, err = s.Engine.ApplyMachinePolicy(ctx, j.Binding, client); err != nil {
-			return err
+			return policyDeliveryError(err)
 		}
 	} else if v.Policy != nil {
 		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "this binding has no Worker lifecycle controller"}

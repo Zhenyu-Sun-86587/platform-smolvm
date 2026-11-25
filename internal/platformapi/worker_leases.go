@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -54,7 +55,7 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 		token := v.Token
 		var generation, rev int64
 		var locked bool
-		err = tx.QueryRowContext(ctx, "SELECT binding_generation,revision,active_operation_id IS NOT NULL FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL", b.MachineID, b.ID).Scan(&generation, &rev, &locked)
+		err = tx.QueryRowContext(ctx, "SELECT binding_generation,revision,EXISTS(SELECT 1 FROM operation_locks WHERE machine_id=machines.id) FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL", b.MachineID, b.ID).Scan(&generation, &rev, &locked)
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
@@ -143,10 +144,18 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
 	var l Lease
 	var machine, principal, state, raw, scopeRaw string
+	var rejected *string
 	var secret []byte
-	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT machine_id,principal,state,request_json,scope_json,secret FROM lifecycle_lease_intents WHERE id=?", id).
-		Scan(&machine, &principal, &state, &raw, &scopeRaw, &secret); err != nil {
+	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT machine_id,principal,state,request_json,scope_json,secret,receipt_json FROM lifecycle_lease_intents WHERE id=?", id).
+		Scan(&machine, &principal, &state, &raw, &scopeRaw, &secret, &rejected); err != nil {
 		return l, err
+	}
+	if state == "rejected" && rejected != nil {
+		var fault workerclient.Fault
+		if err := json.Unmarshal([]byte(*rejected), &fault); err != nil {
+			return l, err
+		}
+		return l, leaseFault(&fault)
 	}
 	var task leaseWork
 	var scope workerclient.Execution
@@ -194,6 +203,14 @@ func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Cli
 				payload["ttl_seconds"] = task.TTL
 			}
 			if err = client.Lifecycle(ctx, method, id, scope, payload, &ack); err != nil {
+				var fault *workerclient.Fault
+				if errors.As(err, &fault) && !workerclient.RetryDelivery(err) {
+					_, saveErr := s.DB.DB().ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state='rejected',receipt_json=?,secret=x'' WHERE id=? AND state='pending'", string(lifecycle.JSON(fault)), id)
+					if saveErr != nil {
+						return l, saveErr
+					}
+					return l, leaseFault(fault)
+				}
 				return l, err
 			}
 		}
@@ -314,5 +331,24 @@ func (s *Server) recoverWorkerLeases(ctx context.Context, b registry.Binding, cl
 		if err == nil && ack.Revision > r.worker && (ack.State == "released" || ack.State == "suspect") {
 			_, _ = s.DB.DB().ExecContext(ctx, "UPDATE leases SET state=?,release_reason=?,revision=revision+1,worker_revision=? WHERE id=? AND revision=? AND worker_revision=?", ack.State, ack.Reason, ack.Revision, r.id, r.rev, r.worker)
 		}
+	}
+}
+
+func leaseFault(f *workerclient.Fault) error {
+	switch f.Code {
+	case "E_STALE_REVISION":
+		return registry.ErrRevision
+	case "E_STALE_EXECUTION":
+		return registry.ErrGeneration
+	case "E_IDEMPOTENCY_CONFLICT":
+		return registry.ErrIdempotency
+	case "E_PERMISSION_DENIED":
+		return auth.ErrForbidden
+	case "E_NOT_FOUND":
+		return registry.ErrNotFound
+	case "E_INVALID_REQUEST", "E_INVALID_ARGUMENT":
+		return registry.ErrInvalid
+	default:
+		return &lifecycle.Failure{Code: f.Code, Message: f.Message}
 	}
 }

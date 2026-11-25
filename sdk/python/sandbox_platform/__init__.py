@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
+from threading import Event as ThreadEvent, Thread
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable, Iterator
@@ -242,6 +244,81 @@ class Client:
 
     def get_machine(self, id):
         return self.get(_item("machines", id))
+
+    def get_lifecycle_status(self, machine_id):
+        return self.get(_item("machines", machine_id) + "/lifecycle")
+
+    def set_default_lifecycle_policy(self, policy, *, revision=None, intent=None):
+        if revision is None:
+            revision = self.get("system/settings")["revision"]
+        return self.mutate("system/settings", {"default_lifecycle_policy": policy},
+                           method="PATCH", revision=revision, intent=intent)
+
+    def update_lifecycle_policy(self, machine_id, policy, *, revision=None, generation=None,
+                                policy_revision=None, intent=None):
+        machine = self.get_machine(machine_id)
+        if policy_revision is None:
+            policy_revision = machine["lifecycle_policy"]["desired_revision"]
+        return self.mutate(_item("machines", machine_id), {
+            "expected_generation": machine["binding_generation"] if generation is None else generation,
+            "expected_policy_revision": policy_revision, "lifecycle_policy": policy,
+        }, method="PATCH", revision=machine["revision"] if revision is None else revision, intent=intent)
+
+    def apply_default_lifecycle_policy(self, default_policy_revision, machines, **options):
+        return self.mutate("lifecycle-policy-applications", {
+            "default_policy_revision": default_policy_revision, "machines": list(machines),
+        }, **options)
+
+    def acquire_running_lease(self, machine_id, reason, ttl_seconds, *, revision=None, intent=None):
+        if revision is None:
+            revision = self.get_machine(machine_id)["revision"]
+        return self.mutate(_item("machines", machine_id) + "/leases", {
+            "semantics_version": 2, "reason": reason, "ttl_seconds": ttl_seconds,
+        }, revision=revision, intent=intent)
+
+    def renew_running_lease(self, lease, ttl_seconds, *, intent=None):
+        result = self.mutate(_item("leases", lease["lease_id"]), {
+            "lease_token": lease["lease_token"], "ttl_seconds": ttl_seconds,
+        }, method="PATCH", revision=lease["revision"], intent=intent)
+        return {**result, "lease_token": lease["lease_token"]}
+
+    def release_running_lease(self, lease, *, intent=None):
+        return self.mutate(_item("leases", lease["lease_id"]), {"lease_token": lease["lease_token"]},
+                           method="DELETE", revision=lease["revision"], intent=intent)
+
+    @contextmanager
+    def activity(self, machine_id, reason, *, ttl_seconds=120):
+        """Renew a v2 running lease during the block and release it when the block exits."""
+        lease = self.acquire_running_lease(machine_id, reason, ttl_seconds)
+        stop = ThreadEvent()
+        errors = []
+
+        def renew():
+            nonlocal lease
+            while not stop.wait(ttl_seconds / 3):
+                try:
+                    lease = self.renew_running_lease(lease, ttl_seconds)
+                except Exception as error:
+                    errors.append(error)
+                    return
+
+        thread = Thread(target=renew, daemon=True)
+        thread.start()
+        failed = False
+        try:
+            yield lease["lease_id"]
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            stop.set()
+            thread.join()
+            try:
+                self.release_running_lease(lease)
+            except Exception as error:
+                errors.append(error)
+            if errors and not failed:
+                raise errors[0]
 
     def list_volumes(self, *, limit=100):
         return self.pages("volumes", limit=limit)

@@ -35,11 +35,11 @@ type WorkerLifecycleStatus struct {
 }
 
 func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.Client, bool) {
-	p, ok := adapter.(interface{ WorkerSocket() string })
-	if !ok || p.WorkerSocket() == "" || b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
+	p, ok := adapter.(interface{ LifecycleWorkerSocket() string })
+	if !ok || p.LifecycleWorkerSocket() == "" || b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
 		return workerclient.Client{}, false
 	}
-	return workerclient.Client{Socket: p.WorkerSocket(), Bundle: b.RuntimeBundleID}, true
+	return workerclient.Client{Socket: p.LifecycleWorkerSocket(), Bundle: b.RuntimeBundleID}, true
 }
 func WorkerExecution(b registry.Binding) workerclient.Execution {
 	return workerclient.Execution{InstanceID: b.RuntimeInstanceObjectID, IncarnationID: b.IncarnationID, Epoch: b.ExecutionEpoch}
@@ -105,6 +105,9 @@ func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, cli
 		p.Desired.KeepRunning, fmt.Sprint(p.Desired.AutoHibernate), p.Desired.HibernateAfter, b.MachineID); err != nil {
 		return p, err
 	}
+	if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_policy_application_targets SET state='applied' WHERE state='pending' AND machine_id=? AND binding_id=? AND policy_revision=?", b.MachineID, b.ID, ack.Applied); err != nil {
+		return p, err
+	}
 	if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_deliveries SET delivered_at=? WHERE id=?", time.Now().UnixMilli(), key); err != nil {
 		return p, err
 	}
@@ -164,7 +167,8 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client w
 		if event.Seq <= latest {
 			continue
 		}
-		if err = registry.AppendEvent(ctx, tx, "lifecycle", b.MachineID, "", event, false); err != nil {
+		payload := map[string]any{"event_name": "lifecycle." + event.Kind + "." + event.Stage, "decision": event}
+		if err = registry.AppendEvent(ctx, tx, "machine", b.MachineID, "", payload, false); err != nil {
 			return st, err
 		}
 		latest = event.Seq

@@ -82,8 +82,36 @@ export interface Control {
 }
 export interface Resources { cpu_count: number; memory_mib: number; storage_gib?: number; overlay_gib?: number }
 export interface IdlePolicy { enabled: boolean; timeout_seconds: number }
+export interface WakeConditions { api_access: boolean; service_access: boolean; private_network_packet: boolean; allow_cold_start: boolean }
+export interface LifecyclePolicy {
+  schema_version: number; auto_standby: boolean; standby_after_seconds: number
+  auto_hibernate: boolean; hibernate_after_seconds: number; keep_running: boolean
+  reclaim_priority: number; pressure_reclaim: "disabled" | "idle_only"; wake_conditions: WakeConditions
+  activity: { protect_running_tasks: boolean; protect_exec_sessions: boolean; protect_inbound_connections: boolean;
+    protect_outbound_connections: boolean; protect_running_leases: true; unknown: "block_auto_sleep" }
+  min_running_after_wake_seconds: number; retry_backoff_seconds: number
+}
+export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_conditions" | "activity">> & {
+  wake_conditions?: Partial<WakeConditions>; activity?: Partial<LifecyclePolicy["activity"]>
+}
+export interface LifecycleStatus {
+  supported: boolean
+  desired_revision: number; applied_revision: number; default_revision: number; source: string
+  desired: LifecyclePolicy; applied?: LifecyclePolicy; last_error?: string; overrides?: LifecyclePolicyPatch
+  worker?: { power: string; blockers: string[]; idle_ms?: number; controlled_suspended: boolean;
+    last_decision?: { operation_id: string; kind: string; stage: string }; collectors: Record<string, unknown> }
+}
+export interface PolicyApplication {
+  application_id: string; default_policy_revision: number; complete: boolean; policy: LifecyclePolicy
+  machines: { machine_id: string; expected_revision: number; state: "applied" | "pending" | "rejected"; reason?: string }[]
+}
+export interface RunningLease {
+  lease_id: string; machine_id: string; semantics_version: number; execution_epoch?: number
+  revision: number; state: string; reason: string; expires_at: string; release_reason?: string; lease_token?: string
+}
 export type BootMode = "oci" | "system"
 export interface CreateMachine {
+  lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
   runtime_instance_id?: string
   name: string
@@ -92,7 +120,8 @@ export interface CreateMachine {
   idle_policy?: IdlePolicy
   start?: boolean
 }
-export interface Machine extends CreateMachine {
+export interface Machine extends Omit<CreateMachine, "lifecycle_policy"> {
+  lifecycle_policy?: LifecycleStatus
   machine_id: string
   desktop_profile?: "software-vnc-v1"
   spec?: { resources?: Resources }
@@ -482,6 +511,70 @@ export class Client {
 
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
+  getLifecycleStatus(id: string, signal?: AbortSignal) {
+    return this.get<LifecycleStatus>(machine(id) + "/lifecycle", signal)
+  }
+  async setDefaultLifecyclePolicy(policy: LifecyclePolicyPatch, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.get<{ revision: number }>("system/settings", options.signal)).revision
+    return this.mutate<{ revision: number; default_lifecycle_revision: number; default_lifecycle_policy: LifecyclePolicy }>(
+      "system/settings", { default_lifecycle_policy: policy }, { ...options, method: "PATCH", revision })
+  }
+  async updateLifecyclePolicy(id: string, policy: LifecyclePolicyPatch, options: MachineWriteOptions & { policyRevision?: number } = {}) {
+    const current = await this.getMachine(id, options.signal)
+    const policyRevision = options.policyRevision ?? current.lifecycle_policy?.desired_revision
+    if (policyRevision === undefined) throw new Error("Machine has no lifecycle policy revision")
+    return this.mutate(machine(id), { lifecycle_policy: policy, expected_policy_revision: policyRevision,
+      expected_generation: options.generation ?? current.binding_generation },
+      { ...options, method: "PATCH", revision: options.revision ?? current.revision })
+  }
+  applyDefaultLifecyclePolicy(revision: number, machines: { machine_id: string; expected_revision: number }[], options?: WriteOptions) {
+    return this.mutate<PolicyApplication>("lifecycle-policy-applications", { default_policy_revision: revision, machines }, options)
+  }
+  async acquireRunningLease(id: string, reason: string, ttlSeconds: number, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision
+    return this.mutate<RunningLease>(machine(id) + "/leases",
+      { semantics_version: 2, reason, ttl_seconds: ttlSeconds }, { ...options, revision })
+  }
+  async renewRunningLease(lease: RunningLease, ttlSeconds: number, options: WriteOptions = {}) {
+    if (!lease.lease_token) throw new Error("A current running lease token is required")
+    const next = await this.mutate<RunningLease>("leases/" + segment(lease.lease_id),
+      { lease_token: lease.lease_token, ttl_seconds: ttlSeconds }, { ...options, revision: lease.revision, method: "PATCH" })
+    return { ...next, lease_token: lease.lease_token }
+  }
+  releaseRunningLease(lease: RunningLease, options: WriteOptions = {}) {
+    if (!lease.lease_token) throw new Error("A current running lease token is required")
+    return this.mutate<RunningLease>("leases/" + segment(lease.lease_id),
+      { lease_token: lease.lease_token }, { ...options, revision: lease.revision, method: "DELETE" })
+  }
+  async withActivity<T>(id: string, reason: string, run: (signal: AbortSignal) => Promise<T>, ttlSeconds = 120): Promise<T> {
+    let lease = await this.acquireRunningLease(id, reason, ttlSeconds)
+    const progress = new AbortController()
+    let timer: ReturnType<typeof setTimeout>
+    let renewing = Promise.resolve()
+    let closed = false
+    const schedule = () => {
+      timer = setTimeout(() => {
+        renewing = this.renewRunningLease(lease, ttlSeconds).then(next => {
+          lease = next
+          if (!closed) schedule()
+        }).catch(error => progress.abort(error))
+      }, ttlSeconds * 1000 / 3)
+    }
+    schedule()
+    let finished = false
+    try {
+      const result = await run(progress.signal)
+      progress.signal.throwIfAborted()
+      finished = true
+      return result
+    } finally {
+      closed = true
+      clearTimeout(timer!)
+      await renewing
+      try { await this.releaseRunningLease(lease) } catch (error) { if (finished) throw error }
+      if (finished) progress.signal.throwIfAborted()
+    }
+  }
   getOperation(id: string, signal?: AbortSignal) { return this.get<Operation>(operation(id), signal) }
   async retryForkTargets(id: string, options: WriteOptions = {}) {
     const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
