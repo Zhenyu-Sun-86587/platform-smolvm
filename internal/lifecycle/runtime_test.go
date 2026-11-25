@@ -148,6 +148,11 @@ func TestDriveResolvesStoredBindingBeforeDispatch(t *testing.T) {
 				if result.State != registry.Succeeded || result.Effect != registry.EffectApplied {
 					t.Fatalf("legacy result = %#v", result)
 				}
+				staleEpoch := int64(1)
+				err := db.ObserveMachine(ctx, op.BindingID, registry.Observation{ObservedState: "stopped", ExpectedExecutionEpoch: &staleEpoch})
+				if !errors.Is(err, registry.ErrStaleObservation) {
+					t.Fatalf("observation from a different execution epoch was accepted: %v", err)
+				}
 			} else {
 				var failure struct {
 					Code string
