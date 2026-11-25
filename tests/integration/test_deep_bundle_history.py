@@ -90,6 +90,18 @@ class BundleHistoryTests(unittest.TestCase):
             self.retire()
         self.assertTrue(self.installation.exists())
 
+    def test_current_worker_keeps_reader_for_retained_backup(self):
+        with sqlite3.connect(self.catalog) as db:
+            db.execute("PRAGMA user_version=22")
+            db.execute("CREATE TABLE native_backup_exports(bundle_digest,phase)")
+            db.execute("INSERT INTO native_backup_exports VALUES (?,'pinned')", (BUNDLE,))
+        self.assertEqual(self.references()["worker"]["pinned_backup_exports"], 1)
+        with self.assertRaisesRegex(BundleError, "still referenced"):
+            self.retire()
+        with sqlite3.connect(self.catalog) as db:
+            db.execute("UPDATE native_backup_exports SET phase='released'")
+        self.assertTrue(Path(self.retire()["retired_path"]).is_dir())
+
     def test_platform_writer_lock_and_quarantined_reader(self):
         with self.lock.open("rb") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

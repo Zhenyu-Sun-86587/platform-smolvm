@@ -21,6 +21,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 
@@ -602,6 +603,59 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply" > /run/fork-wait-result"""
     print("A protected System guest forked while its user task waited. Both children resumed the same PID and nonce, inherited policy, and had independent leases and replies.", flush=True)
 
 
+def connection_recovery_case(platform, source, machine_id, ref, probe):
+    revision = platform.app(source)["revision"]
+    headers = {"If-Control-Epoch": platform.epoch, "If-Match": f'"{revision}"', "Idempotency-Key": "separate-lease"}
+    lease = platform.app(source + "/leases", "POST", {"reason": "independent owner", "semantics_version": 2, "ttl_seconds": 180}, headers)
+    grant = platform.change("guest-grants", "long-exec", dict(
+        source_machine_id=machine_id, target_machine_id=machine_id, action="machine.exec", maximum_uses=1,
+        expires_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()), status=200)
+    token = platform.change(f"guest-grants/{grant['grant_id']}/credential", "grant-token", {"ttl_seconds": 180}, status=200)["token"]
+    body = json.dumps({"command": ["/bin/sleep", "25"], "timeout_seconds": 40})
+    wire = (f"POST /v1/{source}/exec HTTP/1.1\r\nHost: guest-relay\r\nAuthorization: Bearer {token}\r\n"
+            f"Content-Length: {len(body.encode())}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n" + body)
+
+    def forward():
+        with suppress(OSError, RuntimeError):
+            platform.guest(ref, [probe], wire)
+
+    thread = threading.Thread(target=forward, daemon=True)
+    thread.start()
+    database = platform.root / "platform/platform.db"
+
+    def owned_row():
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as db:
+            return db.execute("SELECT id FROM connection_activity WHERE principal=?", (grant["grant_id"],)).fetchone()
+
+    hold, = wait_for(owned_row, timeout=15)
+    scope = dict(route_id="deep", bundle_digest=platform.bundle_id, expected=ref)
+
+    def protection(method="QueryProtection", ident=hold, **extra):
+        args = dict(protection_id=ident, principal=grant["grant_id"], **extra)
+        request = dict(scope)
+        if method != "QueryProtection":
+            request.update(operation_id="fixture-" + method + "-" + ident,
+                           request_digest="sha256:" + hashlib.sha256(json.dumps(args, sort_keys=True).encode()).hexdigest())
+        return worker(platform.worker, method, args, **request)
+
+    wait_for(lambda: protection()["state"] == "active", timeout=10, retry=(RuntimeError,))
+    platform.restart()
+    wait_for(lambda: protection()["state"] == "released" and not owned_row(), timeout=15)
+    thread.join(timeout=2)
+    leases = platform.app(source + "/leases")["items"]
+    assert any(item["lease_id"] == lease["lease_id"] and item["state"] == "active" for item in leases), leases
+    delayed = "access-" + os.urandom(16).hex()
+    assert protection("CloseAccessProtection", delayed)["state"] == "released"
+    try:
+        protection("AcquireActivityHold", delayed, reason="late connection request")
+    except RuntimeError as error:
+        assert error.args[0]["code"] == "E_STALE_REVISION", error
+    else:
+        raise AssertionError("a delayed registration recreated a closed connection")
+    assert platform.context(machine_id)[1] == ref
+    print("After SIGKILL, the replacement platform released only its old Guest connection. An independent lease survived and a late Worker admission stayed closed.", flush=True)
+
+
 def policy_case(platform, source, machine_id, execution):
     def change(path, method, key, body, revision, status=200, *, timeout=15):
         return platform.app(path, method, body, {"If-Control-Epoch": platform.epoch,
@@ -709,6 +763,8 @@ def test(args, root, stack, case):
         assert helper.decode() == digest(platform.bundle / "guest/identity-helper").split(":")[1]
     if case == "protected-fork":
         protected_fork_case(platform, source, ref, probe, seen)
+    elif case == "connection-recovery":
+        connection_recovery_case(platform, source, machine_id, ref, probe)
     elif case == "policy":
         policy_case(platform, source, machine_id, ref)
     elif case == "relay":
@@ -731,7 +787,7 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork"), action="append")
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork", "connection-recovery"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

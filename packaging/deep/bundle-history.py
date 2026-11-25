@@ -16,8 +16,8 @@ from bundle import MANIFEST, sync_path, verify_installed_bundle
 from bundle_inputs import BundleError, digest, read_json, require
 
 
-PLATFORM_SCHEMAS = {1, 2, 1001, 1002, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014}
-WORKER_SCHEMAS = range(1, 18)
+PLATFORM_SCHEMAS = {1, 2, 1001, 1002, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015}
+WORKER_SCHEMAS = range(1, 23)
 SECURITY = ("active", "legacy-allowed", "quarantined", "revoked")
 
 
@@ -84,6 +84,8 @@ def worker_references(db, bundle):
             JOIN operations o ON o.operation_id=s.operation_id WHERE o.bundle_digest=? AND s.phase!='aborted'""", bundle)
     if version >= 17:
         refs["lifecycle_policies"] = count(db, "SELECT COUNT(*) FROM lifecycle_policies WHERE bundle_digest=?", bundle)
+    if version >= 18:
+        refs["pinned_backup_exports"] = count(db, "SELECT COUNT(*) FROM native_backup_exports WHERE bundle_digest=? AND phase='pinned'", bundle)
     return refs
 
 

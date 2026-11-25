@@ -162,8 +162,9 @@ func (e *Engine) Run(ctx context.Context) {
 	tick := time.NewTicker(400 * time.Millisecond)
 	defer tick.Stop()
 	defer e.workers.Wait()
-	e.workers.Add(1)
+	e.workers.Add(2)
 	go func() { defer e.workers.Done(); e.monitor(ctx) }()
+	go func() { defer e.workers.Done(); e.recoverConnections(ctx) }()
 	for {
 		if ctx.Err() != nil {
 			return

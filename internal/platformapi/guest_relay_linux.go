@@ -153,28 +153,11 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 		if _, err := s.Engine.ApplyMachinePolicy(ctx, scope, policyWorker); err != nil {
 			return err
 		}
-		hold, err := registry.NewID("guest-exec-")
+		release, err := s.Engine.HoldConnectionActivity(ctx, scope, policyWorker, authorized.GrantID, "guest_exec")
 		if err != nil {
 			return err
 		}
-		execution := lifecycle.WorkerExecution(scope)
-		body := map[string]any{"protection_id": hold, "principal": authorized.GrantID, "reason": "guest_exec"}
-		var ack struct {
-			Revision int64 `json:"revision"`
-		}
-		if err := policyWorker.Lifecycle(ctx, "AcquireActivityHold", hold+"-open", execution, body, &ack); err != nil {
-			return err
-		}
-		defer func() {
-			closeCtx, stop := context.WithTimeout(context.Background(), 4*time.Second)
-			defer stop()
-			// Recovery can advance an active hold to suspect during the call.
-			scope := map[string]any{"protection_id": hold, "principal": authorized.GrantID}
-			if err := policyWorker.Lifecycle(closeCtx, "QueryProtection", "", execution, scope, &ack); err == nil {
-				scope["expected_revision"] = ack.Revision
-				_ = policyWorker.Lifecycle(closeCtx, "ReleaseActivityHold", hold+"-close", execution, scope, nil)
-			}
-		}()
+		defer release()
 		if err := check(ctx); err != nil {
 			return err
 		}

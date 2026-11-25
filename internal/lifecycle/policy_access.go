@@ -69,21 +69,9 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		err := request(ctx, "QueryProtection", "", map[string]any{}, &current)
 		return current, err
 	}
-	release := func() {
-		c, stop := context.WithTimeout(context.Background(), 4*time.Second)
-		defer stop()
-		cur, err := read(c)
-		if err != nil || cur.State == "released" {
-			return
-		}
-		method := "ReleaseActivityHold"
-		if cur.Kind == "wake" {
-			method = "CancelWakeDemand"
-		}
-		_ = request(c, method, fmt.Sprintf("%s-close-%d", id, cur.Revision), map[string]any{"expected_revision": cur.Revision}, nil)
-	}
+	var release func()
 	defer func() {
-		if !assigned && ack.ID != "" {
+		if !assigned && release != nil {
 			release()
 		}
 	}()
@@ -118,6 +106,13 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 			}
 			// A stable wake demand also covers an observed Running source that may
 			// cross a hibernate decision between status and admission.
+			if release == nil {
+				a, err := e.registerConnection(ctx, b, id, p.ID, scope)
+				if err != nil {
+					return none, nil, err
+				}
+				release = e.connectionRelease(a, client)
+			}
 			err = request(ctx, "RequestWake", id+"-admit", map[string]any{"reason": entry.Trigger, "trigger": entry.Trigger,
 				"expected_binding_revision": st.Revision, "authorization_revision": 1, "endpoint_revision": entry.Revision}, &ack)
 			if err != nil {
