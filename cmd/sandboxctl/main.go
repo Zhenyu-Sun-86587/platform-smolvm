@@ -135,6 +135,7 @@ func rootCommand() (*cobra.Command, *client) {
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
 	root.AddCommand(profiles)
+	root.AddCommand(api.mcpCommand())
 	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())
 	return root, api
 }
