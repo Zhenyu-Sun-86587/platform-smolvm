@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -60,5 +61,48 @@ func TestDroppedPOSTIsForwardedOnce(t *testing.T) {
 	<-done
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("counter=%d want 1", n)
+	}
+}
+
+func TestPrivateBackendStreamClosesAfterAdmissionIsRevoked(t *testing.T) {
+	closed := make(chan struct{})
+	guest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(closed)
+		_, _ = io.WriteString(w, "ready\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer guest.Close()
+	var revoked atomic.Bool
+	var dials atomic.Int32
+	backend := Backend{Port: 34567, Protocol: "http", DialPrivate: func(ctx context.Context) (net.Conn, error) {
+		dials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, "tcp", guest.Listener.Addr().String())
+	}}
+	edge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backend.HTTP(w, r, func(context.Context) error {
+			if revoked.Load() {
+				return errors.New("test credential was revoked")
+			}
+			return nil
+		})
+	}))
+	defer edge.Close()
+	resp, err := (&http.Client{Timeout: 4 * time.Second}).Get(edge.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if line, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatal(line, err)
+	}
+	revoked.Store(true)
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("guest service stream remained live after revocation")
+	}
+	if calls := dials.Load(); calls != 1 {
+		t.Fatalf("private TCP dials = %d, want 1", calls)
 	}
 }

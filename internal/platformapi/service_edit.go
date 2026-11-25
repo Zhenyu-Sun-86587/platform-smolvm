@@ -2,9 +2,11 @@ package platformapi
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -120,7 +122,9 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 	if req.Edit.Readiness != nil {
 		v.Readiness = *req.Edit.Readiness
 	}
-	if req.Edit.GuestPort != 0 && req.Edit.GuestPort != v.GuestPort {
+	if req.Edit.GuestPort != 0 && privateServiceWorker(j.Runtime) != "" {
+		v.GuestPort = req.Edit.GuestPort
+	} else if req.Edit.GuestPort != 0 && req.Edit.GuestPort != v.GuestPort {
 		var port uint16
 		if err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, j.Binding.ID).Scan(&port); err != nil {
 			return err
@@ -189,7 +193,15 @@ func probeHTTP(ctx context.Context, b gateway.Backend, r readiness) error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: b.ServerName},
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return b.Dial(ctx, func(context.Context) error { return nil })
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 4 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, err := client.Do(req)
 	if err != nil {
 		return err

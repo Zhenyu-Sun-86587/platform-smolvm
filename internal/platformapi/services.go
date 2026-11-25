@@ -311,23 +311,26 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 			return empty, nil, nil, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
 		}
 	}
-	o, err := adapter.Observe(ctx, b.RuntimeName)
-	if err != nil {
-		end()
-		return empty, nil, nil, err
-	}
-	var port uint16
-	err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, b.ID).Scan(&port)
-	if err != nil {
-		end()
-		return empty, nil, nil, err
-	}
-	check := func(ctx context.Context) error {
+	checkBinding := func(ctx context.Context) error {
+		if p.CredentialID != "" {
+			var active bool
+			err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM credentials c
+				JOIN principals p ON p.id=c.principal_id WHERE c.id=? AND p.id=? AND p.disabled=0
+				AND c.revoked_at IS NULL AND (c.expires_at IS NULL OR c.expires_at>?))`,
+				p.CredentialID, p.ID, time.Now().UnixMilli()).Scan(&active)
+			if err != nil {
+				return err
+			}
+			if !active {
+				return auth.ErrUnauthenticated
+			}
+		}
 		m, err := s.DB.GetMachine(ctx, v.MachineID)
 		if err != nil {
 			return err
 		}
-		if m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID {
+		if m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID ||
+			m.CurrentBinding.IncarnationID != b.IncarnationID || m.CurrentBinding.ExecutionEpoch != b.ExecutionEpoch {
 			return registry.ErrGeneration
 		}
 		now, err := s.getService(ctx, v.ID)
@@ -337,21 +340,48 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		if !now.Enabled || v.Revision != now.Revision {
 			return registry.ErrRevision
 		}
-		fresh, err := adapter.Observe(ctx, b.RuntimeName)
-		if err != nil {
-			return err
-		}
-		if fresh.Labels["platform.binding"] != b.ID || fresh.State != "running" || !fresh.Identity.Equal(o.Identity) {
-			return registry.ErrGeneration
-		}
-		for _, a := range fresh.Ports {
-			if a.Guest == v.GuestPort && a.Host == port && a.Protocol == "tcp" {
-				return nil
-			}
-		}
-		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "runtime port publication changed"}
+		return nil
 	}
-	backend := gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}
+	var backend gateway.Backend
+	check := checkBinding
+	if worker := privateServiceWorker(adapter); worker != "" {
+		backend, err = workerServiceBackend(ctx, worker, b, v)
+		if err != nil {
+			end()
+			return empty, nil, nil, err
+		}
+	} else {
+		o, err := adapter.Observe(ctx, b.RuntimeName)
+		if err != nil {
+			end()
+			return empty, nil, nil, err
+		}
+		var port uint16
+		err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, b.ID).Scan(&port)
+		if err != nil {
+			end()
+			return empty, nil, nil, err
+		}
+		backend = gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}
+		check = func(ctx context.Context) error {
+			if err := checkBinding(ctx); err != nil {
+				return err
+			}
+			fresh, err := adapter.Observe(ctx, b.RuntimeName)
+			if err != nil {
+				return err
+			}
+			if fresh.Labels["platform.binding"] != b.ID || fresh.State != "running" || !fresh.Identity.Equal(o.Identity) {
+				return registry.ErrGeneration
+			}
+			for _, a := range fresh.Ports {
+				if a.Guest == v.GuestPort && a.Host == port && a.Protocol == "tcp" {
+					return nil
+				}
+			}
+			return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "runtime port publication changed"}
+		}
+	}
 	if v.Readiness.Type == "http" {
 		if err := check(ctx); err != nil {
 			end()
@@ -400,6 +430,7 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 	}
 	var svc service
 	var host uint16
+	privateBackend := privateServiceWorker(j.Runtime) != ""
 	desired := append([]rt.Port{}, o.Ports...)
 	if j.Op.Kind == "service_create" {
 		var v serviceEdit
@@ -457,35 +488,37 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 		if err != nil {
 			return err
 		}
-		rng := s.Config.Gateway.BackendRange
-		for n := rng[0]; n <= rng[1]; n++ {
-			var count int
-			if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol='tcp' AND host_port=? AND state!='released'", n).Scan(&count); err != nil {
+		if !privateBackend {
+			rng := s.Config.Gateway.BackendRange
+			for n := rng[0]; n <= rng[1]; n++ {
+				var count int
+				if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol='tcp' AND host_port=? AND state!='released'", n).Scan(&count); err != nil {
+					return err
+				}
+				if count != 0 {
+					continue
+				}
+				l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
+				if err != nil {
+					continue
+				}
+				l.Close()
+				host = uint16(n)
+				break
+			}
+			if host == 0 {
+				return errors.New("backend port range exhausted")
+			}
+			_, err = tx.ExecContext(ctx, "INSERT INTO port_allocations(id,binding_id,service_id,protocol,host_port,guest_port,state) VALUES(?,?,?,'tcp',?,?,'allocated')", "port_"+j.Op.ID, j.Binding.ID, svc.ID, host, svc.GuestPort)
+			if err != nil {
 				return err
 			}
-			if count != 0 {
-				continue
-			}
-			l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
-			if err != nil {
-				continue
-			}
-			l.Close()
-			host = uint16(n)
-			break
-		}
-		if host == 0 {
-			return errors.New("backend port range exhausted")
-		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO port_allocations(id,binding_id,service_id,protocol,host_port,guest_port,state) VALUES(?,?,?,'tcp',?,?,'allocated')", "port_"+j.Op.ID, j.Binding.ID, svc.ID, host, svc.GuestPort)
-		if err != nil {
-			return err
+			desired = append(desired, rt.Port{Guest: svc.GuestPort, Host: host, Protocol: "tcp"})
 		}
 		if err = tx.Commit(); err != nil {
 			return err
 		}
 		j.Written = true
-		desired = append(desired, rt.Port{Guest: svc.GuestPort, Host: host, Protocol: "tcp"})
 	} else {
 		var v struct {
 			ID       string `json:"service_id"`
@@ -501,36 +534,40 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 		if svc.Revision != v.Revision || svc.MachineID != j.Op.MachineID {
 			return registry.ErrRevision
 		}
-		err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", svc.ID, j.Binding.ID).Scan(&host)
-		if err != nil {
-			return err
-		}
-		desired = nil
-		for _, a := range o.Ports {
-			if a.Host != host || a.Guest != svc.GuestPort {
-				desired = append(desired, a)
+		if !privateBackend {
+			err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", svc.ID, j.Binding.ID).Scan(&host)
+			if err != nil {
+				return err
+			}
+			desired = nil
+			for _, a := range o.Ports {
+				if a.Host != host || a.Guest != svc.GuestPort {
+					desired = append(desired, a)
+				}
 			}
 		}
 	}
-	if err = j.Stage(ctx, "set_ports", ""); err != nil {
-		return err
-	}
-	if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
-		return err
-	}
-	j.Written = true
-	o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
-	if err != nil {
-		return err
-	}
-	found := false
-	for _, a := range o.Ports {
-		if a.Host == host && a.Guest == svc.GuestPort {
-			found = true
+	if !privateBackend {
+		if err = j.Stage(ctx, "set_ports", ""); err != nil {
+			return err
 		}
-	}
-	if found != (j.Op.Kind == "service_create") {
-		return fmt.Errorf("port update did not match desired publication")
+		if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
+			return err
+		}
+		j.Written = true
+		o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, a := range o.Ports {
+			if a.Host == host && a.Guest == svc.GuestPort {
+				found = true
+			}
+		}
+		if found != (j.Op.Kind == "service_create") {
+			return fmt.Errorf("port update did not match desired publication")
+		}
 	}
 	obs := lifecycle.Evidence(o)
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: &obs, Result: lifecycle.JSON(map[string]string{"service_id": svc.ID}), Apply: func(ctx context.Context, tx *sql.Tx) error {
