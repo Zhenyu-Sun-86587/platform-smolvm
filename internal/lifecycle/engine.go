@@ -192,7 +192,11 @@ func (j *Job) Stage(ctx context.Context, stage, target string) error {
 func (j *Job) StageApply(ctx context.Context, stage, target string, apply func(context.Context, *sql.Tx) error) error {
 	j.Intent.Stage = stage
 	j.Intent.Target = target
-	return j.transition(ctx, registry.TransitionRequest{State: registry.Dispatching, Stage: stage, Dispatch: JSON(j.Intent), MaxHeavy: j.Config.Lifecycle.Heavy, Apply: apply})
+	state := registry.Dispatching
+	if j.Op.State == registry.Observing {
+		state = registry.Observing
+	}
+	return j.transition(ctx, registry.TransitionRequest{State: state, Stage: stage, Dispatch: JSON(j.Intent), MaxHeavy: j.Config.Lifecycle.Heavy, Apply: apply})
 }
 func (j *Job) Done(ctx context.Context, r registry.TransitionRequest) error {
 	if j.Op.State != registry.Observing {
@@ -542,9 +546,6 @@ func (j *Job) verify(ctx context.Context) error {
 			return err
 		}
 		if req.Start {
-			if j.Op.State != registry.Dispatching {
-				return errors.New("create confirmed; start requires reconciliation")
-			}
 			if err = j.Stage(ctx, "start", "running"); err != nil {
 				return err
 			}

@@ -36,6 +36,9 @@ func (s *Server) snapshotRoutes() {
 	for _, k := range []string{"snapshot", "clone", "restore", "rollback"} {
 		s.Extra[k] = s.copyJob
 	}
+	for _, k := range []string{"clone", "restore"} {
+		s.Recover[k] = s.recoverImport
+	}
 	for route, kind := range map[string]string{"POST /v1/machines/{machine}/snapshots": "snapshot", "POST /v1/machines/{machine}/clones": "clone", "POST /v1/machines/{machine}/rollback": "rollback", "POST /v1/restores": "restore"} {
 		s.route(route, func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 			mid := r.PathValue("machine")
@@ -270,6 +273,28 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 	}
 	return id, nil
 }
+
+// recoverImport can continue only before any candidate Start intent was written.
+// An operator can repair the status helper and reobserve the same imported name.
+func (s *Server) recoverImport(ctx context.Context, j *lifecycle.Job) error {
+	if j.Intent.Stage != "import_candidate" {
+		return errors.New("candidate stage needs independent outcome evidence")
+	}
+	var v copyRequest
+	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
+		return err
+	}
+	var pinned string
+	var count int
+	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT count(*),COALESCE(MIN(snapshot_id),'') FROM snapshot_pins WHERE owner_kind='operation' AND owner_id=?", j.Op.ID).Scan(&count, &pinned); err != nil {
+		return err
+	}
+	if count != 1 || (v.SnapshotID != "" && v.SnapshotID != pinned) {
+		return errors.New("original import pin is not unique")
+	}
+	v.SnapshotID = pinned
+	return s.restore(ctx, j, nil, v)
+}
 func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Binding, v copyRequest) error {
 	cat := s.Snapshots
 	item, err := cat.Get(ctx, v.SnapshotID)
@@ -282,7 +307,8 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if err = cat.Pin(ctx, item.ID, "operation", j.Op.ID); err != nil {
 		return err
 	}
-	keepPin := false
+	recovering := j.Intent.Stage == "import_candidate"
+	keepPin := recovering
 	defer func() {
 		if !keepPin {
 			_ = cat.Unpin(context.WithoutCancel(ctx), item.ID, "operation", j.Op.ID)
@@ -322,36 +348,38 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 		}
 		keepPin = j.Written
 	}
-	f, err := os.Open(filepath.Join(cat.Root, item.ID, snapshots.CheckpointFile))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err = j.Stage(ctx, "import_candidate", ""); err != nil {
-		return err
-	}
-	if _, err = s.Runtime.RestoreCheckpoint(ctx, j.Binding.RuntimeName, f, item.Size); err != nil {
-		keepPin = keepPin || errors.Is(err, rt.ErrUncertain)
-		return err
-	}
-	keepPin = true
-	j.Written = true
-	if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, []rt.Port{}); err != nil {
-		return err
-	}
-	labels := map[string]*string{}
-	for k, v := range map[string]string{"platform.machine": m.ID, "platform.binding": j.Binding.ID, "platform.spec": j.Binding.SpecHash} {
-		val := v
-		labels[k] = &val
-	}
-	if _, err = s.Runtime.SetLabels(ctx, j.Binding.RuntimeName, labels); err != nil {
-		return err
+	if !recovering {
+		f, err := os.Open(filepath.Join(cat.Root, item.ID, snapshots.CheckpointFile))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err = j.Stage(ctx, "import_candidate", ""); err != nil {
+			return err
+		}
+		if _, err = s.Runtime.RestoreCheckpoint(ctx, j.Binding.RuntimeName, f, item.Size); err != nil {
+			keepPin = keepPin || errors.Is(err, rt.ErrUncertain)
+			return err
+		}
+		keepPin = true
+		j.Written = true
+		if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, []rt.Port{}); err != nil {
+			return err
+		}
+		labels := map[string]*string{}
+		for k, v := range map[string]string{"platform.machine": m.ID, "platform.binding": j.Binding.ID, "platform.spec": j.Binding.SpecHash} {
+			val := v
+			labels[k] = &val
+		}
+		if _, err = s.Runtime.SetLabels(ctx, j.Binding.RuntimeName, labels); err != nil {
+			return err
+		}
 	}
 	o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
 	}
-	if o.State != "created" || len(o.Ports) != 0 || o.Labels["platform.binding"] != j.Binding.ID ||
+	if o.State != "created" || len(o.Ports) != 0 || o.Labels["platform.binding"] != j.Binding.ID || o.Labels["platform.machine"] != j.Binding.MachineID || o.Labels["platform.spec"] != j.Binding.SpecHash ||
 		o.ParentMachine != "" || o.AllowedCIDRs == nil || o.AllowedHosts == nil || len(o.AllowedCIDRs) != 0 ||
 		len(o.AllowedHosts) != 0 || len(o.EgressRules) != 0 {
 		return errors.New("candidate creation, ownership, port or egress fence not verified")

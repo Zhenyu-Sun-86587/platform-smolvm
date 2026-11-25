@@ -367,7 +367,7 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	if r.Stage == "" {
 		return Operation{}, fmt.Errorf("%w: operation stage is required", ErrInvalid)
 	}
-	if r.State == Dispatching {
+	if r.State == Dispatching || (r.State == Observing && len(r.Dispatch) != 0) {
 		if err := checkDispatch(ctx, tx, op, r); err != nil {
 			return Operation{}, err
 		}
