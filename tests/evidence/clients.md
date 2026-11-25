@@ -18,3 +18,14 @@ The first Chromium preview received HTTP 403 even though the cross-origin POST s
 `go test ./...`, the pinned Vite and TypeScript SDK builds, the Python and Node example syntax checks, and OpenAPI YAML and local reference checks passed. The browser pass used Chromium on Linux.
 
 The completed test database's 12 workspaces were deleted through the platform API after releasing native sessions and cancelling any active demo tasks.
+
+## Service and credential write acceptance
+
+`tests/integration/mutation_ingress.py` passed against the local TLS Gateway and smolvm 1.37.1. The fixture used two real VMs, a real HTTP readiness response and a scoped certificate signed by the test client CA.
+
+- A stale service PATCH returned `REVISION_CONFLICT` with no corresponding accepted operation. Two concurrent PATCH requests with the same valid revision produced one accepted operation. The readiness policy blocked HTTP forwarding until the expected status matched the Guest's actual 200.
+- Service DELETE rejected a stale revision at acceptance. After the service row was gone, the original key and revision returned the original operation. A new key returned 404.
+- Credential issue and list reported revision 1. API token issue replay returned metadata without the secret. Token and certificate revoke required `If-Match`, returned revision 2, replayed with the original key and revision, and rejected a new key using revision 1.
+- The machine-scoped token failed with HTTP 403 on the other machine's tunnel. The service-scoped certificate completed a TLS 1.2 handshake on the other service and could not send application data through it. Both checks left the target paused and its operation history unchanged. The same certificate reached its authorized service.
+
+The Cobra CLI resolved the listed credential revision before revoking. The Python and TypeScript SDK token methods each issued and replayed, then revoked and replayed with the original revision. Both mutation-test workspaces were deleted through the API.
