@@ -158,9 +158,26 @@ func (c *client) machines() *cobra.Command {
 		}
 		group.AddCommand(power)
 	}
+	for _, act := range []string{"standby", "hibernate"} {
+		var allow bool
+		power := sub(act+" MACHINE", "Apply a verified full-state machine action", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+			m, err := c.machine(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			body := map[string]any{"expected_generation": m.Generation}
+			if allow {
+				body["activity_policy"] = map[string]bool{"allow_active_tasks": true}
+			}
+			return c.mutation(cmd, "POST", res("machines", m.ID)+"/"+act, body, m.Revision)
+		})
+		power.Flags().BoolVar(&allow, "allow-active-tasks", false, "Permit the action with active tasks")
+		group.AddCommand(power)
+	}
 	for _, mode := range []string{"fork", "clone"} {
 		mode := mode
-		group.AddCommand(sub(mode+" MACHINE CHILD_NAME", "Create a child machine", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		var independent bool
+		child := sub(mode+" MACHINE CHILD_NAME", "Create a child machine", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 			m, err := c.machine(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -169,9 +186,29 @@ func (c *client) machines() *cobra.Command {
 			if mode == "clone" {
 				body["copy_policy"] = "managed_clean"
 			}
+			if independent {
+				body["require_independent"] = true
+			}
 			return c.mutation(cmd, "POST", res("machines", m.ID)+"/"+mode+"s", body, m.Revision)
-		}))
+		})
+		if mode == "fork" {
+			child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
+		}
+		group.AddCommand(child)
 	}
+	group.AddCommand(sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		children := make([]map[string]string, 0, len(args)-1)
+		for _, name := range args[1:] {
+			children = append(children, map[string]string{"name": name})
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", map[string]any{
+			"children": children, "expected_generation": m.Generation, "require_independent": true,
+		}, m.Revision)
+	}))
 	return group
 }
 
@@ -299,18 +336,23 @@ func (c *client) operations() *cobra.Command {
 func (c *client) snapshots() *cobra.Command {
 	group := &cobra.Command{Use: "snapshots", Short: "Capture, verify, import, and restore snapshots"}
 	group.AddCommand(c.list("list MACHINE", "snapshots", true), c.showItem("snapshots"), c.update("delete SNAPSHOT", "snapshots", "DELETE", true))
-	var purpose, label, verification, taskDisposition, oldState string
+	var purpose, label, captureMode, verification, taskDisposition, oldState string
 	capture := sub("capture MACHINE", "Capture a checkpoint", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
-		return c.mutation(cmd, "POST", res("machines", m.ID)+"/snapshots", map[string]any{
+		body := map[string]any{
 			"purpose": purpose, "label": label, "expected_generation": m.Generation,
-		}, m.Revision)
+		}
+		if captureMode != "" {
+			body["capture_mode"] = captureMode
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+"/snapshots", body, m.Revision)
 	})
 	capture.Flags().StringVar(&purpose, "purpose", "clone", "clone or recovery")
 	capture.Flags().StringVar(&label, "label", "", "Snapshot label")
+	capture.Flags().StringVar(&captureMode, "capture-mode", "", "vm or managed_tasks")
 	verify := sub("verify SNAPSHOT", "Verify an archive or an isolated restore", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		path := res("snapshots", args[0])
 		var current struct {

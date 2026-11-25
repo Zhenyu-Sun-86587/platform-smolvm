@@ -15,7 +15,7 @@ import {
 } from "lucide-react"
 import type { Machine, Operation, Page } from "../../sdk/typescript/src/index"
 import { useCollection } from "./api"
-import { Callout, label, num, segment, State, str, time, useRemote } from "./common"
+import { Callout, label, machinePowerState, num, segment, State, str, time, useRemote } from "./common"
 import { WorkspaceActions } from "./workspace-actions"
 import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
@@ -50,11 +50,11 @@ export function MachineList({
   const ops = useRemote<Page<Operation>>("operations?limit=4", revision)
   const data = rows ?? []
   const states = Array.from(
-    new Set(["all", "running", "paused", "stopped", ...data.map((m) => m.observed_state)]),
+    new Set(["all", "running", "standby", "hibernated", "stopped", ...data.map(machinePowerState)]),
   )
   const matching = data.filter(
     (m) =>
-      (filter === "all" || m.observed_state === filter) &&
+      (filter === "all" || machinePowerState(m) === filter) &&
       (m.name + " " + m.machine_id).toLowerCase().includes(search.trim().toLowerCase()),
   )
   const lastPage = Math.max(0, Math.ceil(matching.length / 10) - 1),
@@ -146,9 +146,9 @@ export function MachineList({
                 setPage(0)
               }}
             >
-              {state === "all" ? "All machines" : state === "paused" ? "Hibernated" : label(state)}
+              {state === "all" ? "All machines" : label(state)}
               {(state === "all" || state === filter) && rows && (
-                <b>{state === "all" ? rows.length : rows.filter((m) => m.observed_state === state).length}</b>
+                <b>{state === "all" ? rows.length : rows.filter((m) => machinePowerState(m) === state).length}</b>
               )}
             </button>
           ))}
@@ -195,9 +195,9 @@ export function MachineList({
                       </div>
                     </td>
                     <td>
-                      <State value={m.observed_state} />
+                      <State value={machinePowerState(m)} />
                       <small title={m.blocked_reasons?.join(", ")}>
-                        {label(m.availability ?? "unknown")}
+                        {m.health ? `Guest ${label(m.health.guest_management)} · Workload ${label(m.health.workload)}` : label(m.availability ?? "unknown")}
                       </small>
                     </td>
                     <td>

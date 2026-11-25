@@ -262,11 +262,34 @@ class Client:
             revision = self.get_machine(self.get_task(task_id)["machine_id"])["revision"]
         return self.mutate(_item("tasks", task_id) + "/cancel", {"grace_seconds": grace_seconds}, revision=revision, intent=intent)
 
-    def capture(self, machine_id, purpose="clone", label="", **options):
-        return self._machine_mutation(machine_id, "snapshots", {"purpose": purpose, "label": label}, **options)
+    def capture(self, machine_id, purpose="clone", label="", *, capture_mode=None, **options):
+        body = {"purpose": purpose, "label": label}
+        if capture_mode is not None:
+            body["capture_mode"] = capture_mode
+        return self._machine_mutation(machine_id, "snapshots", body, **options)
 
-    def fork(self, machine_id, child_name, **options):
-        return self._machine_mutation(machine_id, "forks", {"child_name": child_name}, **options)
+    def checkpoint(self, machine_id, label="", **options):
+        return self._machine_mutation(machine_id, "snapshots", {"label": label, "capture_mode": "vm"}, **options)
+
+    def fork(self, machine_id, child_name, *, require_independent=False, **options):
+        body = {"child_name": child_name}
+        if require_independent:
+            body["require_independent"] = True
+        return self._machine_mutation(machine_id, "forks", body, **options)
+
+    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, **options):
+        body = {"children": children, "require_independent": require_independent}
+        if volume_policy is not None:
+            body["volume_policy"] = volume_policy
+        return self._machine_mutation(machine_id, "fork-batches", body, **options)
+
+    def standby(self, machine_id, *, activity_policy=None, **options):
+        body = {} if activity_policy is None else {"activity_policy": activity_policy}
+        return self._machine_mutation(machine_id, "standby", body, **options)
+
+    def hibernate(self, machine_id, *, activity_policy=None, **options):
+        body = {} if activity_policy is None else {"activity_policy": activity_policy}
+        return self._machine_mutation(machine_id, "hibernate", body, **options)
 
     def clone(self, machine_id, child_name, **options):
         return self._machine_mutation(machine_id, "clones", {"child_name": child_name, "copy_policy": "managed_clean"}, **options)
