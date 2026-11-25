@@ -125,3 +125,16 @@ Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐
 | 同目录的 `kvm-block.py` | 同一个合法 writer 获得两块可写 qcow2 设备。broker 重启后核对两个原 OFD。VMM 退出而另一个进程仍持有其中的 FD 时，后续写权被拒绝。最后一个 FD 关闭后，两盘均可由新 Guest 读取先前写入的独立标记，公共只读基盘的摘要保持一致。 |
 | 两次连续的原生 OCI 启动 | 相同 Worker 上使用真实 image seed 的两台 KVM Guest 都执行了镜像命令，内核为 6.18.60。已有 UID claim 保留，宿主 registry 权限在两次启动后均为 0700。 |
 | Debian 11 System 根盘 | 以 ext4 块设备启动 systemd 247，完成 daemon-reexec、SSH 命令、Docker 本地镜像构建及 Compose 任务。停止并重新启动 Agent 后，独立用户服务的 PID 与启动时间保持一致。Guest 完成关机服务，裸 VMM 由测试宿主回收。 |
+
+### 密封捕获、递归身份和多盘写权
+
+2026-11-25 在隔离的 x86_64 KVM Worker 上复测。下列结果针对具体的 Guest、内核配置和设备组合。
+
+| 复现入口 | 观察结果 |
+| --- | --- |
+| libkrun 的 `tests/guest_gate/probe.py --capture` | 源 Guest 使用两块盘。第一次捕获导出 3 个原始密封 RAM FD，第二次导出 6 个基页和增量 FD。故意中断导出后，重连取得相同 checkpoint、描述符和 inode。取消后旧 token 无法导出。 |
+| libkrun 的 `tests/guest_gate/target_probe.py` | 使用只读 ext4 根盘和位于 Guest tmpfs 的 /etc，源机保持 Standby。子机观察到原进程 PID 432 和继续增长的原内存计数器，使用新的 hostname 和 machine-id。非法 hostname 令目标保持隔离。源机唤醒后仍使用原身份。对活动子机再次捕获，销毁两个祖先 VMM 和第一份 checkpoint 目录后，孙机通过 7 个密封基页和增量 FD 恢复了同一进程。 |
+| smolvm 的 `crates/smolvm-resourced/tests/kvm-block.py --live-pivot` | 运行中的源 Guest 在两块盘写入不同标记。VMM 停驻期间向 Worker 提供原写句柄和替换证明。另一个进程保留旧 OFD 时，提交后的捕获保持 held。释放最后副本后源 Guest 在两个新 head 写入，另外启动的 Guest 在封存的两盘读取旧标记。持久决定后取消被拒绝。 |
+| Debian 11 System 中的 K3s | K3s v1.34.13 启动后节点进入 Ready，CoreDNS 完成 rollout，测试 BusyBox Pod 进入运行状态。 |
+
+单独的用户态身份测试通过专属 Unix SOCK_SEQPACKET 对目标做授权。其原生 receipt 的 `clone_ready` 仍为 false。完整产品能力还需同一安装 Bundle 的 Worker 写权、网络和平台准入共同验收。
