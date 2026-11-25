@@ -10,7 +10,7 @@ packaging/install/make-release.sh 0.1.0 /path/to/debian-managed.tar ./release-0.
 
 The release manifest records the platform binaries, migration version, template, units and helpers. The runtime manifest pins the official smolvm 1.37.1 Linux x86_64 archive and bundled components. Install from an authenticated copy of the platform release. The SHA-256 checks verify integrity against those pins. [Official smolvm release](https://github.com/smol-machines/smolvm/releases/tag/v1.37.1)
 
-The default archive for a release is `debian-managed-v1-r3.tar`, SHA-256 `ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64`. The two-argument build looks for the verified archive in `/var/lib/smolvm-phase1-images` or in `SANDBOX_MANAGED_TEMPLATE_DIR` if set. Installed assets use the digest-derived template name. The installed template catalog exposes the same digest, profile, and evidence.
+The default archive for a release is `debian-managed-v1-r3.tar`, SHA-256 `ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64`. The two-argument build looks for the verified archive in `/var/lib/smolvm-phase1-images` or in `SANDBOX_MANAGED_TEMPLATE_DIR` if set. Installed assets use the digest-derived image filename. The installed template catalog exposes the same digest, profile, and evidence. The verified r3 definition is catalog version 2 with ID `debian-managed-ad5b45167c99-v2`. Upgrades retain prior immutable template definitions and the machines that reference them.
 
 ```sh
 SANDBOX_MANAGED_TEMPLATE_DIR=/path/to/verified-artifacts \

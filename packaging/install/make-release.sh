@@ -42,10 +42,13 @@ template_hash=$(sha256sum managed-template.tar | cut -d ' ' -f 1)
 runtime_version=$(jq -r .version runtime-manifest.json)
 jq -n --arg digest "$template_hash" --arg runtime "$runtime_version" --slurpfile gates "$gates" '
   ($gates[0].archives[$digest] | if .runtime_version == $runtime and .architecture == "amd64" then . else null end) as $gate
+  | (($gate.catalog_version // 1)
+      | if type == "number" and . >= 1 and . == floor then . else error("invalid template catalog_version") end) as $catalog_version
+  | ("debian-managed-" + $digest[0:12]) as $name
   | [{
-      template_id:("debian-managed-" + $digest[0:12]), name:("debian-managed-" + $digest[0:12]),
-      version:1, image_digest:("sha256:" + $digest),
-      spec:({local_image:("debian-managed-" + $digest[0:12] + ".tar")}
+      template_id:($name + (if $catalog_version == 1 then "" else "-v" + ($catalog_version | tostring) end)),
+      name:$name, version:$catalog_version, image_digest:("sha256:" + $digest),
+      spec:({local_image:($name + ".tar")}
           + (if $gate == null then {} else {verification_evidence:$gate.evidence} end)),
       capabilities:(reduce ($gate.capabilities // [])[] as $name ({};
           .[$name] = {supported:true, verified_profile:$gate.verified_profile}))
