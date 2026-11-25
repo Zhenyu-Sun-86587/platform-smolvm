@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"time"
 )
 
@@ -27,22 +28,39 @@ type Catalog struct {
 	Key                ed25519.PrivateKey
 	Trust              map[string]ed25519.PublicKey
 }
+type CaptureMode string
+
+const (
+	CaptureManagedTasks CaptureMode = "managed_tasks"
+	CaptureVM           CaptureMode = "vm"
+)
+
 type Snapshot struct {
-	ID         string          `json:"snapshot_id"`
-	MachineID  string          `json:"source_machine_id,omitempty"`
-	Generation int64           `json:"source_generation,omitempty"`
-	Purpose    string          `json:"purpose"`
-	Content    string          `json:"task_content"`
-	State      string          `json:"state"`
-	Hash       string          `json:"sha256,omitempty"`
-	Size       int64           `json:"size_bytes"`
-	Provenance string          `json:"provenance"`
-	Revision   int64           `json:"revision"`
-	Label      string          `json:"label"`
-	Manifest   json.RawMessage `json:"manifest,omitempty"`
-	Created    time.Time       `json:"created_at"`
-	Closure    *time.Time      `json:"closure_verified_at"`
-	Restored   *time.Time      `json:"restore_verified_at"`
+	ID          string          `json:"snapshot_id"`
+	MachineID   string          `json:"source_machine_id,omitempty"`
+	Generation  int64           `json:"source_generation,omitempty"`
+	Purpose     string          `json:"purpose"`
+	Content     string          `json:"task_content"`
+	State       string          `json:"state"`
+	Hash        string          `json:"sha256,omitempty"`
+	Size        int64           `json:"size_bytes"`
+	Provenance  string          `json:"provenance"`
+	Revision    int64           `json:"revision"`
+	Label       string          `json:"label"`
+	Manifest    json.RawMessage `json:"manifest,omitempty"`
+	Created     time.Time       `json:"created_at"`
+	Closure     *time.Time      `json:"closure_verified_at"`
+	Restored    *time.Time      `json:"restore_verified_at"`
+	CaptureMode CaptureMode     `json:"capture_mode"`
+	VM          *VMProvenance   `json:"vm_provenance,omitempty"`
+}
+
+type VMProvenance struct {
+	OperationID       string `json:"operation_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	RuntimeBundleID   string `json:"runtime_bundle_id"`
+	StateReaderID     string `json:"state_reader_id"`
+	RuntimeCaptureID  string `json:"runtime_capture_id"`
 }
 
 func Open(db *registry.Store, c config.Config) (*Catalog, error) {
@@ -154,7 +172,10 @@ func readTrust(c config.Config, local ed25519.PublicKey) (map[string]ed25519.Pub
 	return trust, nil
 }
 
-const columns = `id,COALESCE(source_machine_id,''),COALESCE(source_generation,0),purpose,task_content,state,COALESCE(sha256,''),COALESCE(size_bytes,0),provenance,revision,label,COALESCE(manifest_json,'null'),created_at,closure_verified_at,restore_verified_at`
+const columns = `id,COALESCE(source_machine_id,''),COALESCE(source_generation,0),purpose,task_content,state,COALESCE(sha256,''),COALESCE(size_bytes,0),provenance,revision,label,COALESCE(manifest_json,'null'),created_at,closure_verified_at,restore_verified_at,
+	COALESCE(v.operation_id,''),COALESCE(v.runtime_instance_id,''),COALESCE(v.runtime_bundle_id,''),
+	COALESCE(v.state_reader_id,''),COALESCE(v.runtime_capture_id,'')`
+const fromSnapshots = ` FROM snapshots LEFT JOIN vm_snapshot_provenance v ON v.snapshot_id=snapshots.id`
 
 type scanner interface{ Scan(...any) error }
 
@@ -163,7 +184,13 @@ func scan(row scanner) (Snapshot, error) {
 	var raw string
 	var created int64
 	var closure, restored sql.NullInt64
-	err := row.Scan(&s.ID, &s.MachineID, &s.Generation, &s.Purpose, &s.Content, &s.State, &s.Hash, &s.Size, &s.Provenance, &s.Revision, &s.Label, &raw, &created, &closure, &restored)
+	var vm VMProvenance
+	err := row.Scan(&s.ID, &s.MachineID, &s.Generation, &s.Purpose, &s.Content, &s.State, &s.Hash, &s.Size, &s.Provenance, &s.Revision, &s.Label, &raw, &created, &closure, &restored,
+		&vm.OperationID, &vm.RuntimeInstanceID, &vm.RuntimeBundleID, &vm.StateReaderID, &vm.RuntimeCaptureID)
+	s.CaptureMode = CaptureManagedTasks
+	if vm.OperationID != "" {
+		s.CaptureMode, s.VM = CaptureVM, &vm
+	}
 	s.Manifest = []byte(raw)
 	s.Created = time.UnixMilli(created).UTC()
 	if closure.Valid {
@@ -177,10 +204,10 @@ func scan(row scanner) (Snapshot, error) {
 	return s, err
 }
 func (c *Catalog) Get(ctx context.Context, id string) (Snapshot, error) {
-	return scan(c.DB.ReadDB().QueryRowContext(ctx, "SELECT "+columns+" FROM snapshots WHERE id=?", id))
+	return scan(c.DB.ReadDB().QueryRowContext(ctx, "SELECT "+columns+fromSnapshots+" WHERE id=?", id))
 }
 func (c *Catalog) List(ctx context.Context, mid string) ([]Snapshot, error) {
-	rows, err := c.DB.ReadDB().QueryContext(ctx, "SELECT "+columns+" FROM snapshots WHERE (source_machine_id=? OR ?='') AND state!='deleted' ORDER BY created_at DESC,id", mid, mid)
+	rows, err := c.DB.ReadDB().QueryContext(ctx, "SELECT "+columns+fromSnapshots+" WHERE (source_machine_id=? OR ?='') AND state!='deleted' ORDER BY created_at DESC,id", mid, mid)
 	if err != nil {
 		return nil, err
 	}
@@ -291,6 +318,9 @@ func (c *Catalog) Unpin(ctx context.Context, id, kind, owner string) error {
 	return err
 }
 func (c *Catalog) Verify(ctx context.Context, s Snapshot) error {
+	if s.VM != nil {
+		return rt.ErrUnsupported
+	}
 	f, err := os.Open(filepath.Join(c.Root, s.ID, CheckpointFile))
 	if err != nil {
 		return err

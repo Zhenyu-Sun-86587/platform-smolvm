@@ -21,15 +21,16 @@ import (
 )
 
 type copyRequest struct {
-	SnapshotID         string `json:"snapshot_id,omitempty"`
-	Label              string `json:"label,omitempty"`
-	Purpose            string `json:"purpose,omitempty"`
-	ExpectedGeneration int64  `json:"expected_generation,omitempty"`
-	CopyPolicy         string `json:"copy_policy,omitempty"`
-	ChildName          string `json:"child_name,omitempty"`
-	Name               string `json:"name,omitempty"`
-	Disposition        string `json:"task_disposition,omitempty"`
-	OldStatePolicy     string `json:"old_state_policy,omitempty"`
+	CaptureMode        snapshots.CaptureMode `json:"capture_mode,omitempty"`
+	SnapshotID         string                `json:"snapshot_id,omitempty"`
+	Label              string                `json:"label,omitempty"`
+	Purpose            string                `json:"purpose,omitempty"`
+	ExpectedGeneration int64                 `json:"expected_generation,omitempty"`
+	CopyPolicy         string                `json:"copy_policy,omitempty"`
+	ChildName          string                `json:"child_name,omitempty"`
+	Name               string                `json:"name,omitempty"`
+	Disposition        string                `json:"task_disposition,omitempty"`
+	OldStatePolicy     string                `json:"old_state_policy,omitempty"`
 }
 
 func (s *Server) snapshotRoutes() {
@@ -53,8 +54,26 @@ func (s *Server) snapshotRoutes() {
 				return err
 			}
 			req := registry.AcceptRequest{Kind: kind, MachineID: mid, Heavy: true, ExpectedGeneration: v.ExpectedGeneration}
+			if kind != "snapshot" && v.CaptureMode != "" {
+				return registry.ErrInvalid
+			}
 			switch kind {
 			case "snapshot":
+				switch v.CaptureMode {
+				case snapshots.CaptureVM:
+					if v.ExpectedGeneration < 1 || v.Purpose != "" && v.Purpose != "recovery" && v.Purpose != "clone" {
+						return registry.ErrInvalid
+					}
+					req.Kind = rt.VMSnapshot
+				case snapshots.CaptureManagedTasks:
+					v.CaptureMode = ""
+				case "":
+				default:
+					return registry.ErrInvalid
+				}
+				if req.Kind == rt.VMSnapshot {
+					break
+				}
 				if v.Purpose != "recovery" && v.Purpose != "clone" {
 					return registry.ErrInvalid
 				}
@@ -67,6 +86,24 @@ func (s *Server) snapshotRoutes() {
 				item, err := s.Snapshots.Get(r.Context(), v.SnapshotID)
 				if err != nil {
 					return err
+				}
+				if item.VM != nil {
+					if kind == "rollback" {
+						if item.MachineID != mid {
+							return registry.ErrConflict
+						}
+						if v.ExpectedGeneration < 1 {
+							return registry.ErrInvalid
+						}
+						req.Kind = rt.VMRollback
+						return s.accept(w, r, p, v, req)
+					}
+					if !validChildName(v.Name) {
+						return registry.ErrInvalid
+					}
+					return s.mutate(w, r, p, v, func(context.Context, *sql.Tx) (registry.MutationResult, error) {
+						return registry.MutationResult{}, rt.FullStateUnavailable(rt.VMRestore, false)
+					})
 				}
 				if item.State != "ready" || item.Content == "unknown" {
 					return registry.ErrConflict
@@ -131,6 +168,9 @@ func (s *Server) snapshotRoutes() {
 		}
 		if err = p.Authorize("manage", item.MachineID); err != nil {
 			return err
+		}
+		if item.VM != nil {
+			return rt.ErrUnsupported
 		}
 		owner, err := registry.NewID("export_")
 		if err != nil {
@@ -312,6 +352,9 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	item, err := cat.Get(ctx, v.SnapshotID)
 	if err != nil {
 		return err
+	}
+	if item.VM != nil {
+		return rt.ErrUnsupported
 	}
 	if item.State != "ready" || item.Content == "unknown" || (j.Op.Kind != "rollback" && item.Content != "clean") {
 		return registry.ErrConflict

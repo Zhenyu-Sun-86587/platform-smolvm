@@ -138,6 +138,9 @@ func (s *Server) artifactRoutes() {
 			if err = p.Authorize("manage", snap.MachineID); err != nil {
 				return err
 			}
+			if snap.VM != nil {
+				return rt.ErrUnsupported
+			}
 			rev, err := revision(r)
 			if err != nil {
 				return err
@@ -245,6 +248,7 @@ func (s *Server) deleteSnapshot(ctx context.Context, j *lifecycle.Job) error {
 		return err
 	}
 	res, err := s.DB.DB().ExecContext(ctx, `UPDATE snapshots SET state='deleting',revision=revision+1 WHERE id=? AND revision=? AND state IN ('ready','quarantined')
+		AND NOT EXISTS (SELECT 1 FROM vm_snapshot_provenance WHERE snapshot_id=snapshots.id)
 		AND NOT EXISTS (SELECT 1 FROM snapshot_pins WHERE snapshot_id=?)
 		AND NOT EXISTS (SELECT 1 FROM operations WHERE kind IN ('restore','rollback','snapshot_verify')
 			AND state NOT IN ('succeeded','failed','cancelled') AND json_extract(request_json,'$.snapshot_id')=?)`,
@@ -291,6 +295,9 @@ func (s *Server) verifySnapshot(ctx context.Context, j *lifecycle.Job) error {
 	snap, err := s.Snapshots.Get(ctx, v.ID)
 	if err != nil {
 		return err
+	}
+	if snap.VM != nil {
+		return rt.ErrUnsupported
 	}
 	if snap.Revision != v.Revision {
 		return registry.ErrRevision
