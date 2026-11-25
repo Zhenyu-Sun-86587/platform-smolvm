@@ -36,6 +36,9 @@ type leaseWork struct {
 	WorkerRevision    int64
 	BindingGeneration int64
 	Migrated          bool
+	AwaitRunning      bool       `json:"await_running,omitempty"`
+	ActorScope        auth.Scope `json:"actor_scope,omitempty"`
+	AcceptedPower     string     `json:"accepted_power,omitempty"`
 }
 
 func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Principal, b registry.Binding, client workerclient.Client, id string, revision int64, v leaseRequest) error {
@@ -59,7 +62,7 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
-		if generation != b.Generation || b.IncarnationID == "" || b.ExecutionEpoch < 1 {
+		if generation != b.Generation || id != "" && (b.IncarnationID == "" || b.ExecutionEpoch < 1) {
 			return registry.MutationResult{}, registry.ErrGeneration
 		}
 		if id == "" {
@@ -73,6 +76,7 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 				return registry.MutationResult{}, registry.ErrInvalid
 			}
 			task.Method = "AcquireRunningLease"
+			task.AwaitRunning, task.ActorScope, task.AcceptedPower = true, p.Scope, string(b.PowerState)
 			if task.Semantics == 0 {
 				task.Semantics = 1
 			}
@@ -143,11 +147,11 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 
 func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
 	var l Lease
-	var machine, principal, state, raw, scopeRaw string
+	var machine, bindingID, principal, credential, state, raw, scopeRaw string
 	var rejected *string
 	var secret []byte
-	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT machine_id,principal,state,request_json,scope_json,secret,receipt_json FROM lifecycle_lease_intents WHERE id=?", id).
-		Scan(&machine, &principal, &state, &raw, &scopeRaw, &secret, &rejected); err != nil {
+	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT machine_id,binding_id,principal,credential,state,request_json,scope_json,secret,receipt_json FROM lifecycle_lease_intents WHERE id=?", id).
+		Scan(&machine, &bindingID, &principal, &credential, &state, &raw, &scopeRaw, &secret, &rejected); err != nil {
 		return l, err
 	}
 	if state == "rejected" && rejected != nil {
@@ -164,6 +168,80 @@ func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Cli
 	}
 	if err := json.Unmarshal([]byte(scopeRaw), &scope); err != nil {
 		return l, err
+	}
+	if state == "pending" && task.AwaitRunning {
+		actor := auth.Principal{ID: principal, CredentialID: credential, Scope: task.ActorScope}
+		checkBinding := func(ctx context.Context) error {
+			m, err := s.DB.GetMachine(ctx, machine)
+			if err != nil {
+				return err
+			}
+			if m.DeletedAt != nil || m.CurrentBinding == nil || m.CurrentBinding.ID != bindingID ||
+				m.BindingGeneration != task.BindingGeneration || m.CurrentBinding.RuntimeInstanceObjectID != scope.InstanceID {
+				return registry.ErrGeneration
+			}
+			if m.CurrentBinding.PowerState == registry.PowerStopped && task.AcceptedPower != string(registry.PowerStopped) {
+				return registry.ErrGeneration
+			}
+			return actor.Authorize(auth.ActionManage, machine)
+		}
+		var b registry.Binding
+		var release func()
+		err := checkBinding(ctx)
+		if err == nil {
+			b, release, err = s.Engine.AccessAt(ctx, actor, machine,
+				lifecycle.AccessEndpoint{Trigger: "api_access", Revision: 1, Reauthorize: checkBinding})
+		}
+		if err != nil {
+			var fault *workerclient.Fault
+			var failure *lifecycle.Failure
+			switch {
+			case errors.Is(err, auth.ErrForbidden), errors.Is(err, auth.ErrUnauthenticated):
+				fault = &workerclient.Fault{Code: "E_PERMISSION_DENIED", Message: "lease authorization changed during wake"}
+			case errors.Is(err, registry.ErrGeneration), errors.Is(err, registry.ErrNotFound):
+				fault = &workerclient.Fault{Code: "E_STALE_EXECUTION", Message: "lease target changed during wake"}
+			case errors.As(err, &failure) && failure.Code == "SERVICE_NOT_READY":
+				fault = &workerclient.Fault{Code: failure.Code, Message: failure.Message}
+			case !errors.As(err, &fault) || workerclient.RetryDelivery(err):
+				return l, err
+			}
+			result, saveErr := s.DB.DB().ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state='rejected',receipt_json=?,secret=x'' WHERE id=? AND state='pending' AND request_json=?", string(lifecycle.JSON(fault)), id, raw)
+			if saveErr != nil {
+				return l, saveErr
+			}
+			if count, err := result.RowsAffected(); err != nil {
+				return l, err
+			} else if count == 0 {
+				return s.deliverWorkerLease(ctx, client, id, disclose)
+			}
+			return l, leaseFault(fault)
+		}
+		defer release()
+		task.AwaitRunning = false
+		scope = lifecycle.WorkerExecution(b)
+		result, err := s.DB.DB().ExecContext(ctx, `UPDATE lifecycle_lease_intents SET request_json=?,scope_json=?
+			WHERE id=? AND state='pending' AND request_json=? AND binding_id=(SELECT current_binding_id FROM machines WHERE id=?)`,
+			string(lifecycle.JSON(task)), string(lifecycle.JSON(scope)), id, raw, machine)
+		if err != nil {
+			return l, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return l, err
+		}
+		if n == 0 {
+			var saved string
+			if err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT scope_json FROM lifecycle_lease_intents WHERE id=? AND binding_id=? AND json_extract(request_json,'$.await_running') IS NULL", id, bindingID).Scan(&saved); err != nil {
+				return l, err
+			}
+			var committed workerclient.Execution
+			if err = json.Unmarshal([]byte(saved), &committed); err != nil {
+				return l, err
+			}
+			if committed != scope {
+				return l, registry.ErrGeneration
+			}
+		}
 	}
 	key, err := s.taskEnvCipher(false)
 	if err != nil {
