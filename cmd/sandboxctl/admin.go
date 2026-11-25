@@ -115,7 +115,7 @@ func adminCommand() *cobra.Command {
 	enter.Flags().StringVar(&reason, "reason", "", "Operator reason")
 	_ = enter.MarkFlagRequired("reason")
 	maintenanceCommand.AddCommand(enter, &cobra.Command{Use: "exit", Short: "Disable the maintenance gate after operator review", Args: cobra.NoArgs, RunE: change(false)})
-	root.AddCommand(backup, maintenanceCommand, upgradeCommand(&path), runtimeCapabilitiesCommand())
+	root.AddCommand(backup, maintenanceCommand, upgradeCommand(&path), runtimeCapabilitiesCommand(), runtimeOperationCommand())
 	return root
 }
 
