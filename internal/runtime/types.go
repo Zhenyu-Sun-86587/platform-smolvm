@@ -80,6 +80,7 @@ type Observation struct {
 	ParentMachine  string                `json:"parent_machine,omitempty"`
 	Branchable     bool                  `json:"branchable"`
 	StateReason    string                `json:"state_reason,omitempty"`
+	WorkloadError  *string               `json:"workload_error,omitempty"`
 	Ports          []Port                `json:"ports"`
 	AllowedCIDRs   []string              `json:"allowed_cidrs,omitempty"`
 	AllowedHosts   []string              `json:"allowed_hosts,omitempty"`

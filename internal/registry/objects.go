@@ -378,12 +378,35 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 		return false, fmt.Errorf("%w: invalid guest management or pause status", ErrInvalid)
 	}
 
+	health := old.Health
+	if o.WorkloadError != nil {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(health, &fields); err != nil {
+			return false, fmt.Errorf("decode persisted workload health: %w", err)
+		}
+		if *o.WorkloadError == "" {
+			delete(fields, "workload")
+			delete(fields, "workload_error")
+		} else {
+			fields["workload"] = json.RawMessage(`"failed"`)
+			detail, err := json.Marshal(map[string]string{"code": WorkloadStartFailed, "message": *o.WorkloadError})
+			if err != nil {
+				return false, err
+			}
+			fields["workload_error"] = detail
+		}
+		var err error
+		health, err = json.Marshal(fields)
+		if err != nil {
+			return false, err
+		}
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE runtime_bindings SET observed_state = ?, native_state = ?, availability = ?,
 		runtime_identity_json = ?, observed_at = ?, runtime_pause_id = ?, pause_status = ?, ports_json = ?,
-		guest_management_status = ?, guest_management_evidence_json = ?, state_reason_json = ?
+		guest_management_status = ?, guest_management_evidence_json = ?, state_reason_json = ?, health_json = ?
 		WHERE id = ?`, o.ObservedState, o.NativeState, o.Availability, rawValue(o.RuntimeIdentity), observedAt.UnixMilli(),
 		nullable(o.RuntimePauseID), nullable(o.PauseStatus), string(o.Ports), o.GuestManagementStatus,
-		string(o.GuestManagementEvidence), rawValue(o.StateReason), old.ID)
+		string(o.GuestManagementEvidence), rawValue(o.StateReason), string(health), old.ID)
 	if err != nil {
 		return false, err
 	}
@@ -391,7 +414,7 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 		o.RuntimePauseID != old.RuntimePauseID || o.PauseStatus != old.PauseStatus ||
 		o.GuestManagementStatus != old.GuestManagementStatus || !sameJSON(o.RuntimeIdentity, old.RuntimeIdentity) ||
 		!sameJSON(o.Ports, old.Ports) || !sameJSON(o.GuestManagementEvidence, old.GuestManagementEvidence) ||
-		!sameJSON(o.StateReason, old.StateReason)
+		!sameJSON(o.StateReason, old.StateReason) || !sameJSON(health, old.Health)
 	return changed, nil
 }
 

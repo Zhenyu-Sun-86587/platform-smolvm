@@ -110,6 +110,8 @@ type Observation struct {
 	GuestManagementStatus   string          `json:"guest_management_status"`
 	GuestManagementEvidence json.RawMessage `json:"guest_management_evidence"`
 	StateReason             json.RawMessage `json:"state_reason,omitempty"`
+	// A confirmed Start can set the workload failure or clear it with an empty message.
+	WorkloadError *string `json:"-"`
 	// ExpectedRuntimeIdentity, when set, prevents a probe of a replaced
 	// execution from overwriting the evidence for the current execution.
 	ExpectedRuntimeIdentity json.RawMessage `json:"-"`
@@ -128,6 +130,8 @@ const (
 	EffectApplied = "applied"
 	EffectPartial = "partial"
 	EffectUnknown = "unknown"
+
+	WorkloadStartFailed = "WORKLOAD_START_FAILED"
 )
 
 type Operation struct {
