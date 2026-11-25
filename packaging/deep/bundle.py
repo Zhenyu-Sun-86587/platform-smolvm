@@ -42,6 +42,11 @@ PROVENANCE = "lib/libkrun.provenance"
 LIBKRUN = "lib/libkrun.so"
 FIRMWARE = "lib/libkrunfw.so"
 ROOTFS = "guest/oci-rootfs.tar.gz"
+ROOTFS_INPUT_LOCK = "metadata/rootfs-input-lock.json"
+ROOTFS_PROVENANCE = "metadata/rootfs-provenance.json"
+ROOTFS_METADATA = {ROOTFS_INPUT_LOCK, ROOTFS_PROVENANCE}
+ROOTFS_RECIPE = "scripts/build-agent-rootfs.sh"
+ROOTFS_INPUT_DIGESTS = ("seed_sha256", "crun_build_sha256", "package_db_sha256", "crane_sha256")
 AGENT = "guest/agent"
 INIT = "guest/init"
 IDENTITY_HELPER = "guest/identity-helper"
@@ -54,11 +59,14 @@ PROFILES = {
     "device_profile_digest": "profiles/device.json",
     "clock_contract_digest": "profiles/clock.json",
 }
-EXECUTABLES = ("smolvm", "smolvm-bin", "smolvm-resourced", INIT, AGENT, IDENTITY_HELPER)
+RUNTIME_EXECUTABLES = ("smolvm", "smolvm-bin", "smolvm-resourced", INIT, AGENT)
+EXECUTABLES = (*RUNTIME_EXECUTABLES, IDENTITY_HELPER)
 LIBRARY_OUTPUTS = {LIBKRUN, FIRMWARE, KERNEL, CONFIG, INIT}
 LIBRARY_FILES = {BUILD_LOCK, TOOLCHAIN_LOCK, BUILD_RECORD, PROVENANCE, *LIBRARY_OUTPUTS}
+RUNTIME_OUTPUTS = {*LIBRARY_OUTPUTS, ROOTFS, *ROOTFS_METADATA, *RUNTIME_EXECUTABLES}
+RUNTIME_FILES = {*LIBRARY_FILES, *RUNTIME_OUTPUTS}
 REQUIRED_FILES = {
-    *LIBRARY_FILES, VERIFICATION_PROFILE, "LICENSE", "NOTICE",
+    *RUNTIME_FILES, VERIFICATION_PROFILE, "LICENSE", "NOTICE",
     *EXECUTABLES, *PROFILES.values(), *(f"sources/{repo}.tar.gz" for repo in REPOSITORIES),
 }
 
@@ -174,13 +182,13 @@ def elf(path, kind, *, static=False):
     return data
 
 
-def check_elf_artifacts(root, lock, artifacts, *, libraries_only=False):
+def check_elf_artifacts(root, lock, artifacts, executables):
     elf(root / INIT, {"EXEC", "DYN"}, static=True)
-    host = []
-    if not libraries_only:
+    if IDENTITY_HELPER in executables:
         elf(root / IDENTITY_HELPER, {"EXEC", "DYN"}, static=True)
+    if AGENT in executables:
         elf(root / AGENT, {"EXEC", "DYN"})
-        host = [root / "smolvm-bin", root / "smolvm-resourced"]
+    host = [root / name for name in ("smolvm-bin", "smolvm-resourced") if name in executables]
     maximum = glibc_version(lock["maximum_glibc"])
     for path in host + [root / LIBKRUN, root / FIRMWARE]:
         library = path.parent == root / "lib"
@@ -236,21 +244,61 @@ def verify_rootfs(root, artifacts):
     require(found, "OCI rootfs is missing smolvm-agent")
 
 
-def build_manifest(root, files):
-    missing = sorted(REQUIRED_FILES - files.keys())
+def verify_rootfs_provenance(root, artifacts, toolchain):
+    seed = read_json(root / ROOTFS_INPUT_LOCK)
+    fields(seed, "schema recipe " + " ".join(ROOTFS_INPUT_DIGESTS), "rootfs input lock")
+    require(seed["schema"] == "RuntimeRootfsSeed/1", "unsupported rootfs input lock schema")
+    require(seed["recipe"] == ROOTFS_RECIPE, "unsupported rootfs build recipe")
+
+    provenance = read_json(root / ROOTFS_PROVENANCE)
+    fields(
+        provenance, "schema input_lock_path input_lock_sha256 recipe_sha256 agent_sha256 rootfs_sha256 "
+        + " ".join(ROOTFS_INPUT_DIGESTS), "rootfs provenance",
+    )
+    require(provenance["schema"] == "RuntimeRootfsProvenance/1", "unsupported rootfs provenance schema")
+    input_path = relative(provenance["input_lock_path"], "rootfs input lock source path")
+    pins = {entry["path"]: entry["sha256"] for entry in toolchain["lockfiles"] if entry["repository"] == "smolvm"}
+    require(pins.get(input_path) == provenance["input_lock_sha256"], "rootfs input lock is not pinned by the toolchain lock")
+    recipe = digest(provenance["recipe_sha256"], "rootfs recipe SHA-256")
+    if ROOTFS_RECIPE in pins:
+        require(pins[ROOTFS_RECIPE] == recipe, "rootfs recipe digest differs from the toolchain lock")
+    for name in ROOTFS_INPUT_DIGESTS:
+        value = digest(seed[name], f"rootfs input lock {name}")
+        require(provenance[name] == value, f"rootfs provenance {name} differs from the input lock")
+    for key, path in {
+        "input_lock_sha256": ROOTFS_INPUT_LOCK, "agent_sha256": AGENT, "rootfs_sha256": ROOTFS,
+    }.items():
+        require(provenance[key] == "sha256:" + artifacts[path]["sha256"], f"rootfs provenance {key} does not match {path}")
+
+
+def checked_artifacts(root, files, required, outputs, executables):
+    missing = sorted(required - files.keys())
     require(not missing, f"missing required bundle artifacts: {', '.join(missing)}")
-    for name in EXECUTABLES:
+    for name in executables:
         require(files[name] & stat.S_IXUSR, f"bundle executable is missing its executable mode: {name}")
-    build, _ = read_locks(root / BUILD_LOCK, root / TOOLCHAIN_LOCK)
-    profile = read_profile(root)
-    for name in profile["boot_profiles"]:
-        require(BOOT_TEMPLATES[name] in files, f"missing template for {name}")
+    build, toolchain = read_locks(root / BUILD_LOCK, root / TOOLCHAIN_LOCK)
     artifacts = artifact_index(root, files)
 
     verify_config(root / CONFIG, build["kernel"]["required_config"])
-    verify_provenance(root, build, artifacts, {*LIBRARY_OUTPUTS, ROOTFS, *EXECUTABLES})
-    check_elf_artifacts(root, build, artifacts)
-    verify_rootfs(root, artifacts)
+    verify_provenance(root, build, artifacts, outputs)
+    check_elf_artifacts(root, build, artifacts, executables)
+    if ROOTFS in outputs:
+        verify_rootfs(root, artifacts)
+    if ROOTFS_METADATA <= outputs:
+        verify_rootfs_provenance(root, artifacts, toolchain)
+    return build, artifacts
+
+
+def build_manifest(root, files, *, allow_legacy_rootfs=False):
+    required = REQUIRED_FILES
+    outputs = {*RUNTIME_OUTPUTS, IDENTITY_HELPER}
+    if allow_legacy_rootfs and not ROOTFS_METADATA.intersection(files):
+        required = required - ROOTFS_METADATA
+        outputs -= ROOTFS_METADATA
+    build, artifacts = checked_artifacts(root, files, required, outputs, EXECUTABLES)
+    profile = read_profile(root)
+    for name in profile["boot_profiles"]:
+        require(BOOT_TEMPLATES[name] in files, f"missing template for {name}")
 
     def artifact_digest(name):
         return "sha256:" + artifacts[name]["sha256"]
@@ -293,18 +341,14 @@ def build_manifest(root, files):
 
 
 def check_libraries(root):
-    files = list_files(root)
-    missing = sorted(LIBRARY_FILES - files.keys())
-    require(not missing, f"missing required build outputs: {', '.join(missing)}")
-    require(files[INIT] & stat.S_IXUSR, f"build output is missing its executable mode: {INIT}")
-    build, _ = read_locks(root / BUILD_LOCK, root / TOOLCHAIN_LOCK)
-    artifacts = artifact_index(root, files)
-    verify_config(root / CONFIG, build["kernel"]["required_config"])
-    verify_provenance(root, build, artifacts, LIBRARY_OUTPUTS)
-    check_elf_artifacts(root, build, artifacts, libraries_only=True)
+    checked_artifacts(root, list_files(root), LIBRARY_FILES, LIBRARY_OUTPUTS, (INIT,))
 
 
-def verify_bundle(root, expected=None):
+def check_runtime(root):
+    checked_artifacts(root, list_files(root), RUNTIME_FILES, RUNTIME_OUTPUTS, RUNTIME_EXECUTABLES)
+
+
+def verify_bundle(root, expected=None, *, allow_legacy_rootfs=False):
     files = list_files(root)
     require(MANIFEST in files, f"missing {MANIFEST}")
     del files[MANIFEST]
@@ -331,7 +375,7 @@ def verify_bundle(root, expected=None):
         require(info.st_nlink == 1, f"hardlinked bundle artifact: {name}")
     require(indexed == files.keys(), f"unindexed bundle artifacts: {', '.join(sorted(files.keys() - indexed))}")
 
-    actual = build_manifest(root, files)
+    actual = build_manifest(root, files, allow_legacy_rootfs=allow_legacy_rootfs)
     if actual["bundle_digest"] != actual_digest:
         for actual_entry, expected_entry in zip(actual["artifacts"], entries):
             require(actual_entry == expected_entry, f"artifact digest or order mismatch: {expected_entry['path']}")
@@ -374,12 +418,15 @@ def main():
     check.add_argument("--builder-image", required=True)
     libraries = commands.add_parser("check-libraries", help="check the isolated firmware, libkrun and init outputs")
     libraries.add_argument("--artifacts", type=Path, required=True)
+    runtime = commands.add_parser("check-runtime", help="check the runtime executable and OCI rootfs build stage")
+    runtime.add_argument("--artifacts", type=Path, required=True)
     pack = commands.add_parser("pack", help="check staged build outputs and assemble a new bundle directory")
     pack.add_argument("--artifacts", type=Path, required=True)
     pack.add_argument("--output", type=Path, required=True)
     verify = commands.add_parser("verify", help="verify a RuntimeBundle/1 directory")
     verify.add_argument("bundle", type=Path)
     verify.add_argument("--expect", help="expected sha256: digest from trusted release metadata")
+    verify.add_argument("--allow-legacy-rootfs", action="store_true", help="allow older v1 bundles without rootfs provenance")
     args = parser.parse_args()
     try:
         if args.command == "check-inputs":
@@ -390,10 +437,15 @@ def main():
         elif args.command == "check-libraries":
             check_libraries(args.artifacts)
             print("Runtime libraries and init verified.")
+        elif args.command == "check-runtime":
+            check_runtime(args.artifacts)
+            print("Runtime executables and OCI rootfs verified.")
         elif args.command == "pack":
             print(pack_bundle(args.artifacts, args.output))
         else:
-            print(verify_bundle(args.bundle, args.expect))
+            print(verify_bundle(args.bundle, args.expect, allow_legacy_rootfs=args.allow_legacy_rootfs))
+            if args.allow_legacy_rootfs and not (args.bundle / ROOTFS_PROVENANCE).exists():
+                print("Verified the legacy bundle layout with the requested rootfs provenance exception.", file=sys.stderr)
     except (BundleError, OSError, UnicodeError, tarfile.TarError, subprocess.CalledProcessError) as error:
         print(f"deep bundle: {error}", file=sys.stderr)
         return 1

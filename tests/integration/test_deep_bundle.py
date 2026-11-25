@@ -69,7 +69,14 @@ class BundleTests(unittest.TestCase):
             name: {"commit": hashlib.sha1(name.encode()).hexdigest(), "tree": hashlib.sha1((name + "-tree").encode()).hexdigest()}
             for name in ("smolvm", "libkrun", "libkrunfw")
         }
-        self.json(bundle.TOOLCHAIN_LOCK, toolchain())
+        self.seed = {"schema": "RuntimeRootfsSeed/1", "recipe": bundle.ROOTFS_RECIPE,
+                     **{name: sha(name.encode()) for name in bundle.ROOTFS_INPUT_DIGESTS}}
+        self.seed_path = "packaging/rootfs-seed.json"
+        self.json(bundle.ROOTFS_INPUT_LOCK, self.seed)
+        tools = toolchain()
+        tools["lockfiles"].append({"repository": "smolvm", "path": self.seed_path,
+                                   "sha256": sha((self.stage / bundle.ROOTFS_INPUT_LOCK).read_bytes())})
+        self.json(bundle.TOOLCHAIN_LOCK, tools)
         lock = build_lock(sources, sha((self.stage / bundle.TOOLCHAIN_LOCK).read_bytes()))
         self.json(bundle.BUILD_LOCK, lock)
         self.write(bundle.CONFIG, b"CONFIG_VSOCKETS=y\n# CONFIG_DRM is not set\n")
@@ -109,13 +116,24 @@ class BundleTests(unittest.TestCase):
             member.size = len(agent)
             archive.addfile(member, io.BytesIO(agent))
 
-    def write_record(self):
+    def write_record(self, *, refresh_rootfs=True):
+        if refresh_rootfs:
+            self.json(bundle.ROOTFS_PROVENANCE, {
+                "schema": "RuntimeRootfsProvenance/1",
+                "input_lock_path": self.seed_path,
+                "input_lock_sha256": sha((self.stage / bundle.ROOTFS_INPUT_LOCK).read_bytes()),
+                "recipe_sha256": sha(b"source recipe"),
+                "agent_sha256": sha((self.stage / bundle.AGENT).read_bytes()),
+                "rootfs_sha256": sha((self.stage / bundle.ROOTFS).read_bytes()),
+                **{name: self.seed[name] for name in bundle.ROOTFS_INPUT_DIGESTS},
+            })
         self.json(bundle.BUILD_RECORD, {
             "schema": "RuntimeBuildRecord/1",
             "build_lock_digest": sha((self.stage / bundle.BUILD_LOCK).read_bytes()),
             "outputs": {
                 name: sha((self.stage / name).read_bytes())
-                for name in (bundle.LIBKRUN, bundle.FIRMWARE, bundle.KERNEL, bundle.CONFIG, bundle.ROOTFS, *bundle.EXECUTABLES)
+                for name in {*bundle.RUNTIME_OUTPUTS, bundle.IDENTITY_HELPER}
+                if (self.stage / name).exists()
             },
         })
 
@@ -211,6 +229,31 @@ class BundleTests(unittest.TestCase):
         bundle.check_libraries(self.stage)
         with self.assertRaisesRegex(BundleError, "missing required bundle artifacts"):
             bundle.pack_bundle(self.stage, self.output)
+
+    def test_runtime_stage_checks_seed_lock_and_refuses_missing_helper_at_pack(self):
+        (self.stage / bundle.IDENTITY_HELPER).unlink()
+        self.write_record()
+        bundle.check_runtime(self.stage)
+        with self.assertRaisesRegex(BundleError, "missing required bundle artifacts: guest/identity-helper"):
+            bundle.pack_bundle(self.stage, self.output)
+        provenance = json.loads((self.stage / bundle.ROOTFS_PROVENANCE).read_bytes())
+        provenance["seed_sha256"] = sha(b"a different seed")
+        self.json(bundle.ROOTFS_PROVENANCE, provenance)
+        self.write_record(refresh_rootfs=False)
+        with self.assertRaisesRegex(BundleError, "seed_sha256 differs from the input lock"):
+            bundle.check_runtime(self.stage)
+
+    def test_legacy_rootfs_requires_explicit_compatibility_and_cannot_pack(self):
+        for path in bundle.ROOTFS_METADATA:
+            (self.stage / path).unlink()
+        self.write_record(refresh_rootfs=False)
+        with self.assertRaisesRegex(BundleError, "missing required bundle artifacts: metadata/rootfs"):
+            bundle.pack_bundle(self.stage, self.output)
+        manifest = bundle.build_manifest(self.stage, bundle.list_files(self.stage), allow_legacy_rootfs=True)
+        self.json(bundle.MANIFEST, manifest)
+        with self.assertRaisesRegex(BundleError, "missing required bundle artifacts: metadata/rootfs"):
+            bundle.verify_bundle(self.stage)
+        self.assertEqual(bundle.verify_bundle(self.stage, allow_legacy_rootfs=True), manifest["bundle_digest"])
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in ("as", "ld", "readelf")), "requires GNU binutils")
     def test_pack_with_real_static_elf_and_soname_files(self):
