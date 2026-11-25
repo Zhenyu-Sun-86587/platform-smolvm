@@ -82,6 +82,7 @@ type Action struct {
 }
 type Intent struct {
 	Native          *rt.NativeSubmission  `json:"native,omitempty"`
+	Fork            *nativeForkIntent     `json:"fork,omitempty"`
 	Launch          *rt.LaunchSubmission  `json:"launch,omitempty"`
 	Volume          *rt.VolumeMutation    `json:"volume,omitempty"`
 	Stage           string                `json:"stage"`
@@ -316,6 +317,9 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	j.Runtime, err = e.ForBinding(j.Binding)
 	if op.Kind == "sync_keys" && !bindingRuntime(j.Binding).Legacy() {
 		return j.driveNativeSSH(ctx, err)
+	}
+	if rt.IsNativeFork(op.Kind) {
+		return j.driveNativeFork(ctx, err)
 	}
 	if op.Kind == "create" {
 		var request Create

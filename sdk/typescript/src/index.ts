@@ -50,6 +50,7 @@ export interface Operation {
   stage: string
   effect: Effect
   source_disposition?: SourceDisposition
+  source_lock_released?: boolean
   children?: OperationChild[]
   binding_generation?: number
   error?: ErrorDetail | null

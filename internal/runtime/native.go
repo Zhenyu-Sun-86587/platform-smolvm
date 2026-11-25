@@ -17,7 +17,8 @@ type ExecutionRef struct {
 }
 
 type NativeInventory struct {
-	Execution struct {
+	Capabilities map[string]Capability `json:"-"`
+	Execution    struct {
 		ExecutionRef
 		RouteID      string `json:"route_id"`
 		BundleDigest string `json:"bundle_digest"`
@@ -38,6 +39,7 @@ type NativeInventory struct {
 type NativeDevice struct {
 	VirtioType int              `json:"virtio_type"`
 	Tap        *json.RawMessage `json:"tap"`
+	Block      *NativeBlock     `json:"block"`
 }
 
 func (i NativeInventory) ManagedStandby() bool {
@@ -83,6 +85,7 @@ type OperationReceipt struct {
 	ExpectedIncarnationID  *string         `json:"expected_incarnation_id"`
 	Execution              *ExecutionRef   `json:"execution,omitempty"`
 	Native                 *NativeProgress `json:"native,omitempty"`
+	Fork                   *ForkProgress   `json:"fork,omitempty"`
 	Phase                  string          `json:"phase"`
 	Decision               string          `json:"decision"`
 	Revision               int64           `json:"revision"`

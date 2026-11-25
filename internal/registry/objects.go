@@ -415,6 +415,9 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 			}
 			fields["vm"], _ = json.Marshal(native.PowerState)
 			fields["guest_management"], _ = json.Marshal(o.GuestManagementStatus)
+			if native.ForkCapabilities != nil {
+				fields["native_fork_capabilities"], _ = json.Marshal(native.ForkCapabilities)
+			}
 			nativeChanged = old.ExecutionRef() != ref || old.PowerState != native.PowerState || old.CapabilityProfileID != native.VerifiedStandbyProfile
 		}
 		if o.WorkloadError != nil {

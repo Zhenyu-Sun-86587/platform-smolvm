@@ -245,6 +245,9 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 		req.AdmitRuntime = s.AdmitRuntime
 	}
 	req.AdmitNative = s.AdmitNativePower
+	if rt.IsNativeFork(req.Kind) {
+		req.AdmitNative = s.AdmitNativeFork
+	}
 	if req.MachineID != "" {
 		rev, err := revision(r)
 		if err != nil {
@@ -607,6 +610,7 @@ func (s *Server) machineRoutes() {
 						return registry.ErrInvalid
 					}
 					req.Kind = rt.IndependentFork
+					req.ForkChildren = []string{v.ChildName}
 				}
 				return s.accept(w, r, p, v, req)
 			}

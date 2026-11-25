@@ -116,6 +116,7 @@ type NativeObservation struct {
 	PowerState             PowerState
 	VerifiedStandbyProfile string
 	VerifiedLaunch         bool
+	ForkCapabilities       map[string]rt.Capability
 }
 
 // Observation is current public-runtime evidence. Empty optional fields in an
@@ -161,29 +162,30 @@ const (
 )
 
 type Operation struct {
-	ID                string            `json:"operation_id"`
-	ControlEpoch      string            `json:"control_epoch"`
-	PrincipalID       string            `json:"-"`
-	MachineID         string            `json:"machine_id,omitempty"`
-	SourceMachineID   string            `json:"source_machine_id,omitempty"`
-	BindingID         string            `json:"binding_id,omitempty"`
-	BindingGeneration int64             `json:"binding_generation"`
-	RuntimeName       string            `json:"runtime_name,omitempty"`
-	Kind              string            `json:"kind"`
-	State             string            `json:"state"`
-	Stage             string            `json:"stage"`
-	Request           json.RawMessage   `json:"-"`
-	Dispatch          json.RawMessage   `json:"-"`
-	Result            json.RawMessage   `json:"result"`
-	Error             json.RawMessage   `json:"error"`
-	Effect            string            `json:"effect"`
-	SourceDisposition SourceDisposition `json:"source_disposition,omitempty"`
-	Children          []OperationChild  `json:"children,omitempty"`
-	CreatedAt         time.Time         `json:"created_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
-	Version           int64             `json:"-"`
-	Heavy             bool              `json:"-"`
-	WakePending       bool              `json:"-"`
+	ID                 string            `json:"operation_id"`
+	ControlEpoch       string            `json:"control_epoch"`
+	PrincipalID        string            `json:"-"`
+	MachineID          string            `json:"machine_id,omitempty"`
+	SourceMachineID    string            `json:"source_machine_id,omitempty"`
+	BindingID          string            `json:"binding_id,omitempty"`
+	BindingGeneration  int64             `json:"binding_generation"`
+	RuntimeName        string            `json:"runtime_name,omitempty"`
+	Kind               string            `json:"kind"`
+	State              string            `json:"state"`
+	Stage              string            `json:"stage"`
+	Request            json.RawMessage   `json:"-"`
+	Dispatch           json.RawMessage   `json:"-"`
+	Result             json.RawMessage   `json:"result"`
+	Error              json.RawMessage   `json:"error"`
+	Effect             string            `json:"effect"`
+	SourceDisposition  SourceDisposition `json:"source_disposition,omitempty"`
+	SourceLockReleased bool              `json:"source_lock_released,omitempty"`
+	Children           []OperationChild  `json:"children,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	Version            int64             `json:"-"`
+	Heavy              bool              `json:"-"`
+	WakePending        bool              `json:"-"`
 }
 
 type SourceDisposition string
@@ -197,12 +199,13 @@ const (
 )
 
 type OperationChild struct {
-	Ordinal              int    `json:"ordinal"`
-	MachineID            string `json:"machine_id"`
-	BindingID            string `json:"binding_id"`
-	State                string `json:"state"`
-	ResourceIndependence string `json:"resource_independence,omitempty"`
-	ErrorCode            string `json:"error_code,omitempty"`
+	Ordinal              int                   `json:"ordinal"`
+	MachineID            string                `json:"machine_id"`
+	BindingID            string                `json:"binding_id"`
+	State                string                `json:"state"`
+	ResourceIndependence string                `json:"resource_independence,omitempty"`
+	ErrorCode            string                `json:"error_code,omitempty"`
+	ResourceProof        []rt.ForkDiskEvidence `json:"-"`
 }
 
 func (o Operation) Terminal() bool {
@@ -236,6 +239,7 @@ type AcceptRequest struct {
 	Heavy              bool
 	AllocateBinding    bool
 	RuntimeInstanceID  string
+	ForkChildren       []string
 	Locks              []Lock
 	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
 	AdmitRuntime func(rt.BundleRoute, string) error
@@ -262,6 +266,16 @@ type TransitionRequest struct {
 	WakePending       *bool
 	MaxHeavy          int
 	Apply             func(context.Context, *sql.Tx) error
+	ReleaseSourceLock bool
+	ForkChildren      []ForkChildTransition
+}
+
+type ForkChildTransition struct {
+	Ordinal       int
+	State         string
+	ErrorCode     string
+	Observation   *Observation
+	ResourceProof []rt.ForkDiskEvidence
 }
 
 type Event struct {

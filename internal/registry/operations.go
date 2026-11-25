@@ -19,7 +19,7 @@ const operationColumns = `id, control_epoch, COALESCE(principal_id, ''), COALESC
 	COALESCE(source_machine_id, ''), COALESCE(binding_id, ''), binding_generation, runtime_name,
 	kind, state, stage, request_json, COALESCE(dispatch_json, ''), COALESCE(result_json, ''),
 	COALESCE(error_json, ''), effect, created_at, updated_at, version, heavy, wake_pending,
-	COALESCE(source_disposition, '')`
+	COALESCE(source_disposition, ''), source_lock_released`
 
 func scanOperation(row scanner) (Operation, error) {
 	var op Operation
@@ -27,7 +27,7 @@ func scanOperation(row scanner) (Operation, error) {
 	var created, updated int64
 	err := row.Scan(&op.ID, &op.ControlEpoch, &op.PrincipalID, &op.MachineID, &op.SourceMachineID, &op.BindingID,
 		&op.BindingGeneration, &op.RuntimeName, &op.Kind, &op.State, &op.Stage, &request, &dispatch, &result, &failure,
-		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending, &op.SourceDisposition)
+		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending, &op.SourceDisposition, &op.SourceLockReleased)
 	op.Request = json.RawMessage(request)
 	op.Dispatch = json.RawMessage(dispatch)
 	if result != "" {
@@ -43,11 +43,11 @@ func scanOperation(row scanner) (Operation, error) {
 
 func readOperation(ctx context.Context, q queryer, id string) (Operation, error) {
 	op, err := scanOperation(q.QueryRowContext(ctx, "SELECT "+operationColumns+" FROM operations WHERE id = ?", id))
-	if err != nil || op.Kind != rt.ForkBatch {
+	if err != nil || !rt.IsNativeFork(op.Kind) {
 		return op, err
 	}
 	rows, err := q.QueryContext(ctx, `SELECT c.ordinal, b.machine_id, c.binding_id, c.state,
-		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, '')
+		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, ''), c.resource_proof_json
 		FROM operation_children c JOIN runtime_bindings b ON b.id = c.binding_id
 		WHERE c.operation_id = ? ORDER BY c.ordinal`, op.ID)
 	if err != nil {
@@ -56,7 +56,11 @@ func readOperation(ctx context.Context, q queryer, id string) (Operation, error)
 	defer rows.Close()
 	for rows.Next() {
 		var child OperationChild
-		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode); err != nil {
+		var proof string
+		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode, &proof); err != nil {
+			return Operation{}, err
+		}
+		if err := json.Unmarshal([]byte(proof), &child.ResourceProof); err != nil {
 			return Operation{}, err
 		}
 		op.Children = append(op.Children, child)
@@ -102,6 +106,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	}
 	if !validateLabel(r.Kind, 100) {
 		return Operation{}, false, fmt.Errorf("%w: operation kind is required", ErrInvalid)
+	}
+	if err := validateForkChildren(r); err != nil {
+		return Operation{}, false, err
 	}
 	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore")
 	if r.RuntimeInstanceID != "" && r.Kind != "create" && (r.Kind != rt.VolumeOperation || r.MachineID != "") {
@@ -170,9 +177,10 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		IdlePolicy                                      json.RawMessage
 		KeepRunning, Heavy, Allocate                    bool
 		Locks                                           []Lock
-		RuntimeInstanceID                               string `json:",omitempty"`
+		RuntimeInstanceID                               string   `json:",omitempty"`
+		ForkChildren                                    []string `json:",omitempty"`
 	}{r.Kind, r.MachineID, r.Name, r.TemplateID, r.DesiredPower, idleCanonical,
-		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID}
+		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren}
 	fingerprint, err := mutationFingerprint(ctx, tx, envelope, target)
 	if err != nil {
 		return Operation{}, false, err
@@ -231,11 +239,14 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	if route != (rt.BundleRoute{}) && rt.NativePowerCapability(r.Kind) != "" {
+	if route != (rt.BundleRoute{}) && (rt.NativePowerCapability(r.Kind) != "" || rt.IsNativeFork(r.Kind)) {
 		if r.ExpectedGeneration < 1 {
 			return Operation{}, false, fmt.Errorf("%w: native operation requires an expected binding generation", ErrInvalid)
 		}
 		if prior.CurrentBinding == nil || r.AdmitNative == nil {
+			if rt.IsNativeFork(r.Kind) {
+				return Operation{}, false, rt.FullStateUnavailable(r.Kind, false)
+			}
 			return Operation{}, false, rt.NativePowerUnavailable(r.Kind)
 		}
 		if err := r.AdmitNative(*prior.CurrentBinding, r.Kind); err != nil {
@@ -327,6 +338,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		request, op.Effect, now.UnixMilli(), now.UnixMilli(), op.Heavy)
 	if err != nil {
 		return Operation{}, false, err
+	}
+	if rt.IsNativeFork(op.Kind) {
+		if err := allocateForkChildren(ctx, tx, &op, prior, r.ForkChildren, route, locks); err != nil {
+			return Operation{}, false, err
+		}
 	}
 	machineIDs := make([]string, 0, len(locks))
 	for machineID := range locks {
@@ -451,7 +467,7 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 			return Operation{}, err
 		}
 		if binding.MachineID != op.MachineID || binding.Generation != op.BindingGeneration || binding.RuntimeName != op.RuntimeName ||
-			binding.Status == "retired" {
+			(binding.Status == "retired" && !op.SourceLockReleased) {
 			return Operation{}, ErrGeneration
 		}
 	}
@@ -493,6 +509,10 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 		if err := r.Apply(ctx, tx); err != nil {
 			return Operation{}, err
 		}
+	}
+	forkEvents, err := advanceNativeFork(ctx, tx, &op, r)
+	if err != nil {
+		return Operation{}, err
 	}
 
 	if r.Effect != "" {
@@ -538,9 +558,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	op.Version++
 
 	_, err = tx.ExecContext(ctx, `UPDATE operations SET state = ?, stage = ?, effect = ?, dispatch_json = ?,
-		result_json = ?, error_json = ?, updated_at = ?, version = ?, wake_pending = ?, source_disposition = ? WHERE id = ?`,
+		result_json = ?, error_json = ?, updated_at = ?, version = ?, wake_pending = ?, source_disposition = ?, source_lock_released = ? WHERE id = ?`,
 		op.State, op.Stage, op.Effect, rawValue(op.Dispatch), rawValue(op.Result), rawValue(op.Error),
-		op.UpdatedAt.UnixMilli(), op.Version, op.WakePending, nullable(string(op.SourceDisposition)), op.ID)
+		op.UpdatedAt.UnixMilli(), op.Version, op.WakePending, nullable(string(op.SourceDisposition)), op.SourceLockReleased, op.ID)
 	if err != nil {
 		return Operation{}, err
 	}
@@ -571,10 +591,12 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 		return Operation{}, err
 	}
 	if r.Observation != nil || r.DesiredPower != "" || op.Terminal() {
-		for _, machineID := range machineIDs {
-			if err := appendMachineEvent(ctx, tx, machineID, op.ID, op.Kind == "delete"); err != nil {
-				return Operation{}, err
-			}
+		forkEvents = append(forkEvents, machineIDs...)
+	}
+	sort.Strings(forkEvents)
+	for _, machineID := range slices.Compact(forkEvents) {
+		if err := appendMachineEvent(ctx, tx, machineID, op.ID, op.Kind == "delete"); err != nil {
+			return Operation{}, err
 		}
 	}
 	return op, nil
@@ -611,7 +633,7 @@ func checkDispatch(ctx context.Context, tx *sql.Tx, op Operation, request Transi
 	}
 	var count int
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM operations
-		WHERE heavy = 1 AND state IN ('dispatching', 'observing', 'recovery_required')`).Scan(&count)
+		WHERE heavy = 1 AND source_lock_released = 0 AND state IN ('dispatching', 'observing', 'recovery_required')`).Scan(&count)
 	if err != nil {
 		return err
 	}
@@ -643,9 +665,14 @@ func verifyOperationLocks(ctx context.Context, tx *sql.Tx, op Operation) ([]stri
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if (op.MachineID != "" && !slices.Contains(machines, op.MachineID)) ||
+	if (op.MachineID != "" && !op.SourceLockReleased && !slices.Contains(machines, op.MachineID)) ||
 		(op.SourceMachineID != "" && !slices.Contains(machines, op.SourceMachineID)) {
 		return nil, ErrGeneration
+	}
+	for _, child := range op.Children {
+		if child.State == "pending" && !slices.Contains(machines, child.MachineID) {
+			return nil, ErrGeneration
+		}
 	}
 	return machines, nil
 }
@@ -692,7 +719,7 @@ func (s *Store) ActiveOperation(ctx context.Context, machineID string) (Operatio
 func (s *Store) HeavyInFlight(ctx context.Context) (int, error) {
 	var count int
 	err := s.reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM operations
-		WHERE heavy = 1 AND state IN ('dispatching', 'observing', 'recovery_required')`).Scan(&count)
+		WHERE heavy = 1 AND source_lock_released = 0 AND state IN ('dispatching', 'observing', 'recovery_required')`).Scan(&count)
 	return count, err
 }
 

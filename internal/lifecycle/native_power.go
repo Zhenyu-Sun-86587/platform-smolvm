@@ -83,6 +83,7 @@ func (e *Engine) observeNativePower(ctx context.Context, binding registry.Bindin
 		profile = binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
 	}
 	observation := nativeObservation(binding, ref, power, profile)
+	observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
 	digest := e.observeSystemGuest(ctx, binding, adapter, &observation)
 	if err := e.DB.ObserveMachine(ctx, binding.ID, observation); err != nil {
 		return false

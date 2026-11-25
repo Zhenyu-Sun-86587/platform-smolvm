@@ -77,7 +77,7 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 	}
 	defer store.Close()
 	control, err := store.Control(ctx)
-	if err != nil || control.SchemaVersion != 1007 || control.ControlEpoch != "control" {
+	if err != nil || control.SchemaVersion != 1008 || control.ControlEpoch != "control" {
 		t.Fatal(control, err)
 	}
 	owner, err := auth.New(store).Bootstrap(ctx, "owner", "existing-password")

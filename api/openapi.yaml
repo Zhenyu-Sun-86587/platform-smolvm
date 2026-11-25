@@ -2450,6 +2450,7 @@ components:
         children:
           type: array
           minItems: 1
+          maxItems: 32
           uniqueItems: true
           items:
             type: object
@@ -2483,6 +2484,7 @@ components:
         effect: {type: string, enum: [none, applied, partial, unknown]}
         binding_generation: {type: integer, minimum: 1}
         source_disposition: {type: string, enum: [RUNNING, STANDBY, HELD, EXITED, UNKNOWN]}
+        source_lock_released: {type: boolean, description: The source resumed its recorded disposition and can accept new mutations while fork children finish.}
         children:
           type: array
           items: {$ref: '#/components/schemas/OperationChild'}
