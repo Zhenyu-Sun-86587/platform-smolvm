@@ -138,3 +138,13 @@ Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐
 | Debian 11 System 中的 K3s | K3s v1.34.13 启动后节点进入 Ready，CoreDNS 完成 rollout，测试 BusyBox Pod 进入运行状态。 |
 
 单独的用户态身份测试通过专属 Unix SOCK_SEQPACKET 对目标做授权。其原生 receipt 的 `clone_ready` 仍为 false。完整产品能力还需同一安装 Bundle 的 Worker 写权、网络和平台准入共同验收。
+
+### 安装候选与 Worker 实机复验
+
+冻结候选使用 smolvm `dbe526e`、libkrun `ee06d9f` 和 libkrunfw `4138851`。通过 Debian 11 构建器生成的 Bundle 摘要为 `sha256:435b57796237fc3f616bbd1492a39a3aed867428eb0578b59c796fab73091f5b`。运行产物和只读安装目录分别完成两次 KVM OCI 冷启动，生成的设备与 Guest 证据逐字节相同。安装后的 Serve 握手返回该摘要和清单所载 reader。宿主运行时与 Worker 所需的最高 glibc 符号版本是 2.30。System 测试以相同的 Agent 和两份动态库完成 SSH、Docker 构建与 Compose。在已有离线 K3s 集群的新 namespace 中创建了 ConfigMap 并运行了测试 Pod。
+
+| 实现及验证入口 | 实际观察 |
+| --- | --- |
+| libkrun `tests/guest_gate/target_probe.py --network --host-route` | Guest 经单主机网关路由使用 /32 地址。源、子和孙机保留 Guest PID 444。Guest packet gate 在身份切换期间阻断 ICMP，释放后可通过新的上行链路通信。 |
+| smolvm `crates/smolvm-resourced/tests/kvm-native-operations.py` | 直接经 Worker 注册的真实 KVM 源机在 managed 和 raw 待机期间计数不变，唤醒后原 PID 430 的计数继续。强制终止并重启 Worker 后恢复到同一台待机中的 VMM，随后正常唤醒。操作重放、提交后断开、错 epoch、已提交后取消均检查了持久回执。 |
+| smolvm `crates/smolvm-resourced/tests/kvm-parked-block.py` | 原子捕获两个可写磁盘，源与各后代取得独立写句柄。拒绝了错误代、错误旧 epoch、同 inode 错 OFD 和内容相同的不同祖先 inode。两个祖先进程退出后再次恢复了子机的子机。 |
