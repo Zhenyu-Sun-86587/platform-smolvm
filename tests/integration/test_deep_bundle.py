@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packaging/deep"))
 import bundle
+import managed_evidence
 from bundle_inputs import BundleError, DEFAULT_EXPORTS, check_checkout, check_inputs, git, read_locks
 
 
@@ -163,6 +164,42 @@ class BundleTests(unittest.TestCase):
         expected = bundle.pack_bundle(self.stage, self.output)
         self.rewrite_manifest(lambda manifest: manifest.update(signature="signed-by-release-service"))
         self.assertEqual(bundle.verify_bundle(self.output), expected)
+
+    def test_managed_contracts_require_bound_evidence_and_the_exact_system_disk(self):
+        self.profile["boot_profiles"].append("system-debian-v1")
+        self.profile["contracts"].update(dict.fromkeys(managed_evidence.MANAGED, 1))
+        self.json(bundle.VERIFICATION_PROFILE, self.profile)
+        with self.assertRaisesRegex(BundleError, "missing managed release evidence"):
+            bundle.pack_bundle(self.stage, self.output)
+        disk = b"release disk bytes"
+        with tarfile.open(self.stage / managed_evidence.SYSTEM_TEMPLATE, "w:gz") as archive:
+            member = tarfile.TarInfo(managed_evidence.SYSTEM_DISK)
+            member.size = len(disk)
+            archive.addfile(member, io.BytesIO(disk))
+        evidence = {
+            "schema": "RuntimeManagedAcceptance/1",
+            "build_lock_sha256": sha((self.stage / bundle.BUILD_LOCK).read_bytes()),
+            "build_record_sha256": sha((self.stage / bundle.BUILD_RECORD).read_bytes()),
+            "platformd_sha256": sha(b"platformd"), "system_disk_sha256": sha(disk),
+            "system_disk_bytes": len(disk), "acceptance_revisions": {"smolvm": "1"*40, "platform": "2"*40},
+            "runs": {},
+        }
+        for case, markers in managed_evidence.SCENARIOS.items():
+            log = "\n".join(markers).encode()
+            self.write(managed_evidence.log_name(case), log)
+            evidence["runs"][case] = {"log_sha256": sha(log), "harness_sha256": sha(case.encode())}
+        self.json(managed_evidence.EVIDENCE, evidence)
+        expected = bundle.pack_bundle(self.stage, self.output)
+        self.assertEqual(bundle.verify_bundle(self.output), expected)
+        for key, reason in (("system_disk_sha256", "differs from the accepted disk"),
+                            ("build_record_sha256", "different metadata/build-record")):
+            self.json(managed_evidence.EVIDENCE, {**evidence, key: sha(b"different")})
+            with self.assertRaisesRegex(BundleError, reason):
+                bundle.pack_bundle(self.stage, self.root / "bad")
+        self.json(managed_evidence.EVIDENCE, evidence)
+        self.write(managed_evidence.log_name("lifecycle"), b"unexpected")
+        with self.assertRaisesRegex(BundleError, "acceptance log differs"):
+            bundle.pack_bundle(self.stage, self.root / "bad")
 
     def test_install_is_read_only_and_preserves_an_existing_release(self):
         expected = bundle.pack_bundle(self.stage, self.output)

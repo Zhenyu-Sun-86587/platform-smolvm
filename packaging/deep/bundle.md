@@ -80,3 +80,18 @@ python3 -B packaging/deep/pack-candidate.py \
 ```
 
 The packer checks the build lock and build record against the OCI evidence, copies the source and license material, and verifies the final bundle digest. It records the observed OCI boot profile and the exact source reader revision. Deploy with `SMOLVM_AGENT_ROOTFS` pointing to the extracted, verified `guest/oci-rootfs.tar.gz`. Keep the bundle and the independent writable state directory at paths the dropped VMM UID can traverse.
+
+## Measure the managed OCI and Debian System profiles
+
+Use a Debian System ext4 image containing the staged Agent and identity helper. The Worker needs KVM, systemd, debugfs, and a static C compiler for the two Guest probes. The optional `--counter` and `--probe` arguments accept prebuilt copies of those fixtures. Run against a local platformd that supports the managed profile.
+
+```sh
+sudo python3 -B packaging/deep/measure-managed.py \
+  --artifacts "$runtime_stage" --smolvm "$smolvm_checkout" --platformd "$platformd" \
+  --system-image "$system_disk" --output "$managed_evidence"
+python3 -B packaging/deep/pack-candidate.py \
+  --artifacts "$runtime_stage" --evidence "$boot_evidence" --managed-evidence "$managed_evidence" \
+  --kernel-archive "$kernel_archive" --crun-archive "$crun_archive" --output "$bundle"
+```
+
+The acceptance record identifies the runtime build, the two test suite commits, platformd and the uncompressed System disk. The OCI cases exercise recursive fork, failed-child retry, rollback, two writable disks and automatic lifecycle. The Debian cases exercise Agent rebinding, Guest grants, and successive durable captures. Verification checks all five logs and the restored disk bytes before accepting the additional contracts.
