@@ -150,7 +150,11 @@ def delegated(platform, machine, ref, probe):
     (child,) = forked["children"]
     _, child_ref = platform.context(child["machine_id"])
     assert platform.guest(child_ref, [probe, "--cid"]) != platform.guest(ref, [probe, "--cid"])
-    assert wire(platform, child_ref, probe, "GET", "operations/" + forked["operation_id"], fork_token)[0] == 401
+    child_relay = platform.relay_dir / (child_ref["incarnation_id"] + ".sock")
+    wait_for(child_relay.is_socket, timeout=15)
+    response = wait_for(lambda: wire(platform, child_ref, probe, "GET", "operations/" + forked["operation_id"], fork_token),
+                        timeout=15, retry=(OSError, RuntimeError))
+    assert response[0] == 401, response[0]
     with closing(sqlite3.connect(platform.root / "platform/platform.db")) as db:
         rows = db.execute("SELECT creator_principal_id,owner_principal_id,reserved_memory_mib FROM guest_created_machines ORDER BY reserved_memory_mib").fetchall()
         assert len(rows) == 2 and rows[0][:2] == rows[1][:2] and [row[2] for row in rows] == [640,768], rows
