@@ -371,10 +371,6 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	return backend, check, end, nil
 }
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
-	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
-		fail(w, r, auth.ErrForbidden)
-		return
-	}
 	v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE public_host=? AND kind IN ('http','https') AND enabled=1", host))
 	if err != nil {
 		fail(w, r, auth.ErrUnauthenticated)
