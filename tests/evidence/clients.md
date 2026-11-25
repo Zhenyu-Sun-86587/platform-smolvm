@@ -29,3 +29,9 @@ The completed test database's 12 workspaces were deleted through the platform AP
 - The machine-scoped token failed with HTTP 403 on the other machine's tunnel. The service-scoped certificate completed a TLS 1.2 handshake on the other service and could not send application data through it. Both checks left the target paused and its operation history unchanged. The same certificate reached its authorized service.
 
 The Cobra CLI resolved the listed credential revision before revoking. The Python and TypeScript SDK token methods each issued and replayed, then revoked and replayed with the original revision. Both mutation-test workspaces were deleted through the API.
+
+Chromium also read the issued token's revision and sent `If-Match: "1"` on revoke. Replaying an issuance receipt persisted by the earlier server returned its original token ID with revision 1 and the secret remained omitted.
+
+## Reconcile after an unavailable status helper
+
+The first Independent Clone rehearsal retained `op_aba6aba41ab7583a7531b0c96a5a569d` in `recovery_required` at `verify` after the test server tried a status socket outside the isolated setup. After correcting the socket and restarting platformd with the reconcile fix, the original operation completed. The candidate used the original native name `sbox_cef4742d98a1fd2ef552a0441d3afcc6` and generation 1. The original operation pin on `snap_6064caaf6e21de590f2fe25cb683a673` was present before reconcile and released on success. The recovered child and source were then deleted through the platform API with operations `op_944aa1e3318a15bd0b3974a332f11e00` and `op_462c6df257bcac4bf734dccea470140c`.

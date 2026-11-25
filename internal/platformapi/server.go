@@ -247,21 +247,26 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	w.Header().Set("Location", "/v1/operations/"+op.ID)
 	return write(w, 202, op)
 }
-func (s *Server) mutate(w http.ResponseWriter, r *http.Request, p auth.Principal, v any, fn func(context.Context, *sql.Tx) (registry.MutationResult, error)) error {
+func (s *Server) applyMutation(r *http.Request, p auth.Principal, v any, fn func(context.Context, *sql.Tx) (registry.MutationResult, error)) (json.RawMessage, error) {
 	env := envelope(r, p, v)
 	if r.Header.Get("If-Match") != "" {
 		rev, err := revision(r)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		env.ExpectedRevision = rev
 	}
 	raw, _, err := s.DB.Mutate(r.Context(), env, fn)
+	return raw, err
+}
+func (s *Server) mutate(w http.ResponseWriter, r *http.Request, p auth.Principal, v any, fn func(context.Context, *sql.Tx) (registry.MutationResult, error)) error {
+	raw, err := s.applyMutation(r, p, v, fn)
 	if err != nil {
 		return err
 	}
 	return write(w, 200, raw)
 }
+
 func list[T any](w http.ResponseWriter, r *http.Request, items []T, id func(T) string) error {
 	q := r.URL.Query()
 	limit := 100
@@ -373,16 +378,29 @@ func (s *Server) routes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
-		return s.mutate(w, r, p, v, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
-			t, secret, e := s.Auth.IssueTokenTx(ctx, tx, p, v.Label, v.Scope, v.ExpiresAt)
+		type issueReceipt struct {
+			auth.Token
+			Secret string `json:"token,omitempty"`
+		}
+		raw, err := s.applyMutation(r, p, v, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+			t, secret, err := s.Auth.IssueTokenTx(ctx, tx, p, v.Label, v.Scope, v.ExpiresAt)
 			return registry.MutationResult{
-				Response: lifecycle.JSON(struct {
-					auth.Token
-					Secret string `json:"token"`
-				}{t, secret}),
+				Response:      lifecycle.JSON(issueReceipt{Token: t, Secret: secret}),
 				RetryResponse: lifecycle.JSON(t),
-			}, e
+			}, err
 		})
+		if err != nil {
+			return err
+		}
+		var receipt issueReceipt
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			return err
+		}
+		// Earlier releases saved issuance receipts without a revision.
+		if receipt.Revision == 0 {
+			receipt.Revision = 1
+		}
+		return write(w, http.StatusOK, receipt)
 	})
 	s.route("DELETE /v1/tokens/{token}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize(auth.ActionTokens, ""); err != nil {
