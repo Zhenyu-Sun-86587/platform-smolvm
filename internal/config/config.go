@@ -79,7 +79,8 @@ type Config struct {
 		EventsDays int    `yaml:"events_retention_days"`
 		AuditDays  int    `yaml:"audit_retention_days"`
 	}
-	Backups []BackupPolicy `yaml:"backups"`
+	Backups           []BackupPolicy    `yaml:"backups"`
+	CredentialProxies []CredentialProxy `yaml:"credential_proxies"`
 }
 
 const BackupPortable = "platform_snapshots"
@@ -157,6 +158,9 @@ func Load(path string) (Config, error) {
 	}
 	if c.Version != 1 || c.Runtime.Version != "1.37.1" || c.Tasks.Protocol != 1 || c.Storage.Encoding != "standalone" {
 		return c, errors.New("unsupported platform, runtime, task protocol or snapshot format")
+	}
+	if err := c.validateCredentialProxies(); err != nil {
+		return c, err
 	}
 	for _, p := range []string{c.StateDir, c.Runtime.Socket, c.Runtime.DataDir, c.Database.Path, c.Storage.KeyFile} {
 		if !filepath.IsAbs(p) {

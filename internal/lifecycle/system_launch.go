@@ -125,6 +125,13 @@ func launchReceiptMissing(err error) bool {
 }
 
 func (j *Job) submitSystemLaunch(ctx context.Context, launcher rt.NativeLauncher) error {
+	prior, err := j.checkGuestSubmission(ctx, launcher.QueryOperation)
+	if err != nil || j.Op.Terminal() {
+		return err
+	}
+	if prior != nil {
+		return j.confirmSystemLaunch(ctx, launcher, *prior)
+	}
 	receipt, err := launcher.SubmitLaunch(ctx, *j.Intent.Launch)
 	if err == nil {
 		return j.confirmSystemLaunch(ctx, launcher, receipt)

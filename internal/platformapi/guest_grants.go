@@ -3,6 +3,7 @@ package platformapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -29,6 +30,9 @@ func (s *Server) guestGrantRoutes() {
 		if err := decode(r, &grant); err != nil {
 			return err
 		}
+		if grant.Action == auth.GuestProxy && s.Config.CredentialProxy(grant.ProxyID) == nil {
+			return registry.ErrInvalid
+		}
 		return s.mutate(w, r, p, grant, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
 			id, err := s.Auth.CreateGuestGrantTx(ctx, tx, p, grant)
 			return registry.MutationResult{Response: lifecycle.JSON(map[string]any{"grant_id": id, "revision": 1})}, err
@@ -38,7 +42,8 @@ func (s *Server) guestGrantRoutes() {
 		if err := p.Authorize(auth.ActionAdmin, ""); err != nil {
 			return err
 		}
-		rows, err := s.DB.ReadDB().QueryContext(r.Context(), `SELECT g.id,g.source_machine_id,g.action,COALESCE(g.target_machine_id,''),g.expires_at,g.maximum_uses,g.used_count,g.revision,g.revoked_at
+		rows, err := s.DB.ReadDB().QueryContext(r.Context(), `SELECT g.id,g.source_machine_id,g.action,COALESCE(g.target_machine_id,''),g.expires_at,g.maximum_uses,g.used_count,g.revision,g.revoked_at,
+			COALESCE(g.proxy_id,''),g.maximum_concurrent,g.limits_json
 			FROM guest_grants g JOIN guest_identities i ON i.machine_id=g.source_machine_id WHERE i.owner_principal_id=? ORDER BY g.id`, p.ID)
 		if err != nil {
 			return err
@@ -56,7 +61,12 @@ func (s *Server) guestGrantRoutes() {
 			var v item
 			var expires int64
 			var revoked sql.NullInt64
-			if err := rows.Scan(&v.ID, &v.SourceMachineID, &v.Action, &v.TargetMachineID, &expires, &v.MaximumUses, &v.Uses, &v.Revision, &revoked); err != nil {
+			var limits string
+			if err := rows.Scan(&v.ID, &v.SourceMachineID, &v.Action, &v.TargetMachineID, &expires, &v.MaximumUses, &v.Uses, &v.Revision, &revoked,
+				&v.ProxyID, &v.MaximumConcurrent, &limits); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(limits), &v.Limits); err != nil {
 				return err
 			}
 			v.ExpiresAt = time.UnixMilli(expires).UTC()

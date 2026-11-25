@@ -250,6 +250,8 @@ type AcceptRequest struct {
 	AdmitRuntime func(rt.BundleRoute, string) error
 	// AdmitNative checks the binding's persisted capability and execution evidence.
 	AdmitNative func(Binding, string) error
+	// AdmitGuest verifies the attested caller and records its authority in this transaction.
+	AdmitGuest func(context.Context, *sql.Tx, Operation, bool) error
 	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
 	// On replay it receives the original machine ID for authorization even if the object is gone.
 	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)

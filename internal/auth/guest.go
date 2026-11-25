@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/registry"
 )
 
@@ -17,6 +19,7 @@ const (
 	GuestFork   = "machine.fork"
 	GuestExec   = "machine.exec"
 	GuestRead   = "machine.read"
+	GuestProxy  = "credential_proxy.use"
 )
 
 // AttestedGuestContext is supplied by the host side of the verified transport.
@@ -32,18 +35,34 @@ type AttestedGuestContext struct {
 }
 
 type GuestGrantSpec struct {
-	SourceMachineID string    `json:"source_machine_id"`
-	Action          string    `json:"action"`
-	TargetMachineID string    `json:"target_machine_id,omitempty"`
-	ExpiresAt       time.Time `json:"expires_at"`
-	MaximumUses     int64     `json:"maximum_uses"`
+	SourceMachineID   string      `json:"source_machine_id"`
+	Action            string      `json:"action"`
+	TargetMachineID   string      `json:"target_machine_id,omitempty"`
+	ExpiresAt         time.Time   `json:"expires_at"`
+	MaximumUses       int64       `json:"maximum_uses"`
+	MaximumConcurrent int64       `json:"maximum_concurrent,omitempty"`
+	ProxyID           string      `json:"proxy_id,omitempty"`
+	Limits            GuestLimits `json:"limits,omitempty"`
+}
+
+type GuestLimits struct {
+	MaximumChildren  int64               `json:"max_children,omitempty"`
+	MaximumMemoryMiB int64               `json:"max_total_memory_mib,omitempty"`
+	Create           *GuestCreateProfile `json:"create,omitempty"`
+}
+
+type GuestCreateProfile struct {
+	TemplateID        string `json:"template_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id"`
+	CPUs              uint8  `json:"cpu_count"`
+	MemoryMiB         uint32 `json:"memory_mib"`
+	NetworkID         string `json:"network_id,omitempty"`
 }
 
 type GuestPrincipal struct {
-	ID      string
-	GrantID string
-	Action  string
-	Target  string
+	ID, OwnerID, GrantID, CredentialID string
+	Action, Target, LimitsJSON         string
+	Revision, MaximumConcurrent        int64
 }
 
 func guestTarget(action, target string) bool {
@@ -52,6 +71,8 @@ func guestTarget(action, target string) bool {
 		return target == ""
 	case GuestFork, GuestExec, GuestRead:
 		return validMachineID(target)
+	case GuestProxy:
+		return config.ValidCredentialProxyID(target)
 	default:
 		return false
 	}
@@ -92,12 +113,33 @@ func (s *Service) CreateGuestGrant(ctx context.Context, owner Principal, grant G
 }
 
 func (s *Service) CreateGuestGrantTx(ctx context.Context, tx *sql.Tx, owner Principal, grant GuestGrantSpec) (string, error) {
-	if !validMachineID(grant.SourceMachineID) || !guestTarget(grant.Action, grant.TargetMachineID) ||
-		grant.MaximumUses < 1 || !grant.ExpiresAt.After(time.Now()) {
+	targetID := grant.TargetMachineID
+	if grant.Action == GuestProxy {
+		targetID = grant.ProxyID
+	}
+	if grant.MaximumConcurrent == 0 {
+		grant.MaximumConcurrent = 4
+	}
+	if !validMachineID(grant.SourceMachineID) || !guestTarget(grant.Action, targetID) ||
+		(grant.Action == GuestProxy && grant.TargetMachineID != "") || (grant.Action != GuestProxy && grant.ProxyID != "") ||
+		grant.MaximumUses < 1 || grant.MaximumConcurrent < 1 || grant.MaximumConcurrent > 64 || !grant.ExpiresAt.After(time.Now()) {
 		return "", registry.ErrInvalid
+	}
+	if err := grant.validateLimits(); err != nil {
+		return "", err
 	}
 	if err := requireGrantOwner(ctx, tx, owner); err != nil {
 		return "", err
+	}
+	if create := grant.Limits.Create; create != nil {
+		var known bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM templates WHERE id=?) AND
+			EXISTS(SELECT 1 FROM runtime_instances WHERE id=?)`, create.TemplateID, create.RuntimeInstanceID).Scan(&known); err != nil {
+			return "", err
+		}
+		if !known {
+			return "", registry.ErrInvalid
+		}
 	}
 	var source string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM machines WHERE id=? AND deleted_at IS NULL`, grant.SourceMachineID).Scan(&source); err != nil {
@@ -131,9 +173,18 @@ func (s *Service) CreateGuestGrantTx(ctx context.Context, tx *sql.Tx, owner Prin
 	if err != nil {
 		return "", err
 	}
+	limits, err := json.Marshal(grant.Limits)
+	if err != nil {
+		return "", err
+	}
+	var proxy any
+	if grant.ProxyID != "" {
+		proxy = grant.ProxyID
+	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO guest_grants
-		(id,source_machine_id,action,target_machine_id,expires_at,maximum_uses,revision) VALUES(?,?,?,?,?,?,1)`,
-		id, source, grant.Action, target, grant.ExpiresAt.UnixMilli(), grant.MaximumUses); err != nil {
+		(id,source_machine_id,action,target_machine_id,expires_at,maximum_uses,revision,proxy_id,maximum_concurrent,limits_json)
+		VALUES(?,?,?,?,?,?,1,?,?,?)`, id, source, grant.Action, target, grant.ExpiresAt.UnixMilli(), grant.MaximumUses,
+		proxy, grant.MaximumConcurrent, string(limits)); err != nil {
 		return "", err
 	}
 	if err = registry.AppendEvent(ctx, tx, "auth", source, "", map[string]string{"action": "guest_grant_created", "grant_id": id}, true); err != nil {
@@ -256,13 +307,11 @@ func (s *Service) UseGuestGrant(ctx context.Context, peer AttestedGuestContext, 
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE guest_grants SET used_count=used_count+1
-		WHERE id=? AND used_count<maximum_uses`, p.GrantID)
-	if err != nil {
+	if err := consumeGuestUse(ctx, tx, p); err != nil {
+		if errors.Is(err, ErrGuestQuota) {
+			return errors.Join(ErrForbidden, err)
+		}
 		return err
-	}
-	if n, err := result.RowsAffected(); err != nil || n != 1 {
-		return errors.Join(ErrForbidden, err)
 	}
 	if err := accept(tx, p); err != nil {
 		return err
@@ -285,16 +334,30 @@ func (s *Service) CheckGuestGrant(ctx context.Context, peer AttestedGuestContext
 func verifyGuestGrant(ctx context.Context, db interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, peer AttestedGuestContext, secret, action, target string) (GuestPrincipal, error) {
+	if !guestTarget(action, target) {
+		return GuestPrincipal{}, ErrForbidden
+	}
+	p, err := verifyGuestCredential(ctx, db, peer, secret)
+	if err != nil {
+		return p, err
+	}
+	if p.Action != action || p.Target != target {
+		return p, ErrForbidden
+	}
+	return p, nil
+}
+
+func verifyGuestCredential(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, peer AttestedGuestContext, secret string) (GuestPrincipal, error) {
 	var p GuestPrincipal
 	if !peer.valid() || len(secret) != 47 || !strings.HasPrefix(secret, "sbg_") {
 		return p, ErrUnauthenticated
 	}
-	if !guestTarget(action, target) {
-		return p, ErrForbidden
-	}
 	now := time.Now().UnixMilli()
 	fields := append([]any{credentialDigest(secret), now, now}, peer.fields()...)
-	err := db.QueryRowContext(ctx, `SELECT i.principal_id,g.id,g.action,COALESCE(g.target_machine_id,'')
+	err := db.QueryRowContext(ctx, `SELECT i.principal_id,i.owner_principal_id,g.id,c.id,g.action,
+		COALESCE(g.target_machine_id,g.proxy_id,''),g.revision,g.maximum_concurrent,g.limits_json
 		FROM guest_credentials c JOIN guest_grants g ON g.id=c.grant_id
 		JOIN guest_identities i ON i.machine_id=g.source_machine_id
 		JOIN principals p ON p.id=i.principal_id JOIN machines m ON m.id=i.machine_id
@@ -305,15 +368,34 @@ func verifyGuestGrant(ctx context.Context, db interface {
 			AND c.binding_id=b.id AND c.runtime_instance_id=b.runtime_instance_id
 			AND c.runtime_bundle_id=b.runtime_bundle_id AND c.runtime_object_id=b.runtime_instance_object_id
 			AND c.incarnation_id=b.incarnation_id AND c.execution_epoch=b.execution_epoch AND `+currentGuest,
-		fields...).Scan(&p.ID, &p.GrantID, &p.Action, &p.Target)
+		fields...).Scan(&p.ID, &p.OwnerID, &p.GrantID, &p.CredentialID, &p.Action, &p.Target,
+		&p.Revision, &p.MaximumConcurrent, &p.LimitsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrUnauthenticated
 	}
 	if err != nil {
 		return p, err
 	}
-	if p.Action != action || p.Target != target {
-		return p, ErrForbidden
-	}
 	return p, nil
+}
+
+func (grant GuestGrantSpec) validateLimits() error {
+	limits := grant.Limits
+	if grant.Action == GuestCreate || grant.Action == GuestFork {
+		if limits.MaximumChildren < 1 || limits.MaximumMemoryMiB < 1 {
+			return registry.ErrInvalid
+		}
+	} else if limits.MaximumChildren != 0 || limits.MaximumMemoryMiB != 0 {
+		return registry.ErrInvalid
+	}
+	if grant.Action == GuestCreate {
+		create := limits.Create
+		if create == nil || create.TemplateID == "" || create.RuntimeInstanceID == "" ||
+			create.CPUs == 0 || create.MemoryMiB == 0 || int64(create.MemoryMiB) > limits.MaximumMemoryMiB {
+			return registry.ErrInvalid
+		}
+	} else if limits.Create != nil {
+		return registry.ErrInvalid
+	}
+	return nil
 }

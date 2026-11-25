@@ -35,6 +35,10 @@ func (s *Server) GuestRelay(workerSocket string, binding registry.Binding) *http
 		return secret, nil
 	}
 	mux := http.NewServeMux()
+	s.guestDelegationRoutes(mux, peer, verify)
+	mux.HandleFunc("/v1/credential-proxies/{proxy}/{route...}", guestHandler(verify, func(w http.ResponseWriter, r *http.Request, secret string) error {
+		return s.serveCredentialProxy(w, r, peer, secret, verify)
+	}))
 	mux.HandleFunc("GET /v1/machines/{machine}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		secret, err := verify(r)
@@ -101,11 +105,8 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 	ctx := r.Context()
 	target := r.PathValue("machine")
 	var scope registry.Binding
-	var authorized auth.GuestPrincipal
 	var control rt.NativeGuestControl
-	var policyWorker workerclient.Client
-	var managedPolicy bool
-	err := s.Auth.UseGuestGrant(ctx, peer, secret, auth.GuestExec, target, func(tx *sql.Tx, guest auth.GuestPrincipal) error {
+	authorized, release, err := s.Auth.BeginGuestCall(ctx, peer, secret, auth.GuestExec, target, 125*time.Second, 0, func(tx *sql.Tx, guest auth.GuestPrincipal) error {
 		machine, err := s.DB.GetMachine(ctx, target)
 		if err != nil {
 			return err
@@ -123,14 +124,16 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 		if !ok {
 			return rt.ErrUnsupported
 		}
-		authorized = guest
-		policyWorker, managedPolicy = lifecycle.PolicyClient(adapter, scope)
 		return registry.AppendEvent(ctx, tx, "auth", target, "", map[string]string{"action": "guest_exec_admitted", "grant_id": guest.GrantID}, true)
 	})
 	if err != nil {
 		return err
 	}
+	defer release()
 	check := func(ctx context.Context) error {
+		if _, err := verify(r.WithContext(ctx)); err != nil {
+			return err
+		}
 		if err := s.Auth.CheckGuestGrant(ctx, peer, secret, authorized); err != nil {
 			return err
 		}
@@ -146,39 +149,16 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 	if err := check(ctx); err != nil {
 		return err
 	}
-	if _, err := verify(r); err != nil {
+	stopActivity, err := s.holdGuestRelayActivity(ctx, scope, authorized.GrantID, "guest_exec")
+	if err != nil {
 		return err
 	}
-	if managedPolicy {
-		if _, err := s.Engine.ApplyMachinePolicy(ctx, scope, policyWorker); err != nil {
-			return err
-		}
-		release, err := s.Engine.HoldConnectionActivity(ctx, scope, policyWorker, authorized.GrantID, "guest_exec")
-		if err != nil {
-			return err
-		}
-		defer release()
-		if err := check(ctx); err != nil {
-			return err
-		}
+	defer stopActivity()
+	if err := check(ctx); err != nil {
+		return err
 	}
-	call, cancel := context.WithCancelCause(ctx)
+	call, cancel := watchGuestAuthority(ctx, check)
 	defer cancel(nil)
-	go func() {
-		tick := time.NewTicker(time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-call.Done():
-				return
-			case <-tick.C:
-				if err := check(call); err != nil {
-					cancel(err)
-					return
-				}
-			}
-		}
-	}()
 	result, err := control.GuestExec(call, scope.ExecutionRef(), rt.ExecRequest{
 		Command: request.Command, Env: request.Env, Cwd: request.Cwd, Stdin: request.Stdin, TimeoutSeconds: request.Timeout,
 	})
@@ -192,4 +172,19 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 		return err
 	}
 	return write(w, http.StatusOK, result)
+}
+
+func (s *Server) holdGuestRelayActivity(ctx context.Context, binding registry.Binding, grant, reason string) (func(), error) {
+	adapter, err := s.ForBinding(binding)
+	if err != nil {
+		return nil, err
+	}
+	client, supported := lifecycle.PolicyClient(adapter, binding)
+	if !supported {
+		return func() {}, nil
+	}
+	if _, err := s.Engine.ApplyMachinePolicy(ctx, binding, client); err != nil {
+		return nil, err
+	}
+	return s.Engine.HoldConnectionActivity(ctx, binding, client, grant, reason)
 }

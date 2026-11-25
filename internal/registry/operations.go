@@ -190,6 +190,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		if existing.Hash != fingerprint {
 			return Operation{}, false, ErrIdempotency
 		}
+		if r.AdmitGuest != nil {
+			if err := r.AdmitGuest(ctx, tx, replay, true); err != nil {
+				return Operation{}, false, err
+			}
+		}
 		return replay, true, nil
 	}
 	if len(r.ResolvedCreateRequest) != 0 {
@@ -361,6 +366,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	}
 	if rt.IsNativeFork(op.Kind) {
 		if err := allocateForkChildren(ctx, tx, &op, prior, r.ForkChildren, route, locks); err != nil {
+			return Operation{}, false, err
+		}
+	}
+	if r.AdmitGuest != nil {
+		if err := r.AdmitGuest(ctx, tx, op, false); err != nil {
 			return Operation{}, false, err
 		}
 	}
