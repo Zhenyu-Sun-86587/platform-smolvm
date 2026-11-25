@@ -372,7 +372,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     def target(phase):
         created = platform.change("machines", "create-" + phase, dict(
             name="Packet destination " + phase, template_id="t_system", boot_mode="system",
-            runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=512),
+            runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=1, memory_mib=512),
             network=dict(network_id="packet-net", mode=target_mode),
         ))
         platform.complete(created)
@@ -450,7 +450,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     else:
         raise AssertionError("next source epoch was authorized by the current lease")
     expect_tcp(address, ref)
-    platform.complete(platform.change(machine + "/standby", "standby-on-peer", {}, view))
+    platform.complete(platform.change(machine + "/standby", "standby-on-peer", {}, platform.app(machine)))
     assert status(ref) == "STANDBY"
     send(address, limit=4)
     assert status(ref) == "STANDBY", "a disabled lifecycle trigger caused wake"
@@ -470,7 +470,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
     policy(machine, ref, True, 0)
     assert update_rule(rule_path, "allow-hibernated-peer", True, 0)["source_current"]
-    platform.complete(platform.change(machine + "/hibernate", "durable-packet-sleep", {}, view))
+    platform.complete(platform.change(machine + "/hibernate", "durable-packet-sleep", {}, platform.app(machine)))
     asleep = get_binding(view)
     assert asleep["incarnation_id"] is None and status(asleep) == "HIBERNATED"
     reserved = platform.app(machine + "/network")
@@ -582,6 +582,7 @@ def test(args, root, stack, case):
     )
     if packet_case:
         intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case == "packet-native" else "native")
+        intent["resources"] = dict(cpu_count=1, memory_mib=512)
     created = platform.change("machines", "create", intent)
     platform.complete(created)
     machine_id = created["machine_id"]
