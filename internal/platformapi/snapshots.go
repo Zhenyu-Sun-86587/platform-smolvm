@@ -97,8 +97,11 @@ func (s *Server) snapshotRoutes() {
 			return s.accept(w, r, p, v, req)
 		})
 	}
-	s.route("GET /v1/machines/{machine}/snapshots", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	listSnapshots := func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
+		if id == "" {
+			id = p.Scope.MachineID
+		}
 		if err := p.Authorize("read", id); err != nil {
 			return err
 		}
@@ -107,7 +110,9 @@ func (s *Server) snapshotRoutes() {
 			return err
 		}
 		return list(w, r, out, func(s snapshots.Snapshot) string { return s.ID })
-	})
+	}
+	s.route("GET /v1/machines/{machine}/snapshots", listSnapshots)
+	s.route("GET /v1/snapshots", listSnapshots)
 	s.route("GET /v1/snapshots/{snap}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		item, err := s.Snapshots.Get(r.Context(), r.PathValue("snap"))
 		if err != nil {

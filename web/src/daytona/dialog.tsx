@@ -47,11 +47,13 @@ function DialogContent({
   showCloseButton = true,
   animate = true,
   overlay,
+  placement = "center",
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   container?: React.ComponentProps<typeof DialogPrimitive.Portal>['container']
   showCloseButton?: boolean
   overlay?: React.ReactNode
+  placement?: "center" | "right"
   animate?: boolean
 }) {
   return (
@@ -60,7 +62,8 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'bg-background fixed top-[50%] left-[50%] z-50 flex max-h-[80vh] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg',
+          'bg-background fixed z-50 flex max-h-[80vh] w-full max-w-[calc(100%-2rem)] flex-col gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg',
+          placement === "center" ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" : "top-0 right-0",
           {
             'origin-center data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95':
               animate,

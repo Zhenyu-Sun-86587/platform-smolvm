@@ -1,8 +1,11 @@
 import { ReactNode, useEffect, useState } from "react"
-import { Client, PlatformError } from "../../sdk/typescript/src/index"
+import { PlatformError } from "../../sdk/typescript/src/index"
 
-export const api = new Client(location.origin)
-export const segment = encodeURIComponent
+import { api } from "./api"
+import { Dialog as Root, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter } from "./daytona/dialog"
+import { Button } from "./daytona/button"
+import { AlertCircle } from "lucide-react"
+export { api, segment } from "./api"
 export const query = (value: string) => new URLSearchParams({ path: value }).toString()
 export const label = (value: string) => value.replace(/_/g, " ").replace(/^./, char => char.toUpperCase())
 export const isAuthError = (error: unknown) => error instanceof PlatformError && error.status === 401
@@ -21,6 +24,7 @@ export function useRemote<T>(path: string, revision: number) {
       setLoadedPath(path)
     }).catch(error => {
       if (abort.signal.aborted) return
+      setData(undefined)
       setError(error)
       setLoadedPath(path)
     })
@@ -34,7 +38,7 @@ export function Callout({ error }: { error: unknown }) {
   const message = error instanceof Error ? error.message : String(error)
   const detail = error instanceof PlatformError ? error.detail : undefined
   return <div className="callout" role="alert">
-    <strong>{detail?.code ?? "Request failed"}</strong><span>{message}</span>
+    <AlertCircle size={16} /><strong>{detail?.code ?? "Request failed"}</strong><span>{message}</span>
     {detail?.operation_id && <span>Operation {detail.operation_id}</span>}
     {detail?.effect && <span>Effect {detail.effect}</span>}
     {detail?.retry && <span>Retry {label(detail.retry)}</span>}
@@ -46,7 +50,7 @@ export function State({ value }: { value?: string | null }) {
   const tone = ["running", "ready", "succeeded", "active", "enabled"].includes(value) ? "good"
     : ["failed", "recovery_required", "unknown", "degraded", "interrupted"].includes(value) ? "bad"
       : ["paused", "queued", "observing", "dispatching", "starting", "suspect", "not_ready", "cancelling", "verification_pending"].includes(value) ? "pending" : "neutral"
-  return <span className={`state ${tone}`}><i />{label(value)}</span>
+  return <span className={`state ${tone}`}><i />{value==="paused"?"Hibernated":label(value)}</span>
 }
 
 export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
@@ -95,6 +99,8 @@ export type DialogConfig = {
   title: string
   submit?: string
   description?: string
+  content?: ReactNode
+  sheet?: boolean
   destructive?: boolean
   fields?: Field[]
   act: (data: FormData) => Promise<unknown>
@@ -103,10 +109,11 @@ export type DialogConfig = {
 export function Dialog({ config, close }: { config: DialogConfig; close: () => void }) {
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
-  return <div className="overlay" onClick={event => { if (event.currentTarget === event.target && !busy) close() }}>
-    <section role="dialog" aria-modal="true" aria-label={config.title} className="dialog">
-      <header><h2>{config.title}</h2><button type="button" aria-label="Close" className="icon-button" onClick={close} disabled={busy}>×</button></header>
-      {config.description && <p className="muted">{config.description}</p>}
+  return <Root open onOpenChange={open => { if (!open && !busy) close() }}>
+    <DialogContent placement={config.sheet?"right":"center"} animate={!config.sheet} className={config.sheet ? "form-sheet" : "form-dialog"} onEscapeKeyDown={event => { if (busy) event.preventDefault() }} onInteractOutside={event => { if (busy) event.preventDefault() }} showCloseButton={!busy} {...(config.description ? {} : {"aria-describedby":undefined})}>
+      <DialogHeader><DialogTitle>{config.title}</DialogTitle>
+      {config.description && <DialogDescription>{config.description}</DialogDescription>}</DialogHeader>
+      {config.content}
       <form onSubmit={event => {
         event.preventDefault()
         const form = new FormData(event.currentTarget)
@@ -125,10 +132,10 @@ export function Dialog({ config, close }: { config: DialogConfig; close: () => v
           {field.note && <small>{field.note}</small>}
         </label>)}
         <Callout error={error} />
-        <footer><button type="button" onClick={close} disabled={busy}>Cancel</button><button className={config.destructive ? "danger" : "primary"} type="submit" disabled={busy}>{busy ? "Submitting…" : config.submit ?? config.title}</button></footer>
+        <DialogFooter><Button variant="outline" type="button" onClick={close} disabled={busy}>Cancel</Button><Button variant={config.destructive ? "destructive" : "default"} type="submit" disabled={busy}>{busy ? "Submitting…" : config.submit ?? config.title}</Button></DialogFooter>
       </form>
-    </section>
-  </div>
+    </DialogContent>
+  </Root>
 }
 
 export const str = (data: FormData, field: string) => String(data.get(field) ?? "")

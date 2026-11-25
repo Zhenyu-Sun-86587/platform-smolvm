@@ -14,7 +14,7 @@ export default function Terminal({ execId }: { execId: string }) {
     const root = host.current
     const term = new Xterm({
       fontSize: 13, cursorBlink: true, convertEol: false, scrollback: 3000,
-      theme: { background: "#141c19", foreground: "#d7e2da", cursor: "#68daa3" }
+      theme: { background: "#101317", foreground: "#e2e5ea", cursor: "#99e2c5" }
     })
     const fit = new FitAddon()
     term.loadAddon(fit)

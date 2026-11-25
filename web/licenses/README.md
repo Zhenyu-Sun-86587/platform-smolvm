@@ -7,10 +7,11 @@ The source baseline is [daytonaio/daytona v0.190.0](https://github.com/daytonaio
 | Upstream | Local use |
 | --- | --- |
 | components/ui/button.tsx, dialog.tsx, dropdown-menu.tsx, empty.tsx, skeleton.tsx | Locally built UI primitives in src/daytona, with local utility imports |
+| components/ui/sidebar.tsx | Sidebar menu and menu item primitives |
 | components/ui/table.tsx and components/PageLayout.tsx | Table primitives and page title/intro, with local columns and navigation |
 | index.css | Dashboard theme tokens in src/daytona/theme.css |
-| components/sandboxes/SandboxState.tsx | Status indicator adapted to platform observation and operation states |
+| components/sandboxes/SandboxState.tsx | Visual reference for the local status indicator using platform observation and operation states |
 
-The views, SDK adapter, and interactions use this platform's API. boxd public demonstrations informed navigation and operation grouping. Its marketing assets are kept separately from the application.
+The views, SDK adapter, and interactions use this platform's API. boxd’s public demonstrations and operator-supplied console screenshots informed navigation and operation grouping. Its marketing assets are kept separately from the application.
 
 The build collects installed third-party frontend dependency license texts in the notices download. These include React, Radix UI, Lucide, xterm, Geist and their applicable licenses. To rebuild the web bundle from the source archive on Linux, run `cd web && npm ci && npm run build`. To compile the embedding executable, run `go build ./cmd/platformd` in the repository root. Existing component notices retain their own terms.

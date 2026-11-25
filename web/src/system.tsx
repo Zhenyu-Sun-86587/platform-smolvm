@@ -1,3 +1,6 @@
+import { PageIntro } from "./daytona/page"
+import { RefreshCw } from "lucide-react"
+import { Button } from "./daytona/button"
 import { useState } from "react"
 import type { Operation, Page } from "../../sdk/typescript/src/index"
 import { operation } from "../../sdk/typescript/src/index"
@@ -8,7 +11,8 @@ export type SystemTab = "operations" | "settings" | "diagnostics" | "templates"
 type Props = { tab: SystemTab; id?: string; actions: Actions; revision: number; operationIds: string[] }
 
 export function System({ tab, ...props }: Props) {
-  return <><header className="page-head"><h1>{label(tab)}</h1><button onClick={props.actions.refresh}>Refresh</button></header>
+  return <><PageIntro title={tab==="operations"?"Operations":"Settings"} desc={tab==="operations"?"Inspect lifecycle progress, results, and recovery.":"Manage credentials, templates, and your local platform."} actions={<Button variant="outline" onClick={props.actions.refresh}><RefreshCw/>Refresh</Button>}/>
+    {tab!=="operations"&&<nav className="tabs" aria-label="Settings sections">{[["settings","Credentials"],["templates","Templates"],["diagnostics","Diagnostics"]].map(([key,title])=><a key={key} className={tab===key?"active":""} href={"#/"+key}>{title}</a>)}</nav>}
     {tab === "operations" ? <Operations {...props} /> : tab === "templates" ? <Templates {...props} />
       : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : <Settings {...props} />}</>
 }

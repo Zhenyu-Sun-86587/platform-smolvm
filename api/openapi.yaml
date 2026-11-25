@@ -661,6 +661,20 @@ paths:
               description: Path of the accepted operation
               schema: {type: string}
         default: {$ref: '#/components/responses/Error'}
+  /snapshots:
+    get:
+      operationId: get_snapshots
+      summary: List snapshots visible to this credential
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotPage'}
+        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/snapshots:
     get:
       operationId: get_machines_machine_snapshots
