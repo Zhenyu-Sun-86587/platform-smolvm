@@ -251,7 +251,7 @@ export function WorkspaceActions({
               Cold start
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onSelect={() => powerDialog(m, actions, "wake")}>
+          <DropdownMenuItem disabled={deep && (power !== "standby" || Boolean(fullStateBlock(m, "lifecycle.standby_wake")))} onSelect={() => powerDialog(m, actions, "wake")}>
             <Zap />
             Wake
           </DropdownMenuItem>

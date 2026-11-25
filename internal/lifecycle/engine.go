@@ -80,6 +80,7 @@ type Action struct {
 	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
+	Native          *rt.NativeSubmission  `json:"native,omitempty"`
 	Stage           string                `json:"stage"`
 	Name            string                `json:"runtime_name"`
 	Source          string                `json:"source,omitempty"`
@@ -244,6 +245,13 @@ func (j *Job) fail(ctx context.Context, err error) error {
 	if errors.As(err, &re) {
 		code = re.Code
 	}
+	var capability *rt.CapabilityError
+	if errors.As(err, &capability) {
+		code = "CAPABILITY_UNKNOWN"
+		if capability.Status.Status == "unsupported" {
+			code = "CAPABILITY_UNSUPPORTED"
+		}
+	}
 	var ge *tasks.RPCError
 	if errors.As(err, &ge) {
 		code = ge.Code
@@ -311,7 +319,12 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	if err = readyRuntime(ctx, j.Runtime); err != nil {
 		return err
 	}
+	native, hasNative := j.Runtime.(rt.NativeControl)
+	useNative := hasNative && !bindingRuntime(j.Binding).Legacy() && rt.NativePowerCapability(op.Kind) != ""
 	if dispatched {
+		if useNative {
+			return j.reconcileNative(ctx, native)
+		}
 		return j.reconcile(ctx)
 	}
 	if err = j.Stage(ctx, "preflight", ""); err != nil {
@@ -326,12 +339,19 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 			return j.fail(ctx, &Failure{"DISK_LOW", "insufficient free space for heavy operation"})
 		}
 	}
-	if fn := e.Extra[op.Kind]; fn != nil {
+	if useNative {
+		err = j.nativePower(ctx, native)
+	} else if fn := e.Extra[op.Kind]; fn != nil {
 		err = fn(ctx, j)
 	} else {
 		err = j.power(ctx)
 	}
 	if err == nil || parent.Err() != nil {
+		return err
+	}
+	if useNative && j.Intent.Native == nil && errors.Is(err, rt.ErrUnavailable) {
+		// The preflight has issued no operation. A restarted Worker may need
+		// another observation before the original intent can be dispatched.
 		return err
 	}
 	if errors.Is(err, registry.ErrOperationState) || errors.Is(err, registry.ErrHeavyBusy) {

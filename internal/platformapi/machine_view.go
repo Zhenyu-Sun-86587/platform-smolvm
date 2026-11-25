@@ -81,6 +81,11 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		v.Binding = m.CurrentBinding
 		v.RuntimeName = m.CurrentBinding.RuntimeName
 		v.GuestStatus = m.CurrentBinding.GuestManagementStatus
+		if !official {
+			for _, kind := range []string{rt.Standby, rt.Wake} {
+				v.Capabilities[rt.NativePowerCapability(kind)] = s.NativePowerCapability(*b, kind)
+			}
+		}
 	}
 	if m.DeletedAt == nil && m.CurrentBinding != nil && (m.ObservedAt == nil || time.Since(*m.ObservedAt) > time.Duration(s.Config.Lifecycle.StatusStale)*time.Second) {
 		v.Availability = "unknown"

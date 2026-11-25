@@ -231,6 +231,17 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
+	if route != (rt.BundleRoute{}) && rt.NativePowerCapability(r.Kind) != "" {
+		if r.ExpectedGeneration < 1 {
+			return Operation{}, false, fmt.Errorf("%w: native operation requires an expected binding generation", ErrInvalid)
+		}
+		if prior.CurrentBinding == nil || r.AdmitNative == nil {
+			return Operation{}, false, rt.NativePowerUnavailable(r.Kind)
+		}
+		if err := r.AdmitNative(*prior.CurrentBinding, r.Kind); err != nil {
+			return Operation{}, false, err
+		}
+	}
 	if creates {
 		if fromSource {
 			op.SourceMachineID = prior.ID
