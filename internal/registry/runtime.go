@@ -48,3 +48,66 @@ func loadRuntimeRoute(ctx context.Context, tx *sql.Tx, instanceID string) (rt.Bu
 	}
 	return route, err
 }
+
+type RuntimeProfile struct {
+	RuntimeInstanceID  string                   `json:"runtime_instance_id"`
+	RuntimeBundleID    string                   `json:"runtime_bundle_id"`
+	StateReaderID      string                   `json:"state_reader_id"`
+	Status             string                   `json:"status"`
+	VerificationStatus string                   `json:"verification_status"`
+	SecurityStatus     string                   `json:"security_status"`
+	BootProfiles       []string                 `json:"boot_profiles"`
+	RunningBindings    int64                    `json:"running_bindings"`
+	StandbyBindings    int64                    `json:"standby_bindings"`
+	HibernatedBindings int64                    `json:"hibernated_bindings"`
+	BundleBindingRefs  int64                    `json:"bundle_binding_refs"`
+	BundleSnapshotRefs int64                    `json:"bundle_snapshot_refs"`
+	Capabilities       map[string]rt.Capability `json:"capabilities"`
+}
+
+func (s *Store) ListRuntimeProfiles(ctx context.Context) ([]RuntimeProfile, error) {
+	rows, err := s.reader.QueryContext(ctx, `
+	WITH current_bindings AS (
+		SELECT b.runtime_instance_id,
+			COUNT(*) FILTER (WHERE b.power_state='running') AS running,
+			COUNT(*) FILTER (WHERE b.power_state='standby') AS standby,
+			COUNT(*) FILTER (WHERE b.power_state='hibernated') AS hibernated
+		FROM machines m JOIN runtime_bindings b ON b.id = m.current_binding_id
+		WHERE m.deleted_at IS NULL AND b.runtime_instance_id IS NOT NULL
+		GROUP BY b.runtime_instance_id
+	), bundle_refs AS (
+		SELECT bundle_id, COUNT(*) FILTER (WHERE owner_kind='binding') AS bindings,
+			COUNT(*) FILTER (WHERE owner_kind='snapshot') AS snapshots
+		FROM runtime_bundle_refs GROUP BY bundle_id
+	)
+	SELECT i.id, b.id, COALESCE(json_extract(b.manifest_json, '$.contracts.state_reader_id'), ''),
+		i.status, b.verification_status, b.security_status,
+		COALESCE(json_extract(b.manifest_json, '$.guest.boot_profiles'), '[]'),
+		COALESCE(c.running, 0), COALESCE(c.standby, 0), COALESCE(c.hibernated, 0),
+		COALESCE(r.bindings, 0), COALESCE(r.snapshots, 0)
+	FROM runtime_instances i JOIN runtime_bundles b ON b.id = i.runtime_bundle_id
+	LEFT JOIN current_bindings c ON c.runtime_instance_id = i.id
+	LEFT JOIN bundle_refs r ON r.bundle_id = b.id
+	ORDER BY i.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	profiles := []RuntimeProfile{}
+	for rows.Next() {
+		var profile RuntimeProfile
+		var bootProfiles string
+		if err = rows.Scan(&profile.RuntimeInstanceID, &profile.RuntimeBundleID, &profile.StateReaderID,
+			&profile.Status, &profile.VerificationStatus, &profile.SecurityStatus, &bootProfiles,
+			&profile.RunningBindings, &profile.StandbyBindings, &profile.HibernatedBindings,
+			&profile.BundleBindingRefs, &profile.BundleSnapshotRefs); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal([]byte(bootProfiles), &profile.BootProfiles); err != nil {
+			return nil, fmt.Errorf("decode runtime bundle %s boot profiles: %w", profile.RuntimeBundleID, err)
+		}
+		profile.Capabilities = rt.FullStateCapabilities(false)
+		profiles = append(profiles, profile)
+	}
+	return profiles, rows.Err()
+}

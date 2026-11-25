@@ -230,6 +230,7 @@ export class Client {
     getService(id, signal) { return this.get(service(id), signal); }
     getSnapshot(id, signal) { return this.get(snapshot(id), signal); }
     listMachines(signal) { return this.pages("machines", 100, signal); }
+    listRuntimeProfiles(signal) { return this.pages("runtime-profiles", 100, signal); }
     machineAction(id, action, generation, options) {
         return this.mutate(machine(id) + "/" + action, { expected_generation: generation }, options);
     }

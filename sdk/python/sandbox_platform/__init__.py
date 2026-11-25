@@ -236,6 +236,9 @@ class Client:
     def get_machine(self, id):
         return self.get(_item("machines", id))
 
+    def list_runtime_profiles(self, *, limit=100):
+        return self.pages("runtime-profiles", limit=limit)
+
     def machine_action(self, id, action, *, intent=None, **fields):
         if action not in {"start", "stop", "pause", "resume", "wake"}:
             raise ValueError("unknown machine action")

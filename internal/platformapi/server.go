@@ -387,6 +387,16 @@ func (s *Server) routes() {
 		}
 		return write(w, 200, v)
 	})
+	s.route("GET /v1/runtime-profiles", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		if err := p.Authorize("read", ""); err != nil {
+			return err
+		}
+		profiles, err := s.DB.ListRuntimeProfiles(r.Context())
+		if err != nil {
+			return err
+		}
+		return list(w, r, profiles, func(profile registry.RuntimeProfile) string { return profile.RuntimeInstanceID })
+	})
 	s.route("GET /v1/tokens", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		tokens, err := s.Auth.ListTokens(r.Context(), p)
 		if err != nil {

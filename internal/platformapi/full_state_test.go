@@ -51,7 +51,7 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.RegisterRuntime(ctx, rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}, "isolated-socket",
-		json.RawMessage(`{"contracts":{"state_reader_id":"reader"}}`)); err != nil {
+		json.RawMessage(`{"contracts":{"state_reader_id":"reader"},"guest":{"boot_profiles":["oci-v1"]}}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.DB().ExecContext(ctx, `
@@ -148,6 +148,24 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 	var pinnedBundle string
 	if err := db.ReadDB().QueryRowContext(ctx, `SELECT bundle_id FROM runtime_bundle_refs WHERE owner_kind='snapshot' AND owner_id='vm_snapshot'`).Scan(&pinnedBundle); err != nil || pinnedBundle != "bundle" {
 		t.Fatal(pinnedBundle, err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `UPDATE runtime_bindings SET power_state='standby' WHERE id='b_deep'`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime-profiles", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	profileResponse := httptest.NewRecorder()
+	s.mux.ServeHTTP(profileResponse, req)
+	var profiles struct{ Items []registry.RuntimeProfile }
+	if err := json.Unmarshal(profileResponse.Body.Bytes(), &profiles); err != nil || profileResponse.Code != http.StatusOK ||
+		len(profiles.Items) != 1 || strings.Contains(profileResponse.Body.String(), "isolated-socket") {
+		t.Fatalf("runtime profiles = %d %s, %v", profileResponse.Code, profileResponse.Body.String(), err)
+	}
+	profile := profiles.Items[0]
+	if profile.RuntimeInstanceID != "serve" || profile.RuntimeBundleID != "bundle" || profile.StateReaderID != "reader" ||
+		profile.StandbyBindings != 1 || profile.BundleSnapshotRefs != 1 || len(profile.BootProfiles) != 1 ||
+		profile.BootProfiles[0] != "oci-v1" || profile.Capabilities["state.hibernate"].Status != "unknown" {
+		t.Fatalf("inaccurate runtime profile %+v", profile)
 	}
 	snapshot, err := s.Snapshots.Get(ctx, "vm_snapshot")
 	if err != nil || snapshot.CaptureMode != snapshots.CaptureVM || snapshot.VM == nil ||
