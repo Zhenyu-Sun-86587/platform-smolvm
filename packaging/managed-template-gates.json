@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "default_archive": {
+    "basename": "debian-managed-v1-r3.tar",
+    "sha256": "ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64"
+  },
+  "archives": {
+    "ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64": {
+      "runtime_version": "1.37.1",
+      "architecture": "amd64",
+      "verified_profile": "smolvm-1.37.1 linux/amd64 virtio-net full internal storage",
+      "verified_at": "2026-11-25T04:22:00Z",
+      "evidence": "docs/phase1/LOCAL_GUEST_EVIDENCE.md",
+      "capabilities": ["persistent_task", "clean_checkpoint", "independent_clone", "native_exec", "files"]
+    },
+    "e77444dc02446153136008fe4383132579381fdcd403ca73b476e4e646ece281": {
+      "runtime_version": "1.37.1",
+      "architecture": "amd64",
+      "verified_profile": "smolvm-1.37.1 linux/amd64 virtio-net full internal storage",
+      "verified_at": "2026-11-25T04:22:00Z",
+      "evidence": "docs/phase1/LOCAL_GUEST_EVIDENCE.md",
+      "capabilities": ["persistent_task", "task_log_retention"]
+    }
+  }
+}
