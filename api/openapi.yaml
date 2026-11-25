@@ -1,0 +1,2290 @@
+openapi: 3.1.0
+info:
+  title: Sandbox Platform
+  version: 0.1.0
+  description: Management, execution and access API for a single-node Sandbox installation.
+servers:
+- url: /v1
+security:
+- bearer: []
+- session: []
+paths:
+  /control:
+    get:
+      operationId: get_control
+      summary: Read the control epoch, runtime readiness, and capabilities
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  control_epoch: {type: string}
+                  maintenance: {type: boolean}
+                  runtime_version: {type: string}
+                  build: {type: string}
+                  runtime_ready: {type: boolean}
+                  csrf_token: {type: string}
+                  capabilities: {type: object, additionalProperties: true}
+                required:
+                - control_epoch
+        default: {$ref: '#/components/responses/Error'}
+  /auth/login:
+    post:
+      operationId: post_auth_login
+      summary: Authenticate the owner
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: {type: string, minLength: 1}
+                password: {type: string, format: password}
+              required:
+              - username
+              - password
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/logout:
+    post:
+      operationId: post_auth_logout
+      summary: Revoke the current browser session
+      parameters:
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /tokens:
+    get:
+      operationId: get_tokens
+      summary: List API tokens
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_tokens
+      summary: Issue an API token
+      description: The token secret is returned on initial issue.
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: {type: string, minLength: 1}
+                scope: {$ref: '#/components/schemas/TokenScope'}
+                expires_at: {type: string, format: date-time}
+              required:
+              - label
+              - scope
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /tokens/{token}:
+    delete:
+      operationId: delete_tokens_token
+      summary: Revoke an API token
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /ssh-keys:
+    get:
+      operationId: get_ssh_keys
+      summary: List Guest public keys
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SSHKeyPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_ssh_keys
+      summary: Register a Guest SSH public key
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                public_key: {type: string, minLength: 1}
+                label: {type: string}
+              required:
+              - public_key
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /ssh-keys/{key}:
+    delete:
+      operationId: delete_ssh_keys_key
+      summary: Revoke a Guest SSH key
+      parameters:
+      - name: key
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /client-certificates:
+    get:
+      operationId: get_client_certificates
+      summary: List issued client certificates
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_client_certificates
+      summary: Issue a client mTLS certificate from a CSR
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                csr: {type: string, minLength: 1}
+                scope:
+                  type: object
+                  properties:
+                    service_ids: {type: array, items: {type: string, minLength: 1}}
+                  required:
+                  - service_ids
+                  additionalProperties: false
+                ttl_seconds: {type: integer, minimum: 1}
+              required:
+              - csr
+              - scope
+              - ttl_seconds
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /client-certificates/{certificate}:
+    delete:
+      operationId: delete_client_certificates_certificate
+      summary: Revoke a client mTLS certificate
+      parameters:
+      - name: certificate
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /machines:
+    get:
+      operationId: get_machines
+      summary: List visible machines
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MachinePage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines
+      summary: Create a machine
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMachine'}
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}:
+    get:
+      operationId: get_machines_machine
+      summary: Read a machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Machine'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: patch_machines_machine
+      summary: Update machine configuration
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MachinePatch'}
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_machines_machine
+      summary: Delete the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/start:
+    post:
+      operationId: post_machines_machine_start
+      summary: Start the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+                reason: {type: string}
+                allow_active_tasks: {type: boolean}
+                cancel_tasks: {type: boolean}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/stop:
+    post:
+      operationId: post_machines_machine_stop
+      summary: Stop the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+                reason: {type: string}
+                allow_active_tasks: {type: boolean}
+                cancel_tasks: {type: boolean}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/pause:
+    post:
+      operationId: post_machines_machine_pause
+      summary: Pause the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+                reason: {type: string}
+                allow_active_tasks: {type: boolean}
+                cancel_tasks: {type: boolean}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/resume:
+    post:
+      operationId: post_machines_machine_resume
+      summary: Resume the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+                reason: {type: string}
+                allow_active_tasks: {type: boolean}
+                cancel_tasks: {type: boolean}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/wake:
+    post:
+      operationId: post_machines_machine_wake
+      summary: Wake the machine
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_generation: {type: integer, minimum: 1}
+                reason: {type: string}
+                allow_active_tasks: {type: boolean}
+                cancel_tasks: {type: boolean}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/dependencies:
+    get:
+      operationId: get_machines_machine_dependencies
+      summary: Get logical lineage and native resource dependencies
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/forks:
+    post:
+      operationId: post_machines_machine_forks
+      summary: Create a Live Fork
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                child_name: {type: string, minLength: 1}
+                expected_generation: {type: integer, minimum: 1}
+              required:
+              - child_name
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/clones:
+    post:
+      operationId: post_machines_machine_clones
+      summary: Create an independent clone
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                child_name: {type: string, minLength: 1}
+                expected_generation: {type: integer, minimum: 1}
+                copy_policy: {type: string, enum: [managed_clean]}
+              required:
+              - child_name
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/snapshots:
+    get:
+      operationId: get_machines_machine_snapshots
+      summary: List the machine's snapshots
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SnapshotPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines_machine_snapshots
+      summary: Capture a machine snapshot
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                purpose: {type: string, enum: [clone, recovery]}
+                label: {type: string}
+                expected_generation: {type: integer, minimum: 1}
+              required:
+              - purpose
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/{snapshot}:
+    get:
+      operationId: get_snapshots_snapshot
+      summary: Get snapshot metadata
+      parameters:
+      - name: snapshot
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Snapshot'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_snapshots_snapshot
+      summary: Delete an unpinned snapshot
+      parameters:
+      - name: snapshot
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/{snapshot}/export:
+    get:
+      operationId: get_snapshots_snapshot_export
+      summary: Download a snapshot archive
+      parameters:
+      - name: snapshot
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/x-tar:
+              schema: {type: string, format: binary}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/import:
+    post:
+      operationId: post_snapshots_import
+      summary: Stage a snapshot archive
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      - name: X-Content-SHA256
+        in: header
+        required: true
+        schema: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+      - name: Content-Length
+        in: header
+        required: true
+        schema: {type: integer, minimum: 0}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/{snapshot}/verify:
+    post:
+      operationId: post_snapshots_snapshot_verify
+      summary: Verify a snapshot
+      parameters:
+      - name: snapshot
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                verification: {type: string, enum: [checksum, restore]}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /restores:
+    get:
+      operationId: get_restores
+      summary: List restore operations
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_restores
+      summary: Restore a clean snapshot into a new machine
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                snapshot_id: {type: string, minLength: 1}
+                name: {type: string, minLength: 1}
+              required:
+              - snapshot_id
+              - name
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/rollback:
+    post:
+      operationId: post_machines_machine_rollback
+      summary: Replace the current machine binding from a snapshot
+      description: A paused prior runtime is exported and deleted, retaining the exported artifact.
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                snapshot_id: {type: string, minLength: 1}
+                expected_generation: {type: integer, minimum: 1}
+                old_state_policy: {type: string, enum: [export_then_delete_on_paused]}
+                task_disposition: {type: string, enum: [cancel_captured, resume_captured]}
+              required:
+              - snapshot_id
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/exec:
+    post:
+      operationId: post_machines_machine_exec
+      summary: Run a native command
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                argv: {type: array, items: {type: string}}
+                cwd: {type: string}
+                env: {type: object, additionalProperties: {type: string}}
+                user: {type: string, default: root}
+                timeout_seconds: {type: integer, minimum: 0}
+                wait_seconds: {type: integer, minimum: 0}
+              required:
+              - argv
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/execs:
+    get:
+      operationId: get_machines_machine_execs
+      summary: List native exec sessions
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExecPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines_machine_execs
+      summary: Start a native execution session
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                argv: {type: array, items: {type: string}}
+                cwd: {type: string}
+                env: {type: object, additionalProperties: {type: string}}
+                user: {type: string, default: root}
+                timeout_seconds: {type: integer, minimum: 0}
+                tty: {type: boolean}
+                interactive: {type: boolean}
+                cols: {type: integer, minimum: 1}
+                rows: {type: integer, minimum: 1}
+              required:
+              - argv
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Exec'}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}:
+    get:
+      operationId: get_execs_exec
+      summary: Get native exec session state
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Exec'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_execs_exec
+      summary: Terminate a native exec session
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}/output:
+    get:
+      operationId: get_execs_exec_output
+      summary: Read native session output
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - name: cursor
+        in: query
+        required: false
+        schema: {type: integer, minimum: 0}
+      - name: limit
+        in: query
+        required: false
+        schema: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}/stdin:
+    post:
+      operationId: post_execs_exec_stdin
+      summary: Write sequenced native session input
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seq: {type: integer, minimum: 1}
+                data_base64: {type: string, contentEncoding: base64}
+              required:
+              - seq
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}/resize:
+    post:
+      operationId: post_execs_exec_resize
+      summary: Resize the native PTY
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cols: {type: integer, minimum: 1}
+                rows: {type: integer, minimum: 1}
+              required:
+              - cols
+              - rows
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}/attach-ticket:
+    post:
+      operationId: post_execs_exec_attach_ticket
+      summary: Issue a single-use native session stream ticket
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ticket'}
+        default: {$ref: '#/components/responses/Error'}
+  /execs/{exec}/attach:
+    get:
+      operationId: get_execs_exec_attach
+      summary: Attach to a native terminal
+      description: Negotiate sandbox.terminal.v1. Authenticate with a Bearer header or a ticket.<secret> subprotocol. Binary frames are output.
+        Client JSON stdin frames contain seq and data_base64. Resize frames contain cols and rows.
+      security:
+      - bearer: []
+      - {}
+      parameters:
+      - name: exec
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - name: cursor
+        in: query
+        required: false
+        schema: {type: integer, minimum: 0}
+      responses:
+        '101':
+          description: WebSocket upgraded
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/tasks:
+    get:
+      operationId: get_machines_machine_tasks
+      summary: List persistent Guest tasks
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskPage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines_machine_tasks
+      summary: Accept a persistent Guest task
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                argv: {type: array, items: {type: string}}
+                cwd: {type: string}
+                env: {type: object, additionalProperties: {type: string}}
+                user: {type: string, default: root}
+                task_key: {type: string, minLength: 1}
+                expected_generation: {type: integer, minimum: 1}
+                output_policy: {type: string}
+                output_limit: {type: integer, minimum: 1}
+              required:
+              - argv
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /tasks/{task}:
+    get:
+      operationId: get_tasks_task
+      summary: Get persistent task state
+      parameters:
+      - name: task
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        default: {$ref: '#/components/responses/Error'}
+  /tasks/{task}/output:
+    get:
+      operationId: get_tasks_task_output
+      summary: Read persistent output by byte offset
+      parameters:
+      - name: task
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - name: stream
+        in: query
+        required: false
+        schema: {type: string, enum: [stdout, stderr]}
+      - name: offset
+        in: query
+        required: false
+        schema: {type: integer, minimum: 0}
+      - name: limit
+        in: query
+        required: false
+        schema: {type: integer, minimum: 1, maximum: 65536}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskOutput'}
+        default: {$ref: '#/components/responses/Error'}
+  /tasks/{task}/cancel:
+    post:
+      operationId: post_tasks_task_cancel
+      summary: Request persistent task cancellation
+      parameters:
+      - name: task
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grace_seconds: {type: integer, minimum: 0}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/files:
+    get:
+      operationId: get_machines_machine_files
+      summary: Download bytes from a Guest file
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - name: path
+        in: query
+        required: false
+        schema: {type: string}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: put_machines_machine_files
+      summary: Upload bytes to a Guest file
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      - name: path
+        in: query
+        required: false
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/files/list:
+    get:
+      operationId: get_machines_machine_files_list
+      summary: List Guest directory contents
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - name: path
+        in: query
+        required: false
+        schema: {type: string}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/leases:
+    get:
+      operationId: get_machines_machine_leases
+      summary: List keep-running leases
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LeasePage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines_machine_leases
+      summary: Acquire a keep-running lease
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string}
+                ttl_seconds: {type: integer, minimum: 1}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Lease'}
+        default: {$ref: '#/components/responses/Error'}
+  /leases/{lease}:
+    patch:
+      operationId: patch_leases_lease
+      summary: Renew a keep-running lease
+      parameters:
+      - name: lease
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lease_token: {type: string, minLength: 1}
+                ttl_seconds: {type: integer, minimum: 1}
+              required:
+              - lease_token
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Lease'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_leases_lease
+      summary: Release a keep-running lease
+      parameters:
+      - name: lease
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lease_token: {type: string, minLength: 1}
+                ttl_seconds: {type: integer, minimum: 1}
+              required:
+              - lease_token
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Lease'}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/services:
+    get:
+      operationId: get_machines_machine_services
+      summary: List stable machine services
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServicePage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_machines_machine_services
+      summary: Publish a stable machine service
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, minLength: 1}
+                protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+                guest_port: {type: integer, minimum: 1, maximum: 65535}
+                expected_generation: {type: integer, minimum: 1}
+              required:
+              - name
+              - protocol
+              - guest_port
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /services/{service}:
+    get:
+      operationId: get_services_service
+      summary: Get service configuration and state
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Service'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: patch_services_service
+      summary: Update a stable machine service
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, minLength: 1}
+                protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+                guest_port: {type: integer, minimum: 1, maximum: 65535}
+              additionalProperties: false
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: delete_services_service
+      summary: Remove a stable machine service
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202':
+          description: Durably accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+          headers:
+            Location:
+              description: Path of the accepted operation
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /services/{service}/preview-ticket:
+    post:
+      operationId: post_services_service_preview_ticket
+      summary: Issue a browser preview ticket
+      description: Submit ticket as a form field by POST to the returned action on the registered service host.
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  action: {type: string, format: uri}
+                  ticket: {type: string}
+                required:
+                - action
+                - ticket
+                additionalProperties: false
+        default: {$ref: '#/components/responses/Error'}
+  /services/{service}/tunnel-tickets:
+    post:
+      operationId: post_services_service_tunnel_tickets
+      summary: Issue a single-use service stream ticket
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Ticket'}
+        default: {$ref: '#/components/responses/Error'}
+  /services/{service}/tunnel:
+    get:
+      operationId: get_services_service_tunnel
+      summary: Open an authenticated byte tunnel
+      description: Negotiate sandbox.tunnel.v1. Binary frames transfer the inner protocol. JSON text frames carry ready, close_write, or error.
+      security:
+      - bearer: []
+      - {}
+      parameters:
+      - name: service
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '101':
+          description: WebSocket upgraded
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/ssh-tunnel:
+    get:
+      operationId: get_machines_machine_ssh_tunnel
+      summary: Open an authenticated byte tunnel
+      description: Negotiate sandbox.tunnel.v1. Binary frames transfer the inner protocol. JSON text frames carry ready, close_write, or error.
+      security:
+      - bearer: []
+      - {}
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '101':
+          description: WebSocket upgraded
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/metrics:
+    get:
+      operationId: get_machines_machine_metrics
+      summary: Read machine metrics
+      parameters:
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /system/metrics:
+    get:
+      operationId: get_system_metrics
+      summary: Read system metrics
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /templates:
+    get:
+      operationId: get_templates
+      summary: List registered templates
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TemplatePage'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: post_templates
+      summary: Register an immutable template version
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                template_id: {type: string, minLength: 1}
+                name: {type: string}
+                version: {type: integer, minimum: 1}
+                image_digest: {type: string}
+              required:
+              - template_id
+              - name
+              - version
+              - image_digest
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /system/settings:
+    get:
+      operationId: get_system_settings
+      summary: Read effective platform settings
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: patch_system_settings
+      summary: Update mutable settings
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                default_idle_seconds: {type: integer, minimum: 1}
+              required:
+              - default_idle_seconds
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /system/diagnostics:
+    get:
+      operationId: get_system_diagnostics
+      summary: Get a redacted diagnostics summary
+      parameters:
+      - name: machine_id
+        in: query
+        required: false
+        schema: {type: string, minLength: 1}
+      - name: operation_id
+        in: query
+        required: false
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Error'}
+  /operations:
+    get:
+      operationId: get_operations
+      summary: List authorized operation records
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OperationPage'}
+        default: {$ref: '#/components/responses/Error'}
+  /operations/{operation}:
+    get:
+      operationId: get_operations_operation
+      summary: Read a durable operation
+      parameters:
+      - name: operation
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+  /operations/{operation}/reconcile:
+    post:
+      operationId: post_operations_operation_reconcile
+      summary: Reconcile a durable operation
+      parameters:
+      - name: operation
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+  /operations/{operation}/cancel:
+    post:
+      operationId: post_operations_operation_cancel
+      summary: Cancel a durable operation
+      parameters:
+      - name: operation
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Error'}
+  /events:
+    get:
+      operationId: get_events
+      summary: Replay and follow durable events
+      description: Send the last processed event ID when reconnecting. HTTP 410 requires fetching current state before resubscribing.
+      parameters:
+      - name: Last-Event-ID
+        in: header
+        schema: {type: string}
+      responses:
+        '200':
+          description: Successful response
+          content:
+            text/event-stream:
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    session:
+      type: apiKey
+      in: cookie
+      name: __Host-sandbox-session
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 256}
+    ControlEpoch:
+      name: If-Control-Epoch
+      in: header
+      required: true
+      schema: {type: string}
+    Revision:
+      name: If-Match
+      in: header
+      required: true
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+    CSRF:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      schema: {type: string}
+      description: Required for authenticated browser session writes.
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string}
+  responses:
+    Error:
+      description: Request failed
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    Error:
+      type: object
+      properties:
+        request_id: {type: string, minLength: 1}
+        operation_id: {type: string, minLength: 1}
+        code: {type: string, minLength: 1}
+        message: {type: string}
+        effect: {type: string, enum: [none, applied, partial, unknown]}
+        retry: {type: string, enum: [never, same_key, poll_operation, after_precondition, client_decision]}
+      required:
+      - code
+      - message
+      - effect
+      - retry
+    ErrorEnvelope:
+      type: object
+      properties:
+        error: {$ref: '#/components/schemas/Error'}
+      required:
+      - error
+      additionalProperties: false
+    Operation:
+      type: object
+      properties:
+        operation_id: {type: string, minLength: 1}
+        machine_id: {type: string, minLength: 1}
+        kind: {type: string}
+        stage: {type: string}
+        state: {type: string, enum: [queued, dispatching, observing, succeeded, failed, cancelled, recovery_required]}
+        effect: {type: string, enum: [none, applied, partial, unknown]}
+        binding_generation: {type: integer, minimum: 1}
+        error: {anyOf: [{$ref: '#/components/schemas/Error'}, {type: 'null'}]}
+        result: {type: [object, 'null']}
+      required:
+      - operation_id
+      - state
+      - kind
+      - stage
+      - effect
+    Resources:
+      type: object
+      properties:
+        cpu_count: {type: integer, minimum: 1}
+        memory_mib: {type: integer, minimum: 1}
+        storage_gib: {type: integer, minimum: 1}
+        overlay_gib: {type: integer, minimum: 1}
+      additionalProperties: false
+    IdlePolicy:
+      type: object
+      properties:
+        enabled: {type: boolean}
+        timeout_seconds: {type: integer, minimum: 1}
+      additionalProperties: false
+    CreateMachine:
+      type: object
+      properties:
+        name: {type: string, minLength: 1}
+        template_id: {type: string, minLength: 1}
+        resources: {$ref: '#/components/schemas/Resources'}
+        idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
+        start: {type: boolean}
+      required:
+      - name
+      - template_id
+      additionalProperties: false
+    MachinePatch:
+      type: object
+      properties:
+        name: {type: string, minLength: 1}
+        resources: {$ref: '#/components/schemas/Resources'}
+        idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
+        keep_running: {type: boolean}
+        expected_generation: {type: integer, minimum: 1}
+      additionalProperties: false
+    Machine:
+      type: object
+      properties:
+        machine_id: {type: string, minLength: 1}
+        name: {type: string, minLength: 1}
+        template_id: {type: string, minLength: 1}
+        resources: {$ref: '#/components/schemas/Resources'}
+        idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
+        keep_running: {type: boolean}
+        revision: {type: integer, minimum: 1}
+        binding_generation: {type: integer, minimum: 1}
+        observed_state: {type: string}
+        availability: {type: string}
+        desired_power: {type: string}
+        operation_id: {type: string, minLength: 1}
+        observed_at: {type: string, format: date-time}
+        last_user_activity_at: {type: string, format: date-time}
+        blocked_reasons: {type: array, items: {type: string}}
+        runtime_identity: {type: object, additionalProperties: true}
+        runtime_name: {type: string}
+        capabilities: {type: object, additionalProperties: true}
+      required:
+      - machine_id
+      - name
+      - template_id
+      - revision
+      - binding_generation
+      - observed_state
+      - availability
+    Task:
+      type: object
+      properties:
+        id: {type: string, minLength: 1}
+        task_id: {type: string, minLength: 1}
+        machine_id: {type: string, minLength: 1}
+        binding_generation: {type: integer, minimum: 1}
+        state: {type: string, enum: [accepted, starting, running, cancelling, succeeded, failed, cancelled, unknown, interrupted]}
+        observed_at: {type: string, format: date-time}
+        exit_code: {type: [integer, 'null']}
+        origin_machine_id: {type: string, minLength: 1}
+        origin_task_id: {type: string, minLength: 1}
+      required:
+      - machine_id
+      - state
+    TaskOutput:
+      type: object
+      properties:
+        data_base64: {type: string, contentEncoding: base64}
+        start: {type: integer, minimum: 0}
+        end: {type: integer, minimum: 0}
+        next: {type: integer, minimum: 0}
+        gap: {type: boolean}
+        complete: {type: boolean}
+        dropped: {type: integer, minimum: 0}
+      required:
+      - data_base64
+      - start
+      - next
+      - gap
+      - complete
+      additionalProperties: false
+    Snapshot:
+      type: object
+      properties:
+        snapshot_id: {type: string, minLength: 1}
+        revision: {type: integer, minimum: 1}
+        source_machine_id: {type: string, minLength: 1}
+        purpose: {type: string, enum: [clone, recovery]}
+        task_content: {type: string, enum: [clean, active, unknown]}
+        label: {type: string}
+        state: {type: string}
+        size_bytes: {type: integer, minimum: 0}
+        provenance: {type: string}
+        sha256: {type: string}
+        created_at: {type: string, format: date-time}
+      required:
+      - snapshot_id
+      - purpose
+      - state
+    Service:
+      type: object
+      properties:
+        service_id: {type: string, minLength: 1}
+        machine_id: {type: string, minLength: 1}
+        revision: {type: integer, minimum: 1}
+        name: {type: string, minLength: 1}
+        protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+        guest_port: {type: integer, minimum: 1}
+        public_host: {type: string}
+        public_port: {type: integer, minimum: 1}
+        enabled: {type: boolean}
+      required:
+      - service_id
+      - machine_id
+      - revision
+      - name
+      - protocol
+      - guest_port
+    Lease:
+      type: object
+      properties:
+        lease_id: {type: string, minLength: 1}
+        reason: {type: string}
+        revision: {type: integer, minimum: 1}
+        state: {type: string}
+        expires_at: {type: string, format: date-time}
+        lease_token: {type: string}
+      required:
+      - lease_id
+    TokenScope:
+      type: object
+      properties:
+        access: {type: string, enum: [read, manage, tunnel]}
+        machine_id: {type: string, minLength: 1}
+      required:
+      - access
+      additionalProperties: false
+    Token:
+      type: object
+      properties:
+        token_id: {type: string, minLength: 1}
+        label: {type: string}
+        scope: {$ref: '#/components/schemas/TokenScope'}
+        expires_at: {type: string, format: date-time}
+    SSHKey:
+      type: object
+      properties:
+        ssh_key_id: {type: string, minLength: 1}
+        label: {type: string}
+        public_key: {type: string}
+    Template:
+      type: object
+      properties:
+        template_id: {type: string, minLength: 1}
+        name: {type: string}
+        version: {type: integer, minimum: 1}
+        image_digest: {type: string}
+        guest_release: {type: string}
+        spec: {type: object, additionalProperties: true}
+        capabilities: {type: object, additionalProperties: true}
+    Exec:
+      type: object
+      properties:
+        exec_id: {type: string, minLength: 1}
+        state: {type: string}
+        exit_code: {type: [integer, 'null']}
+        revision: {type: integer, minimum: 1}
+        tty: {type: boolean}
+      required:
+      - exec_id
+    Ticket:
+      type: object
+      properties:
+        ticket: {type: string}
+        expires_at: {type: string, format: date-time}
+      required:
+      - ticket
+      additionalProperties: false
+    MachinePage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Machine'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    OperationPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Operation'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    TaskPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Task'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    SnapshotPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Snapshot'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    ServicePage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Service'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    LeasePage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Lease'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    TokenPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Token'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    TemplatePage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Template'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    ExecPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Exec'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false
+    SSHKeyPage:
+      type: object
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/SSHKey'}}
+        next_cursor: {type: string}
+      required:
+      - items
+      additionalProperties: false

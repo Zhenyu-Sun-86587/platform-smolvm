@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sandbox-platform"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["httpx==0.28.1"]
+
+[project.optional-dependencies]
+tunnel = ["websockets==15.0.1"]
