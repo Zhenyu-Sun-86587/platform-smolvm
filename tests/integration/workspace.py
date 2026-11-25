@@ -157,8 +157,22 @@ def main():
                             if val:return val
                             time.sleep(.06)
                         raise TimeoutError("activity outcome")
+                    cur=request("GET","machines/"+mid,expect=200)[1]
+                    saved_activity=cur["last_user_activity_at"]
+                    lease=request("POST","machines/"+mid+"/leases",{"ttl_seconds":1,"reason":"idle gate"},
+                                  newkey()|{"If-Match":f'"{cur["revision"]}"'},200)[1]
+                    patch_idle(True)
+                    def expired_lease():
+                        items=request("GET","machines/"+mid+"/leases",expect=200)[1]["items"]
+                        return next((item for item in items if item["state"]=="suspect"),None)
+                    suspect=wait_for(expired_lease)
+                    metrics=request("GET","machines/"+mid+"/metrics",expect=200)[1]
+                    assert metrics["platform"]["active_access_holds"]==0 and metrics["platform"]["wake_waiters"]==0
+                    cur=request("GET","machines/"+mid,expect=200)[1]
+                    assert cur["observed_state"]=="running" and cur["last_user_activity_at"]==saved_activity
                     with proxy.intercept("pause"):
-                        patch_idle(True)
+                        request("DELETE","leases/"+lease["lease_id"],{"lease_token":lease["lease_token"]},
+                                newkey()|{"If-Match":f'"{suspect["revision"]}"'},200)
                         assert proxy.response_ready.wait(45), "native idle pause missing"
                         idle_op=request("GET","machines/"+mid,expect=200)[1]["operation_id"]
                         demand=http.client.HTTPConnection(address)
@@ -191,6 +205,20 @@ def main():
                     wait(stopped["operation_id"])
                     assert request("GET","tasks/"+task_id,expect=200)[1]["state"]=="cancelled"
                 mutate("","DELETE")
+                if args.interrupt_dispatch:
+                    proc.terminate()
+                    proc.wait()
+                    cfg=json.loads(config.read_text())
+                    cfg["storage"]={"minimum_free_bytes":1<<60}
+                    config.write_text(json.dumps(cfg))
+                    proc=launch()
+                    low=request("POST","machines",intent|{"name":intent["name"]+"-disk"},newkey(),202)[1]
+                    def declined():
+                        op=request("GET","operations/"+low["operation_id"],expect=200)[1]
+                        return op if op["state"]=="failed" else None
+                    outcome=wait_for(declined)
+                    assert outcome["effect"]=="none" and outcome["error"]["code"]=="DISK_LOW" and proxy.count["create"]==1
+                    print("suspect lease, read-only metrics, and low-space admission verified",flush=True)
             except Exception:
                 # Preserve the disposable registry and the exact identities for diagnosis.
                 import shutil

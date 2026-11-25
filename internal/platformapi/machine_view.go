@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"time"
 )
 
 type machineView struct {
@@ -46,6 +47,10 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		v.Binding = m.CurrentBinding
 		v.RuntimeName = m.CurrentBinding.RuntimeName
 		v.GuestStatus = m.CurrentBinding.GuestManagementStatus
+	}
+	if m.DeletedAt == nil && m.CurrentBinding != nil && (m.ObservedAt == nil || time.Since(*m.ObservedAt) > time.Duration(s.Config.Lifecycle.StatusStale)*time.Second) {
+		v.Availability = "unknown"
+		v.Blocked = append(v.Blocked, "observation_stale")
 	}
 	if m.ActiveOperationID != "" {
 		v.Blocked = append(v.Blocked, "operation_in_progress")

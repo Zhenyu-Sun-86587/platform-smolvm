@@ -21,19 +21,21 @@ import (
 )
 
 type Engine struct {
-	DB      *registry.Store
-	Runtime *smolvm.Client
-	Config  config.Config
-	mu      sync.Mutex
-	running map[string]bool
-	holds   map[string]int
-	workers sync.WaitGroup
-	Recover map[string]func(context.Context, *Job) error
-	Extra   map[string]func(context.Context, *Job) error
+	DB           *registry.Store
+	Runtime      *smolvm.Client
+	Config       config.Config
+	mu           sync.Mutex
+	running      map[string]bool
+	holds        map[string]int
+	waiters      map[string]int
+	activeAccess int
+	workers      sync.WaitGroup
+	Recover      map[string]func(context.Context, *Job) error
+	Extra        map[string]func(context.Context, *Job) error
 }
 
 func New(db *registry.Store, r *smolvm.Client, c config.Config) *Engine {
-	return &Engine{DB: db, Runtime: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, Recover: map[string]func(context.Context, *Job) error{}, Extra: map[string]func(context.Context, *Job) error{}}
+	return &Engine{DB: db, Runtime: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, waiters: map[string]int{}, Recover: map[string]func(context.Context, *Job) error{}, Extra: map[string]func(context.Context, *Job) error{}}
 }
 
 type Create struct {

@@ -61,7 +61,7 @@ func TestRecordHostBootLossKeepsTerminalReceipts(t *testing.T) {
 	engine := Engine{DB: store}
 	binding := registry.Binding{ID: "b", MachineID: "m", Generation: 2, TaskNamespace: "ns",
 		Observation: registry.Observation{RuntimeIdentity: json.RawMessage(identity)}}
-	if err := engine.recordHostBootLoss(ctx, binding, time.Now()); err != nil {
+	if err := engine.recordTaskUncertainty(ctx, binding, time.Now(), "host_boot_changed"); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[string]string{"active": "unknown", "done": "failed", "retired": "running"} {

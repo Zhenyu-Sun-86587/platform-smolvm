@@ -32,22 +32,22 @@ func stoppedAfterHostReboot(bootID string, binding registry.Binding, current rt.
 	return json.Unmarshal(prior.BootID, &priorBoot) == nil && priorBoot != "" && priorBoot != bootID
 }
 
-// recordHostBootLoss keeps terminal guest receipts authoritative. A different
+// recordTaskUncertainty keeps terminal guest receipts authoritative. A different
 // host boot and a fresh native stopped state disprove continuity but cannot
 // distinguish an unobserved Guest exit from interrupted execution.
-func (e *Engine) recordHostBootLoss(ctx context.Context, binding registry.Binding, observedAt time.Time) error {
+func (e *Engine) recordTaskUncertainty(ctx context.Context, binding registry.Binding, observedAt time.Time, reason string) error {
 	_, err := e.DB.DB().ExecContext(ctx, `
 		UPDATE tasks SET state = 'unknown', observed_at = ?,
 			result_json = json_set(result_json, '$.state', 'unknown', '$.reason',
-				'host_boot_changed', '$.observed_at', ?)
+				?, '$.observed_at', ?)
 		WHERE machine_id = ? AND binding_generation = ? AND task_namespace = ?
 			AND state NOT IN ('succeeded', 'failed', 'cancelled', 'interrupted', 'unknown')
 			AND EXISTS (
 				SELECT 1 FROM machines m JOIN runtime_bindings b ON m.current_binding_id = b.id
 				WHERE m.id = tasks.machine_id AND m.deleted_at IS NULL AND b.id = ?
-					AND b.runtime_identity_json = ?
+					AND COALESCE(b.runtime_identity_json,'') = ?
 					AND NOT EXISTS (SELECT 1 FROM operation_locks busy WHERE busy.machine_id = m.id)
-			)`, observedAt.UnixMilli(), observedAt.UTC().Format(time.RFC3339Nano),
+			)`, observedAt.UnixMilli(), reason, observedAt.UTC().Format(time.RFC3339Nano),
 		binding.MachineID, binding.Generation, binding.TaskNamespace, binding.ID, string(binding.RuntimeIdentity))
 	return err
 }

@@ -263,8 +263,8 @@ type Capacity struct {
 	AllocatedMemoryMB     uint64  `json:"allocated_memory_mb"`
 	UsedCPUs              float64 `json:"used_cpus"`
 	UsedMemoryMB          uint64  `json:"used_memory_mb"`
-	HostMemoryTotalMB     *uint64 `json:"host_memory_total_mb,omitempty"`
-	HostMemoryAvailableMB *uint64 `json:"host_memory_available_mb,omitempty"`
+	HostMemoryTotalMB     *uint64 `json:"host_memory_total_mb"`
+	HostMemoryAvailableMB *uint64 `json:"host_memory_available_mb"`
 	UsedDiskGB            uint64  `json:"used_disk_gb"`
 	BootID                string  `json:"boot_id"`
 }
@@ -288,12 +288,12 @@ type Metrics struct {
 	State          string    `json:"state"`
 	VCPUs          uint32    `json:"vcpus"`
 	MemoryLimitMB  uint32    `json:"memory_limit_mb"`
-	CPUMillis      *uint64   `json:"cpu_millis,omitempty"`
-	CPULimitMillis *uint32   `json:"cpu_limit_millicpus,omitempty"`
-	MemoryMB       *uint64   `json:"memory_mb,omitempty"`
-	RSSMB          *uint64   `json:"rss_mb,omitempty"`
-	DiskUsedMB     *uint64   `json:"disk_used_mb,omitempty"`
-	DiskGB         *uint64   `json:"disk_gb,omitempty"`
-	EgressBytes    *uint64   `json:"egress_bytes,omitempty"`
-	Pressure       *Pressure `json:"pressure,omitempty"`
+	CPUMillis      *uint64   `json:"cpu_millis"`
+	CPULimitMillis *uint32   `json:"cpu_limit_millicpus"`
+	MemoryMB       *uint64   `json:"memory_mb"`
+	RSSMB          *uint64   `json:"rss_mb"`
+	DiskUsedMB     *uint64   `json:"disk_used_mb"`
+	DiskGB         *uint64   `json:"disk_gb"`
+	EgressBytes    *uint64   `json:"egress_bytes"`
+	Pressure       *Pressure `json:"pressure"`
 }

@@ -43,14 +43,15 @@ type Config struct {
 		Heavy        int  `yaml:"max_heavy_operations"`
 	}
 	Gateway struct {
-		AppsDomain   string `yaml:"apps_domain"`
-		MaxWaiters   int    `yaml:"max_waiters_per_machine"`
-		WaitSeconds  int    `yaml:"wake_wait_seconds"`
-		PrefixBytes  int    `yaml:"queued_prefix_bytes"`
-		BackendRange []int  `yaml:"backend_port_range"`
-		TCPRange     []int  `yaml:"tcp_mtls_port_range"`
-		ClientCA     string `yaml:"client_ca_file"`
-		ClientCAKey  string `yaml:"client_ca_key_file"`
+		AppsDomain     string `yaml:"apps_domain"`
+		MaxWaiters     int    `yaml:"max_waiters_per_machine"`
+		MaxConnections int    `yaml:"max_connections"`
+		WaitSeconds    int    `yaml:"wake_wait_seconds"`
+		PrefixBytes    int    `yaml:"queued_prefix_bytes"`
+		BackendRange   []int  `yaml:"backend_port_range"`
+		TCPRange       []int  `yaml:"tcp_mtls_port_range"`
+		ClientCA       string `yaml:"client_ca_file"`
+		ClientCAKey    string `yaml:"client_ca_key_file"`
 	}
 	Storage struct {
 		MinBytes   uint64 `yaml:"minimum_free_bytes"`
@@ -94,6 +95,7 @@ func Defaults() Config {
 	c.Lifecycle.StartupGuard = 60
 	c.Lifecycle.StatusStale = 30
 	c.Lifecycle.Heavy = 1
+	c.Gateway.MaxConnections = 256
 	c.Gateway.MaxWaiters = 64
 	c.Gateway.WaitSeconds = 90
 	c.Gateway.PrefixBytes = 65536
@@ -151,7 +153,7 @@ func Load(path string) (Config, error) {
 	if c.Runtime.VerifySocket != "" && (!filepath.IsAbs(c.Runtime.VerifySocket) || c.Runtime.VerifySocket == c.Runtime.Socket || c.Runtime.VerifySocket == c.Runtime.StatusSocket) {
 		return c, errors.New("runtime verify_socket must be an independent absolute socket path")
 	}
-	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
+	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxConnections < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
 		return c, errors.New("invalid capacity settings")
 	}
 	host, _, e := net.SplitHostPort(c.API.Listen)

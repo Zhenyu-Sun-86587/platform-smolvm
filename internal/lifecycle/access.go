@@ -20,14 +20,17 @@ func (e *Engine) Access(ctx context.Context, p auth.Principal, id string) (regis
 		return zero, nil, registry.ErrMaintenance
 	}
 	e.mu.Lock()
-	if e.holds[id] >= e.Config.Gateway.MaxWaiters {
+	if e.activeAccess >= e.Config.Gateway.MaxConnections || e.waiters[id] >= e.Config.Gateway.MaxWaiters {
 		e.mu.Unlock()
 		return zero, nil, &Failure{"RESOURCE_EXHAUSTED", "too many concurrent access requests"}
 	}
 	e.holds[id]++
+	e.waiters[id]++
+	e.activeAccess++
 	e.mu.Unlock()
 	release := func() {
 		e.mu.Lock()
+		e.activeAccess--
 		if e.holds[id] <= 1 {
 			delete(e.holds, id)
 		} else {
@@ -36,6 +39,12 @@ func (e *Engine) Access(ctx context.Context, p auth.Principal, id string) (regis
 		e.mu.Unlock()
 	}
 	b, err := e.waitForRunning(ctx, p, ctl, id)
+	e.mu.Lock()
+	e.waiters[id]--
+	if e.waiters[id] == 0 {
+		delete(e.waiters, id)
+	}
+	e.mu.Unlock()
 	if err != nil {
 		release()
 		return zero, nil, err
@@ -191,4 +200,18 @@ func (e *Engine) wakeSuccessors(ctx context.Context) {
 		}
 		_, _ = e.DB.DB().ExecContext(ctx, "UPDATE operations SET wake_pending=0 WHERE id=?", r.Key)
 	}
+}
+
+// AccessCounts samples established access holds and callers still waiting for an execution.
+func (e *Engine) AccessCounts(machine string) (int, int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if machine != "" {
+		return e.holds[machine] - e.waiters[machine], e.waiters[machine]
+	}
+	var waiting int
+	for _, n := range e.waiters {
+		waiting += n
+	}
+	return e.activeAccess - waiting, waiting
 }

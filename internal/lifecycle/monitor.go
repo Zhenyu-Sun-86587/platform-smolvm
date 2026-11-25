@@ -47,8 +47,17 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked"})
 			continue
 		}
-		if stoppedAfterHostReboot(bootID, b, o) {
-			if err := e.recordHostBootLoss(ctx, b, o.ObservedAt); err != nil {
+		var uncertainty string
+		switch {
+		case stoppedAfterHostReboot(bootID, b, o):
+			uncertainty = "host_boot_changed"
+		case o.PressurePaused():
+			uncertainty = "native_pressure_pause"
+		case o.State == "failed" || (o.State == "stopped" && b.ObservedState == "running"):
+			uncertainty = "native_execution_ended"
+		}
+		if uncertainty != "" {
+			if err := e.recordTaskUncertainty(ctx, b, o.ObservedAt, uncertainty); err != nil {
 				continue
 			}
 		}

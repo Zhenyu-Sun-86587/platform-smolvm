@@ -226,6 +226,21 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 		req.ExpectedRevision = rev
 	}
 	op, _, err := s.DB.Accept(r.Context(), req)
+	var busy *registry.ActiveOperationError
+	if req.Kind == "task_start" && errors.As(err, &busy) {
+		active, readErr := s.DB.GetOperation(r.Context(), busy.OperationID)
+		if readErr != nil {
+			return readErr
+		}
+		if active.Kind == "idle_pause" || active.Kind == "sync_keys" {
+			_, release, wakeErr := s.Access(r.Context(), p, req.MachineID)
+			if wakeErr != nil {
+				return wakeErr
+			}
+			defer release()
+			op, _, err = s.DB.Accept(r.Context(), req)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -522,34 +537,7 @@ func (s *Server) machineRoutes() {
 		}
 		return write(w, 200, op)
 	})
-	s.route("GET /v1/machines/{machine}/metrics", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-		id := r.PathValue("machine")
-		if err := p.Authorize("read", id); err != nil {
-			return err
-		}
-		m, err := s.DB.GetMachine(r.Context(), id)
-		if err != nil {
-			return err
-		}
-		if m.CurrentBinding == nil {
-			return registry.ErrGeneration
-		}
-		v, err := s.Runtime.Metrics(r.Context(), m.CurrentBinding.RuntimeName)
-		if err != nil {
-			return err
-		}
-		return write(w, 200, v)
-	})
-	s.route("GET /v1/system/metrics", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-		if err := p.Authorize("read", ""); err != nil {
-			return err
-		}
-		v, err := s.Runtime.Capacity(r.Context())
-		if err != nil {
-			return err
-		}
-		return write(w, 200, v)
-	})
+	s.metricsRoutes()
 }
 func (s *Server) eventRoutes() {
 	s.route("GET /v1/events", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
