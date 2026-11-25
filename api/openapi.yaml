@@ -1850,6 +1850,112 @@ paths:
                   guest_ipv4: {type: string, format: ipv4}
                   dns_name: {type: string}
         default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/desktop-sessions:
+    parameters:
+    - {name: machine, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: list_desktop_sessions
+      summary: List the caller's desktop sessions for a System machine
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Desktop sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/DesktopSession'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: create_desktop_session
+      summary: Create an execution-scoped desktop session and activity lease
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [service_id, expected_generation]
+              properties:
+                service_id: {type: string, minLength: 1}
+                expected_generation: {type: integer, minimum: 1}
+                ttl_seconds: {type: integer, minimum: 1, maximum: 86400, default: 900}
+      responses:
+        '200':
+          description: Created desktop session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DesktopSession'}
+        default: {$ref: '#/components/responses/Error'}
+  /desktop-sessions/{session}:
+    parameters:
+    - {name: session, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: get_desktop_session
+      responses:
+        '200':
+          description: Desktop session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DesktopSession'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: close_desktop_session
+      summary: End the session and release its activity lease
+      parameters:
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Ended desktop session
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DesktopSession'}
+        default: {$ref: '#/components/responses/Error'}
+  /desktop-sessions/{session}/tunnel-tickets:
+    post:
+      operationId: create_desktop_ticket
+      summary: Issue a single-use browser ticket for this desktop session
+      parameters:
+      - {name: session, in: path, required: true, schema: {type: string}}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Short-lived WebSocket ticket
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket, expires_at]
+                properties:
+                  ticket: {type: string}
+                  expires_at: {type: string, format: date-time}
+        default: {$ref: '#/components/responses/Error'}
+  /desktop-sessions/{session}/tunnel:
+    get:
+      operationId: attach_desktop_session
+      summary: Connect an authorized binary RFB stream over WebSocket
+      parameters:
+      - {name: session, in: path, required: true, schema: {type: string}}
+      responses:
+        '101': {description: WebSocket upgrade using the sandbox.rfb.v1 subprotocol}
+        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/services:
     get:
       operationId: get_machines_machine_services
@@ -1888,7 +1994,7 @@ paths:
               type: object
               properties:
                 name: {type: string, minLength: 1}
-                protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+                protocol: {type: string, enum: [http, https, ssh, tcp-mtls, vnc]}
                 guest_port: {type: integer, minimum: 1, maximum: 65535}
                 readiness:
                   type: object
@@ -1957,7 +2063,7 @@ paths:
               type: object
               properties:
                 name: {type: string, minLength: 1}
-                protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+                protocol: {type: string, enum: [http, https, ssh, tcp-mtls, vnc]}
                 guest_port: {type: integer, minimum: 1, maximum: 65535}
                 readiness:
                   type: object
@@ -2638,6 +2744,7 @@ components:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
         boot_mode: {$ref: '#/components/schemas/BootMode'}
+        desktop_profile: {const: software-vnc-v1}
         network: {$ref: '#/components/schemas/MachineNetwork'}
         resources: {$ref: '#/components/schemas/Resources'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
@@ -2741,6 +2848,20 @@ components:
       - snapshot_id
       - purpose
       - state
+    DesktopSession:
+      type: object
+      required: [desktop_session_id, machine_id, service_id, lease_id, binding_id, binding_generation, execution_epoch, state, revision, expires_at]
+      properties:
+        desktop_session_id: {type: string}
+        machine_id: {type: string}
+        service_id: {type: string}
+        lease_id: {type: string}
+        binding_id: {type: string}
+        binding_generation: {type: integer, minimum: 1}
+        execution_epoch: {type: integer, minimum: 1}
+        state: {type: string, enum: [active, suspect, released]}
+        revision: {type: integer, minimum: 1}
+        expires_at: {type: string, format: date-time}
     Service:
       type: object
       properties:
@@ -2748,7 +2869,7 @@ components:
         machine_id: {type: string, minLength: 1}
         revision: {type: integer, minimum: 1}
         name: {type: string, minLength: 1}
-        protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
+        protocol: {type: string, enum: [http, https, ssh, tcp-mtls, vnc]}
         guest_port: {type: integer, minimum: 1}
         public_host: {type: string}
         public_port: {type: integer, minimum: 1}

@@ -234,6 +234,22 @@ export class Client {
         return this.mutate(operation(id) + "/retry", {}, { ...options, revision });
     }
     getService(id, signal) { return this.get(service(id), signal); }
+    listDesktopSessions(id, signal) {
+        return this.pages(machine(id) + "/desktop-sessions", 100, signal);
+    }
+    async createDesktopSession(id, serviceId, ttlSeconds, options = {}) {
+        const current = options.generation === undefined || options.revision === undefined ? await this.getMachine(id, options.signal) : undefined;
+        return this.mutate(machine(id) + "/desktop-sessions", {
+            service_id: serviceId, expected_generation: options.generation ?? current?.binding_generation, ttl_seconds: ttlSeconds,
+        }, { ...options, revision: options.revision ?? current?.revision });
+    }
+    closeDesktopSession(id, options) {
+        return this.mutate("desktop-sessions/" + segment(id), {}, { ...options, method: "DELETE" });
+    }
+    desktopSocket(id, signal) {
+        const path = "desktop-sessions/" + segment(id);
+        return this.browserSocket(path + "/tunnel", path + "/tunnel-tickets", "sandbox.rfb.v1", signal);
+    }
     getSnapshot(id, signal) { return this.get(snapshot(id), signal); }
     listMachines(signal) { return this.pages("machines", 100, signal); }
     listVolumes(signal) { return this.pages("volumes", 100, signal); }

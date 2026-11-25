@@ -189,6 +189,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1008, "1008_native_fork_locks.sql"},
 		{1009, "1009_deep_statepoints.sql"},
 		{1010, "1010_native_fork_attempts.sql"},
+		{1011, "1011_desktop_sessions.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0

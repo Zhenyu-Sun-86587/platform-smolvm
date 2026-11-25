@@ -130,7 +130,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().Int64Var(&api.revision, "revision", 0, "Original resource revision for a replay or explicit update")
 	root.PersistentFlags().Int64Var(&api.generation, "generation", 0, "Original machine generation for a replay")
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
-		api.files(), api.leases(), api.credentials(), api.templates(), api.settings(), api.events(),
+		api.files(), api.leases(), api.desktops(), api.credentials(), api.templates(), api.settings(), api.events(),
 		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"

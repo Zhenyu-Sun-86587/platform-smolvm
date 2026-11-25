@@ -29,6 +29,7 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 	if err != nil || ctl.Maintenance {
 		return
 	}
+	_ = e.DB.ExpireDesktopLeases(ctx, time.Now())
 	officialReady := readyRuntime(ctx, e.OfficialRuntime()) == nil
 	ms, err := e.DB.ListMachines(ctx)
 	if err != nil {

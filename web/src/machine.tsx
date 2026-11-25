@@ -11,6 +11,7 @@ import { useCollection } from "./api"
 import { WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
+const Desktop = lazy(() => import("./Desktop"))
 
 type Context = { machine: Machine; actions: Actions; revision: number }
 const tabs = ["overview", "terminal", "files", "tasks", "snapshots", "branches", "networking", "activity"]
@@ -42,9 +43,10 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
     <PageIntro title={<span className="machine-title"><span className="machine-icon large"><Box/></span>{machine.name}</span>}
       desc={<span className="machine-id"><code>{machine.machine_id}</code><State value={machinePowerState(machine)}/><State value={machine.availability}/></span>}
       actions={<WorkspaceActions machine={machine} actions={actions}/>}/>
-    <nav className="tabs" aria-label="Machine sections">{tabs.map(item => <a className={tab === item ? "active" : ""} href={path + "/" + item} key={item}>{label(item)}</a>)}</nav>
+    <nav className="tabs" aria-label="Machine sections">{(machine.desktop_profile === "software-vnc-v1" ? [...tabs, "desktop"] : tabs).map(item => <a className={tab === item ? "active" : ""} href={path + "/" + item} key={item}>{label(item)}</a>)}</nav>
     {machine.blocked_reasons?.length ? <div className="blockers">{machine.blocked_reasons.map(reason => <span key={reason}>{label(reason)}</span>)}</div> : null}
-    {tab === "terminal" ? <Execs {...context} />
+    {tab === "desktop" && machine.desktop_profile === "software-vnc-v1" ? <Suspense fallback={<p className="empty">Loading desktop…</p>}><Desktop machine={machine} revision={context.revision} /></Suspense>
+      : tab === "terminal" ? <Execs {...context} />
       : tab === "tasks" ? <Tasks {...context} initialTask={location.hash.split("/")[4]}/>
         : tab === "files" ? <Files {...context} />
           : tab === "networking" ? <Services {...context} />
@@ -314,7 +316,7 @@ export function Services({ machine, actions, revision }: Context) {
     title: current ? "Edit service" : "Create service", submit: current ? "Save" : "Create",
     fields: [
       { name: "name", label: "Name", value: current?.name, required: true },
-      { name: "protocol", label: "Protocol", value: current?.protocol ?? "http", options: ["http", "https", "ssh", "tcp-mtls"].map(value => ({ value })) },
+      { name: "protocol", label: "Protocol", value: current?.protocol ?? "http", options: ["http", "https", "ssh", "tcp-mtls", ...(machine.boot_mode === "system" ? ["vnc"] : [])].map(value => ({ value })) },
       { name: "guest_port", label: "Guest port", type: "number", value: current?.guest_port ?? 8080, min: 1, required: true },
       { name: "readiness", label: "Readiness probe", value: readiness(current)?.type ?? "tcp", options: [{ value: "tcp", label: "TCP connection" }, { value: "http", label: "HTTP response" }] },
       { name: "health_path", label: "HTTP health path", value: readiness(current)?.path ?? "/" },

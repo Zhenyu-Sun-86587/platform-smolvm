@@ -20,7 +20,10 @@ type Spec struct {
 	LocalImage       string      `json:"local_image,omitempty"`
 	RootGenerationID string      `json:"root_generation_id,omitempty"`
 	ManagedSSH       bool        `json:"managed_ssh,omitempty"`
+	DesktopProfile   string      `json:"desktop_profile,omitempty"`
 }
+
+const DesktopSoftwareVNC = "software-vnc-v1"
 
 var generationID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var imageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -34,6 +37,9 @@ func ReadSpec(t registry.Template) (Spec, error) {
 	}
 	if spec.BootMode == "" {
 		spec.BootMode = rt.BootOCI
+	}
+	if spec.DesktopProfile != "" && (spec.BootMode != rt.BootSystem || spec.DesktopProfile != DesktopSoftwareVNC) {
+		return spec, fmt.Errorf("%w: unsupported desktop template profile", registry.ErrInvalid)
 	}
 	switch spec.BootMode {
 	case rt.BootOCI:

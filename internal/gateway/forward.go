@@ -156,6 +156,14 @@ func (b Backend) HTTP(w http.ResponseWriter, r *http.Request, check func(context
 	proxy.ServeHTTP(w, r)
 }
 func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(context.Context) error) error {
+	return b.tunnel(ctx, ws, check, true)
+}
+
+func (b Backend) TunnelRFB(ctx context.Context, ws *websocket.Conn, check func(context.Context) error) error {
+	return b.tunnel(ctx, ws, check, false)
+}
+
+func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(context.Context) error, controlFrames bool) error {
 	conn, err := b.Dial(ctx, check)
 	if err != nil {
 		return err
@@ -165,8 +173,10 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ws.SetReadLimit(1 << 20)
-	if err = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"ready"}`)); err != nil {
-		return err
+	if controlFrames {
+		if err = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"ready"}`)); err != nil {
+			return err
+		}
 	}
 	result := make(chan error, 2)
 	go recheckWhileActive(ctx, check, func(err error) {
@@ -194,7 +204,7 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 			var control struct {
 				Type string `json:"type"`
 			}
-			if kind != websocket.MessageText || json.Unmarshal(msg, &control) != nil || control.Type != "close_write" || half {
+			if !controlFrames || kind != websocket.MessageText || json.Unmarshal(msg, &control) != nil || control.Type != "close_write" || half {
 				result <- errors.New("invalid tunnel frame")
 				return
 			}
@@ -219,6 +229,10 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 			}
 			if e != nil {
 				if e == io.EOF {
+					if !controlFrames {
+						result <- nil
+						return
+					}
 					e = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"close_write"}`))
 					if e == nil {
 						close(backendHalf)
