@@ -39,6 +39,13 @@ func (r *Resolver) Admit(route BundleRoute, kind string) error {
 		}
 		return ErrUnsupported
 	}
+	if route != (BundleRoute{}) && IsNativeFork(kind) {
+		adapter, err := r.ForBinding(BindingRuntime{BundleRoute: route})
+		if _, ok := adapter.(NativeForkControl); err == nil && ok {
+			return nil
+		}
+		return FullStateUnavailable(kind, false)
+	}
 	if route != (BundleRoute{}) && NativePowerCapability(kind) != "" {
 		adapter, err := r.ForBinding(BindingRuntime{BundleRoute: route})
 		if _, ok := adapter.(NativeControl); err == nil && ok {

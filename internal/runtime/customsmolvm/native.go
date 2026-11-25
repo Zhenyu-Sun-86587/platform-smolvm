@@ -39,7 +39,7 @@ func (a *Adapter) NativeInventory(ctx context.Context, expected rt.ExecutionRef)
 	if !validExecution(expected) {
 		return rt.NativeInventory{}, fmt.Errorf("%w: invalid registered execution", rt.ErrInvalid)
 	}
-	endpoint, _, err := a.connect(ctx)
+	endpoint, handshake, err := a.connect(ctx)
 	if err != nil {
 		return rt.NativeInventory{}, err
 	}
@@ -53,6 +53,7 @@ func (a *Adapter) NativeInventory(ctx context.Context, expected rt.ExecutionRef)
 		result.Inventory.Protocol != rt.ManagedStandbyContract || result.Inventory.Devices == nil {
 		return rt.NativeInventory{}, fmt.Errorf("%w: incompatible native inventory", rt.ErrUnsupported)
 	}
+	result.Capabilities = handshake.Capabilities
 	return result, nil
 }
 

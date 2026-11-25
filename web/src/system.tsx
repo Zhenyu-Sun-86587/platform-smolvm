@@ -44,7 +44,7 @@ function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">)
 
 function OperationDetail({ item, actions }: { item: Operation; actions: Actions }) {
   return <>
-    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition }} />
+    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition, source_lock_released: item.source_lock_released }} />
     {item.error && <div className="callout" role="alert"><strong>{item.error.code}</strong><span>{item.error.message}</span><span>Effect {item.error.effect ?? item.effect}</span>{item.error.retry && <span>Retry {label(item.error.retry)}</span>}</div>}
     {item.result != null && <Records value={item.result} />}
     {Boolean(item.children?.length) && <div className="rows" aria-label="Forked machines">

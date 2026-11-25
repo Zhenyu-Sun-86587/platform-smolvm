@@ -64,19 +64,21 @@ func (s *Server) fullStateRoutes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
-		if v.ExpectedGeneration < 1 || len(v.Children) == 0 ||
+		if v.ExpectedGeneration < 1 || len(v.Children) == 0 || len(v.Children) > rt.MaxForkChildren ||
 			(v.VolumePolicy != nil && v.VolumePolicy.Default != "" && v.VolumePolicy.Default != "clone") {
 			return registry.ErrInvalid
 		}
 		names := make(map[string]bool, len(v.Children))
+		children := make([]string, 0, len(v.Children))
 		for _, child := range v.Children {
 			if !validChildName(child.Name) || names[child.Name] {
 				return registry.ErrInvalid
 			}
 			names[child.Name] = true
+			children = append(children, child.Name)
 		}
 		return s.accept(w, r, p, v, registry.AcceptRequest{
-			Kind: rt.ForkBatch, MachineID: id, ExpectedGeneration: v.ExpectedGeneration, Heavy: true,
+			Kind: rt.ForkBatch, MachineID: id, ExpectedGeneration: v.ExpectedGeneration, Heavy: true, ForkChildren: children,
 		})
 	})
 }

@@ -93,6 +93,9 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 			for _, kind := range []string{rt.Standby, rt.Wake} {
 				v.Capabilities[rt.NativePowerCapability(kind)] = s.NativePowerCapability(*b, kind)
 			}
+			for _, kind := range []string{rt.IndependentFork, rt.ForkBatch} {
+				v.Capabilities[rt.FullStateOperationCapability(kind)] = s.NativeForkCapability(*b, kind)
+			}
 			if boot.BootMode == rt.BootSystem && boot.ManagedSSH {
 				key, err := s.VerifiedNativeSSHKey(ctx, *b, lifecycle.SystemSSHPort)
 				if err != nil {

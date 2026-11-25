@@ -337,6 +337,7 @@ class Client:
         return self._machine_mutation(machine_id, "forks", body, **options)
 
     def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, **options):
+        """Submit a single capture and keep the ordered child IDs through partial completion."""
         body = {"children": children, "require_independent": require_independent}
         if volume_policy is not None:
             body["volume_policy"] = volume_policy
