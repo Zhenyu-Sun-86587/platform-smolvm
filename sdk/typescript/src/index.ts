@@ -112,6 +112,18 @@ export interface Snapshot {
   created_at?: string
   [key: string]: unknown
 }
+export interface TokenSpec {
+  label: string
+  scope: { access: "read" | "manage" | "tunnel"; machine_id?: string }
+  expires_at?: string
+}
+export interface Token extends TokenSpec {
+  token_id: string
+  revision: number
+  created_at: string
+  revoked_at?: string
+  token?: string
+}
 export interface Mutation { epoch: string; key: string }
 export interface WriteOptions { method?: string; revision?: number; intent?: Mutation; signal?: AbortSignal }
 export interface MachineWriteOptions extends WriteOptions { generation?: number }
@@ -387,6 +399,13 @@ export class Client {
   }
   restore(snapshotID: string, name: string, options?: WriteOptions) {
     return this.mutate("restores", { snapshot_id: snapshotID, name }, options)
+  }
+  listTokens(signal?: AbortSignal) { return this.pages<Token>("tokens", 100, signal) }
+  issueToken(spec: TokenSpec, options?: WriteOptions) { return this.mutate<Token>("tokens", spec, options) }
+  revokeToken(id: string, revision: number, options: WriteOptions = {}) {
+    return this.mutate<{ token_id: string; revision: number; status: "revoked" }>(
+      "tokens/" + segment(id), {}, { ...options, method: "DELETE", revision }
+    )
   }
   async expose(id: string, spec: ServiceSpec, options: WriteOptions = {}) {
     const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision

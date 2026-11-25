@@ -262,6 +262,11 @@ export class Client {
     restore(snapshotID, name, options) {
         return this.mutate("restores", { snapshot_id: snapshotID, name }, options);
     }
+    listTokens(signal) { return this.pages("tokens", 100, signal); }
+    issueToken(spec, options) { return this.mutate("tokens", spec, options); }
+    revokeToken(id, revision, options = {}) {
+        return this.mutate("tokens/" + segment(id), {}, { ...options, method: "DELETE", revision });
+    }
     async expose(id, spec, options = {}) {
         const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision;
         return this.mutate(machine(id) + "/services", spec, { ...options, revision });

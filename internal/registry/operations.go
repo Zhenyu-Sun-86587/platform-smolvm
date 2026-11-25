@@ -74,6 +74,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	}
 	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore")
 	fromSource := creates && r.Kind != "create" && r.MachineID != ""
+	if r.ResolveMachine != nil && (creates || r.MachineID != "") {
+		return Operation{}, false, fmt.Errorf("%w: machine resolver requires an existing object", ErrInvalid)
+	}
 	if creates && (!validateLabel(r.Name, 255) || r.Kind == "create" && r.MachineID != "" ||
 		oneOf(r.Kind, "fork", "branch") && !fromSource) {
 		return Operation{}, false, fmt.Errorf("%w: a new machine name and eligible source are required", ErrInvalid)
@@ -104,6 +107,30 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		return Operation{}, false, err
 	}
 	defer tx.Rollback()
+
+	existing, found, err := readIdempotency(ctx, tx, envelope)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	var replay Operation
+	if found {
+		if existing.OperationID == "" {
+			return Operation{}, false, ErrIdempotency
+		}
+		replay, err = readOperation(ctx, tx, existing.OperationID)
+		if err != nil {
+			return Operation{}, false, err
+		}
+	}
+	if r.ResolveMachine != nil {
+		r.MachineID, err = r.ResolveMachine(ctx, tx, replay.MachineID)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		if r.MachineID == "" {
+			return Operation{}, false, ErrNotFound
+		}
+	}
 	target := struct {
 		Kind, MachineID, Name, TemplateID, DesiredPower string
 		IdlePolicy                                      json.RawMessage
@@ -115,16 +142,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	if err != nil {
 		return Operation{}, false, err
 	}
-	existing, found, err := readIdempotency(ctx, tx, envelope)
-	if err != nil {
-		return Operation{}, false, err
-	}
 	if found {
-		if existing.Hash != fingerprint || existing.OperationID == "" {
+		if existing.Hash != fingerprint {
 			return Operation{}, false, ErrIdempotency
 		}
-		op, err := readOperation(ctx, tx, existing.OperationID)
-		return op, true, err
+		return replay, true, nil
 	}
 	if len(r.IdlePolicy) == 0 && len(r.DefaultIdlePolicy) != 0 {
 		idle, err = ensureJSON(r.DefaultIdlePolicy, "{}")

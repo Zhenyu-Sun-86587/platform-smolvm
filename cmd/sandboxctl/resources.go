@@ -504,15 +504,51 @@ func (c *client) credentials() *cobra.Command {
 		collection.AddCommand(c.list("list", resource, false))
 		collection.AddCommand(c.update("create", resource, "POST", false),
 			sub("revoke ID", "Revoke a credential", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-				var revision int64
-				if resource != "tokens" {
-					revision = 1
+				revision, err := c.credentialRevision(cmd.Context(), resource, args[0])
+				if err != nil {
+					return err
 				}
 				return c.mutation(cmd, "DELETE", res(resource, args[0]), struct{}{}, revision)
 			}))
 		group.AddCommand(collection)
 	}
 	return group
+}
+
+func (c *client) credentialRevision(ctx context.Context, resource, id string) (int64, error) {
+	if c.revision > 0 {
+		return c.revision, nil
+	}
+	cursor := ""
+	for {
+		var page struct {
+			Items []struct {
+				ID       string `json:"id"`
+				TokenID  string `json:"token_id"`
+				Revision int64  `json:"revision"`
+			} `json:"items"`
+			Next string `json:"next_cursor"`
+		}
+		path := resource + "?" + url.Values{"cursor": {cursor}}.Encode()
+		if err := c.get(ctx, path, &page); err != nil {
+			return 0, err
+		}
+		for _, item := range page.Items {
+			if item.ID == id || item.TokenID == id {
+				if item.Revision <= 0 {
+					return 0, errors.New("platform did not return a credential revision")
+				}
+				return item.Revision, nil
+			}
+		}
+		if page.Next == "" {
+			return 0, fmt.Errorf("credential %s was not found", id)
+		}
+		if page.Next == cursor {
+			return 0, errors.New("platform did not advance the credential cursor")
+		}
+		cursor = page.Next
+	}
 }
 
 func (c *client) templates() *cobra.Command {

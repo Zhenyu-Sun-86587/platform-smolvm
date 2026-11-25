@@ -176,6 +176,9 @@ type AcceptRequest struct {
 	Heavy              bool
 	AllocateBinding    bool
 	Locks              []Lock
+	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
+	// On replay it receives the original machine ID for authorization even if the object is gone.
+	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)
 }
 
 type TransitionRequest struct {

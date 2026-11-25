@@ -118,7 +118,7 @@ paths:
           description: Successful response
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema: {$ref: '#/components/schemas/Token'}
         default: {$ref: '#/components/responses/Error'}
   /tokens/{token}:
     delete:
@@ -131,13 +131,24 @@ paths:
         schema: {type: string, minLength: 1}
       - {$ref: '#/components/parameters/IdempotencyKey'}
       - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
       - {$ref: '#/components/parameters/CSRF'}
       responses:
         '200':
           description: Successful response
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema:
+                type: object
+                properties:
+                  token_id: {type: string, minLength: 1}
+                  status: {type: string, enum: [revoked]}
+                  revision: {type: integer, minimum: 1}
+                required:
+                - token_id
+                - status
+                - revision
+                additionalProperties: false
         default: {$ref: '#/components/responses/Error'}
   /ssh-keys:
     get:
@@ -1602,7 +1613,6 @@ paths:
                   required:
                   - private
                   additionalProperties: false
-                enabled: {type: boolean}
               additionalProperties: false
       responses:
         '202':
@@ -2221,9 +2231,16 @@ components:
       type: object
       properties:
         token_id: {type: string, minLength: 1}
+        revision: {type: integer, minimum: 1}
         label: {type: string}
         scope: {$ref: '#/components/schemas/TokenScope'}
+        created_at: {type: string, format: date-time}
         expires_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
+        token: {type: string}
+      required:
+      - token_id
+      - revision
     SSHKey:
       type: object
       properties:

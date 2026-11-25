@@ -317,7 +317,7 @@ func (s *Server) routes() {
 			return err
 		}
 		defer tx.Rollback()
-		if err = s.Auth.RevokeTx(r.Context(), tx, p, p.CredentialID, "web_session"); err != nil {
+		if err = s.Auth.RevokeTx(r.Context(), tx, p, p.CredentialID, "web_session", 0); err != nil {
 			return err
 		}
 		if err = tx.Commit(); err != nil {
@@ -360,16 +360,20 @@ func (s *Server) routes() {
 		}
 		return s.mutate(w, r, p, v, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
 			t, secret, e := s.Auth.IssueTokenTx(ctx, tx, p, v.Label, v.Scope, v.ExpiresAt)
-			return registry.MutationResult{Response: lifecycle.JSON(map[string]any{"token": secret, "token_id": t.ID}), RetryResponse: lifecycle.JSON(t)}, e
+			return registry.MutationResult{
+				Response: lifecycle.JSON(struct {
+					auth.Token
+					Secret string `json:"token"`
+				}{t, secret}),
+				RetryResponse: lifecycle.JSON(t),
+			}, e
 		})
 	})
 	s.route("DELETE /v1/tokens/{token}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize(auth.ActionTokens, ""); err != nil {
 			return err
 		}
-		return s.mutate(w, r, p, nil, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
-			return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"token_id": r.PathValue("token")})}, s.Auth.RevokeTx(ctx, tx, p, r.PathValue("token"), "api_token")
-		})
+		return s.revokeCredential(w, r, p, r.PathValue("token"), "api_token", "token_id")
 	})
 	s.clientCertRoutes()
 	s.settingsRoutes()

@@ -274,6 +274,15 @@ class Client:
     def restore(self, snapshot_id, name, **options):
         return self.mutate("restores", {"snapshot_id": snapshot_id, "name": name}, **options)
 
+    def list_tokens(self):
+        return self.pages("tokens")
+
+    def issue_token(self, spec, *, intent=None):
+        return self.mutate("tokens", spec, intent=intent)
+
+    def revoke_token(self, token_id, revision, *, intent=None):
+        return self.mutate(_item("tokens", token_id), method="DELETE", revision=revision, intent=intent)
+
     def expose(self, machine_id, service, *, intent=None, revision=None):
         if revision is None:
             revision = self.get_machine(machine_id)["revision"]

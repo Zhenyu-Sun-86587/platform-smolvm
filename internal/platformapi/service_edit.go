@@ -58,13 +58,6 @@ func (v serviceEdit) validate() error {
 func (s *Server) servicePatchRoute() {
 	s.Extra["service_update"] = s.updateService
 	s.route("PATCH /v1/services/{svc}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-		v, err := s.getService(r.Context(), r.PathValue("svc"))
-		if err != nil {
-			return err
-		}
-		if err = p.Authorize("manage", v.MachineID); err != nil {
-			return err
-		}
 		rev, err := revision(r)
 		if err != nil {
 			return err
@@ -76,16 +69,36 @@ func (s *Server) servicePatchRoute() {
 		if err = edit.validate(); err != nil {
 			return err
 		}
-		req := serviceChange{edit, v.ID, rev}
-		env := envelope(r, p, req)
-		op, _, err := s.DB.Accept(r.Context(), registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: env.Epoch, Key: env.Key, Scope: env.Scope, Request: env.Request, Kind: "service_update", MachineID: v.MachineID})
-		if err != nil {
-			return err
-		}
-		w.Header().Set("Location", "/v1/operations/"+op.ID)
-		return write(w, 202, op)
+		id := r.PathValue("svc")
+		return s.acceptServiceChange(w, r, p, id, rev, "service_update", serviceChange{edit, id, rev})
 	})
 }
+
+// acceptServiceChange checks the service revision and takes its machine lock in
+// the same transaction. A replay is authorized against the saved operation.
+func (s *Server) acceptServiceChange(w http.ResponseWriter, r *http.Request, p auth.Principal, id string, rev int64, kind string, request any) error {
+	return s.accept(w, r, p, request, registry.AcceptRequest{
+		Kind: kind,
+		ResolveMachine: func(ctx context.Context, tx *sql.Tx, originalMachine string) (string, error) {
+			if originalMachine != "" {
+				return originalMachine, p.Authorize(auth.ActionManage, originalMachine)
+			}
+			var mid string
+			var actual int64
+			if err := tx.QueryRowContext(ctx, "SELECT machine_id, revision FROM services WHERE id=?", id).Scan(&mid, &actual); err != nil {
+				return "", err
+			}
+			if err := p.Authorize(auth.ActionManage, mid); err != nil {
+				return "", err
+			}
+			if rev != actual {
+				return "", registry.ErrRevision
+			}
+			return mid, nil
+		},
+	})
+}
+
 func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 	var req serviceChange
 	if err := json.Unmarshal(j.Op.Request, &req); err != nil {

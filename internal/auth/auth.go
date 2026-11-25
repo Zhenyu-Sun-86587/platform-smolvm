@@ -78,6 +78,7 @@ func (p Principal) Authorize(action, machineID string) error {
 
 type Token struct {
 	ID        string     `json:"token_id"`
+	Revision  int64      `json:"revision"`
 	Label     string     `json:"label"`
 	Scope     Scope      `json:"scope"`
 	CreatedAt time.Time  `json:"created_at"`

@@ -102,7 +102,7 @@ func (s *Server) clientCertRoutes() {
 			if err == nil {
 				err = registry.AppendEvent(ctx, tx, "auth", "", "", map[string]string{"action": "client_certificate_issued", "credential_id": id}, true)
 			}
-			return registry.MutationResult{Response: lifecycle.JSON(map[string]any{"certificate_id": id, "certificate_pem": cert, "expires_at": exp})}, err
+			return registry.MutationResult{Response: lifecycle.JSON(map[string]any{"certificate_id": id, "certificate_pem": cert, "revision": 1, "expires_at": exp})}, err
 		})
 	})
 }

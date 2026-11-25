@@ -130,6 +130,21 @@ export interface Snapshot {
     created_at?: string;
     [key: string]: unknown;
 }
+export interface TokenSpec {
+    label: string;
+    scope: {
+        access: "read" | "manage" | "tunnel";
+        machine_id?: string;
+    };
+    expires_at?: string;
+}
+export interface Token extends TokenSpec {
+    token_id: string;
+    revision: number;
+    created_at: string;
+    revoked_at?: string;
+    token?: string;
+}
 export interface Mutation {
     epoch: string;
     key: string;
@@ -219,5 +234,12 @@ export declare class Client {
     clone(id: string, childName: string, options?: MachineWriteOptions): Promise<Operation>;
     fork(id: string, childName: string, options?: MachineWriteOptions): Promise<Operation>;
     restore(snapshotID: string, name: string, options?: WriteOptions): Promise<Operation>;
+    listTokens(signal?: AbortSignal): AsyncGenerator<Token, any, any>;
+    issueToken(spec: TokenSpec, options?: WriteOptions): Promise<Token>;
+    revokeToken(id: string, revision: number, options?: WriteOptions): Promise<{
+        token_id: string;
+        revision: number;
+        status: "revoked";
+    }>;
     expose(id: string, spec: ServiceSpec, options?: WriteOptions): Promise<Operation>;
 }

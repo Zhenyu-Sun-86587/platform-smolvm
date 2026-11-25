@@ -127,27 +127,16 @@ func (s *Server) serviceRoutes() {
 		return s.accept(w, r, p, v, registry.AcceptRequest{Kind: "service_create", MachineID: mid, ExpectedGeneration: v.ExpectedGeneration})
 	})
 	s.route("DELETE /v1/services/{svc}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-		v, err := s.getService(r.Context(), r.PathValue("svc"))
-		if err != nil {
-			return err
-		}
-		if err = p.Authorize("manage", v.MachineID); err != nil {
-			return err
-		}
 		rev, err := revision(r)
 		if err != nil {
 			return err
 		}
-		if rev != v.Revision {
-			return registry.ErrRevision
-		}
-		env := envelope(r, p, v.ID)
-		op, _, err := s.DB.Accept(r.Context(), registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: env.Epoch, Key: env.Key, Scope: env.Scope, Request: lifecycle.JSON(map[string]any{"service_id": v.ID, "revision": rev}), MachineID: v.MachineID, Kind: "service_delete"})
-		if err != nil {
+		var body struct{}
+		if err = decode(r, &body); err != nil {
 			return err
 		}
-		w.Header().Set("Location", "/v1/operations/"+op.ID)
-		return write(w, 202, op)
+		id := r.PathValue("svc")
+		return s.acceptServiceChange(w, r, p, id, rev, "service_delete", map[string]any{"service_id": id, "revision": rev})
 	})
 	s.route("GET /v1/machines/{machine}/services", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		mid := r.PathValue("machine")

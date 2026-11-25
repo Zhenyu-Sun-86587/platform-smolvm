@@ -41,7 +41,7 @@ func issue(ctx context.Context, tx *sql.Tx, p Principal, label string, scope Sco
 		return t, "", err
 	}
 	secret := base64.RawURLEncoding.EncodeToString(random[:])
-	t = Token{ID: id, Label: label, Scope: scope, ExpiresAt: expiry, CreatedAt: time.Now().UTC()}
+	t = Token{ID: id, Revision: 1, Label: label, Scope: scope, ExpiresAt: expiry, CreatedAt: time.Now().UTC()}
 	var exp any
 	if expiry != nil {
 		exp = expiry.UnixMilli()
@@ -69,15 +69,31 @@ func (s *Service) Session(ctx context.Context, p Principal) (string, error) {
 	}
 	return secret, tx.Commit()
 }
-func (s *Service) RevokeTx(ctx context.Context, tx *sql.Tx, p Principal, id, kind string) error {
+func (s *Service) RevokeTx(ctx context.Context, tx *sql.Tx, p Principal, id, kind string, expectedRevision int64) error {
 	if kind == kindWebSession {
 		if id != p.CredentialID {
 			return ErrForbidden
 		}
-	} else if err := p.Authorize(ActionTokens, ""); err != nil {
-		return err
+	} else {
+		if err := p.Authorize(ActionTokens, ""); err != nil {
+			return err
+		}
+		var actualRevision int64
+		err := tx.QueryRowContext(ctx, "SELECT CASE WHEN revoked_at IS NULL THEN 1 ELSE 2 END FROM credentials WHERE id=? AND principal_id=? AND kind=?", id, p.ID, kind).Scan(&actualRevision)
+		if errors.Is(err, sql.ErrNoRows) {
+			return registry.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if actualRevision != expectedRevision {
+			return registry.ErrRevision
+		}
+		if actualRevision == 2 {
+			return registry.ErrConflict
+		}
 	}
-	res, err := tx.ExecContext(ctx, "UPDATE credentials SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND principal_id=? AND kind=?", time.Now().UnixMilli(), id, p.ID, kind)
+	res, err := tx.ExecContext(ctx, "UPDATE credentials SET revoked_at=? WHERE id=? AND principal_id=? AND kind=? AND revoked_at IS NULL", time.Now().UnixMilli(), id, p.ID, kind)
 	if err != nil {
 		return err
 	}
@@ -111,12 +127,14 @@ func (s *Service) ListTokens(ctx context.Context, p Principal) ([]Token, error) 
 		if err = json.Unmarshal([]byte(raw), &t.Scope); err != nil {
 			return nil, err
 		}
+		t.Revision = 1
 		t.CreatedAt = time.UnixMilli(at).UTC()
 		if exp.Valid {
 			x := time.UnixMilli(exp.Int64).UTC()
 			t.ExpiresAt = &x
 		}
 		if rev.Valid {
+			t.Revision = 2
 			x := time.UnixMilli(rev.Int64).UTC()
 			t.RevokedAt = &x
 		}

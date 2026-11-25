@@ -229,7 +229,7 @@ func (s *Server) publicCredentials() {
 			if err == nil {
 				err = registry.AppendEvent(ctx, tx, "auth", "", "", map[string]string{"action": "ssh_key_added", "credential_id": id}, true)
 			}
-			return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"id": id, "public_key": pub, "guest_update": "pending"})}, err
+			return registry.MutationResult{Response: lifecycle.JSON(map[string]any{"id": id, "public_key": pub, "guest_update": "pending", "revision": 1})}, err
 		})
 	})
 	for path, kind := range map[string]string{"ssh-keys": "ssh_public_key", "client-certificates": "client_certificate"} {
@@ -265,20 +265,26 @@ func (s *Server) publicCredentials() {
 			if err := p.Authorize("admin", ""); err != nil {
 				return err
 			}
-			id := r.PathValue("credential")
-			rev, err := revision(r)
-			if err != nil {
-				return err
-			}
-			return s.mutate(w, r, p, nil, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
-				if rev != 1 {
-					return registry.MutationResult{}, registry.ErrRevision
-				}
-				err := s.Auth.RevokeTx(ctx, tx, p, id, kind)
-				return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"id": id, "status": "revoked"})}, err
-			})
+			return s.revokeCredential(w, r, p, r.PathValue("credential"), kind, "id")
 		})
 	}
+}
+
+func (s *Server) revokeCredential(w http.ResponseWriter, r *http.Request, p auth.Principal, id, kind, idField string) error {
+	rev, err := revision(r)
+	if err != nil {
+		return err
+	}
+	var body struct{}
+	if err = decode(r, &body); err != nil {
+		return err
+	}
+	return s.mutate(w, r, p, nil, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+		if err := s.Auth.RevokeTx(ctx, tx, p, id, kind, rev); err != nil {
+			return registry.MutationResult{}, err
+		}
+		return registry.MutationResult{Response: lifecycle.JSON(map[string]any{idField: id, "status": "revoked", "revision": rev + 1})}, nil
+	})
 }
 
 var _ = fmt.Sprint
