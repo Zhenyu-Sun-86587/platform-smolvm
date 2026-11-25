@@ -71,6 +71,23 @@ class SystemTemplateTest(unittest.TestCase):
                 "[Match]\nName=smol-uplink\n\n[Link]\nUnmanaged=yes\n",
             )
 
+    def test_managed_ssh_uses_a_private_unit_and_keeps_distribution_configuration(self):
+        sshd = self.root / "usr/sbin/sshd"
+        sshd.parent.mkdir(parents=True)
+        sshd.write_text("#!/bin/sh\nexit 0\n")
+        sshd.chmod(0o755)
+        config = self.root / "etc/ssh/sshd_config"
+        config.parent.mkdir()
+        config.write_text("Port 22\n")
+        result = self.install(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(config.read_text(), "Port 22\n")
+        self.assertIn("Port 2222\n", (config.parent / "sandbox-managed/sshd_config").read_text())
+        units = self.root / "etc/systemd/system"
+        unit = units / "sandbox-managed-sshd.service"
+        self.assertEqual((units / "multi-user.target.wants" / unit.name).resolve(), unit)
+        self.assertTrue((self.root / "usr/local/sbin/sandbox-system-ssh-sync").stat().st_mode & 0o100)
+
 
 if __name__ == "__main__":
     unittest.main()

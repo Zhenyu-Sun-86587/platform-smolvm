@@ -1,0 +1,12 @@
+Port 2222
+HostKey /etc/ssh/sandbox-managed/host_ed25519_key
+PidFile /run/sandbox-managed-sshd.pid
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM yes
+AuthorizedKeysFile /etc/ssh/sandbox-managed/authorized_keys
+Subsystem sftp internal-sftp
