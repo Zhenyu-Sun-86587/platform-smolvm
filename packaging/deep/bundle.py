@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight a deep runtime build, or pack and verify its output."""
+"""Preflight a deep runtime build and pack, verify or install its output."""
 
 import argparse
 import hashlib
@@ -400,6 +400,14 @@ def verify_bundle(root, expected=None, *, allow_legacy_rootfs=False):
     return actual_digest
 
 
+def copy_bundle_files(source, candidate, files):
+    for name, mode in files.items():
+        path = candidate / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, path)
+        path.chmod(0o555 if mode & stat.S_IXUSR else 0o444)
+
+
 def pack_bundle(staging, output):
     files = list_files(staging)
     require(MANIFEST not in files, "staged outputs already contain a bundle manifest")
@@ -410,11 +418,7 @@ def pack_bundle(staging, output):
     with tempfile.TemporaryDirectory(prefix=".deep-bundle-", dir=output.parent) as work:
         candidate = Path(work) / "candidate"
         candidate.mkdir()
-        for name, mode in files.items():
-            path = candidate / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(staging / name, path)
-            path.chmod(0o555 if mode & stat.S_IXUSR else 0o444)
+        copy_bundle_files(staging, candidate, files)
         manifest = build_manifest(candidate, list_files(candidate))
         path = candidate / MANIFEST
         path.write_bytes(canonical_json(manifest) + b"\n")
@@ -422,6 +426,56 @@ def pack_bundle(staging, output):
         subprocess.run(["mv", "-nT", "--", str(candidate), str(output)], check=True)
         require(not candidate.exists(), f"output already exists: {output}")
     return manifest["bundle_digest"]
+
+
+def sync_path(path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def verify_installed_bundle(output, expected):
+    checksum = verify_bundle(output, expected)
+    for directory, _, filenames in os.walk(output):
+        path = Path(directory)
+        require(not path.stat().st_mode & 0o222, f"installed directory is writable: {path}")
+        for name in filenames:
+            artifact = path / name
+            require(not artifact.stat().st_mode & 0o222, f"installed artifact is writable: {artifact}")
+    return checksum
+
+
+def install_bundle(source, output, expected):
+    expected = digest(expected, "expected bundle digest")
+    source = source.resolve(strict=True)
+    output = output.parent.resolve(strict=True) / output.name
+    if output.exists() or output.is_symlink():
+        return verify_installed_bundle(output, expected)
+    require(source not in output.parents, "installation must be outside the source bundle")
+    verify_bundle(source, expected)
+    files = list_files(source)
+    with tempfile.TemporaryDirectory(prefix=".deep-install-", dir=output.parent) as work:
+        candidate = Path(work)
+        copy_bundle_files(source, candidate, files)
+        verify_bundle(candidate, expected)
+        for name in files:
+            sync_path(candidate / name)
+        directories = [Path(path) for path, _, _ in os.walk(candidate, topdown=False)]
+        try:
+            for path in directories:
+                path.chmod(0o555)
+                sync_path(path)
+            subprocess.run(["mv", "-nT", "--", str(candidate), str(output)], check=True)
+            if candidate.exists():
+                return verify_installed_bundle(output, expected)
+            sync_path(output.parent)
+        finally:
+            if candidate.exists():
+                for path in reversed(directories):
+                    path.chmod(0o755)
+    return expected
 
 
 def main():
@@ -444,6 +498,10 @@ def main():
     verify.add_argument("bundle", type=Path)
     verify.add_argument("--expect", help="expected sha256: digest from trusted release metadata")
     verify.add_argument("--allow-legacy-rootfs", action="store_true", help="allow older v1 bundles without rootfs provenance")
+    install = commands.add_parser("install", help="verify and atomically install an immutable bundle directory")
+    install.add_argument("bundle", type=Path)
+    install.add_argument("--expect", required=True, help="expected sha256: digest from trusted release metadata")
+    install.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "check-inputs":
@@ -459,6 +517,8 @@ def main():
             print("Runtime executables and OCI rootfs verified.")
         elif args.command == "pack":
             print(pack_bundle(args.artifacts, args.output))
+        elif args.command == "install":
+            print(install_bundle(args.bundle, args.output, args.expect))
         else:
             print(verify_bundle(args.bundle, args.expect, allow_legacy_rootfs=args.allow_legacy_rootfs))
             if args.allow_legacy_rootfs and not (args.bundle / ROOTFS_PROVENANCE).exists():
