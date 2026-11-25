@@ -13,12 +13,14 @@ import (
 
 // Route pins a particular Serve installation and its installed bundle.
 type Route struct {
-	InstanceID   string `yaml:"instance_id"`
-	Bundle       string `yaml:"bundle_digest"`
-	Reader       string `yaml:"state_reader_id"`
-	Socket       string
-	WorkerSocket string `yaml:"worker_socket,omitempty"`
-	Manifest     string
+	InstanceID       string `yaml:"instance_id"`
+	Bundle           string `yaml:"bundle_digest"`
+	Reader           string `yaml:"state_reader_id"`
+	Socket           string
+	WorkerSocket     string           `yaml:"worker_socket,omitempty"`
+	PrivateNetworks  []PrivateNetwork `yaml:"private_networks,omitempty"`
+	DefaultNetworkID string           `yaml:"default_network_id,omitempty"`
+	Manifest         string
 }
 
 func (r Route) Key() rt.BundleRoute {
@@ -37,6 +39,9 @@ func (r Route) Validate() error {
 			return err
 		}
 	}
+	if err := r.validatePrivateNetworks(); err != nil {
+		return err
+	}
 	return validateEndpoint(r.Socket, r.Bundle, r.Reader)
 }
 
@@ -46,6 +51,16 @@ type Adapter struct {
 }
 
 func (a *Adapter) WorkerSocket() string { return a.route.WorkerSocket }
+
+func (a *Adapter) Admit(kind string) error {
+	if a.WorkerSocket() != "" {
+		switch kind {
+		case "service_create", "service_update", "service_delete":
+			return nil
+		}
+	}
+	return &rt.Error{Code: "NOT_SUPPORTED", Message: "runtime operation requires native dispatch and Worker admission"}
+}
 
 var _ rt.Adapter = (*Adapter)(nil)
 

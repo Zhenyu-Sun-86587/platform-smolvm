@@ -24,6 +24,7 @@ type machineView struct {
 	PowerState registry.PowerState `json:"power_state"`
 	Health     machineHealth       `json:"health"`
 	BootMode   rt.BootMode         `json:"boot_mode"`
+	Network    *rt.LaunchNetwork   `json:"network,omitempty"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -36,12 +37,16 @@ type machineView struct {
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineView, error) {
 	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
 	var spec struct {
-		Resources json.RawMessage `json:"resources"`
+		Resources json.RawMessage   `json:"resources"`
+		Network   *rt.LaunchNetwork `json:"network"`
 	}
 	if err := json.Unmarshal(m.Spec, &spec); err != nil {
 		return v, err
 	}
 	v.Resources = spec.Resources
+	if spec.Network != nil {
+		v.Network = &rt.LaunchNetwork{NetworkID: spec.Network.NetworkID, Mode: spec.Network.Mode}
+	}
 	t, err := s.DB.GetTemplate(ctx, m.TemplateID)
 	if err != nil {
 		return v, err

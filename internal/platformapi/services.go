@@ -105,6 +105,15 @@ func (s *Server) serviceRoutes() {
 	s.servicePatchRoute()
 	s.Extra["service_create"] = s.editService
 	s.Extra["service_delete"] = s.editService
+	for _, kind := range []string{"service_create", "service_update", "service_delete"} {
+		s.Recover[kind] = func(ctx context.Context, j *lifecycle.Job) error {
+			if privateServiceWorker(j.Runtime) == "" {
+				return errors.New("dispatched operation needs specific outcome evidence")
+			}
+			j.Written = false
+			return s.Extra[j.Op.Kind](ctx, j)
+		}
+	}
 	s.route("POST /v1/machines/{machine}/services", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		mid := r.PathValue("machine")
 		if err := p.Authorize("manage", mid); err != nil {
@@ -427,7 +436,60 @@ func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string
 	defer end()
 	b.HTTP(w, r, check)
 }
+
+func (s *Server) requestedService(j *lifecycle.Job) (service, error) {
+	var v serviceEdit
+	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
+		return service{}, err
+	}
+	svc := service{ID: "svc-" + j.Op.ID[3:], MachineID: j.Op.MachineID, Name: v.Name, Revision: 1, Protocol: v.Protocol, GuestPort: v.GuestPort}
+	if v.Protocol == "http" || v.Protocol == "https" {
+		if s.Config.Gateway.AppsDomain == "" {
+			return service{}, errors.New("gateway apps_domain is required")
+		}
+		svc.PublicHost = svc.ID + "." + s.Config.Gateway.AppsDomain
+	}
+	if v.Readiness != nil {
+		svc.Readiness = *v.Readiness
+	}
+	return svc, nil
+}
+
+func (s *Server) insertService(ctx context.Context, tx *sql.Tx, svc service, enabled bool) error {
+	var domain any
+	if svc.PublicHost != "" {
+		domain = svc.PublicHost
+	}
+	var publicPort any
+	if svc.Protocol == "tcp-mtls" {
+		rng := s.Config.Gateway.TCPRange
+		for n := rng[0]; n <= rng[1]; n++ {
+			var count int
+			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM services WHERE public_port=?", n).Scan(&count); err != nil {
+				return err
+			}
+			if count == 0 {
+				host, _, _ := net.SplitHostPort(s.Config.API.Listen)
+				l, e := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(n)))
+				if e == nil {
+					l.Close()
+					publicPort = n
+					break
+				}
+			}
+		}
+		if publicPort == nil {
+			return errors.New("no free mTLS port")
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,public_host,public_port,readiness_json,access_json,enabled) VALUES(?,?,?,1,?,?,?,?,?, '{"private":true}',?)`, svc.ID, svc.MachineID, svc.Name, svc.Protocol, svc.GuestPort, domain, publicPort, string(lifecycle.JSON(svc.Readiness)), enabled)
+	return err
+}
+
 func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
+	if worker := privateServiceWorker(j.Runtime); worker != "" {
+		return s.editWorkerService(ctx, j, worker)
+	}
 	o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
@@ -437,19 +499,11 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 	}
 	var svc service
 	var host uint16
-	privateBackend := privateServiceWorker(j.Runtime) != ""
 	desired := append([]rt.Port{}, o.Ports...)
 	if j.Op.Kind == "service_create" {
-		var v serviceEdit
-		if err = json.Unmarshal(j.Op.Request, &v); err != nil {
+		svc, err = s.requestedService(j)
+		if err != nil {
 			return err
-		}
-		svc = service{ID: "svc-" + j.Op.ID[3:], MachineID: j.Op.MachineID, Name: v.Name, Revision: 1, Protocol: v.Protocol, GuestPort: v.GuestPort, Enabled: true}
-		if v.Protocol == "http" || v.Protocol == "https" {
-			if s.Config.Gateway.AppsDomain == "" {
-				return errors.New("gateway apps_domain is required")
-			}
-			svc.PublicHost = svc.ID + "." + s.Config.Gateway.AppsDomain
 		}
 		for _, port := range desired {
 			if port.Guest == svc.GuestPort {
@@ -461,67 +515,34 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 			return err
 		}
 		defer tx.Rollback()
-		if v.Readiness != nil {
-			svc.Readiness = *v.Readiness
+		if err := s.insertService(ctx, tx, svc, false); err != nil {
+			return err
 		}
-		var domain any
-		if svc.PublicHost != "" {
-			domain = svc.PublicHost
-		}
-		var publicPort any
-		if v.Protocol == "tcp-mtls" {
-			rng := s.Config.Gateway.TCPRange
-			for n := rng[0]; n <= rng[1]; n++ {
-				var count int
-				if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM services WHERE public_port=?", n).Scan(&count); err != nil {
-					return err
-				}
-				if count == 0 {
-					host, _, _ := net.SplitHostPort(s.Config.API.Listen)
-					l, e := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(n)))
-					if e == nil {
-						l.Close()
-						publicPort = n
-						svc.PublicPort = n
-						break
-					}
-				}
+		rng := s.Config.Gateway.BackendRange
+		for n := rng[0]; n <= rng[1]; n++ {
+			var count int
+			if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol='tcp' AND host_port=? AND state!='released'", n).Scan(&count); err != nil {
+				return err
 			}
-			if publicPort == nil {
-				return errors.New("no free mTLS port")
+			if count != 0 {
+				continue
 			}
+			l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
+			if err != nil {
+				continue
+			}
+			l.Close()
+			host = uint16(n)
+			break
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,public_host,public_port,readiness_json,access_json,enabled) VALUES(?,?,?,1,?,?,?,?,?, '{"private":true}',0)`, svc.ID, svc.MachineID, svc.Name, svc.Protocol, svc.GuestPort, domain, publicPort, string(lifecycle.JSON(svc.Readiness)))
+		if host == 0 {
+			return errors.New("backend port range exhausted")
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO port_allocations(id,binding_id,service_id,protocol,host_port,guest_port,state) VALUES(?,?,?,'tcp',?,?,'allocated')", "port_"+j.Op.ID, j.Binding.ID, svc.ID, host, svc.GuestPort)
 		if err != nil {
 			return err
 		}
-		if !privateBackend {
-			rng := s.Config.Gateway.BackendRange
-			for n := rng[0]; n <= rng[1]; n++ {
-				var count int
-				if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol='tcp' AND host_port=? AND state!='released'", n).Scan(&count); err != nil {
-					return err
-				}
-				if count != 0 {
-					continue
-				}
-				l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
-				if err != nil {
-					continue
-				}
-				l.Close()
-				host = uint16(n)
-				break
-			}
-			if host == 0 {
-				return errors.New("backend port range exhausted")
-			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO port_allocations(id,binding_id,service_id,protocol,host_port,guest_port,state) VALUES(?,?,?,'tcp',?,?,'allocated')", "port_"+j.Op.ID, j.Binding.ID, svc.ID, host, svc.GuestPort)
-			if err != nil {
-				return err
-			}
-			desired = append(desired, rt.Port{Guest: svc.GuestPort, Host: host, Protocol: "tcp"})
-		}
+		desired = append(desired, rt.Port{Guest: svc.GuestPort, Host: host, Protocol: "tcp"})
 		if err = tx.Commit(); err != nil {
 			return err
 		}
@@ -541,40 +562,36 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 		if svc.Revision != v.Revision || svc.MachineID != j.Op.MachineID {
 			return registry.ErrRevision
 		}
-		if !privateBackend {
-			err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", svc.ID, j.Binding.ID).Scan(&host)
-			if err != nil {
-				return err
-			}
-			desired = nil
-			for _, a := range o.Ports {
-				if a.Host != host || a.Guest != svc.GuestPort {
-					desired = append(desired, a)
-				}
-			}
-		}
-	}
-	if !privateBackend {
-		if err = j.Stage(ctx, "set_ports", ""); err != nil {
-			return err
-		}
-		if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
-			return err
-		}
-		j.Written = true
-		o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
+		err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", svc.ID, j.Binding.ID).Scan(&host)
 		if err != nil {
 			return err
 		}
-		found := false
+		desired = nil
 		for _, a := range o.Ports {
-			if a.Host == host && a.Guest == svc.GuestPort {
-				found = true
+			if a.Host != host || a.Guest != svc.GuestPort {
+				desired = append(desired, a)
 			}
 		}
-		if found != (j.Op.Kind == "service_create") {
-			return fmt.Errorf("port update did not match desired publication")
+	}
+	if err = j.Stage(ctx, "set_ports", ""); err != nil {
+		return err
+	}
+	if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
+		return err
+	}
+	j.Written = true
+	o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, a := range o.Ports {
+		if a.Host == host && a.Guest == svc.GuestPort {
+			found = true
 		}
+	}
+	if found != (j.Op.Kind == "service_create") {
+		return fmt.Errorf("port update did not match desired publication")
 	}
 	obs := lifecycle.Evidence(o)
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: &obs, Result: lifecycle.JSON(map[string]string{"service_id": svc.ID}), Apply: func(ctx context.Context, tx *sql.Tx) error {

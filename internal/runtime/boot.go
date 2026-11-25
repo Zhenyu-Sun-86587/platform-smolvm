@@ -35,14 +35,28 @@ type LaunchSubmission struct {
 }
 
 type LaunchParameters struct {
-	Name        string       `json:"name"`
-	BootProfile string       `json:"boot_profile"`
-	CPUs        uint8        `json:"cpus"`
-	MemoryMiB   uint32       `json:"memory_mib"`
-	Disks       []LaunchDisk `json:"disks"`
-	Init        string       `json:"init"`
-	Args        []string     `json:"args"`
+	Name        string         `json:"name"`
+	BootProfile string         `json:"boot_profile"`
+	CPUs        uint8          `json:"cpus"`
+	MemoryMiB   uint32         `json:"memory_mib"`
+	Disks       []LaunchDisk   `json:"disks"`
+	Init        string         `json:"init"`
+	Args        []string       `json:"args"`
+	Network     *LaunchNetwork `json:"network,omitempty"`
 }
+
+// LaunchNetwork combines the public selection with topology from trusted runtime configuration.
+type LaunchNetwork struct {
+	NetworkID     string `json:"network_id"`
+	Mode          string `json:"mode,omitempty"`
+	RouteDomainID string `json:"route_domain_id,omitempty"`
+	CIDR          string `json:"cidr,omitempty"`
+}
+
+const (
+	NativeNetwork        = "native"
+	FixedInternalNetwork = "fixed_internal"
+)
 
 type LaunchDisk struct {
 	AttachmentID string `json:"attachment_id"`

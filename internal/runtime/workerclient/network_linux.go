@@ -14,6 +14,8 @@ import (
 type NetworkAttachment struct {
 	Lease         NetworkLease `json:"lease"`
 	RequestDigest string       `json:"request_digest"`
+	NetworkID     string       `json:"network_id"`
+	DNSName       string       `json:"dns_name"`
 }
 
 type NetworkLease struct {
@@ -26,9 +28,11 @@ type NetworkLease struct {
 	State       string `json:"state"`
 	Gate        string `json:"gate"`
 	Attachment  struct {
-		Schema  string     `json:"schema"`
-		ID      string     `json:"attachment_id"`
-		Address netip.Addr `json:"private_ipv4"`
+		Schema       string     `json:"schema"`
+		ID           string     `json:"attachment_id"`
+		Address      netip.Addr `json:"private_ipv4"`
+		GuestAddress netip.Addr `json:"guest_ipv4"`
+		Mode         string     `json:"mode"`
 	} `json:"attachment"`
 }
 

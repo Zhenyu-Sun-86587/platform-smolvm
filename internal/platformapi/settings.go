@@ -21,8 +21,10 @@ import (
 )
 
 type settings struct {
-	Revision    int64 `json:"revision"`
-	IdleSeconds int   `json:"default_idle_seconds"`
+	Revision    int64  `json:"revision"`
+	IdleSeconds int    `json:"default_idle_seconds"`
+	NetworkMode string `json:"default_network_mode,omitempty"`
+	NetworkID   string `json:"default_network_id,omitempty"`
 }
 
 func (s *Server) settings(ctx context.Context) (settings, error) {
@@ -53,19 +55,29 @@ func (s *Server) settingsRoutes() {
 		if err != nil {
 			return err
 		}
-		return write(w, 200, map[string]any{"revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "public_origin": s.Config.API.PublicOrigin, "apps_domain": s.Config.Gateway.AppsDomain, "tcp_mtls_port_range": s.Config.Gateway.TCPRange, "max_heavy_operations": s.Config.Lifecycle.Heavy, "runtime_socket": s.Config.Runtime.Socket})
+		mode := v.NetworkMode
+		if mode == "" {
+			mode = rt.NativeNetwork
+		}
+		return write(w, 200, map[string]any{"revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "default_network_mode": mode,
+			"default_network_id": v.NetworkID, "public_origin": s.Config.API.PublicOrigin, "apps_domain": s.Config.Gateway.AppsDomain,
+			"tcp_mtls_port_range": s.Config.Gateway.TCPRange, "max_heavy_operations": s.Config.Lifecycle.Heavy, "runtime_socket": s.Config.Runtime.Socket})
 	})
 	s.route("PATCH /v1/system/settings", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize("admin", ""); err != nil {
 			return err
 		}
 		var body struct {
-			Idle int `json:"default_idle_seconds"`
+			Idle        *int    `json:"default_idle_seconds,omitempty"`
+			NetworkMode *string `json:"default_network_mode,omitempty"`
+			NetworkID   *string `json:"default_network_id,omitempty"`
 		}
 		if err := decode(r, &body); err != nil {
 			return err
 		}
-		if body.Idle < 1 || body.Idle > 31536000 {
+		if (body.Idle == nil && body.NetworkMode == nil && body.NetworkID == nil) ||
+			(body.Idle != nil && (*body.Idle < 1 || *body.Idle > 31536000)) ||
+			(body.NetworkMode != nil && *body.NetworkMode != rt.NativeNetwork && *body.NetworkMode != rt.FixedInternalNetwork) {
 			return registry.ErrInvalid
 		}
 		rev, err := revision(r)
@@ -73,7 +85,27 @@ func (s *Server) settingsRoutes() {
 			return err
 		}
 		return s.mutate(w, r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
-			v := settings{Revision: rev + 1, IdleSeconds: body.Idle}
+			v := settings{Revision: 1, IdleSeconds: s.Config.Lifecycle.IdleSeconds}
+			var previous string
+			if err := tx.QueryRowContext(ctx, "SELECT settings_json FROM meta WHERE id=1").Scan(&previous); err != nil {
+				return registry.MutationResult{}, err
+			}
+			if err := json.Unmarshal([]byte(previous), &v); err != nil {
+				return registry.MutationResult{}, err
+			}
+			if body.Idle != nil {
+				v.IdleSeconds = *body.Idle
+			}
+			if body.NetworkMode != nil {
+				v.NetworkMode = *body.NetworkMode
+			}
+			if body.NetworkID != nil {
+				if *body.NetworkID != "" && !s.hasPrivateNetwork(*body.NetworkID) {
+					return registry.MutationResult{}, registry.ErrInvalid
+				}
+				v.NetworkID = *body.NetworkID
+			}
+			v.Revision = rev + 1
 			raw := lifecycle.JSON(v)
 			res, err := tx.ExecContext(ctx, "UPDATE meta SET settings_json=? WHERE id=1 AND COALESCE(json_extract(settings_json,'$.revision'),1)=?", string(raw), rev)
 			if err != nil {

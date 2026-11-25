@@ -57,10 +57,11 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 }
 
 type Create struct {
-	Name              string      `json:"name"`
-	TemplateID        string      `json:"template_id"`
-	RuntimeInstanceID string      `json:"runtime_instance_id,omitempty"`
-	BootMode          rt.BootMode `json:"boot_mode,omitempty"`
+	Name              string            `json:"name"`
+	TemplateID        string            `json:"template_id"`
+	RuntimeInstanceID string            `json:"runtime_instance_id,omitempty"`
+	BootMode          rt.BootMode       `json:"boot_mode,omitempty"`
+	Network           *rt.LaunchNetwork `json:"network,omitempty"`
 	Resources         struct {
 		CPUs    uint8  `json:"cpu_count"`
 		Memory  uint32 `json:"memory_mib"`
