@@ -13,7 +13,7 @@ import {
   Search,
   Server,
 } from "lucide-react"
-import type { Machine, Operation, Page } from "../../sdk/typescript/src/index"
+import type { BootMode, CreateMachine, Machine, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { useCollection } from "./api"
 import { Callout, label, machinePowerState, num, segment, State, str, time, useRemote } from "./common"
 import { WorkspaceActions } from "./workspace-actions"
@@ -26,7 +26,7 @@ import type { Actions } from "./main"
 
 const memory = (mib: number) =>
   mib >= 1024 ? (mib / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 }) + " GiB" : mib + " MiB"
-type Template = { template_id?: string; id?: string; name: string; version: number }
+type Template = { template_id?: string; id?: string; name: string; version: number; spec?: {boot_mode?: BootMode} }
 
 export function MachineList({
   rows,
@@ -40,7 +40,17 @@ export function MachineList({
   revision: number
 }) {
   const templates = useCollection<Template>("templates", revision)
-  const preferred = templates.items?.reduce<Template | undefined>(
+  const hasSystemTemplates = templates.items?.some(template => template.spec?.boot_mode === "system") ?? false
+  const profiles = useCollection<RuntimeProfile>(hasSystemTemplates ? "runtime-profiles" : "", revision)
+  const systemRuntimes = profiles.items?.filter(profile => profile.capabilities["boot.system"]?.status === "supported") ?? []
+  const choices = (templates.items ?? []).flatMap(template => {
+    const value = template.template_id ?? template.id
+    if (!value) return []
+    const system = template.spec?.boot_mode === "system"
+    return [{value, label: system ? `${template.name} · System` : template.name, system,
+      version: template.version, disabled: system && systemRuntimes.length === 0}]
+  })
+  const preferred = choices.filter(item => !item.disabled).reduce<typeof choices[number] | undefined>(
     (last, item) => (!last || item.version > last.version ? item : last),
     undefined,
   )
@@ -77,49 +87,53 @@ export function MachineList({
       submit: "Create machine",
       sheet: true,
       description: "Choose a template and allocate resources for your guest.",
-      fields: [
-        { name: "name", label: "Machine name", required: true },
-        {
-          name: "template_id",
-          label: "Template",
-          value: preferred?.template_id ?? preferred?.id,
-          required: true,
-          options: [
-            { value: "", label: "Select a template" },
-            ...(templates.items ?? []).flatMap((template) => {
-              const id = template.template_id ?? template.id
-              return id ? [{ value: id, label: template.name ?? id }] : []
-            }),
-          ],
-        },
-        { name: "cpu", label: "vCPUs", type: "number", min: 1, value: 2, required: true },
-        { name: "memory", label: "Memory (MiB)", type: "number", min: 1, value: 2048, required: true },
-        { name: "storage", label: "Storage (GiB)", type: "number", min: 1, value: 20, required: true },
-        { name: "overlay", label: "Overlay (GiB)", type: "number", min: 1, value: 10, required: true },
-        {
-          name: "idle",
-          label: "Idle timeout (seconds)",
-          type: "number",
-          min: 60,
-          value: 1800,
-          required: true,
-        },
-        { name: "auto_idle", label: "Hibernate automatically when idle", type: "checkbox", value: true },
-        { name: "start", label: "Start after creation", type: "checkbox", value: true },
-      ],
-      act: (form) =>
-        actions.mutate("machines", {
+      fields: (values) => {
+        const selected = choices.find(item => item.value === (values?.get("template_id") ?? preferred?.value))
+        const common = [
+          {name: "name", label: "Machine name", required: true},
+          {name: "template_id", label: "Template", value: preferred?.value, required: true, options: choices,
+            note: hasSystemTemplates && systemRuntimes.length === 0 ? "System templates require a verified runtime." : undefined},
+          {name: "cpu", label: "vCPUs", type: "number" as const, min: 1, value: 2, required: true},
+          {name: "memory", label: "Memory (MiB)", type: "number" as const, min: 1, value: 2048, required: true},
+        ]
+        if (selected?.system) {
+          return [...common, {name: "runtime_instance_id", label: "Runtime", required: true,
+            options: systemRuntimes.map(runtime => ({value: runtime.runtime_instance_id}))}]
+        }
+        const idle = [
+          {value: "default", label: "Use template default"},
+          {value: "enabled", label: "Hibernate when idle"},
+          {value: "disabled", label: "Keep running"},
+        ]
+        return [...common,
+          {name: "storage", label: "Storage (GiB)", type: "number", min: 1, value: 20, required: true},
+          {name: "overlay", label: "Overlay (GiB)", type: "number", min: 1, value: 10, required: true},
+          {name: "auto_idle", label: "Idle policy", options: idle, value: "default"},
+          ...(values?.get("auto_idle") === "enabled" ? [
+            {name: "idle", label: "Idle timeout (seconds)", type: "number" as const, min: 60, value: 1800, required: true},
+          ] : []),
+          {name: "start", label: "Start after creation", type: "checkbox", value: true},
+        ]
+      },
+      act: (form) => {
+        const selected = choices.find(item => item.value === str(form, "template_id"))
+        const resources = {cpu_count: num(form, "cpu"), memory_mib: num(form, "memory")}
+        const body: CreateMachine = {
           name: str(form, "name"),
           template_id: str(form, "template_id"),
-          resources: {
-            cpu_count: num(form, "cpu"),
-            memory_mib: num(form, "memory"),
-            storage_gib: num(form, "storage"),
-            overlay_gib: num(form, "overlay"),
-          },
-          idle_policy: { enabled: form.has("auto_idle"), timeout_seconds: num(form, "idle") },
-          start: form.has("start"),
-        }),
+          resources,
+          start: selected?.system || form.has("start"),
+        }
+        if (selected?.system) {
+          body.boot_mode = "system"
+          body.runtime_instance_id = str(form, "runtime_instance_id")
+        } else {
+          body.resources = {...resources, storage_gib: num(form, "storage"), overlay_gib: num(form, "overlay")}
+          const idle = str(form, "auto_idle")
+          if (idle !== "default") body.idle_policy = {enabled: idle === "enabled", timeout_seconds: idle === "enabled" ? num(form, "idle") : 1800}
+        }
+        return actions.mutate("machines", body)
+      },
     })
   return (
     <>
@@ -127,7 +141,7 @@ export function MachineList({
         title="Machines"
         desc="Create, connect to, and branch your workspaces."
         actions={
-          <Button onClick={create} disabled={!preferred}>
+          <Button onClick={create} disabled={!preferred} title={!preferred && hasSystemTemplates ? "System templates require a verified runtime." : undefined}>
             <Plus />
             New machine
           </Button>
@@ -135,6 +149,7 @@ export function MachineList({
       />
       <Callout error={error} />
       <Callout error={templates.error} />
+      <Callout error={profiles.error} />
       <div className="toolbar">
         <div className="segments" aria-label="Filter by machine state">
           {states.map((state) => (
@@ -204,7 +219,7 @@ export function MachineList({
                       {r ? (
                         <>
                           {r.cpu_count} vCPU · {memory(r.memory_mib)}
-                          <small>{r.storage_gib} GiB disk</small>
+                          {r.storage_gib !== undefined && <small>{r.storage_gib} GiB disk</small>}
                         </>
                       ) : (
                         "—"

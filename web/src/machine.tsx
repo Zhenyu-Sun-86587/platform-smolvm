@@ -85,7 +85,7 @@ function Overview({ machine, actions }: Context) {
         }, { method: "PATCH", revision: machine.revision })
       }
     })}>Edit</button>}>
-      <Details value={{template:machine.template_id,power_state:machinePowerState(machine),guest_management:machine.health?.guest_management ?? machine.guest_management_status,workload:machine.health?.workload,workload_error:machine.health?.workload_error?.message,network_identity:machine.health?.network_identity,services:machine.health?.services,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
+      <Details value={{template:machine.template_id,boot_mode:machine.boot_mode,power_state:machinePowerState(machine),guest_management:machine.health?.guest_management ?? machine.guest_management_status,workload:machine.health?.workload,workload_error:machine.health?.workload_error?.message,network_identity:machine.health?.network_identity,services:machine.health?.services,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
       <details className="disclosure"><summary>Runtime binding and identity</summary>      <Details value={{
         template: machine.template_id, desired_power: machine.desired_power,
         binding_generation: machine.binding_generation, revision: machine.revision,

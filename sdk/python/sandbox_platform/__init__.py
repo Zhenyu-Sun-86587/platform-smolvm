@@ -231,6 +231,7 @@ class Client:
         )
 
     def create_machine(self, spec, **options):
+        """Create from a template. System templates require runtime_instance_id and start=True."""
         return self.mutate("machines", spec, **options)
 
     def get_machine(self, id):

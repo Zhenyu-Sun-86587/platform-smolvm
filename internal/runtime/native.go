@@ -22,6 +22,9 @@ type NativeInventory struct {
 		RouteID      string `json:"route_id"`
 		BundleDigest string `json:"bundle_digest"`
 		Phase        string `json:"phase"`
+		HostBootID   string `json:"host_boot_id"`
+		PID          int    `json:"pid"`
+		PIDStartTime int64  `json:"pid_start_time"`
 	} `json:"execution"`
 	Inventory struct {
 		Protocol          string          `json:"protocol"`
@@ -78,6 +81,7 @@ type OperationReceipt struct {
 	BundleDigest           string          `json:"bundle_digest"`
 	ExpectedExecutionEpoch int64           `json:"expected_execution_epoch"`
 	ExpectedIncarnationID  *string         `json:"expected_incarnation_id"`
+	Execution              *ExecutionRef   `json:"execution,omitempty"`
 	Native                 *NativeProgress `json:"native,omitempty"`
 	Phase                  string          `json:"phase"`
 	Decision               string          `json:"decision"`

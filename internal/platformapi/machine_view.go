@@ -7,6 +7,7 @@ import (
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/templates"
 )
 
 type machineHealth struct {
@@ -21,6 +22,7 @@ type machineHealth struct {
 type machineView struct {
 	PowerState registry.PowerState `json:"power_state"`
 	Health     machineHealth       `json:"health"`
+	BootMode   rt.BootMode         `json:"boot_mode"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -43,6 +45,11 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 	if err != nil {
 		return v, err
 	}
+	boot, err := templates.ReadSpec(t)
+	if err != nil {
+		return v, err
+	}
+	v.BootMode = boot.BootMode
 	if len(t.Capabilities) > 0 {
 		var raw map[string]json.RawMessage
 		if err = json.Unmarshal(t.Capabilities, &raw); err != nil {

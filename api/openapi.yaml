@@ -2251,14 +2251,18 @@ components:
       properties:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
-        runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. The selected runtime must admit Create.}
+        boot_mode: {$ref: '#/components/schemas/BootMode'}
+        runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. System templates require a verified System runtime.}
         resources: {$ref: '#/components/schemas/Resources'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
-        start: {type: boolean}
+        start: {type: boolean, description: Must be true for System templates.}
       required:
       - name
       - template_id
       additionalProperties: false
+    BootMode:
+      type: string
+      enum: [oci, system]
     MachinePatch:
       type: object
       properties:
@@ -2274,6 +2278,7 @@ components:
         machine_id: {type: string, minLength: 1}
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
+        boot_mode: {$ref: '#/components/schemas/BootMode'}
         resources: {$ref: '#/components/schemas/Resources'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
         keep_running: {type: boolean}
@@ -2445,7 +2450,13 @@ components:
         version: {type: integer, minimum: 1}
         image_digest: {type: string}
         guest_release: {type: string}
-        spec: {type: object, additionalProperties: true}
+        spec:
+          type: object
+          additionalProperties: true
+          properties:
+            boot_mode: {$ref: '#/components/schemas/BootMode'}
+            local_image: {type: string, description: Filename of an administrator-registered OCI archive.}
+            root_generation_id: {type: string, description: Imported immutable Worker block generation for a System root disk.}
         capabilities: {type: object, additionalProperties: true}
     Exec:
       type: object

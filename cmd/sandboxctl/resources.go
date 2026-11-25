@@ -97,19 +97,36 @@ func (c *client) machines() *cobra.Command {
 		return c.show(cmd, res("machines", args[0])+"/metrics")
 	}))
 
-	var template string
+	var template, bootMode, runtimeInstance string
 	var start, idle bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		resources := map[string]int{"cpu_count": cpu, "memory_mib": memory}
 		body := map[string]any{
 			"name": args[0], "template_id": template, "start": start,
-			"resources":   map[string]int{"cpu_count": cpu, "memory_mib": memory, "storage_gib": storage, "overlay_gib": overlay},
-			"idle_policy": map[string]any{"enabled": idle, "timeout_seconds": idleSeconds},
+			"resources": resources,
+		}
+		if bootMode != "" {
+			body["boot_mode"] = bootMode
+		}
+		if runtimeInstance != "" {
+			body["runtime_instance_id"] = runtimeInstance
+		}
+		if bootMode != "system" || cmd.Flags().Changed("storage-gib") {
+			resources["storage_gib"] = storage
+		}
+		if bootMode != "system" || cmd.Flags().Changed("overlay-gib") {
+			resources["overlay_gib"] = overlay
+		}
+		if cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds") {
+			body["idle_policy"] = map[string]any{"enabled": idle, "timeout_seconds": idleSeconds}
 		}
 		return c.mutation(cmd, "POST", "machines", body, 0)
 	})
 	create.Flags().StringVar(&template, "template", "", "Registered template ID")
 	_ = create.MarkFlagRequired("template")
+	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
+	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
 	create.Flags().IntVar(&cpu, "cpu", 2, "Number of vCPUs")
 	create.Flags().IntVar(&memory, "memory-mib", 2048, "Memory in MiB")
 	create.Flags().IntVar(&storage, "storage-gib", 20, "Guest disk space in GiB")

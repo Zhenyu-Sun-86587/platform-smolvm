@@ -1,0 +1,230 @@
+package lifecycle
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"slices"
+
+	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/templates"
+)
+
+func (e *Engine) SystemBootCapability(ctx context.Context, route rt.BundleRoute) (rt.Capability, error) {
+	unknown := rt.FullStateCapabilities(false)[rt.SystemBootCapability]
+	adapter, err := e.runtimes.ForBinding(rt.BindingRuntime{BundleRoute: route})
+	launcher, ok := adapter.(rt.NativeLauncher)
+	if err != nil || !ok {
+		return unknown, nil
+	}
+	capability, err := launcher.SystemBoot(ctx)
+	if err != nil {
+		return unknown, err
+	}
+	return capability, nil
+}
+
+func (request Create) ValidateSystemCreate() error {
+	if !request.Start {
+		return fmt.Errorf("%w: System creation requires start=true", registry.ErrInvalid)
+	}
+	if request.Resources.Storage != 0 || request.Resources.Overlay != 0 {
+		return fmt.Errorf("%w: the System root disk capacity is determined by its template", registry.ErrInvalid)
+	}
+	if request.IdlePolicy != nil && request.IdlePolicy.Enabled {
+		return fmt.Errorf("%w: System creation requires automatic idle to be disabled", registry.ErrInvalid)
+	}
+	return nil
+}
+
+func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError error) error {
+	launcher, ok := j.Runtime.(rt.NativeLauncher)
+	if routeError != nil || !ok || bindingRuntime(j.Binding).Legacy() {
+		if j.Op.State == registry.Queued {
+			if err := j.Stage(ctx, "preflight", ""); err != nil {
+				return err
+			}
+		}
+		j.Written = j.Intent.Launch != nil
+		return j.fail(ctx, rt.SystemBootUnavailable(bindingRuntime(j.Binding).Legacy()))
+	}
+	if j.Intent.Launch != nil {
+		return j.reconcileSystemLaunch(ctx, launcher)
+	}
+	if err := readyRuntime(ctx, j.Runtime); err != nil {
+		return err
+	}
+	if err := j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
+		return err
+	}
+	template, err := j.DB.GetTemplate(ctx, request.TemplateID)
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	spec, err := templates.ReadSpec(template)
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	if spec.BootMode != rt.BootSystem {
+		return j.fail(ctx, registry.ErrInvalid)
+	}
+	if err := request.ValidateSystemCreate(); err != nil {
+		return j.fail(ctx, err)
+	}
+	binding, err := launcher.DiscoverLaunchBinding(ctx, j.Binding.RuntimeName)
+	if errors.Is(err, rt.ErrUnavailable) {
+		return err
+	}
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	if binding.ExecutionEpoch != 0 || binding.IncarnationID != nil {
+		return j.fail(ctx, &Failure{"STATE_CONFLICT", "new System machine name already has a Worker execution"})
+	}
+	intent := rt.LaunchSubmission{
+		OperationID: j.Op.ID, Expected: binding, Kind: rt.Launch,
+		Parameters: rt.LaunchParameters{
+			Name: j.Binding.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
+			MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
+			Disks: []rt.LaunchDisk{{AttachmentID: j.Binding.ID + "-root", DeviceID: "root", Role: "root", GenerationID: spec.RootGenerationID}},
+		},
+	}
+	intent.RequestDigest = launchDigest(intent)
+	j.Intent.Launch = &intent
+	if err := j.Stage(ctx, "worker_launch", "running"); err != nil {
+		return err
+	}
+	return j.submitSystemLaunch(ctx, launcher)
+}
+
+func launchDigest(request rt.LaunchSubmission) string {
+	request.RequestDigest = ""
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(JSON(request)))
+}
+
+func launchReceiptMissing(err error) bool {
+	var fault *rt.Error
+	return errors.As(err, &fault) && errors.Is(fault, rt.ErrNotFound) && fault.NativeCode == "E_NOT_FOUND"
+}
+
+func (j *Job) submitSystemLaunch(ctx context.Context, launcher rt.NativeLauncher) error {
+	receipt, err := launcher.SubmitLaunch(ctx, *j.Intent.Launch)
+	if err == nil {
+		return j.confirmSystemLaunch(ctx, launcher, receipt)
+	}
+	// A local capability check never sends the mutation. A Worker refusal
+	// can be terminal only when the durable operation is absent as well.
+	refusal := nativeRefusal(err)
+	var capability *rt.CapabilityError
+	if refusal != nil || errors.As(err, &capability) {
+		known, queryErr := launcher.QueryOperation(ctx, j.Op.ID)
+		if queryErr == nil {
+			return j.confirmSystemLaunch(ctx, launcher, known)
+		}
+		if launchReceiptMissing(queryErr) {
+			if refusal == nil {
+				refusal = capability
+			}
+			j.Written = false
+			return j.fail(ctx, refusal)
+		}
+	}
+	return j.awaitSystemLaunch(ctx)
+}
+
+func (j *Job) reconcileSystemLaunch(ctx context.Context, launcher rt.NativeLauncher) error {
+	j.Written = true
+	request := j.Intent.Launch
+	if request.OperationID != j.Op.ID || request.Kind != rt.Launch || request.Parameters.Name != j.Binding.RuntimeName ||
+		request.Expected.ExecutionEpoch != 0 || request.Expected.IncarnationID != nil || request.RequestDigest != launchDigest(*request) {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "System launch intent does not match the accepted operation"})
+	}
+	receipt, err := launcher.QueryOperation(ctx, j.Op.ID)
+	if launchReceiptMissing(err) {
+		// The same ID and digest are safe even if the original submit happens
+		// to finish while this retry reaches the Worker.
+		return j.submitSystemLaunch(ctx, launcher)
+	}
+	if errors.Is(err, rt.ErrUnavailable) {
+		return err
+	}
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	return j.confirmSystemLaunch(ctx, launcher, receipt)
+}
+
+func (j *Job) awaitSystemLaunch(ctx context.Context) error {
+	if j.Op.State == registry.Observing && j.Op.Stage == "worker_launch" && j.Op.Effect == registry.EffectUnknown {
+		return nil
+	}
+	return j.transition(ctx, registry.TransitionRequest{State: registry.Observing, Stage: "worker_launch", Effect: registry.EffectUnknown})
+}
+
+func (j *Job) confirmSystemLaunch(ctx context.Context, launcher rt.NativeLauncher, receipt rt.OperationReceipt) error {
+	j.Written = true
+	request := j.Intent.Launch
+	if receipt.OperationID != request.OperationID || receipt.Kind != rt.Launch || receipt.RequestDigest != request.RequestDigest ||
+		receipt.RouteID != "deep" || receipt.BundleDigest != j.Binding.RuntimeBundleID || receipt.InstanceID != request.Expected.InstanceID ||
+		receipt.ExpectedExecutionEpoch != request.Expected.ExecutionEpoch || receipt.ExpectedIncarnationID != nil {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker launch receipt does not match the accepted binding or intent"})
+	}
+	switch receipt.Phase {
+	case "NEW":
+		return j.awaitSystemLaunch(ctx)
+	case "ABORTED":
+		if receipt.Decision != "ABORT" || receipt.Execution != nil {
+			return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker launch abort has no confirmed final disposition"})
+		}
+		return j.finish(ctx, registry.Failed, registry.TransitionRequest{
+			Effect: registry.EffectNone, Error: JSON(map[string]string{"code": "NATIVE_OPERATION_ABORTED", "message": "Worker aborted the System launch"}),
+		})
+	case "COMPLETED":
+		return j.promoteSystemExecution(ctx, launcher, receipt)
+	default:
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker returned an unrecognized System launch phase"})
+	}
+}
+
+func (j *Job) promoteSystemExecution(ctx context.Context, launcher rt.NativeLauncher, receipt rt.OperationReceipt) error {
+	expected := j.Intent.Launch.Expected
+	if receipt.Decision != "NONE" || receipt.Execution == nil || receipt.Execution.InstanceID != expected.InstanceID ||
+		receipt.Execution.ExecutionEpoch != expected.ExecutionEpoch+1 || receipt.Execution.IncarnationID == "" {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker launch completion has no confirmed next execution"})
+	}
+	ref, err := launcher.DiscoverExecution(ctx, j.Binding.RuntimeName)
+	if errors.Is(err, rt.ErrUnavailable) {
+		return err
+	}
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	if ref != *receipt.Execution {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "registered execution differs from the Worker launch completion"})
+	}
+	inventory, err := launcher.NativeInventory(ctx, ref)
+	if errors.Is(err, rt.ErrUnavailable) {
+		return err
+	}
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	vm := inventory.Execution
+	if vm.ExecutionRef != ref || vm.BundleDigest != j.Binding.RuntimeBundleID || vm.Phase != "registered" || vm.PID < 1 ||
+		vm.PIDStartTime < 1 || vm.HostBootID == "" || inventory.Inventory.SourceDisposition != "RUNNING" ||
+		!slices.ContainsFunc(inventory.Inventory.Devices, func(device rt.NativeDevice) bool { return device.VirtioType == 2 }) {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "new execution lacks verified running block-root inventory"})
+	}
+	profile := ""
+	if inventory.ManagedStandby() {
+		profile = j.Binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
+	}
+	observation := nativeObservation(j.Binding, ref, registry.PowerRunning, profile)
+	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
+	return j.Done(ctx, registry.TransitionRequest{
+		Observation: &observation, Effect: registry.EffectApplied, PromoteBinding: true, DesiredPower: "running",
+		Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "boot_mode": rt.BootSystem, "execution_epoch": ref.ExecutionEpoch}),
+	})
+}

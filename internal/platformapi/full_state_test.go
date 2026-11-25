@@ -50,6 +50,10 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 		Capabilities: json.RawMessage(`{"state.hibernate":{"supported":true}}`)}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.EnsureTemplate(ctx, registry.Template{ID: "system-template", Name: "System", Version: 1,
+		ImageDigest: "sha256:" + strings.Repeat("1", 64), Spec: json.RawMessage(`{"boot_mode":"system","root_generation_id":"debian-root"}`)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.RegisterRuntime(ctx, rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}, "isolated-socket",
 		json.RawMessage(`{"contracts":{"state_reader_id":"reader"},"guest":{"boot_profiles":["oci-v1"]}}`)); err != nil {
 		t.Fatal(err)
@@ -73,6 +77,17 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.mux.ServeHTTP(w, r)
 		return w
+	}
+	for _, testcase := range []struct{ body, code string }{
+		{`{"name":"system","template_id":"system-template","start":true}`, "CAPABILITY_UNSUPPORTED"},
+		{`{"name":"system","template_id":"system-template","runtime_instance_id":"serve","start":true}`, "CAPABILITY_UNKNOWN"},
+		{`{"name":"system","template_id":"system-template","runtime_instance_id":"serve","boot_mode":"oci","start":true}`, "INVALID_ARGUMENT"},
+	} {
+		w := post("/v1/machines", testcase.body, "unverified-system")
+		var response struct{ Error map[string]string }
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Error["code"] != testcase.code || response.Error["effect"] != "none" {
+			t.Fatalf("System create = %d %s, %v", w.Code, w.Body.String(), err)
+		}
 	}
 	for _, tc := range []struct{ path, capability, body string }{
 		{"standby", "lifecycle.standby", `{"expected_generation":1}`},

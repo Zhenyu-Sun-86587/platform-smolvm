@@ -58,6 +58,7 @@ func FullStateCapabilities(official bool) map[string]Capability {
 	c := fullStateCapability(official)
 	result := map[string]Capability{
 		NativePowerCapability(Wake): c,
+		SystemBootCapability:        c,
 		"state.live_fork":           c,
 		"state.clone_ready":         c,
 		"storage.multidisk_capture": c,

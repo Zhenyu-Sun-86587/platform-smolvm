@@ -81,14 +81,16 @@ export interface Control {
 export interface Resources {
     cpu_count: number;
     memory_mib: number;
-    storage_gib: number;
-    overlay_gib: number;
+    storage_gib?: number;
+    overlay_gib?: number;
 }
 export interface IdlePolicy {
     enabled: boolean;
     timeout_seconds: number;
 }
+export type BootMode = "oci" | "system";
 export interface CreateMachine {
+    boot_mode?: BootMode;
     runtime_instance_id?: string;
     name: string;
     template_id: string;

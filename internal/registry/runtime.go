@@ -40,9 +40,13 @@ func (s *Store) RegisterRuntime(ctx context.Context, route rt.BundleRoute, endpo
 	return tx.Commit()
 }
 
-func loadRuntimeRoute(ctx context.Context, tx *sql.Tx, instanceID string) (rt.BundleRoute, error) {
+func (s *Store) GetRuntimeRoute(ctx context.Context, instanceID string) (rt.BundleRoute, error) {
+	return loadRuntimeRoute(ctx, s.reader, instanceID)
+}
+
+func loadRuntimeRoute(ctx context.Context, db queryer, instanceID string) (rt.BundleRoute, error) {
 	route := rt.BundleRoute{InstanceID: instanceID}
-	err := tx.QueryRowContext(ctx, `SELECT runtime_bundle_id FROM runtime_instances WHERE id = ?`, instanceID).Scan(&route.BundleID)
+	err := db.QueryRowContext(ctx, `SELECT runtime_bundle_id FROM runtime_instances WHERE id = ?`, instanceID).Scan(&route.BundleID)
 	if err == sql.ErrNoRows {
 		return rt.BundleRoute{}, &rt.Error{Code: "NOT_SUPPORTED", Message: "runtime instance is not registered"}
 	}

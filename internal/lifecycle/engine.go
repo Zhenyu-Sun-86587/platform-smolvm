@@ -57,14 +57,15 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 }
 
 type Create struct {
-	Name              string `json:"name"`
-	TemplateID        string `json:"template_id"`
-	RuntimeInstanceID string `json:"runtime_instance_id,omitempty"`
+	Name              string      `json:"name"`
+	TemplateID        string      `json:"template_id"`
+	RuntimeInstanceID string      `json:"runtime_instance_id,omitempty"`
+	BootMode          rt.BootMode `json:"boot_mode,omitempty"`
 	Resources         struct {
 		CPUs    uint8  `json:"cpu_count"`
 		Memory  uint32 `json:"memory_mib"`
-		Storage uint64 `json:"storage_gib"`
-		Overlay uint64 `json:"overlay_gib"`
+		Storage uint64 `json:"storage_gib,omitempty"`
+		Overlay uint64 `json:"overlay_gib,omitempty"`
 	} `json:"resources"`
 	IdlePolicy *IdlePolicy `json:"idle_policy,omitempty"`
 	Start      bool        `json:"start"`
@@ -81,6 +82,7 @@ type Action struct {
 }
 type Intent struct {
 	Native          *rt.NativeSubmission  `json:"native,omitempty"`
+	Launch          *rt.LaunchSubmission  `json:"launch,omitempty"`
 	Stage           string                `json:"stage"`
 	Name            string                `json:"runtime_name"`
 	Source          string                `json:"source,omitempty"`
@@ -303,6 +305,15 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)
+	if op.Kind == "create" {
+		var request Create
+		if err := json.Unmarshal(op.Request, &request); err != nil {
+			return err
+		}
+		if request.BootMode == rt.BootSystem {
+			return j.driveSystemLaunch(ctx, request, err)
+		}
+	}
 	if err == nil {
 		err = e.AdmitRuntime(bindingRuntime(j.Binding).BundleRoute, op.Kind)
 	}
@@ -327,17 +338,8 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 		return j.reconcile(ctx)
 	}
-	if err = j.Stage(ctx, "preflight", ""); err != nil {
+	if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
 		return err
-	}
-	if op.Heavy {
-		var s syscall.Statfs_t
-		if err = syscall.Statfs(e.Config.StateDir, &s); err != nil {
-			return j.fail(ctx, err)
-		}
-		if s.Bavail*uint64(s.Bsize) < e.Config.Storage.MinBytes || s.Blocks > 0 && 100*s.Bavail/s.Blocks < uint64(e.Config.Storage.MinPercent) {
-			return j.fail(ctx, &Failure{"DISK_LOW", "insufficient free space for heavy operation"})
-		}
 	}
 	if useNative {
 		err = j.nativePower(ctx, native)
@@ -358,6 +360,20 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		return err
 	}
 	return j.fail(parent, err)
+}
+
+func (j *Job) prepareDispatch(ctx context.Context) error {
+	if err := j.Stage(ctx, "preflight", ""); err != nil || !j.Op.Heavy {
+		return err
+	}
+	var s syscall.Statfs_t
+	if err := syscall.Statfs(j.Config.StateDir, &s); err != nil {
+		return j.fail(ctx, err)
+	}
+	if s.Bavail*uint64(s.Bsize) < j.Config.Storage.MinBytes || s.Blocks > 0 && 100*s.Bavail/s.Blocks < uint64(j.Config.Storage.MinPercent) {
+		return j.fail(ctx, &Failure{"DISK_LOW", "insufficient free space for heavy operation"})
+	}
+	return nil
 }
 
 // CheckSameRuntime protects operations whose native source and target must live

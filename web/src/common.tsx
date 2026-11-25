@@ -118,26 +118,29 @@ export type DialogConfig = {
   content?: ReactNode
   sheet?: boolean
   destructive?: boolean
-  fields?: Field[]
+  fields?: Field[] | ((values?: FormData) => Field[])
   act: (data: FormData) => Promise<unknown>
 }
 
 export function Dialog({ config, close }: { config: DialogConfig; close: () => void }) {
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
+  const [values, setValues] = useState<FormData>()
+  const dynamic = typeof config.fields === "function"
+  const fields = typeof config.fields === "function" ? config.fields(values) : config.fields
   return <Root open onOpenChange={open => { if (!open && !busy) close() }}>
     <DialogContent placement={config.sheet?"right":"center"} animate={!config.sheet} className={config.sheet ? "form-sheet" : "form-dialog"} onEscapeKeyDown={event => { if (busy) event.preventDefault() }} onInteractOutside={event => { if (busy) event.preventDefault() }} showCloseButton={!busy} {...(config.description ? {} : {"aria-describedby":undefined})}>
       <DialogHeader><DialogTitle>{config.title}</DialogTitle>
       {config.description && <DialogDescription>{config.description}</DialogDescription>}</DialogHeader>
       {config.content}
-      <form onSubmit={event => {
+      <form onChange={dynamic ? event => setValues(new FormData(event.currentTarget)) : undefined} onSubmit={event => {
         event.preventDefault()
         const form = new FormData(event.currentTarget)
         setBusy(true)
         setError(undefined)
         config.act(form).then(close).catch(setError).finally(() => setBusy(false))
       }}>
-        {config.fields?.map(field => <label key={field.name} className={field.type === "checkbox" ? "checkbox" : "field"}>
+        {fields?.map(field => <label key={field.name} className={field.type === "checkbox" ? "checkbox" : "field"}>
           <span>{field.label}</span>
           {field.options ? <select name={field.name} defaultValue={String(field.value ?? "")} required={field.required}>
             {field.options.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label ?? option.value}</option>)}

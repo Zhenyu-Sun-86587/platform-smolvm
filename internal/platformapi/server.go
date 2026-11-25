@@ -27,6 +27,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/snapshots"
+	"sandbox-platform/internal/templates"
 )
 
 type Server struct {
@@ -240,7 +241,9 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	req.Key = env.Key
 	req.Scope = env.Scope
 	req.Request = env.Request
-	req.AdmitRuntime = s.AdmitRuntime
+	if req.AdmitRuntime == nil {
+		req.AdmitRuntime = s.AdmitRuntime
+	}
 	req.AdmitNative = s.AdmitNativePower
 	if req.MachineID != "" {
 		rev, err := revision(r)
@@ -396,6 +399,10 @@ func (s *Server) routes() {
 		if err != nil {
 			return err
 		}
+		for _, profile := range profiles {
+			capability, _ := s.SystemBootCapability(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
+			profile.Capabilities[rt.SystemBootCapability] = capability
+		}
 		return list(w, r, profiles, func(profile registry.RuntimeProfile) string { return profile.RuntimeInstanceID })
 	})
 	s.route("GET /v1/tokens", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -506,24 +513,49 @@ func (s *Server) machineRoutes() {
 		if v.Name == "" || v.TemplateID == "" {
 			return registry.ErrInvalid
 		}
+		tpl, err := s.DB.GetTemplate(r.Context(), v.TemplateID)
+		if err != nil {
+			return err
+		}
+		boot, err := templates.ReadSpec(tpl)
+		if err != nil {
+			return err
+		}
+		if v.BootMode != "" && v.BootMode != boot.BootMode {
+			return fmt.Errorf("%w: boot mode differs from the selected template", registry.ErrInvalid)
+		}
 		if v.Resources.CPUs == 0 {
 			v.Resources.CPUs = 1
 		}
 		if v.Resources.Memory == 0 {
 			v.Resources.Memory = 512
 		}
-		if v.Resources.Storage == 0 {
-			v.Resources.Storage = 2
-		}
-		if v.Resources.Overlay == 0 {
-			v.Resources.Overlay = 2
-		}
 		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true, RuntimeInstanceID: v.RuntimeInstanceID}
-		if v.IdlePolicy == nil {
-			tpl, err := s.DB.GetTemplate(r.Context(), v.TemplateID)
+		if boot.BootMode == rt.BootSystem {
+			if v.RuntimeInstanceID == "" {
+				return rt.SystemBootUnavailable(true)
+			}
+			v.BootMode = rt.BootSystem
+			if err := v.ValidateSystemCreate(); err != nil {
+				return err
+			}
+			admission, err := s.systemCreateAdmission(r.Context(), v.RuntimeInstanceID)
 			if err != nil {
 				return err
 			}
+			req.AdmitRuntime = admission
+			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
+			req.DesiredPower = "running"
+		} else {
+			v.BootMode = ""
+			if v.Resources.Storage == 0 {
+				v.Resources.Storage = 2
+			}
+			if v.Resources.Overlay == 0 {
+				v.Resources.Overlay = 2
+			}
+		}
+		if v.IdlePolicy == nil && boot.BootMode == rt.BootOCI {
 			defaults, err := s.settings(r.Context())
 			if err != nil {
 				return err
