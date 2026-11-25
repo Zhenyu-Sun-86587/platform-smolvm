@@ -46,24 +46,36 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		if !custom && !officialReady {
 			continue
 		}
+		if custom && b.ExecutionEpoch != 0 {
+			// Public machine metadata cannot identify a native execution epoch.
+			continue
+		}
+		var expectedEpoch *int64
+		if custom {
+			expectedEpoch = &b.ExecutionEpoch
+		}
 		adapter, err := e.ForBinding(b)
 		if err != nil {
 			continue
 		}
 		o, err := adapter.Observe(ctx, b.RuntimeName)
 		if err != nil {
-			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked", GuestManagementStatus: "unknown"})
+			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked", GuestManagementStatus: "unknown", ExpectedExecutionEpoch: expectedEpoch})
 			continue
 		}
 		if o.Labels["platform.binding"] != b.ID {
-			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked"})
+			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked", ExpectedExecutionEpoch: expectedEpoch})
 			continue
 		}
 		if custom {
 			x := Evidence(o)
 			x.ExpectedRuntimeIdentity = b.RuntimeIdentity
+			x.ExpectedExecutionEpoch = expectedEpoch
 			x.Availability = "blocked"
 			x.GuestManagementStatus = "unknown"
+			if o.Identity.Complete() {
+				x.WorkloadError = o.WorkloadError
+			}
 			_ = e.DB.ObserveMachine(ctx, b.ID, x)
 			continue
 		}

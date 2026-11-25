@@ -117,6 +117,8 @@ type Observation struct {
 	// ExpectedRuntimeIdentity, when set, prevents a probe of a replaced
 	// execution from overwriting the evidence for the current execution.
 	ExpectedRuntimeIdentity json.RawMessage `json:"-"`
+	// ExpectedExecutionEpoch also guards the transition from no native execution.
+	ExpectedExecutionEpoch *int64 `json:"-"`
 }
 
 const (

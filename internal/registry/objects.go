@@ -333,7 +333,8 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 			return false, fmt.Errorf("%w: invalid observation JSON", ErrInvalid)
 		}
 	}
-	if len(o.ExpectedRuntimeIdentity) > 0 && !sameJSON(o.ExpectedRuntimeIdentity, old.RuntimeIdentity) {
+	if (o.ExpectedExecutionEpoch != nil && *o.ExpectedExecutionEpoch != old.ExecutionEpoch) ||
+		(len(o.ExpectedRuntimeIdentity) > 0 && !sameJSON(o.ExpectedRuntimeIdentity, old.RuntimeIdentity)) {
 		return false, ErrStaleObservation
 	}
 	observedAt := o.ObservedAt
