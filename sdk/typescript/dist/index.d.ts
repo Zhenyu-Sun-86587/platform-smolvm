@@ -47,6 +47,7 @@ export interface IdlePolicy {
     timeout_seconds: number;
 }
 export interface CreateMachine {
+    runtime_instance_id?: string;
     name: string;
     template_id: string;
     resources?: Resources;
@@ -86,6 +87,8 @@ export interface Machine extends CreateMachine {
     state_reason?: unknown;
     binding?: {
         binding_id?: string;
+        runtime_instance_id?: string;
+        runtime_bundle_id?: string;
         runtime_identity?: Record<string, unknown> | null;
         state_reason?: unknown;
         guest_management_evidence?: {

@@ -73,6 +73,9 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 		if b == nil || m.DeletedAt != nil {
 			return zero, registry.ErrNotFound
 		}
+		if err := e.AdmitRuntime(bindingRuntime(*b).BundleRoute, "access"); err != nil {
+			return zero, err
+		}
 		adapter, err := e.ForBinding(*b)
 		if err != nil {
 			return zero, err
@@ -120,7 +123,7 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 				if o.State != "paused" && !e.Config.Lifecycle.WakeStopped {
 					return zero, &Failure{"SERVICE_NOT_READY", "cold wake is disabled"}
 				}
-				op, _, err := e.DB.Accept(ctx, registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: ctl.ControlEpoch, Kind: "wake", Scope: "POST /internal/access/" + id, Key: key, MachineID: id, ExpectedGeneration: b.Generation, Heavy: true, Request: JSON(map[string]string{"reason": "user_access"})})
+				op, _, err := e.DB.Accept(ctx, registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: ctl.ControlEpoch, Kind: "wake", Scope: "POST /internal/access/" + id, Key: key, MachineID: id, ExpectedGeneration: b.Generation, Heavy: true, Request: JSON(map[string]string{"reason": "user_access"}), AdmitRuntime: e.AdmitRuntime})
 				if err != nil && !errors.Is(err, registry.ErrOperationActive) {
 					return zero, err
 				}

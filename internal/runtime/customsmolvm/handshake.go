@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	rt "sandbox-platform/internal/runtime"
@@ -22,13 +23,14 @@ const extensionPath = "/api/v1/runtime-ext/v1"
 const capabilitiesPath = extensionPath + "/capabilities"
 
 type Handshake struct {
-	Schema           string                   `json:"schema"`
-	RouteID          string                   `json:"route_id"`
-	BundleDigest     string                   `json:"bundle_digest"`
-	StateReaderID    string                   `json:"state_reader_id"`
-	Protocols        map[string]int           `json:"protocols"`
-	RequiredFeatures []string                 `json:"required_features"`
-	Capabilities     map[string]rt.Capability `json:"capabilities"`
+	Schema            string                   `json:"schema"`
+	RouteID           string                   `json:"route_id"`
+	RuntimeInstanceID string                   `json:"runtime_instance_id,omitempty"`
+	BundleDigest      string                   `json:"bundle_digest"`
+	StateReaderID     string                   `json:"state_reader_id"`
+	Protocols         map[string]int           `json:"protocols"`
+	RequiredFeatures  []string                 `json:"required_features"`
+	Capabilities      map[string]rt.Capability `json:"capabilities"`
 }
 
 var bundleID = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -37,13 +39,26 @@ func validDigest(value string) bool {
 	return bundleID.MatchString(value) && value != "sha256:"+strings.Repeat("0", 64)
 }
 
-func Probe(ctx context.Context, socket, expectedBundle, expectedReader string) (Handshake, error) {
-	var h Handshake
+func validateEndpoint(socket, expectedBundle, expectedReader string) error {
 	if !filepath.IsAbs(socket) || filepath.Clean(socket) != socket || len(socket) > 107 ||
-		!validDigest(expectedBundle) || strings.TrimSpace(expectedReader) == "" {
-		return h, fmt.Errorf("%w: expected canonical socket, bundle digest and reader ID", rt.ErrInvalid)
+		strings.ContainsRune(socket, 0) || !validDigest(expectedBundle) || strings.TrimSpace(expectedReader) == "" {
+		return fmt.Errorf("%w: expected canonical socket, bundle digest and reader ID", rt.ErrInvalid)
 	}
-	if err := get(ctx, socket, capabilitiesPath, &h); err != nil {
+	return nil
+}
+
+func Probe(ctx context.Context, socket, expectedBundle, expectedReader string) (Handshake, error) {
+	if err := validateEndpoint(socket, expectedBundle, expectedReader); err != nil {
+		return Handshake{}, err
+	}
+	endpoint := dialEndpoint(socket)
+	defer endpoint.CloseIdleConnections()
+	return probe(ctx, endpoint, expectedBundle, expectedReader)
+}
+
+func probe(ctx context.Context, endpoint *http.Client, expectedBundle, expectedReader string) (Handshake, error) {
+	var h Handshake
+	if err := get(ctx, endpoint, capabilitiesPath, &h); err != nil {
 		if errors.Is(err, rt.ErrNotFound) {
 			return Handshake{}, fmt.Errorf("%w: Serve has no runtime-ext/v1", rt.ErrUnsupported)
 		}
@@ -67,11 +82,20 @@ func Probe(ctx context.Context, socket, expectedBundle, expectedReader string) (
 	return h, nil
 }
 
-func get(ctx context.Context, socket, path string, target any) error {
-	d := &net.Dialer{}
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return d.DialContext(ctx, "unix", socket) }}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+func dialEndpoint(socket string) *http.Client {
+	var dialed atomic.Bool
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		// A verified follow-up request must use the same connection as the handshake.
+		if dialed.Swap(true) {
+			return nil, fmt.Errorf("verified Serve connection closed")
+		}
+		return d.DialContext(ctx, "unix", socket)
+	}}
+	return &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func get(ctx context.Context, client *http.Client, path string, target any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://smolvm"+path, nil)
 	if err != nil {
 		return err
@@ -105,6 +129,9 @@ func get(ctx context.Context, socket, path string, target any) error {
 			code = "CONFLICT"
 		}
 		return &rt.Error{Code: code, Status: res.StatusCode, NativeCode: detail.Code, Message: fmt.Sprintf("Serve returned %s: %s", res.Status, detail.Error)}
+	}
+	if target == nil {
+		return nil
 	}
 	if err = json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("%w: invalid Serve response: %v", rt.ErrInvalid, err)

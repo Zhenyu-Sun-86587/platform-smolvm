@@ -230,6 +230,7 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	req.Key = env.Key
 	req.Scope = env.Scope
 	req.Request = env.Request
+	req.AdmitRuntime = s.AdmitRuntime
 	if req.MachineID != "" {
 		rev, err := revision(r)
 		if err != nil {
@@ -495,7 +496,7 @@ func (s *Server) machineRoutes() {
 		if v.Resources.Overlay == 0 {
 			v.Resources.Overlay = 2
 		}
-		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true}
+		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true, RuntimeInstanceID: v.RuntimeInstanceID}
 		if v.IdlePolicy == nil {
 			tpl, err := s.DB.GetTemplate(r.Context(), v.TemplateID)
 			if err != nil {

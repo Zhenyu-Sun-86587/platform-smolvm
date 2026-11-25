@@ -11,6 +11,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 const operationColumns = `id, control_epoch, COALESCE(principal_id, ''), COALESCE(machine_id, ''),
@@ -73,6 +75,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		return Operation{}, false, fmt.Errorf("%w: operation kind is required", ErrInvalid)
 	}
 	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore")
+	if r.RuntimeInstanceID != "" && r.Kind != "create" {
+		return Operation{}, false, fmt.Errorf("%w: only a new machine can select a runtime instance", ErrInvalid)
+	}
 	fromSource := creates && r.Kind != "create" && r.MachineID != ""
 	if r.ResolveMachine != nil && (creates || r.MachineID != "") {
 		return Operation{}, false, fmt.Errorf("%w: machine resolver requires an existing object", ErrInvalid)
@@ -136,8 +141,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		IdlePolicy                                      json.RawMessage
 		KeepRunning, Heavy, Allocate                    bool
 		Locks                                           []Lock
+		RuntimeInstanceID                               string `json:",omitempty"`
 	}{r.Kind, r.MachineID, r.Name, r.TemplateID, r.DesiredPower, idleCanonical,
-		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks}
+		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID}
 	fingerprint, err := mutationFingerprint(ctx, tx, envelope, target)
 	if err != nil {
 		return Operation{}, false, err
@@ -175,6 +181,24 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 		if err := checkMachineExpected(prior, r.ExpectedRevision, r.ExpectedGeneration); err != nil {
+			return Operation{}, false, err
+		}
+	}
+	var route rt.BundleRoute
+	if prior.CurrentBinding != nil {
+		route = rt.BundleRoute{InstanceID: prior.CurrentBinding.RuntimeInstanceID, BundleID: prior.CurrentBinding.RuntimeBundleID}
+	}
+	if r.RuntimeInstanceID != "" {
+		route, err = loadRuntimeRoute(ctx, tx, r.RuntimeInstanceID)
+		if err != nil {
+			return Operation{}, false, err
+		}
+	}
+	if route != (rt.BundleRoute{}) {
+		if r.AdmitRuntime == nil {
+			return Operation{}, false, rt.ErrUnsupported
+		}
+		if err := r.AdmitRuntime(route, r.Kind); err != nil {
 			return Operation{}, false, err
 		}
 	}
@@ -246,7 +270,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		if op.MachineID == "" {
 			return Operation{}, false, fmt.Errorf("%w: binding allocation requires a machine", ErrInvalid)
 		}
-		if err := allocateBinding(ctx, tx, &op, request); err != nil {
+		if err := allocateBinding(ctx, tx, &op, request, route); err != nil {
 			return Operation{}, false, err
 		}
 	} else if prior.CurrentBinding != nil {
@@ -310,7 +334,7 @@ func checkMachineExpected(m Machine, revision, generation int64) error {
 	return nil
 }
 
-func allocateBinding(ctx context.Context, tx *sql.Tx, op *Operation, request string) error {
+func allocateBinding(ctx context.Context, tx *sql.Tx, op *Operation, request string, route rt.BundleRoute) error {
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(generation), 0) + 1 FROM runtime_bindings WHERE machine_id = ?",
 		op.MachineID).Scan(&op.BindingGeneration); err != nil {
 		return err
@@ -334,9 +358,13 @@ func allocateBinding(ctx context.Context, tx *sql.Tx, op *Operation, request str
 	}
 	digest := sha256.Sum256(canonical)
 	_, err = tx.ExecContext(ctx, `INSERT INTO runtime_bindings
-		(id, machine_id, generation, runtime_name, status, task_namespace, spec_hash)
-		VALUES (?, ?, ?, ?, 'candidate', ?, ?)`, op.BindingID, op.MachineID, op.BindingGeneration,
-		op.RuntimeName, namespace, hex.EncodeToString(digest[:]))
+		(id, machine_id, generation, runtime_name, status, task_namespace, spec_hash, runtime_instance_id, runtime_bundle_id)
+		VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?, ?)`, op.BindingID, op.MachineID, op.BindingGeneration,
+		op.RuntimeName, namespace, hex.EncodeToString(digest[:]), nullable(route.InstanceID), nullable(route.BundleID))
+	if err != nil || route.BundleID == "" {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runtime_bundle_refs(bundle_id, owner_kind, owner_id) VALUES (?, 'binding', ?)`, route.BundleID, op.BindingID)
 	return err
 }
 

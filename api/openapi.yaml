@@ -2102,6 +2102,7 @@ components:
       properties:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
+        runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. The selected runtime must admit Create.}
         resources: {$ref: '#/components/schemas/Resources'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
         start: {type: boolean}
@@ -2153,6 +2154,8 @@ components:
           type: object
           properties:
             binding_id: {type: string, minLength: 1}
+            runtime_instance_id: {type: string, minLength: 1}
+            runtime_bundle_id: {type: string, minLength: 1}
             runtime_identity: {type: object, additionalProperties: true}
             state_reason: {type: object, additionalProperties: true}
             guest_management_evidence: {type: object, additionalProperties: true}

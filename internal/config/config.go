@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sandbox-platform/internal/runtime/customsmolvm"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +32,7 @@ type Config struct {
 		VerifySocket                string `yaml:"verify_socket"`
 		Version, Socket, Executable string
 		DataDir                     string `yaml:"data_dir"`
+		Custom                      []customsmolvm.Route
 	}
 	Database struct {
 		Path        string
@@ -152,6 +155,26 @@ func Load(path string) (Config, error) {
 	}
 	if c.Runtime.VerifySocket != "" && (!filepath.IsAbs(c.Runtime.VerifySocket) || c.Runtime.VerifySocket == c.Runtime.Socket || c.Runtime.VerifySocket == c.Runtime.StatusSocket) {
 		return c, errors.New("runtime verify_socket must be an independent absolute socket path")
+	}
+	instances := make(map[string]bool)
+	sockets := map[string]bool{}
+	for _, socket := range []string{c.Runtime.Socket, c.Runtime.StatusSocket, c.Runtime.VerifySocket} {
+		if socket != "" {
+			sockets[filepath.Clean(socket)] = true
+		}
+	}
+	for _, route := range c.Runtime.Custom {
+		if err := route.Validate(); err != nil {
+			return c, err
+		}
+		if !filepath.IsAbs(route.Manifest) || filepath.Clean(route.Manifest) != route.Manifest {
+			return c, errors.New("custom runtime manifest must use a canonical absolute path")
+		}
+		if instances[route.InstanceID] || sockets[route.Socket] {
+			return c, errors.New("custom runtime instances and socket paths must be distinct")
+		}
+		instances[route.InstanceID] = true
+		sockets[route.Socket] = true
 	}
 	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxConnections < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
 		return c, errors.New("invalid capacity settings")

@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -91,9 +92,13 @@ func TestDriveResolvesStoredBindingBeforeDispatch(t *testing.T) {
 	official := &createRuntime{}
 	engine, owner, epoch := runtimeTestEngine(t, ctx, official)
 	db := engine.DB
+	customRoute := rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}
+	if err := db.RegisterRuntime(ctx, customRoute, "isolated-socket", JSON(map[string]string{"schema": "RuntimeBundle/1"})); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"legacy", "custom"} {
 		t.Run(name, func(t *testing.T) {
-			op, _, err := db.Accept(ctx, registry.AcceptRequest{
+			request := registry.AcceptRequest{
 				PrincipalID: owner,
 				Epoch:       epoch,
 				Key:         "create-" + name,
@@ -102,17 +107,34 @@ func TestDriveResolvesStoredBindingBeforeDispatch(t *testing.T) {
 				TemplateID:  "t1",
 				Name:        name,
 				Request:     JSON(Create{Name: name, TemplateID: "t1"}),
-			})
+			}
+			if name == "custom" {
+				request.RuntimeInstanceID = customRoute.InstanceID
+				request.AdmitRuntime = engine.AdmitRuntime
+				if _, _, err := db.Accept(ctx, request); !errors.Is(err, rt.ErrUnsupported) {
+					t.Fatalf("unavailable runtime admitted before dispatch: %v", err)
+				}
+				// Model a previously admitted operation after its runtime was removed.
+				request.AdmitRuntime = func(route rt.BundleRoute, kind string) error {
+					if route != customRoute || kind != "create" {
+						t.Fatalf("unexpected admission of %v %s", route, kind)
+					}
+					return nil
+				}
+			}
+			op, _, err := db.Accept(ctx, request)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if name == "custom" {
-				_, err := db.DB().ExecContext(ctx,
-					"INSERT INTO runtime_bundles VALUES ('bundle', 'digest', '{}', 'verified', 'approved', 1);"+
-						"INSERT INTO runtime_instances VALUES ('serve', 'deep', 'bundle', 'isolated-socket', 'ready', 1);"+
-						"UPDATE runtime_bindings SET runtime_instance_id='serve', runtime_bundle_id='bundle' WHERE id=?;", op.BindingID)
-				if err != nil {
-					t.Fatal(err)
+				binding, err := db.GetBinding(ctx, op.BindingID)
+				if err != nil || bindingRuntime(binding).BundleRoute != customRoute {
+					t.Fatalf("binding route was not persisted: %+v, %v", binding, err)
+				}
+				request.AdmitRuntime = engine.AdmitRuntime
+				replay, found, err := db.Accept(ctx, request)
+				if err != nil || !found || replay.ID != op.ID {
+					t.Fatalf("idempotent replay = %+v, %t, %v", replay, found, err)
 				}
 			}
 			if err := engine.drive(ctx, op); err != nil {

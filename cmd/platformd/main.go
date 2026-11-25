@@ -20,6 +20,7 @@ import (
 	"sandbox-platform/internal/platformapi"
 	"sandbox-platform/internal/registry"
 	"sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/customsmolvm"
 	"sandbox-platform/internal/runtime/smolvm"
 	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/templates"
@@ -93,7 +94,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	engine := lifecycle.New(db, runtime.NewResolver(official, nil), c)
+	custom := make(map[runtime.BundleRoute]runtime.Adapter, len(c.Runtime.Custom))
+	for _, route := range c.Runtime.Custom {
+		adapter, err := customsmolvm.New(route)
+		if err != nil {
+			return err
+		}
+		manifest, err := route.LoadManifest()
+		if err != nil {
+			return fmt.Errorf("custom runtime %q: %w", route.InstanceID, err)
+		}
+		if err := db.RegisterRuntime(ctx, route.Key(), route.Socket, manifest); err != nil {
+			return err
+		}
+		custom[route.Key()] = adapter
+	}
+	engine := lifecycle.New(db, runtime.NewResolver(official, custom), c)
 	catalog, err := snapshots.Open(db, c)
 	if err != nil {
 		return err
