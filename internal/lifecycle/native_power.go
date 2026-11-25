@@ -40,12 +40,16 @@ func nativeObservation(binding registry.Binding, ref rt.ExecutionRef, power regi
 	if power == registry.PowerStandby {
 		state = "paused"
 	}
-	return registry.Observation{
+	observation := registry.Observation{
 		ObservedState: state, NativeState: string(power), Availability: "blocked",
 		RuntimeIdentity: binding.RuntimeIdentity, ExpectedExecutionEpoch: &binding.ExecutionEpoch,
 		GuestManagementStatus: "unknown", StateReason: json.RawMessage(`""`),
 		Native: &registry.NativeObservation{Execution: ref, PowerState: power, VerifiedStandbyProfile: profile},
 	}
+	if binding.ExecutionRef() == ref {
+		observation.GuestManagementEvidence = binding.GuestManagementEvidence
+	}
+	return observation
 }
 
 func (e *Engine) observeNativePower(ctx context.Context, binding registry.Binding, adapter rt.Adapter) bool {
@@ -79,7 +83,14 @@ func (e *Engine) observeNativePower(ctx context.Context, binding registry.Bindin
 		profile = binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
 	}
 	observation := nativeObservation(binding, ref, power, profile)
-	return e.DB.ObserveMachine(ctx, binding.ID, observation) == nil
+	digest := e.observeSystemGuest(ctx, binding, adapter, &observation)
+	if err := e.DB.ObserveMachine(ctx, binding.ID, observation); err != nil {
+		return false
+	}
+	if digest != "" {
+		e.queueNativeSSH(ctx, binding, digest)
+	}
+	return true
 }
 
 func (j *Job) nativePower(ctx context.Context, control rt.NativeControl) error {

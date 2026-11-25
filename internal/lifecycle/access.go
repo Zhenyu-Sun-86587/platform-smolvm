@@ -3,9 +3,11 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"time"
+
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/registry"
-	"time"
+	rt "sandbox-platform/internal/runtime"
 )
 
 // Access registers demand before observing the VM. The durable worker owns any
@@ -73,12 +75,18 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 		if b == nil || m.DeletedAt != nil {
 			return zero, registry.ErrNotFound
 		}
-		if err := e.AdmitRuntime(bindingRuntime(*b).BundleRoute, "access"); err != nil {
-			return zero, err
-		}
 		adapter, err := e.ForBinding(*b)
 		if err != nil {
 			return zero, err
+		}
+		native, _ := adapter.(rt.NativeControl)
+		if bindingRuntime(*b).Legacy() || b.ExecutionEpoch == 0 {
+			native = nil
+		}
+		if native == nil {
+			if err := e.AdmitRuntime(bindingRuntime(*b).BundleRoute, "access"); err != nil {
+				return zero, err
+			}
 		}
 		if m.ActiveOperationID != "" {
 			op, err := e.DB.GetOperation(ctx, m.ActiveOperationID)
@@ -91,7 +99,7 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 				}
 			}
 			switch op.Kind {
-			case "wake", "resume", "idle_pause", "start", "sync_keys":
+			case rt.Wake, rt.Standby, "resume", "idle_pause", "start", "sync_keys":
 				if op.State == registry.RecoveryRequired {
 					return zero, &Failure{"RECOVERY_REQUIRED", "pending machine operation requires observation"}
 				}
@@ -99,31 +107,30 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 				return zero, &registry.ActiveOperationError{MachineID: id, OperationID: op.ID}
 			}
 		} else {
-			o, err := adapter.Observe(ctx, b.RuntimeName)
+			state, err := verifyAccessState(ctx, *b, adapter, native)
 			if err != nil {
 				return zero, err
 			}
-			if o.Labels["platform.binding"] != b.ID {
-				return zero, registry.ErrStaleObservation
-			}
-			switch o.State {
-			case "running":
-				if !o.Identity.Complete() {
-					return zero, &Failure{"RECOVERY_REQUIRED", "runtime identity is incomplete"}
-				}
+			switch state {
+			case rt.StateRunning:
 				// Mutations accepted after this point see the hold at preflight.
 				latest, err := e.DB.GetMachine(ctx, id)
 				if err != nil {
 					return zero, err
 				}
-				if latest.ActiveOperationID == "" && latest.CurrentBinding != nil && latest.CurrentBinding.ID == b.ID {
+				if latest.ActiveOperationID == "" && latest.CurrentBinding != nil && latest.CurrentBinding.ID == b.ID &&
+					latest.CurrentBinding.ExecutionRef() == b.ExecutionRef() {
 					return *b, nil
 				}
-			case "paused", "stopped", "created":
-				if o.State != "paused" && !e.Config.Lifecycle.WakeStopped {
+			case rt.StatePaused, rt.StateStopped, rt.StateCreated:
+				if state != rt.StatePaused && !e.Config.Lifecycle.WakeStopped {
 					return zero, &Failure{"SERVICE_NOT_READY", "cold wake is disabled"}
 				}
-				op, _, err := e.DB.Accept(ctx, registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: ctl.ControlEpoch, Kind: "wake", Scope: "POST /internal/access/" + id, Key: key, MachineID: id, ExpectedGeneration: b.Generation, Heavy: true, Request: JSON(map[string]string{"reason": "user_access"}), AdmitRuntime: e.AdmitRuntime})
+				op, _, err := e.DB.Accept(ctx, registry.AcceptRequest{
+					PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: ctl.ControlEpoch, Kind: rt.Wake,
+					Scope: "POST /internal/access/" + id, Key: key, MachineID: id, ExpectedGeneration: b.Generation, Heavy: true,
+					Request: JSON(map[string]string{"reason": "user_access"}), AdmitRuntime: e.AdmitRuntime, AdmitNative: e.AdmitNativePower,
+				})
 				if err != nil && !errors.Is(err, registry.ErrOperationActive) {
 					return zero, err
 				}
@@ -140,6 +147,37 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 		case <-time.After(80 * time.Millisecond):
 		}
 	}
+}
+
+func verifyAccessState(ctx context.Context, b registry.Binding, adapter rt.Adapter, control rt.NativeControl) (rt.State, error) {
+	if control != nil {
+		inventory, err := control.NativeInventory(ctx, b.ExecutionRef())
+		if err != nil {
+			return rt.StateUnknown, err
+		}
+		if inventory.Execution.ExecutionRef != b.ExecutionRef() {
+			return rt.StateUnknown, registry.ErrStaleObservation
+		}
+		switch inventory.Inventory.SourceDisposition {
+		case "RUNNING":
+			return rt.StateRunning, nil
+		case "STANDBY":
+			return rt.StatePaused, nil
+		default:
+			return rt.StateUnknown, nil
+		}
+	}
+	o, err := adapter.Observe(ctx, b.RuntimeName)
+	if err != nil {
+		return rt.StateUnknown, err
+	}
+	if o.Labels["platform.binding"] != b.ID {
+		return rt.StateUnknown, registry.ErrStaleObservation
+	}
+	if o.State == rt.StateRunning && !o.Identity.Complete() {
+		return rt.StateUnknown, &Failure{"RECOVERY_REQUIRED", "runtime identity is incomplete"}
+	}
+	return o.State, nil
 }
 
 // rememberWake persists demand once native idle capture may be in progress.

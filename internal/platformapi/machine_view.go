@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/templates"
@@ -91,6 +92,25 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		if !official {
 			for _, kind := range []string{rt.Standby, rt.Wake} {
 				v.Capabilities[rt.NativePowerCapability(kind)] = s.NativePowerCapability(*b, kind)
+			}
+			if boot.BootMode == rt.BootSystem && boot.ManagedSSH {
+				key, err := s.VerifiedNativeSSHKey(ctx, *b, lifecycle.SystemSSHPort)
+				if err != nil {
+					return v, err
+				}
+				if key == "" && len(b.GuestManagementEvidence) > 0 {
+					var evidence map[string]json.RawMessage
+					if err := json.Unmarshal(b.GuestManagementEvidence, &evidence); err != nil {
+						return v, err
+					}
+					if evidence != nil && evidence["ssh_ready"] != nil {
+						delete(evidence, "ssh_host_key")
+						evidence["ssh_ready"] = json.RawMessage("false")
+						copy := *b
+						copy.GuestManagementEvidence = lifecycle.JSON(evidence)
+						v.Binding = &copy
+					}
+				}
 			}
 		}
 	}
