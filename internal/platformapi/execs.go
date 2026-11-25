@@ -245,7 +245,10 @@ func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecor
 		s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
 		return x, registry.ErrGeneration
 	}
+	stream := execbridge.New(0, "starting")
+	s.execStreams.Store(x.ID, stream)
 	if _, err := s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state='starting' WHERE id=? AND state='reserved'", x.ID); err != nil {
+		s.execStreams.CompareAndDelete(x.ID, stream)
 		release()
 		return x, err
 	}
@@ -258,14 +261,15 @@ func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecor
 		if !errors.Is(err, rt.ErrUncertain) {
 			release()
 			s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
+			s.execStreams.CompareAndDelete(x.ID, stream)
 			return x, err
 		}
 		// The native ID was already recorded. Query that ID once the
 		// connection is restored even when StartExec lost its response.
-		s.watchExec(x, nil, release)
+		s.runExec(x, stream, nil, release)
 		return x, &lifecycle.Failure{Code: "OUTCOME_UNKNOWN", Message: "inspect native exec " + x.ID + " before starting another command"}
 	}
-	s.watchExec(x, &native, release)
+	s.runExec(x, stream, &native, release)
 	x.State = native.State
 	return x, nil
 }
@@ -297,6 +301,11 @@ func (s *Server) watchExec(x execRecord, initial *rt.ExecSession, release func()
 		release()
 		return existing.(*execbridge.Stream)
 	}
+	s.runExec(x, stream, initial, release)
+	return stream
+}
+
+func (s *Server) runExec(x execRecord, stream *execbridge.Stream, initial *rt.ExecSession, release func()) {
 	if initial != nil {
 		stream.Observe(*initial)
 		view, _ := stream.Read(0, 0)
@@ -310,7 +319,6 @@ func (s *Server) watchExec(x execRecord, initial *rt.ExecSession, release func()
 		}, release)
 		time.AfterFunc(5*time.Minute, func() { s.execStreams.CompareAndDelete(x.ID, stream) })
 	}()
-	return stream
 }
 
 func (s *Server) streamFor(x execRecord) *execbridge.Stream {
