@@ -13,7 +13,7 @@ const (
 func FullStateOperationCapability(kind string) string {
 	switch kind {
 	case Standby:
-		return "lifecycle.standby"
+		return NativePowerCapability(kind)
 	case Hibernate:
 		return "state.hibernate"
 	case IndependentFork:
@@ -57,6 +57,7 @@ func fullStateCapability(official bool) Capability {
 func FullStateCapabilities(official bool) map[string]Capability {
 	c := fullStateCapability(official)
 	result := map[string]Capability{
+		NativePowerCapability(Wake): c,
 		"state.live_fork":           c,
 		"state.clone_ready":         c,
 		"storage.multidisk_capture": c,

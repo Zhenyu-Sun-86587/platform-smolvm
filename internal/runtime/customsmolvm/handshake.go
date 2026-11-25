@@ -3,6 +3,7 @@
 package customsmolvm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,9 +97,16 @@ func dialEndpoint(socket string) *http.Client {
 }
 
 func get(ctx context.Context, client *http.Client, path string, target any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://smolvm"+path, nil)
+	return exchange(ctx, client, http.MethodGet, path, nil, target)
+}
+
+func exchange(ctx context.Context, client *http.Client, method, path string, payload []byte, target any) error {
+	req, err := http.NewRequestWithContext(ctx, method, "http://smolvm"+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
+	}
+	if len(payload) > 0 {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := client.Do(req)
 	if err != nil {

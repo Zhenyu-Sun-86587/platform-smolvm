@@ -241,6 +241,7 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	req.Scope = env.Scope
 	req.Request = env.Request
 	req.AdmitRuntime = s.AdmitRuntime
+	req.AdmitNative = s.AdmitNativePower
 	if req.MachineID != "" {
 		rev, err := revision(r)
 		if err != nil {

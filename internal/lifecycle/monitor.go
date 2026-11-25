@@ -46,16 +46,17 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		if !custom && !officialReady {
 			continue
 		}
-		if custom && b.ExecutionEpoch != 0 {
-			// Public machine metadata cannot identify a native execution epoch.
-			continue
-		}
 		var expectedEpoch *int64
 		if custom {
 			expectedEpoch = &b.ExecutionEpoch
 		}
 		adapter, err := e.ForBinding(b)
 		if err != nil {
+			continue
+		}
+		if custom && b.ExecutionEpoch != 0 {
+			// Public machine metadata cannot identify a native execution epoch.
+			e.observeNativePower(ctx, b, adapter)
 			continue
 		}
 		o, err := adapter.Observe(ctx, b.RuntimeName)
@@ -68,6 +69,9 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			continue
 		}
 		if custom {
+			if e.observeNativePower(ctx, b, adapter) {
+				continue
+			}
 			x := Evidence(o)
 			x.ExpectedRuntimeIdentity = b.RuntimeIdentity
 			x.ExpectedExecutionEpoch = expectedEpoch

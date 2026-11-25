@@ -107,6 +107,16 @@ type Binding struct {
 	Observation
 }
 
+func (b Binding) ExecutionRef() rt.ExecutionRef {
+	return rt.ExecutionRef{InstanceID: b.RuntimeInstanceObjectID, IncarnationID: b.IncarnationID, ExecutionEpoch: b.ExecutionEpoch}
+}
+
+type NativeObservation struct {
+	Execution              rt.ExecutionRef
+	PowerState             PowerState
+	VerifiedStandbyProfile string
+}
+
 // Observation is current public-runtime evidence. Empty optional fields in an
 // update preserve existing pause and guest evidence except where explicitly
 // replaced. A sampled identity belongs to the observed execution only.
@@ -128,7 +138,8 @@ type Observation struct {
 	// execution from overwriting the evidence for the current execution.
 	ExpectedRuntimeIdentity json.RawMessage `json:"-"`
 	// ExpectedExecutionEpoch also guards the transition from no native execution.
-	ExpectedExecutionEpoch *int64 `json:"-"`
+	ExpectedExecutionEpoch *int64             `json:"-"`
+	Native                 *NativeObservation `json:"-"`
 }
 
 const (
@@ -227,6 +238,8 @@ type AcceptRequest struct {
 	Locks              []Lock
 	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
 	AdmitRuntime func(rt.BundleRoute, string) error
+	// AdmitNative checks the binding's persisted capability and execution evidence.
+	AdmitNative func(Binding, string) error
 	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
 	// On replay it receives the original machine ID for authorization even if the object is gone.
 	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)

@@ -379,22 +379,47 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 		return false, fmt.Errorf("%w: invalid guest management or pause status", ErrInvalid)
 	}
 
+	nativeChanged := false
 	health := old.Health
-	if o.WorkloadError != nil {
+	if o.Native != nil || o.WorkloadError != nil {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(health, &fields); err != nil {
 			return false, fmt.Errorf("decode persisted workload health: %w", err)
 		}
-		if *o.WorkloadError == "" {
-			delete(fields, "workload")
-			delete(fields, "workload_error")
-		} else {
-			fields["workload"] = json.RawMessage(`"failed"`)
-			detail, err := json.Marshal(map[string]string{"code": WorkloadStartFailed, "message": *o.WorkloadError})
+		if o.Native != nil {
+			native := o.Native
+			ref := native.Execution
+			if o.ExpectedExecutionEpoch == nil || old.RuntimeBundleID == "" || ref.InstanceID == "" ||
+				ref.IncarnationID == "" || ref.ExecutionEpoch < 1 ||
+				(old.RuntimeInstanceObjectID != "" && old.RuntimeInstanceObjectID != ref.InstanceID) ||
+				(old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
+				return false, ErrStaleObservation
+			}
+			if native.PowerState != PowerRunning && native.PowerState != PowerStandby {
+				return false, fmt.Errorf("%w: invalid native power evidence", ErrInvalid)
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE runtime_bindings SET runtime_instance_object_id=?,
+				incarnation_id=?, execution_epoch=?, power_state=?, capability_profile_id=? WHERE id=?`,
+				ref.InstanceID, ref.IncarnationID, ref.ExecutionEpoch, native.PowerState, nullable(native.VerifiedStandbyProfile), old.ID)
 			if err != nil {
 				return false, err
 			}
-			fields["workload_error"] = detail
+			fields["vm"], _ = json.Marshal(native.PowerState)
+			fields["guest_management"], _ = json.Marshal(o.GuestManagementStatus)
+			nativeChanged = old.ExecutionRef() != ref || old.PowerState != native.PowerState || old.CapabilityProfileID != native.VerifiedStandbyProfile
+		}
+		if o.WorkloadError != nil {
+			if *o.WorkloadError == "" {
+				delete(fields, "workload")
+				delete(fields, "workload_error")
+			} else {
+				fields["workload"] = json.RawMessage(`"failed"`)
+				detail, err := json.Marshal(map[string]string{"code": WorkloadStartFailed, "message": *o.WorkloadError})
+				if err != nil {
+					return false, err
+				}
+				fields["workload_error"] = detail
+			}
 		}
 		var err error
 		health, err = json.Marshal(fields)
@@ -411,7 +436,7 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 	if err != nil {
 		return false, err
 	}
-	changed := o.ObservedState != old.ObservedState || o.NativeState != old.NativeState || o.Availability != old.Availability ||
+	changed := nativeChanged || o.ObservedState != old.ObservedState || o.NativeState != old.NativeState || o.Availability != old.Availability ||
 		o.RuntimePauseID != old.RuntimePauseID || o.PauseStatus != old.PauseStatus ||
 		o.GuestManagementStatus != old.GuestManagementStatus || !sameJSON(o.RuntimeIdentity, old.RuntimeIdentity) ||
 		!sameJSON(o.Ports, old.Ports) || !sameJSON(o.GuestManagementEvidence, old.GuestManagementEvidence) ||
