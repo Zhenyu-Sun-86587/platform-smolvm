@@ -6,7 +6,7 @@
 
 本计划把上一轮研究收敛为一个可自主实施的工程目标：**在不修改 smolvm 及其底层依赖的前提下，完成可长期使用的 Linux 单节点 Agent Sandbox 产品。** 它包括管理后端、持久工作区、临时执行与持久任务、Live Fork 和 Independent Clone、快照/恢复/回滚、稳定访问入口、自动休眠唤醒，以及完整 WebUI、CLI、Python/TypeScript SDK 和基本运维。
 
-本次交付保持原 5 份 Markdown、4 个里程碑与 11 个工作包。2026-11-25 用户修订：默认 Guest root（含 Exec、SSH、文件与 Persistent Task）；Live Fork 默认原生运行态复制，不以 Guest 用户身份、任务、会话、进程或 GTM 健康为准入限制。宿主仍为 root smolvm serve 与非 root platformd，原生隔离不变。本包仅为规划修订，未编写平台代码或执行实机实验。
+本次交付保持原 5 份 Markdown、4 个里程碑与 11 个工作包。2026-11-25 用户修订：默认 Guest root（含 Exec、SSH、文件与 Persistent Task）；Live Fork 默认原生运行态复制，不以 Guest 用户身份、任务、会话、进程或 GTM 健康为准入限制。宿主仍为 root smolvm serve 与非 root platformd，原生隔离不变。原始规划到此定稿。后续实现的阶段结果、运行环境与验证范围见[本机验收](LOCAL_ACCEPTANCE.md)。
 
 <a id="decisions"></a>
 ## 1. 已固定的决策
