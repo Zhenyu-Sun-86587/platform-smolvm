@@ -81,17 +81,18 @@ type Action struct {
 	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
-	Native          *rt.NativeSubmission  `json:"native,omitempty"`
-	Fork            *nativeForkIntent     `json:"fork,omitempty"`
-	Launch          *rt.LaunchSubmission  `json:"launch,omitempty"`
-	Volume          *rt.VolumeMutation    `json:"volume,omitempty"`
-	Stage           string                `json:"stage"`
-	Name            string                `json:"runtime_name"`
-	Source          string                `json:"source,omitempty"`
-	Target          string                `json:"expected_state,omitempty"`
-	PauseID         string                `json:"pause_id,omitempty"`
-	BindingID       string                `json:"binding_id"`
-	WorkloadFailure *workloadStartFailure `json:"workload_failure,omitempty"`
+	Native          *rt.NativeSubmission     `json:"native,omitempty"`
+	Launch          *rt.LaunchSubmission     `json:"launch,omitempty"`
+	Volume          *rt.VolumeMutation       `json:"volume,omitempty"`
+	Fork            *nativeForkIntent        `json:"fork,omitempty"`
+	StatePoint      *rt.StatePointSubmission `json:"statepoint,omitempty"`
+	Stage           string                   `json:"stage"`
+	Name            string                   `json:"runtime_name"`
+	Source          string                   `json:"source,omitempty"`
+	Target          string                   `json:"expected_state,omitempty"`
+	PauseID         string                   `json:"pause_id,omitempty"`
+	BindingID       string                   `json:"binding_id"`
+	WorkloadFailure *workloadStartFailure    `json:"workload_failure,omitempty"`
 }
 
 type workloadStartFailure struct {
@@ -315,6 +316,9 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)
+	if rt.ManagedStatePoint(op.Kind) || (op.Kind == "start" && (j.Binding.PowerState == registry.PowerHibernated || j.Intent.StatePoint != nil)) {
+		return j.driveStatePoint(ctx, err)
+	}
 	if op.Kind == "sync_keys" && !bindingRuntime(j.Binding).Legacy() {
 		return j.driveNativeSSH(ctx, err)
 	}

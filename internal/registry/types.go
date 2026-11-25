@@ -117,6 +117,8 @@ type NativeObservation struct {
 	VerifiedStandbyProfile string
 	VerifiedLaunch         bool
 	ForkCapabilities       map[string]rt.Capability
+	VerifiedRestore        bool
+	HibernatedCapture      string
 }
 
 // Observation is current public-runtime evidence. Empty optional fields in an
@@ -232,6 +234,7 @@ type AcceptRequest struct {
 	ExpectedRevision   int64
 	ExpectedGeneration int64
 	Request            json.RawMessage
+	MachineSpec        json.RawMessage
 	IdlePolicy         json.RawMessage
 	DefaultIdlePolicy  json.RawMessage // resolved for a new machine, outside the caller fingerprint
 	DesiredPower       string

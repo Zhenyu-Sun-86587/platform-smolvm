@@ -60,6 +60,12 @@ func (r *Resolver) Admit(route BundleRoute, kind string) error {
 		}
 	}
 	if FullStateOperationCapability(kind) != "" {
+		if ManagedStatePoint(kind) && route != (BundleRoute{}) {
+			adapter, err := r.ForBinding(BindingRuntime{BundleRoute: route})
+			if _, ok := adapter.(StatePointControl); err == nil && ok {
+				return nil
+			}
+		}
 		return FullStateUnavailable(kind, route == (BundleRoute{}))
 	}
 	if route == (BundleRoute{}) {

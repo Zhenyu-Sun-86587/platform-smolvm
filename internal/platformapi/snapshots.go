@@ -21,16 +21,18 @@ import (
 )
 
 type copyRequest struct {
-	CaptureMode        snapshots.CaptureMode `json:"capture_mode,omitempty"`
-	SnapshotID         string                `json:"snapshot_id,omitempty"`
-	Label              string                `json:"label,omitempty"`
-	Purpose            string                `json:"purpose,omitempty"`
-	ExpectedGeneration int64                 `json:"expected_generation,omitempty"`
-	CopyPolicy         string                `json:"copy_policy,omitempty"`
-	ChildName          string                `json:"child_name,omitempty"`
-	Name               string                `json:"name,omitempty"`
-	Disposition        string                `json:"task_disposition,omitempty"`
-	OldStatePolicy     string                `json:"old_state_policy,omitempty"`
+	CaptureMode         snapshots.CaptureMode  `json:"capture_mode,omitempty"`
+	SnapshotID          string                 `json:"snapshot_id,omitempty"`
+	Label               string                 `json:"label,omitempty"`
+	Purpose             string                 `json:"purpose,omitempty"`
+	ExpectedGeneration  int64                  `json:"expected_generation,omitempty"`
+	CopyPolicy          string                 `json:"copy_policy,omitempty"`
+	ChildName           string                 `json:"child_name,omitempty"`
+	Name                string                 `json:"name,omitempty"`
+	Disposition         string                 `json:"task_disposition,omitempty"`
+	OldStatePolicy      string                 `json:"old_state_policy,omitempty"`
+	VolumeRestorePolicy rt.VolumeRestorePolicy `json:"volume_restore_policy,omitempty"`
+	NetworkMode         string                 `json:"network_mode,omitempty"`
 }
 
 func (s *Server) snapshotRoutes() {
@@ -57,6 +59,9 @@ func (s *Server) snapshotRoutes() {
 			if kind != "snapshot" && v.CaptureMode != "" {
 				return registry.ErrInvalid
 			}
+			if kind != "restore" && kind != "rollback" && (v.VolumeRestorePolicy != "" || v.NetworkMode != "") {
+				return registry.ErrInvalid
+			}
 			switch kind {
 			case "snapshot":
 				switch v.CaptureMode {
@@ -72,6 +77,9 @@ func (s *Server) snapshotRoutes() {
 					return registry.ErrInvalid
 				}
 				if req.Kind == rt.VMSnapshot {
+					if err := s.machineStatePointProfile(r.Context(), mid, req.Kind); err != nil {
+						return err
+					}
 					break
 				}
 				if v.Purpose != "recovery" && v.Purpose != "clone" {
@@ -88,6 +96,16 @@ func (s *Server) snapshotRoutes() {
 					return err
 				}
 				if item.VM != nil {
+					if err := p.Authorize(auth.ActionManage, item.MachineID); err != nil {
+						return err
+					}
+					if item.State != "ready" || (v.VolumeRestorePolicy != "" && v.VolumeRestorePolicy != rt.RestoreExact &&
+						v.VolumeRestorePolicy != rt.RestoreCloneConflicts) || (v.NetworkMode != "" && v.NetworkMode != "snapshot") {
+						return registry.ErrInvalid
+					}
+					if v.VolumeRestorePolicy == "" {
+						v.VolumeRestorePolicy = rt.RestoreCloneConflicts
+					}
 					if kind == "rollback" {
 						if item.MachineID != mid {
 							return registry.ErrConflict
@@ -96,14 +114,30 @@ func (s *Server) snapshotRoutes() {
 							return registry.ErrInvalid
 						}
 						req.Kind = rt.VMRollback
+						if err := s.machineStatePointProfile(r.Context(), mid, req.Kind); err != nil {
+							return err
+						}
 						return s.accept(w, r, p, v, req)
 					}
 					if !validChildName(v.Name) {
 						return registry.ErrInvalid
 					}
-					return s.mutate(w, r, p, v, func(context.Context, *sql.Tx) (registry.MutationResult, error) {
-						return registry.MutationResult{}, rt.FullStateUnavailable(rt.VMRestore, false)
-					})
+					route := registry.Binding{RuntimeInstanceID: item.VM.RuntimeInstanceID, RuntimeBundleID: item.VM.RuntimeBundleID}
+					if err := s.requireStatePointProfile(r.Context(), route, rt.VMRestore); err != nil {
+						return err
+					}
+					source, err := s.DB.GetMachine(r.Context(), item.MachineID)
+					if err != nil {
+						return err
+					}
+					req.Kind, req.Name, req.TemplateID = rt.VMRestore, v.Name, source.TemplateID
+					req.RuntimeInstanceID, req.MachineSpec = item.VM.RuntimeInstanceID, source.Spec
+					req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
+					req.DesiredPower = "running"
+					return s.accept(w, r, p, v, req)
+				}
+				if v.VolumeRestorePolicy != "" || v.NetworkMode != "" {
+					return registry.ErrInvalid
 				}
 				if item.State != "ready" || item.Content == "unknown" {
 					return registry.ErrConflict
