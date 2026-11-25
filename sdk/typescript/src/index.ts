@@ -107,6 +107,7 @@ export interface LifecycleStatus {
   desired_revision: number; applied_revision: number; default_revision: number; source: string
   desired: LifecyclePolicy; applied?: LifecyclePolicy; last_error?: string; overrides?: LifecyclePolicyPatch
   worker?: { power: string; blockers: string[]; idle_ms?: number; controlled_suspended: boolean;
+    next_action?: { kind: string; origin: string; eligible_after_ms: number } | null;
     last_decision?: { operation_id: string; kind: string; stage: string }; collectors: Record<string, unknown> }
 }
 export interface PolicyApplication {

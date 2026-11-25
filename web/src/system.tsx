@@ -2,7 +2,7 @@ import { PageIntro } from "./daytona/page"
 import { RefreshCw } from "lucide-react"
 import { Button } from "./daytona/button"
 import { useState } from "react"
-import type { BackupPolicy, BackupRun, LifecyclePolicy, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, Operation, Page, PolicyApplication, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, num, Records, Section, segment, State, str, time, useRemote } from "./common"
@@ -165,6 +165,60 @@ function Templates({ actions, revision }: Omit<Props, "tab">) {
 }
 
 type Credential = { id?: string; token_id?: string; credential_id?: string; ssh_key_id?: string; revision?: number; label?: string; scope?: unknown; revoked_at?: string; created_at?: string; [key: string]: unknown }
+function ApplyDefaults({ actions, revision, defaultRevision }: Pick<Props, "actions" | "revision"> & { defaultRevision: number }) {
+  const [open, setOpen] = useState(false)
+  const [pages, setPages] = useState([""])
+  const [selected, setSelected] = useState<Record<string, number>>({})
+  const [receipt, setReceipt] = useState<PolicyApplication>()
+  const cursor = pages[pages.length - 1]
+  const machines = useRemote<Page<Machine>>(open ? "machines?limit=25&cursor=" + encodeURIComponent(cursor) : "", revision)
+  const result = useRemote<PolicyApplication>(receipt ? "lifecycle-policy-applications/" + segment(receipt.application_id) : "", revision)
+  const current = result.data ?? receipt
+  const targets = Object.entries(selected).map(([machine_id, expected_revision]) => ({ machine_id, expected_revision }))
+  return <details className="disclosure" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>Apply defaults to existing machines</summary>
+    <Callout error={machines.error} />
+    <div className="rows">{machines.data?.items.map(machine => <label className="row" key={machine.machine_id}>
+      <input type="checkbox" checked={Object.hasOwn(selected, machine.machine_id)}
+        disabled={!machine.lifecycle_policy?.supported || (!Object.hasOwn(selected, machine.machine_id) && targets.length >= 256)}
+        onChange={event => {
+          const add = event.currentTarget.checked
+          setSelected(previous => {
+            const next = { ...previous }
+            if (add) next[machine.machine_id] = machine.revision
+            else delete next[machine.machine_id]
+            return next
+          })
+        }} />
+      <strong>{machine.name}</strong><code>{machine.machine_id}</code>
+      <span>{machine.lifecycle_policy?.supported ? "Revision " + machine.revision : "Policy unavailable"}</span>
+    </label>)}</div>
+    <div className="actions">
+      {pages.length > 1 && <button onClick={() => setPages(pages.slice(0, -1))}>Previous</button>}
+      {machines.data?.next_cursor && <button onClick={() => setPages([...pages, machines.data!.next_cursor!])}>Next</button>}
+      <button disabled={targets.length === 0} onClick={() => actions.dialog({
+        title: "Apply lifecycle defaults", submit: "Apply to selected machines",
+        description: `Replace lifecycle overrides on ${targets.length} selected machine(s) with default revision ${defaultRevision}.`,
+        act: async () => {
+          const applied = await actions.mutate<PolicyApplication>("lifecycle-policy-applications", {
+            default_policy_revision: defaultRevision, machines: targets,
+          })
+          setReceipt(applied)
+          setSelected({})
+        },
+      })}>Apply to selected machines ({targets.length})</button>
+    </div>
+    {current && <div aria-live="polite">
+      <p>Default revision {current.default_policy_revision} · <code>{current.application_id}</code></p>
+      <Callout error={result.error} />
+      <div className="rows">{current.machines.map(m => <div className="row" key={m.machine_id}>
+        <code>{m.machine_id}</code><State value={m.state}/>{m.reason && <span>{label(m.reason)}</span>}
+      </div>)}</div>
+      {!current.complete && <button onClick={actions.refresh}>Refresh results</button>}
+    </div>}
+  </details>
+}
+
 function Settings({ actions, revision }: Omit<Props, "tab">) {
   const settings = useRemote<Record<string, unknown> & { default_lifecycle_policy?: LifecyclePolicy }>("system/settings", revision)
   const tokens = useRemote<Page<Credential>>("tokens", revision)
@@ -200,6 +254,7 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     })}>Edit defaults</button>}>
       <p>New machines inherit default revision {String(settings.data.default_lifecycle_revision)}.</p>
       <Details value={{ ...settings.data.default_lifecycle_policy }} />
+      <ApplyDefaults actions={actions} revision={revision} defaultRevision={Number(settings.data.default_lifecycle_revision)} />
     </Section>}
     <Section title="API tokens" actions={<button onClick={() => actions.dialog({
       title: "Create API token",

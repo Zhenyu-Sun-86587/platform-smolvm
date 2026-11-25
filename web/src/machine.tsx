@@ -494,7 +494,10 @@ function Activity({ machine, actions, revision }: Context) {
       <Details value={{ source: policy.source, default_revision: policy.default_revision, desired_revision: policy.desired_revision,
         applied_revision: policy.applied_revision, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
         hibernate_after_seconds: policy.applied?.hibernate_after_seconds, idle_seconds: policy.worker?.idle_ms == null ? undefined : Math.floor(policy.worker.idle_ms / 1000),
-        blockers: policy.worker?.blockers, last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
+        overrides: policy.overrides, blockers: policy.worker?.blockers,
+        next_action: policy.worker?.next_action?.kind, next_action_origin: policy.worker?.next_action?.origin,
+        eligible_after_seconds: policy.worker?.next_action && Math.ceil(policy.worker.next_action.eligible_after_ms / 1000),
+        last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
     </Section> : <Section title="Idle policy" actions={<button onClick={() => actions.dialog({
       title: "Configure idle policy", submit: "Save",
       fields: [{ name: "enabled", label: "Automatically pause when idle", type: "checkbox", value: machine.idle_policy?.enabled },
