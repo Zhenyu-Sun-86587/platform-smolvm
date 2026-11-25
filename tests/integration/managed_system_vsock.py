@@ -437,6 +437,9 @@ def test(args, root, stack, case):
         fork_case(platform, source, ref, probe, seen)
     elif case == "statepoint":
         statepoint_case(platform, source, ref, probe, seen)
+    elif case == "successive-captures":
+        statepoint_case(platform, source, ref, probe, seen)
+        hibernate_case(platform, source, ref, probe, seen)
     else:
         hibernate_case(platform, source, ref, probe, seen)
 
@@ -447,7 +450,7 @@ def main():
     parser.add_argument("--platformd", type=lambda p: Path(p).resolve(), required=True)
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
-    cases = ("relay", "fork", "statepoint", "hibernate")
+    cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=cases, action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
