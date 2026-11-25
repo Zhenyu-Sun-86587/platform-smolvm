@@ -44,8 +44,12 @@ export function MachineList({
   const templates = useCollection<Template>("templates", revision)
   const hasSystemTemplates = templates.items?.some(template => template.spec?.boot_mode === "system") ?? false
   const profiles = useCollection<RuntimeProfile>(hasSystemTemplates ? "runtime-profiles" : "", revision)
-  const systemRuntimes = profiles.items?.filter(profile => profile.capabilities["boot.system"]?.status === "supported") ?? []
-  const networks = useCollection<PrivateNetwork>(systemRuntimes.length ? "networks" : "", revision)
+  const networks = useCollection<PrivateNetwork>(hasSystemTemplates ? "networks" : "", revision)
+  const systemRuntimes = profiles.items?.filter(profile => {
+    const boot = profile.capabilities["boot.system"]
+    return boot?.status === "supported" && boot.supported
+  }) ?? []
+  const loadingSystemCatalog = hasSystemTemplates && ((!profiles.items && !profiles.error) || (!networks.items && !networks.error))
   const choices = (templates.items ?? []).flatMap(template => {
     const value = template.template_id ?? template.id
     if (!value) return []
@@ -59,6 +63,7 @@ export function MachineList({
     (last, item) => (!last || item.version > last.version ? item : last),
     undefined,
   )
+  const canCreate = Boolean(preferred) && !loadingSystemCatalog
   const [search, setSearch] = useState(""),
     [filter, setFilter] = useState("all"),
     [page, setPage] = useState(0)
@@ -103,13 +108,13 @@ export function MachineList({
         ]
         if (selected?.system) {
           const runtimeID = values?.get("runtime_instance_id") ?? systemRuntimes[0]?.runtime_instance_id
-          const available = (networks.items ?? []).filter(network => network.runtime_instance_id === runtimeID)
+          const availableNetworks = (networks.items ?? []).filter(network => network.runtime_instance_id === runtimeID)
           return [...common,
             {name: "runtime_instance_id", label: "Runtime", required: true,
               options: systemRuntimes.map(runtime => ({value: runtime.runtime_instance_id}))},
-            ...(available.length ? [
+            ...(availableNetworks.length ? [
               {name: "network_id", label: "Private network", options: [
-                {value: "", label: "Use configured default"}, ...available.map(network => ({value: network.network_id, label: network.network_id})),
+                {value: "", label: "Use configured default"}, ...availableNetworks.map(network => ({value: network.network_id, label: network.network_id})),
               ]},
               {name: "network_mode", label: "Network mode", options: [{value: "", label: "Use platform default"}, ...networkModes],
                 note: "Native uses a private address inside the guest. Fixed internal keeps a stable guest address and assigns a separate private address."},
@@ -163,7 +168,8 @@ export function MachineList({
         title="Machines"
         desc="Create, connect to, and branch your workspaces."
         actions={
-          <Button onClick={create} disabled={!preferred} title={!preferred && hasSystemTemplates ? "System templates require a verified runtime." : undefined}>
+          <Button onClick={create} disabled={!canCreate} aria-busy={loadingSystemCatalog}
+            title={!preferred && hasSystemTemplates && !loadingSystemCatalog ? "System templates require a verified runtime." : undefined}>
             <Plus />
             New machine
           </Button>
@@ -279,7 +285,7 @@ export function MachineList({
             <Button
               size="sm"
               variant="outline"
-              disabled={!data.length && !preferred}
+              disabled={!data.length && !canCreate}
               onClick={() => {
                 if (data.length) {
                   setFilter("all")
