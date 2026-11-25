@@ -9,6 +9,7 @@ import (
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 )
 
 func (s *Server) operationsRoutes() {
@@ -48,7 +49,7 @@ func (s *Server) operationsRoutes() {
 	}
 	for route, kind := range map[string]string{"GET /v1/operations": "", "GET /v1/restores": "restore"} {
 		s.route(route, func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-			rows, err := s.DB.ReadDB().QueryContext(r.Context(), "SELECT id,COALESCE(machine_id,'') FROM operations WHERE (?='' OR kind=?) ORDER BY created_at DESC,id", kind, kind)
+			rows, err := s.DB.ReadDB().QueryContext(r.Context(), "SELECT id,COALESCE(machine_id,'') FROM operations WHERE (?='' OR kind IN (?,?)) ORDER BY created_at DESC,id", kind, kind, rt.VMRestore)
 			if err != nil {
 				return err
 			}

@@ -353,7 +353,7 @@ func (c *client) operations() *cobra.Command {
 func (c *client) snapshots() *cobra.Command {
 	group := &cobra.Command{Use: "snapshots", Short: "Capture, verify, import, and restore snapshots"}
 	group.AddCommand(c.list("list MACHINE", "snapshots", true), c.showItem("snapshots"), c.update("delete SNAPSHOT", "snapshots", "DELETE", true))
-	var purpose, label, captureMode, verification, taskDisposition, oldState string
+	var purpose, label, captureMode, verification, taskDisposition, oldState, restoreVolumes, rollbackVolumes string
 	capture := sub("capture MACHINE", "Capture a checkpoint", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
@@ -381,21 +381,41 @@ func (c *client) snapshots() *cobra.Command {
 		return c.mutation(cmd, "POST", path+"/verify", map[string]string{"verification": verification}, current.Revision)
 	})
 	verify.Flags().StringVar(&verification, "verification", "checksum", "checksum or restore")
-	restore := sub("restore SNAPSHOT NAME", "Create a new machine from a clean snapshot", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-		return c.mutation(cmd, "POST", "restores", map[string]string{"snapshot_id": args[0], "name": args[1]}, 0)
+	restore := sub("restore SNAPSHOT NAME", "Create a new machine from a snapshot", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		body := map[string]string{"snapshot_id": args[0], "name": args[1]}
+		if restoreVolumes != "" {
+			body["volume_restore_policy"] = restoreVolumes
+		}
+		return c.mutation(cmd, "POST", "restores", body, 0)
 	})
+	restore.Flags().StringVar(&restoreVolumes, "volume-restore-policy", "", "VM volume policy: exact or clone_conflicts")
 	rollback := sub("rollback MACHINE SNAPSHOT", "Replace the current runtime binding from a snapshot", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
-		return c.mutation(cmd, "POST", res("machines", m.ID)+"/rollback", map[string]any{
-			"snapshot_id": args[1], "task_disposition": taskDisposition, "old_state_policy": oldState, "expected_generation": m.Generation,
-		}, m.Revision)
+		var snapshot struct {
+			CaptureMode string `json:"capture_mode"`
+		}
+		if err := c.get(cmd.Context(), res("snapshots", args[1]), &snapshot); err != nil {
+			return err
+		}
+		body := map[string]any{"snapshot_id": args[1], "expected_generation": m.Generation}
+		if c.generation > 0 {
+			body["expected_generation"] = c.generation
+		}
+		if rollbackVolumes != "" {
+			body["volume_restore_policy"] = rollbackVolumes
+		}
+		if snapshot.CaptureMode != "vm" {
+			body["task_disposition"], body["old_state_policy"] = taskDisposition, oldState
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+"/rollback", body, m.Revision)
 	})
-	rollback.Long = "Replace the current runtime binding. A paused old runtime is exported and deleted, retaining its prior execution as an artifact."
+	rollback.Long = "Replace the current runtime binding and retain a rescue capture of the previous execution."
 	rollback.Flags().StringVar(&taskDisposition, "task-disposition", "cancel_captured", "cancel_captured or resume_captured")
 	rollback.Flags().StringVar(&oldState, "old-state-policy", "export_then_delete_on_paused", "Old state policy")
+	rollback.Flags().StringVar(&rollbackVolumes, "volume-restore-policy", "", "VM volume policy: exact or clone_conflicts")
 	group.AddCommand(capture, verify, restore, rollback, c.list("restores", "restores", false))
 	group.AddCommand(sub("export SNAPSHOT OUTPUT", "Download a snapshot archive", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 		return c.download(cmd, res("snapshots", args[0])+"/export", args[1])

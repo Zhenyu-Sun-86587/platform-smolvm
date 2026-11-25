@@ -379,8 +379,28 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
   const [error, setError] = useState<unknown>()
   const modal = (mode: string, item: Snapshot) => {
     const resource = snapshot(item.snapshot_id)
+    const vm = item.capture_mode === "vm"
     if (mode === "Export") {
       api.response(resource + "/export").then(response => download(response, item.snapshot_id + ".tar")).catch(setError)
+      return
+    }
+    if (vm && (mode === "Restore" || (mode === "Rollback" && machine))) {
+      actions.dialog({
+        title: mode + " VM checkpoint", destructive: mode === "Rollback",
+        description: mode === "Rollback" ? "The Worker saves a rescue StatePoint before replacing this execution." : undefined,
+        fields: [
+          ...(mode === "Restore" ? [{ name: "name", label: "New machine name", required: true }] : []),
+          { name: "volume_policy", label: "Volume restore policy", value: "clone_conflicts", options: [
+            { value: "clone_conflicts", label: "Create independent writable volumes" }, { value: "exact", label: "Require exact volume generations" },
+          ] },
+        ],
+        act: form => {
+          const body = { snapshot_id: item.snapshot_id, volume_restore_policy: str(form, "volume_policy") }
+          if (mode === "Rollback" && machine) return actions.mutate(base + "/rollback",
+            { ...body, expected_generation: machine.binding_generation }, { revision: machine.revision })
+          return actions.mutate("restores", { ...body, name: str(form, "name") })
+        },
+      })
       return
     }
     actions.dialog({
@@ -435,9 +455,9 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
         <div className="row snapshot-row"><span className="machine-icon"><Layers3 size={17}/></span><div><strong>{item.label || item.snapshot_id}</strong><small>{time(item.created_at)}</small></div><State value={item.state}/>
           <span className="subtle">{item.capture_mode === "vm" ? "VM checkpoint" : (item.purpose === "clone" ? "Clean checkpoint" : "Recovery checkpoint") + " · " + item.task_content}</span>
           {!machine && item.source_machine_id && <a href={"#/machines/"+segment(item.source_machine_id)+"/snapshots"}>{machines?.find(m=>m.machine_id===item.source_machine_id)?.name??item.source_machine_id}</a>}
-          <div className="actions"><Button variant="outline" size="sm" disabled={item.capture_mode==="vm"||item.state!=="ready"||item.task_content!=="clean"} onClick={()=>modal("Restore",item)}>Restore</Button>
+          <div className="actions"><Button variant="outline" size="sm" disabled={item.state!=="ready"||(item.capture_mode!=="vm"&&item.task_content!=="clean")} onClick={()=>modal("Restore",item)}>Restore</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Snapshot actions for "+(item.label||item.snapshot_id)}><Ellipsis/></Button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">{["Export","Verify",...(machine?["Rollback"]:[]),"Delete"].map(mode=><DropdownMenuItem disabled={item.capture_mode==="vm"} key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
+          <DropdownMenuContent align="end">{(item.capture_mode === "vm" ? (machine ? ["Rollback"] : []) : ["Export","Verify",...(machine?["Rollback"]:[]),"Delete"]).map(mode=><DropdownMenuItem key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
         </div><details className="disclosure"><summary>Artifact details</summary><Details value={{snapshot_id:item.snapshot_id,bytes:item.size_bytes,sha256:item.sha256,provenance:item.provenance,vm_provenance:item.vm_provenance,closure_verified:item.closure_verified_at,restore_verified:item.restore_verified_at}}/></details>
       </div>)}</div>
     </Section>

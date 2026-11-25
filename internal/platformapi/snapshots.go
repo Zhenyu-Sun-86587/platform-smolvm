@@ -99,8 +99,9 @@ func (s *Server) snapshotRoutes() {
 					if err := p.Authorize(auth.ActionManage, item.MachineID); err != nil {
 						return err
 					}
-					if item.State != "ready" || (v.VolumeRestorePolicy != "" && v.VolumeRestorePolicy != rt.RestoreExact &&
-						v.VolumeRestorePolicy != rt.RestoreCloneConflicts) || (v.NetworkMode != "" && v.NetworkMode != "snapshot") {
+					if item.State != "ready" || v.Disposition != "" || v.OldStatePolicy != "" ||
+						(v.VolumeRestorePolicy != "" && v.VolumeRestorePolicy != rt.RestoreExact &&
+							v.VolumeRestorePolicy != rt.RestoreCloneConflicts) || (v.NetworkMode != "" && v.NetworkMode != "snapshot") {
 						return registry.ErrInvalid
 					}
 					if v.VolumeRestorePolicy == "" {

@@ -312,8 +312,11 @@ export class Client {
     forkBatch(id, request, options) {
         return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options);
     }
-    restore(snapshotID, name, options) {
-        return this.mutate("restores", { snapshot_id: snapshotID, name }, options);
+    restore(snapshotID, name, { volumeRestorePolicy, ...options } = {}) {
+        return this.mutate("restores", { snapshot_id: snapshotID, name, volume_restore_policy: volumeRestorePolicy }, options);
+    }
+    rollbackVM(id, snapshotID, volumeRestorePolicy = "clone_conflicts", options) {
+        return this.machineMutation(id, "rollback", { snapshot_id: snapshotID, volume_restore_policy: volumeRestorePolicy }, options);
     }
     listTokens(signal) { return this.pages("tokens", 100, signal); }
     issueToken(spec, options) { return this.mutate("tokens", spec, options); }
