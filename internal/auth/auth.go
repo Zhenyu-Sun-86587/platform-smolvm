@@ -92,6 +92,9 @@ type Service struct {
 
 func New(store *registry.Store) *Service { return &Service{store: store} }
 
+const selectOwner = `SELECT p.id, p.username FROM installation_owner i
+	JOIN principals p ON p.id = i.principal_id WHERE i.singleton = 1`
+
 func (s *Service) Bootstrap(ctx context.Context, username, password string) (Principal, error) {
 	if username == "" || len(username) > 128 || strings.TrimSpace(username) != username || strings.ContainsAny(username, "\x00\r\n") {
 		return Principal{}, fmt.Errorf("%w: invalid owner username", registry.ErrInvalid)
@@ -100,7 +103,7 @@ func (s *Service) Bootstrap(ctx context.Context, username, password string) (Pri
 		return Principal{}, fmt.Errorf("%w: owner password is required", registry.ErrInvalid)
 	}
 	var existing Principal
-	err := s.store.ReadDB().QueryRowContext(ctx, "SELECT id, username FROM principals LIMIT 1").Scan(&existing.ID, &existing.Username)
+	err := s.store.ReadDB().QueryRowContext(ctx, selectOwner).Scan(&existing.ID, &existing.Username)
 	if err == nil {
 		if existing.Username != username {
 			return Principal{}, fmt.Errorf("%w: installation owner %q already exists", registry.ErrConflict, existing.Username)
@@ -124,23 +127,33 @@ func (s *Service) Bootstrap(ctx context.Context, username, password string) (Pri
 		return Principal{}, err
 	}
 	defer tx.Rollback()
-	inserted, err := tx.ExecContext(ctx, `INSERT INTO principals (id, username, password_hash, created_at)
-		SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM principals)`, id, username, passwordHash, time.Now().UnixMilli())
-	if err != nil {
-		return Principal{}, err
-	}
-	n, err := inserted.RowsAffected()
-	if err != nil {
-		return Principal{}, err
-	}
-	if n == 0 {
-		if err := tx.QueryRowContext(ctx, "SELECT id, username FROM principals LIMIT 1").Scan(&id, &existing.Username); err != nil {
-			return Principal{}, err
-		}
+	err = tx.QueryRowContext(ctx, selectOwner).Scan(&id, &existing.Username)
+	switch {
+	case err == nil:
 		if existing.Username != username {
 			return Principal{}, fmt.Errorf("%w: installation owner %q already exists", registry.ErrConflict, existing.Username)
 		}
-	} else if err := registry.AppendEvent(ctx, tx, "auth", "", "", map[string]string{"action": "owner_created", "principal_id": id}, true); err != nil {
+	case errors.Is(err, sql.ErrNoRows):
+		var historicalOwner bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM principals WHERE password_hash IS NOT NULL)
+			OR EXISTS (SELECT 1 FROM events WHERE type = 'auth' AND audit = 1
+				AND json_extract(payload_json, '$.action') = 'owner_created')`).Scan(&historicalOwner); err != nil {
+			return Principal{}, err
+		}
+		if historicalOwner {
+			return Principal{}, registry.ErrOwnerUnverified
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO principals (id, username, password_hash, created_at)
+			VALUES (?, ?, ?, ?)`, id, username, passwordHash, time.Now().UnixMilli()); err != nil {
+			return Principal{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO installation_owner VALUES (1, ?)`, id); err != nil {
+			return Principal{}, err
+		}
+		if err := registry.AppendEvent(ctx, tx, "auth", "", "", map[string]string{"action": "owner_created", "principal_id": id}, true); err != nil {
+			return Principal{}, err
+		}
+	default:
 		return Principal{}, err
 	}
 	return Principal{ID: id, Username: username, Scope: Scope{Access: AccessManage}}, tx.Commit()
