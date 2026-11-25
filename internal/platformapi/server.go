@@ -136,6 +136,7 @@ func write(w http.ResponseWriter, status int, v any) error {
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	code, status := "INTERNAL", 500
 	var capability *rt.CapabilityError
+	var upstream *rt.Error
 	switch {
 	case errors.As(err, &capability):
 		code, status = "CAPABILITY_UNKNOWN", 409
@@ -146,6 +147,12 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, status = "UNAUTHENTICATED", 401
 	case errors.Is(err, auth.ErrForbidden):
 		code, status = "PERMISSION_DENIED", 403
+	case errors.Is(err, auth.ErrGuestQuota):
+		code, status = "RESOURCE_LIMIT", http.StatusTooManyRequests
+	case errors.As(err, &upstream) && upstream.Code == "UPSTREAM_UNAVAILABLE" && upstream.Status == http.StatusBadGateway:
+		code, status = upstream.Code, upstream.Status
+	case errors.As(err, &upstream) && upstream.Code == "RESOURCE_LIMIT" && upstream.Status == http.StatusRequestEntityTooLarge:
+		code, status = upstream.Code, upstream.Status
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, sql.ErrNoRows):
 		code, status = "NOT_FOUND", 404
 	case errors.Is(err, registry.ErrInvalid), errors.Is(err, rt.ErrInvalid):

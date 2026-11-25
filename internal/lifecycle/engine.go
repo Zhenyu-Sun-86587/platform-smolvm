@@ -407,8 +407,17 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 }
 
 func (j *Job) prepareDispatch(ctx context.Context) error {
-	if err := j.Stage(ctx, "preflight", ""); err != nil || !j.Op.Heavy {
+	if err := j.Stage(ctx, "preflight", ""); err != nil {
 		return err
+	}
+	if err := j.DB.CheckGuestDispatch(ctx, j.Op.ID); err != nil {
+		if errors.Is(err, registry.ErrGuestAuthorityRevoked) {
+			return j.fail(ctx, &Failure{"PERMISSION_DENIED", err.Error()})
+		}
+		return err
+	}
+	if !j.Op.Heavy {
+		return nil
 	}
 	var s syscall.Statfs_t
 	if err := syscall.Statfs(j.Config.StateDir, &s); err != nil {

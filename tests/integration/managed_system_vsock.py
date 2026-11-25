@@ -92,7 +92,7 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack, networks=()):
+    def __init__(self, args, root, stack, networks=(), credential_proxies=()):
         self.args = args
         self.root = root
         self.stack = stack
@@ -103,6 +103,7 @@ class Platform:
         self.csrf = ""
         self.epoch = ""
         self.networks = networks
+        self.credential_proxies = credential_proxies
 
     def start(self):
         root = self.root
@@ -165,6 +166,7 @@ class Platform:
         config.write_text(json.dumps(dict(
             version=1, state_dir=str(root / "platform"), templates_file=str(templates),
             api=dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin),
+            **({"credential_proxies": self.credential_proxies} if self.credential_proxies else {}),
             runtime=dict(socket=str(root / "ipc/official.sock"), status_socket="",
                          data_dir=str(root / "official"), custom=[dict(
                              instance_id=self.serve_id, bundle_digest=self.bundle_id,

@@ -137,6 +137,13 @@ func nativeForkDigest(request rt.ForkSubmission) string {
 }
 
 func (j *Job) submitNativeFork(ctx context.Context, control rt.NativeForkControl) error {
+	prior, err := j.checkGuestSubmission(ctx, control.QueryOperation)
+	if err != nil || j.Op.Terminal() {
+		return err
+	}
+	if prior != nil {
+		return j.confirmNativeFork(ctx, control, *prior)
+	}
 	receipt, err := control.SubmitFork(ctx, j.Intent.Fork.Submission)
 	if err == nil {
 		return j.confirmNativeFork(ctx, control, receipt)
