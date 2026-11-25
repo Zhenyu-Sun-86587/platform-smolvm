@@ -450,7 +450,16 @@ func (j *Job) power(ctx context.Context) error {
 			j.mu.Unlock()
 			return &Failure{"ACTIVE_ACTIVITY", "activity arrived before idle dispatch"}
 		}
-		err = j.Stage(ctx, action, target)
+		err = j.StageApply(ctx, action, target, func(ctx context.Context, tx *sql.Tx) error {
+			var pending bool
+			if err := tx.QueryRowContext(ctx, "SELECT wake_pending FROM operations WHERE id=?", j.Op.ID).Scan(&pending); err != nil {
+				return err
+			}
+			if pending {
+				return &Failure{"ACTIVE_ACTIVITY", "activity arrived during idle preflight"}
+			}
+			return nil
+		})
 		j.mu.Unlock()
 	} else {
 		err = j.Stage(ctx, action, target)
@@ -669,6 +678,12 @@ func (j *Job) checkHolds(ctx context.Context, action string) error {
 			}
 			if _, err := j.DB.DB().ExecContext(ctx, "UPDATE tasks SET state=?,exit_code=?,observed_at=?,result_json=? WHERE id=? AND task_namespace=? AND observed_at<=?", t.State, t.ExitCode, t.ObservedAt.UnixMilli(), string(JSON(t)), t.ID, t.Namespace, t.ObservedAt.UnixMilli()); err != nil {
 				return err
+			}
+			if !t.Terminal() && (action == "stop" || action == "delete") && opts.CancelTasks {
+				if _, err := j.CancelGuestTask(ctx, tasks.Request{Method: "cancel", TaskID: t.ID}); err != nil {
+					return err
+				}
+				continue
 			}
 			if t.Terminal() {
 				continue

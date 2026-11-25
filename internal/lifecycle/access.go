@@ -132,15 +132,24 @@ func (e *Engine) rememberWake(ctx context.Context, op registry.Operation) error 
 	if op.WakePending {
 		return nil
 	}
-	if op.State == registry.Queued {
-		_, err := e.DB.Cancel(ctx, op.ID)
-		if err == nil || errors.Is(err, registry.ErrOperationState) {
-			return nil
-		}
+	tx, err := e.DB.DB().BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := e.DB.DB().ExecContext(ctx, "UPDATE operations SET wake_pending=1 WHERE id=? AND state IN ('dispatching','observing')", op.ID)
-	return err
+	defer tx.Rollback()
+	var state string
+	if err = tx.QueryRowContext(ctx, "SELECT state FROM operations WHERE id=?", op.ID).Scan(&state); err != nil {
+		return err
+	}
+	if state == registry.Queued {
+		_, err = e.DB.TransitionTx(ctx, tx, op.ID, registry.TransitionRequest{State: registry.Cancelled, Stage: "completed", Effect: registry.EffectNone})
+	} else if state == registry.Dispatching || state == registry.Observing || state == registry.Succeeded {
+		_, err = tx.ExecContext(ctx, "UPDATE operations SET wake_pending=1 WHERE id=?", op.ID)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (e *Engine) wakeSuccessors(ctx context.Context) {
 	rows, err := e.DB.ReadDB().QueryContext(ctx, `SELECT o.id,o.machine_id,o.binding_generation,o.control_epoch,o.principal_id FROM operations o JOIN machines m ON m.id=o.machine_id JOIN meta ON meta.id=1 WHERE o.kind='idle_pause' AND o.wake_pending AND o.state='succeeded' AND o.control_epoch=meta.control_epoch AND meta.maintenance=0 AND m.deleted_at IS NULL AND m.binding_generation=o.binding_generation`)

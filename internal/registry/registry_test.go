@@ -31,6 +31,7 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := registry.AcceptRequest{PrincipalID: p.ID, PrincipalScope: []byte(`{"access":"manage"}`), Kind: "create", Name: "example", TemplateID: "t1", Key: "lost-response", Epoch: ctl.ControlEpoch, Scope: "POST /v1/machines", Heavy: true, Request: []byte(`{"name":"example"}`)}
+	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":1800}`)
 	op, again, err := s.Accept(ctx, req)
 	if err != nil || again {
 		t.Fatal(again, err)
@@ -46,9 +47,14 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":60}`)
 	replay, again, err := s.Accept(ctx, req)
 	if err != nil || !again || op.ID != replay.ID || op.RuntimeName != replay.RuntimeName {
 		t.Fatal(replay, again, err)
+	}
+	originalMachine, err := s.GetMachine(ctx, op.MachineID)
+	if err != nil || string(originalMachine.IdlePolicy) != `{"enabled":true,"timeout_seconds":1800}` {
+		t.Fatal(string(originalMachine.IdlePolicy), err)
 	}
 	if _, err = json.Marshal(replay); err != nil {
 		t.Fatal(err)

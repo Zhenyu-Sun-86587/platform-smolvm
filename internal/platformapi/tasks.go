@@ -258,44 +258,11 @@ func (s *Server) cancelTask(ctx context.Context, j *lifecycle.Job) error {
 	if err := json.Unmarshal(j.Op.Request, &req); err != nil {
 		return err
 	}
-	req.OperationID = j.Op.ID
-	if err := j.Stage(ctx, "guest_cancel", ""); err != nil {
-		return err
-	}
-	res, err := s.Call(ctx, j.Binding, req)
+	t, err := j.CancelGuestTask(ctx, req)
 	if err != nil {
-		j.Written = true
 		return err
 	}
-	j.Written = true
-	if res.Task == nil {
-		return errors.New("guest did not return cancellation state")
-	}
-	until := time.Now().Add(15 * time.Second)
-	if req.GraceSeconds != nil {
-		until = time.Now().Add(time.Duration(*req.GraceSeconds+6) * time.Second)
-	}
-	for res.Task.State == "cancelling" && time.Now().Before(until) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(150 * time.Millisecond):
-		}
-		res, err = s.Call(ctx, j.Binding, tasks.Request{Method: "status", TaskID: req.TaskID})
-		if err != nil {
-			return err
-		}
-		if res.Task == nil {
-			return errors.New("missing cancellation receipt")
-		}
-	}
-	if !res.Task.Terminal() {
-		return errors.New("guest cancellation outcome requires observation")
-	}
-	if err := s.observeTask(ctx, j.Binding.ID, *res.Task); err != nil {
-		return err
-	}
-	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(res.Task)})
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(t)})
 }
 func (s *Server) observeTask(ctx context.Context, bid string, t tasks.Task) error {
 	_, err := s.DB.DB().ExecContext(ctx, `UPDATE tasks SET result_json=?, observed_at=?,exit_code=?,state=? WHERE id=? AND task_namespace=? AND observed_at<=? AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=?)`, string(lifecycle.JSON(t)), t.ObservedAt.UnixMilli(), t.ExitCode, t.State, t.ID, t.Namespace, t.ObservedAt.UnixMilli(), t.MachineID, bid)

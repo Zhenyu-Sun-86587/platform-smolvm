@@ -48,7 +48,7 @@ def main():
         config = root / "config.json"
         config.write_text(json.dumps({"state_dir":tmp, "api":{"listen":address,"public_origin":origin},
             "runtime":{"socket":runtime_socket, "local_image_dir":str(image.parent)},
-            "templates_file":str(root/"templates")}))
+            "lifecycle":{"startup_idle_guard_seconds":1},"templates_file":str(root/"templates")}))
         import os
         def launch():
             proc = subprocess.Popen([args.binary, "-config", str(config)],env={**os.environ,"SANDBOX_OWNER_PASSWORD_FILE":str(pw)})
@@ -145,8 +145,51 @@ def main():
                     for dbfile in root.glob("platform.db*"):
                         assert b"LOCAL-ENV-CHECK-71394" not in dbfile.read_bytes()
                     print("single native create and guest task dispatch across two SIGKILLs",tid,flush=True)
+                    def patch_idle(enabled):
+                        cur=request("GET","machines/"+mid,expect=200)[1]
+                        change=request("PATCH","machines/"+mid,{"idle_policy":{"enabled":enabled,"timeout_seconds":3}},
+                                       newkey()|{"If-Match":f'"{cur["revision"]}"'},202)[1]
+                        wait(change["operation_id"])
+                    def wait_for(check, seconds=45):
+                        end=time.monotonic()+seconds
+                        while time.monotonic()<end:
+                            val=check()
+                            if val:return val
+                            time.sleep(.06)
+                        raise TimeoutError("activity outcome")
+                    with proxy.intercept("pause"):
+                        patch_idle(True)
+                        assert proxy.response_ready.wait(45), "native idle pause missing"
+                        idle_op=request("GET","machines/"+mid,expect=200)[1]["operation_id"]
+                        demand=http.client.HTTPConnection(address)
+                        demand.request("GET","/v1/machines/"+mid+"/files/list",headers=headers)
+                        try:
+                            import sqlite3
+                            with sqlite3.connect(f"file:{root}/platform.db?mode=ro",uri=True) as reader:
+                                wait_for(lambda: reader.execute("SELECT wake_pending FROM operations WHERE id=?", (idle_op,)).fetchone()[0])
+                        finally:
+                            demand.close()
+                    wait(idle_op)
+                    def woke():
+                        operations=request("GET","operations",expect=200)[1]["items"]
+                        wakes=[op for op in operations if op["kind"]=="wake" and op["machine_id"]==mid]
+                        assert len(wakes)<=1
+                        return wakes and wakes[0]["state"]=="succeeded"
+                    wait_for(woke)
+                    patch_idle(False)
+                    print("idle capture with a disconnected waiter completed one durable wake", idle_op, flush=True)
                 for act in ("pause","resume","stop","start"):
                     mutate(act)
+                if args.interrupt_dispatch:
+                    cur=request("GET","machines/"+mid,expect=200)[1]
+                    task=request("POST","machines/"+mid+"/tasks",{"argv":["/bin/sleep","300"]},
+                                 newkey()|{"If-Match":f'"{cur["revision"]}"'},202)[1]
+                    task_id=wait(task["operation_id"])["result"]["task_id"]
+                    cur=request("GET","machines/"+mid,expect=200)[1]
+                    stopped=request("POST","machines/"+mid+"/stop",{"cancel_tasks":True},
+                                    newkey()|{"If-Match":f'"{cur["revision"]}"'},202)[1]
+                    wait(stopped["operation_id"])
+                    assert request("GET","tasks/"+task_id,expect=200)[1]["state"]=="cancelled"
                 mutate("","DELETE")
             except Exception:
                 # Preserve the disposable registry and the exact identities for diagnosis.
