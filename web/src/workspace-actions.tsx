@@ -92,10 +92,12 @@ function forkBatchDialog(m: Machine, actions: Actions) {
     title: "Fork batch",
     description: "Create independent children from one source capture.",
     submit: "Fork batch",
-    fields: [{ name: "children", label: "Child names, one per line", type: "textarea", required: true }],
+    fields: [{ name: "children", label: "Child names, one per line", type: "textarea", required: true },
+      { name: "best_effort", label: "Create as many children as the Worker can admit", type: "checkbox" }],
     act: (f) => actions.mutate("machines/" + segment(m.machine_id) + "/fork-batches", {
       expected_generation: m.binding_generation,
       require_independent: true,
+      ...(f.has("best_effort") ? { admission: "best_effort" } : {}),
       children: str(f, "children").split("\n").map(name => name.trim()).filter(Boolean).map(name => ({name})),
     }, { revision: m.revision }),
   })

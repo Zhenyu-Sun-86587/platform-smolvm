@@ -35,6 +35,7 @@ export interface DesktopSession {
 export interface ForkBatch {
   children: { name: string }[]
   require_independent?: boolean
+  admission?: "all_or_reject" | "best_effort"
   volume_policy?: { default?: "clone" }
 }
 export interface ErrorDetail {

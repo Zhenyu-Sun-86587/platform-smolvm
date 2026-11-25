@@ -19,8 +19,9 @@ type fullStateAction struct {
 }
 
 type forkBatchRequest struct {
-	ExpectedGeneration int64 `json:"expected_generation"`
-	RequireIndependent bool  `json:"require_independent"`
+	ExpectedGeneration int64  `json:"expected_generation"`
+	RequireIndependent bool   `json:"require_independent"`
+	Admission          string `json:"admission,omitempty"`
 	Children           []struct {
 		Name string `json:"name"`
 	} `json:"children"`
@@ -70,6 +71,7 @@ func (s *Server) fullStateRoutes() {
 			return err
 		}
 		if v.ExpectedGeneration < 1 || len(v.Children) == 0 || len(v.Children) > rt.MaxForkChildren ||
+			(rt.ForkAdmission(v.Admission) != rt.ForkAllOrReject && v.Admission != rt.ForkBestEffort) ||
 			(v.VolumePolicy != nil && v.VolumePolicy.Default != "" && v.VolumePolicy.Default != "clone") {
 			return registry.ErrInvalid
 		}

@@ -181,6 +181,8 @@ func nativeRefusal(err error) error {
 		code = "STATE_CONFLICT"
 	case "E_OPERATION_IN_PROGRESS":
 		code = "OPERATION_IN_PROGRESS"
+	case "E_RESOURCE_LIMIT":
+		code = "RESOURCE_LIMIT"
 	case "E_PERMISSION_DENIED":
 		code = "PERMISSION_DENIED"
 	case "E_INVALID_REQUEST":
