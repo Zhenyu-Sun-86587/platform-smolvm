@@ -61,3 +61,18 @@ For an existing RuntimeBundle/1 that predates both rootfs metadata files, add `v
 ```sh
 python3 -B tests/integration/test_deep_bundle.py -v
 ```
+
+## Measure and pack an OCI candidate
+
+Compile the probe inside the locked x86-64 builder. Run the smoke on a Linux KVM Worker with systemd and root access. The probe boots the staged runtime twice using an offline OCI archive. It records KVM extensions and MSR indices on the Worker, and CPUID, XCR0, kernel release, virtio devices and clocksource from inside the guest. The test uses private state and UID claims.
+
+```sh
+cc -O2 -static packaging/deep/probe-candidate.c -o "$probe"
+sudo python3 -B packaging/deep/smoke-candidate.py \
+  --artifacts "$runtime_stage" --probe "$probe" --output "$boot_evidence"
+python3 -B packaging/deep/pack-candidate.py \
+  --artifacts "$runtime_stage" --evidence "$boot_evidence" \
+  --kernel-archive "$kernel_archive" --crun-archive "$crun_archive" --output "$bundle"
+```
+
+The packer checks the build lock and build record against the OCI evidence, copies the source and license material, and verifies the final bundle digest. It records the observed OCI boot profile and the exact source reader revision. Deploy with `SMOLVM_AGENT_ROOTFS` pointing to the extracted, verified `guest/oci-rootfs.tar.gz`. Keep the bundle and the independent writable state directory at paths the dropped VMM UID can traverse.
