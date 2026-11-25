@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"sandbox-platform/internal/lifecycle"
+	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 )
 
@@ -27,4 +29,35 @@ func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (
 		}
 		return admission
 	}, nil
+}
+
+func (s *Server) resolveSystemNetwork(input lifecycle.Create, accept *registry.AcceptRequest) {
+	admit := accept.AdmitRuntime
+	var topologyError error
+	for _, route := range s.Config.Runtime.Custom {
+		if route.InstanceID != input.RuntimeInstanceID {
+			continue
+		}
+		network, err := route.ResolvePrivateNetwork(input.Network)
+		if err == nil && network != nil {
+			input.Network = network
+			accept.ResolvedCreateRequest = lifecycle.JSON(input)
+		}
+		if err != nil {
+			topologyError = errors.Join(registry.ErrInvalid, err)
+		}
+		accept.AdmitRuntime = func(accepted rt.BundleRoute, kind string) error {
+			if accepted != route.Key() {
+				return rt.SystemBootUnavailable(false)
+			}
+			if topologyError != nil {
+				return topologyError
+			}
+			return admit(accepted, kind)
+		}
+		return
+	}
+	if input.Network != nil {
+		accept.AdmitRuntime = func(rt.BundleRoute, string) error { return registry.ErrInvalid }
+	}
 }

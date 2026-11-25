@@ -514,6 +514,9 @@ func (s *Server) machineRoutes() {
 		if v.Name == "" || v.TemplateID == "" {
 			return registry.ErrInvalid
 		}
+		if v.Network != nil && (v.Network.CIDR != "" || v.Network.RouteDomainID != "") {
+			return registry.ErrInvalid
+		}
 		tpl, err := s.DB.GetTemplate(r.Context(), v.TemplateID)
 		if err != nil {
 			return err
@@ -545,12 +548,16 @@ func (s *Server) machineRoutes() {
 				return err
 			}
 			req.AdmitRuntime = admission
+			s.resolveSystemNetwork(v, &req)
 			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
 			req.DesiredPower = "stopped"
 			if v.Start {
 				req.DesiredPower = "running"
 			}
 		} else {
+			if v.Network != nil {
+				return registry.ErrInvalid
+			}
 			v.BootMode = ""
 			if v.Resources.Storage == 0 {
 				v.Resources.Storage = 2

@@ -123,6 +123,9 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 		v.Readiness = *req.Edit.Readiness
 	}
 	if req.Edit.GuestPort != 0 && privateServiceWorker(j.Runtime) != "" {
+		if _, _, err := workerServiceAttachment(ctx, privateServiceWorker(j.Runtime), j.Binding); err != nil {
+			return err
+		}
 		v.GuestPort = req.Edit.GuestPort
 	} else if req.Edit.GuestPort != 0 && req.Edit.GuestPort != v.GuestPort {
 		var port uint16
@@ -172,6 +175,15 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 		v.GuestPort = req.Edit.GuestPort
 	}
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]any{"service_id": v.ID, "revision": v.Revision + 1}), Apply: func(ctx context.Context, tx *sql.Tx) error {
+		if req.Edit.GuestPort != 0 && privateServiceWorker(j.Runtime) != "" {
+			var present bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM services WHERE machine_id=? AND guest_port=? AND id<>?)", v.MachineID, v.GuestPort, v.ID).Scan(&present); err != nil {
+				return err
+			}
+			if present {
+				return registry.ErrConflict
+			}
+		}
 		res, err := tx.ExecContext(ctx, "UPDATE services SET name=?,guest_port=?,readiness_json=?,revision=revision+1 WHERE id=? AND revision=?", v.Name, v.GuestPort, string(lifecycle.JSON(v.Readiness)), v.ID, v.Revision)
 		if err != nil {
 			return err

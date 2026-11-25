@@ -216,27 +216,28 @@ type Lock struct {
 }
 
 type AcceptRequest struct {
-	PrincipalID        string
-	CredentialID       string
-	PrincipalScope     json.RawMessage
-	Epoch              string
-	Key                string
-	Scope              string
-	Kind               string
-	MachineID          string
-	Name               string
-	TemplateID         string
-	ExpectedRevision   int64
-	ExpectedGeneration int64
-	Request            json.RawMessage
-	IdlePolicy         json.RawMessage
-	DefaultIdlePolicy  json.RawMessage // resolved for a new machine, outside the caller fingerprint
-	DesiredPower       string
-	KeepRunning        bool
-	Heavy              bool
-	AllocateBinding    bool
-	RuntimeInstanceID  string
-	Locks              []Lock
+	PrincipalID           string
+	CredentialID          string
+	PrincipalScope        json.RawMessage
+	Epoch                 string
+	Key                   string
+	Scope                 string
+	Kind                  string
+	MachineID             string
+	Name                  string
+	TemplateID            string
+	ExpectedRevision      int64
+	ExpectedGeneration    int64
+	Request               json.RawMessage
+	ResolvedCreateRequest json.RawMessage // operator defaults resolved outside the caller fingerprint
+	IdlePolicy            json.RawMessage
+	DefaultIdlePolicy     json.RawMessage // resolved for a new machine, outside the caller fingerprint
+	DesiredPower          string
+	KeepRunning           bool
+	Heavy                 bool
+	AllocateBinding       bool
+	RuntimeInstanceID     string
+	Locks                 []Lock
 	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
 	AdmitRuntime func(rt.BundleRoute, string) error
 	// AdmitNative checks the binding's persisted capability and execution evidence.
