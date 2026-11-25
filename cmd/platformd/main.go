@@ -115,6 +115,9 @@ func run() error {
 		return err
 	}
 	api := platformapi.New(engine, catalog, web.Handler())
+	if err := api.StartGuestRelays(ctx); err != nil {
+		return err
+	}
 	httpServer := &http.Server{Addr: c.API.Listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10}
 	go api.StartTCP(ctx)
 	workerDone := make(chan struct{})
