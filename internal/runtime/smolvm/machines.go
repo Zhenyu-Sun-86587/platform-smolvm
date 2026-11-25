@@ -51,6 +51,7 @@ type machineInfo struct {
 	ParentMachine  string            `json:"parentMachine"`
 	Branchable     bool              `json:"branchable"`
 	StateReason    string            `json:"stateReason"`
+	WorkloadError  *string           `json:"workloadError"`
 	Ports          []runtime.Port    `json:"ports"`
 	AllowedCIDRs   []string          `json:"allowedCidrs"`
 	AllowedHosts   []string          `json:"allowedHosts"`
@@ -101,7 +102,7 @@ func (m machineInfo) observe() runtime.Observation {
 	}
 	return runtime.Observation{
 		Name: m.Name, State: state, RawState: m.State, Identity: identity, ParentMachine: m.ParentMachine,
-		Branchable: m.Branchable, StateReason: m.StateReason, Ports: m.Ports, ObservedAt: time.Now().UTC(),
+		Branchable: m.Branchable, StateReason: m.StateReason, WorkloadError: m.WorkloadError, Ports: m.Ports, ObservedAt: time.Now().UTC(),
 		AllowedCIDRs: m.AllowedCIDRs, AllowedHosts: m.AllowedHosts, EgressRules: m.EgressRules,
 		Image: m.Image, Labels: m.Labels, CPUs: m.CPUs, MemoryMB: m.MemoryMB, StorageGB: m.StorageGB,
 		OverlayGB: m.OverlayGB, DiskChainDepth: m.DiskChainDepth, Capabilities: capabilities,

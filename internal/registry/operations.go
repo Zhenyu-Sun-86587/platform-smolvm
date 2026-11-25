@@ -396,8 +396,13 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 		}
 	}
 	if r.PromoteBinding {
-		if r.State != Succeeded || r.MarkDeleted || binding.ID == "" || !oneOf(binding.Status, "candidate", "unknown") {
-			return Operation{}, fmt.Errorf("%w: only a successful eligible candidate can become current", ErrInvalid)
+		// The VM creation and start can apply even when its image workload fails.
+		workloadFailedAfterCreate := op.Kind == "create" && r.State == Failed && r.Effect == EffectApplied &&
+			r.DesiredPower == "running" && r.Observation != nil && r.Observation.ObservedState == "running" &&
+			r.Observation.Availability == "ready" && len(r.Observation.RuntimeIdentity) != 0 &&
+			r.Observation.WorkloadError != nil && *r.Observation.WorkloadError != ""
+		if (r.State != Succeeded && !workloadFailedAfterCreate) || r.MarkDeleted || binding.ID == "" || !oneOf(binding.Status, "candidate", "unknown") {
+			return Operation{}, fmt.Errorf("%w: binding promotion requires a confirmed eligible candidate", ErrInvalid)
 		}
 		if err := promoteBinding(ctx, tx, binding); err != nil {
 			return Operation{}, err

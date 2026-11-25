@@ -75,12 +75,18 @@ type Action struct {
 	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
-	Stage     string `json:"stage"`
-	Name      string `json:"runtime_name"`
-	Source    string `json:"source,omitempty"`
-	Target    string `json:"expected_state,omitempty"`
-	PauseID   string `json:"pause_id,omitempty"`
-	BindingID string `json:"binding_id"`
+	Stage           string                `json:"stage"`
+	Name            string                `json:"runtime_name"`
+	Source          string                `json:"source,omitempty"`
+	Target          string                `json:"expected_state,omitempty"`
+	PauseID         string                `json:"pause_id,omitempty"`
+	BindingID       string                `json:"binding_id"`
+	WorkloadFailure *workloadStartFailure `json:"workload_failure,omitempty"`
+}
+
+type workloadStartFailure struct {
+	Identity *rt.Identity `json:"identity"`
+	Message  string       `json:"message"`
 }
 
 func JSON(v any) json.RawMessage {
@@ -222,12 +228,16 @@ func (j *Job) StageApply(ctx context.Context, stage, target string, apply func(c
 	return j.transition(ctx, registry.TransitionRequest{State: state, Stage: stage, Dispatch: JSON(j.Intent), MaxHeavy: j.Config.Lifecycle.Heavy, Apply: apply})
 }
 func (j *Job) Done(ctx context.Context, r registry.TransitionRequest) error {
+	return j.finish(ctx, registry.Succeeded, r)
+}
+
+func (j *Job) finish(ctx context.Context, state string, r registry.TransitionRequest) error {
 	if j.Op.State != registry.Observing {
 		if err := j.transition(ctx, registry.TransitionRequest{State: registry.Observing, Stage: "verify", Effect: r.Effect}); err != nil {
 			return err
 		}
 	}
-	r.State = registry.Succeeded
+	r.State = state
 	r.Stage = "completed"
 	if r.Result == nil {
 		r.Result = JSON(map[string]string{"machine_id": j.Op.MachineID})
@@ -366,6 +376,40 @@ func (j *Job) loadOwned(ctx context.Context) (rt.Observation, error) {
 	}
 	return o, nil
 }
+
+func (j *Job) start(ctx context.Context, name string) error {
+	receipt, err := j.Runtime.Start(ctx, name)
+	if err != nil {
+		return err
+	}
+	j.Written = true
+	o := receipt.Observation
+	if o.WorkloadError == nil {
+		return nil
+	}
+	message := *o.WorkloadError
+	if message == "" {
+		message = "runtime reported that the image workload failed to start"
+	}
+	j.Intent.WorkloadFailure = &workloadStartFailure{Identity: o.Identity, Message: message}
+	// The Start response can be the only source of this error.
+	return j.Stage(ctx, j.Intent.Stage, j.Intent.Target)
+}
+
+func (j *Job) workloadError(o rt.Observation) (*string, error) {
+	if failure := j.Intent.WorkloadFailure; failure != nil {
+		if o.State != rt.StateRunning || !o.Identity.Equal(failure.Identity) {
+			return nil, errors.New("workload start receipt does not match the running execution")
+		}
+		return &failure.Message, nil
+	}
+	if j.Intent.Stage == "start" || (j.Intent.Stage == "task_wake" && j.Intent.PauseID == "") {
+		cleared := ""
+		return &cleared, nil
+	}
+	return nil, nil
+}
+
 func (j *Job) power(ctx context.Context) error {
 	op := j.Op
 	if op.Kind == "sync_keys" {
@@ -406,7 +450,7 @@ func (j *Job) power(ctx context.Context) error {
 			if err = j.Stage(ctx, "start", "running"); err != nil {
 				return err
 			}
-			if _, err = j.Runtime.Start(ctx, name); err != nil {
+			if err = j.start(ctx, name); err != nil {
 				return err
 			}
 		}
@@ -531,7 +575,7 @@ func (j *Job) power(ctx context.Context) error {
 	}
 	switch action {
 	case "start":
-		_, err = j.Runtime.Start(ctx, name)
+		err = j.start(ctx, name)
 	case "pause":
 		_, err = j.Runtime.Pause(ctx, name, j.Intent.PauseID)
 	case "resume":
@@ -584,6 +628,10 @@ func (j *Job) verify(ctx context.Context) error {
 		return fmt.Errorf("observed %s without confirmed target identity/state %s", o.State, j.Intent.Target)
 	}
 	x := Evidence(o)
+	x.WorkloadError, err = j.workloadError(o)
+	if err != nil {
+		return err
+	}
 	power := o.State
 	if power == "created" {
 		power = "stopped"
@@ -605,7 +653,7 @@ func (j *Job) verify(ctx context.Context) error {
 			if err = j.Stage(ctx, "start", "running"); err != nil {
 				return err
 			}
-			if _, err = j.Runtime.Start(ctx, j.Op.RuntimeName); err != nil {
+			if err = j.start(ctx, j.Op.RuntimeName); err != nil {
 				return err
 			}
 			return j.verify(ctx)
@@ -651,6 +699,10 @@ func (j *Job) verify(ctx context.Context) error {
 				return SaveAdopted(ctx, tx, j.Binding, adopted)
 			}
 		}
+	}
+	if j.Intent.WorkloadFailure != nil && (j.Op.Kind == "create" || j.Op.Kind == "start") {
+		r.Error = JSON(map[string]string{"code": registry.WorkloadStartFailed, "message": j.Intent.WorkloadFailure.Message})
+		return j.finish(ctx, registry.Failed, r)
 	}
 	return j.Done(ctx, r)
 }
@@ -838,7 +890,7 @@ func (j *Job) TaskRunning(ctx context.Context, recovering bool) error {
 		if action == "resume" {
 			_, err = j.Runtime.Resume(ctx, j.Binding.RuntimeName, pid)
 		} else {
-			_, err = j.Runtime.Start(ctx, j.Binding.RuntimeName)
+			err = j.start(ctx, j.Binding.RuntimeName)
 		}
 		if err != nil {
 			return err
@@ -856,6 +908,10 @@ func (j *Job) TaskRunning(ctx context.Context, recovering bool) error {
 		return nil
 	}
 	x := Evidence(o)
+	x.WorkloadError, err = j.workloadError(o)
+	if err != nil {
+		return err
+	}
 	if j.Binding.PauseStatus == "active" {
 		x.PauseStatus = "consumed"
 	}

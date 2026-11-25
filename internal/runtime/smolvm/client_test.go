@@ -147,6 +147,26 @@ func TestOfficialAdapterVersionAndPauseContract(t *testing.T) {
 	}
 }
 
+func TestStartReceiptCarriesWorkloadFailure(t *testing.T) {
+	client, err := New("/fixture/api.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = fixtureTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != machinesPath+"/example/start" || r.Method != http.MethodPost {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, "{\"name\":\"example\",\"state\":\"running\",\"runtime\":{\"pid\":42,\"startTime\":1},\"workloadError\":\"entrypoint failed\"}")
+	}}
+	started, err := client.Start(context.Background(), "example")
+	o := started.Observation
+	if err != nil || o.State != runtime.StateRunning || !o.Identity.Complete() || o.WorkloadError == nil || *o.WorkloadError != "entrypoint failed" {
+		t.Fatalf("start = %+v, %v", o, err)
+	}
+}
+
 func TestOfficialRuntimeSmoke(t *testing.T) {
 	socket, imageDir, image := os.Getenv("SMOLVM_TEST_SOCKET"), os.Getenv("SMOLVM_TEST_IMAGE_DIR"), os.Getenv("SMOLVM_TEST_IMAGE")
 	if socket == "" || imageDir == "" || image == "" {
