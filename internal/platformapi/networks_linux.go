@@ -37,6 +37,7 @@ func (s *Server) hasPrivateNetwork(id string) bool {
 }
 
 func (s *Server) networkRoutes() {
+	s.privatePacketWakeRoutes()
 	s.route("GET /v1/networks", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize(auth.ActionAdmin, ""); err != nil {
 			return err
@@ -80,6 +81,15 @@ func (s *Server) networkRoutes() {
 					endpoint.PrivateIPv4 = lease.Attachment.Address.String()
 					endpoint.GuestIPv4 = lease.Attachment.GuestAddress.String()
 					endpoint.DNSName = attachment.DNSName
+				}
+			}
+			if endpoint.State == "unavailable" && binding.PowerState == registry.PowerHibernated {
+				if saved, err := s.packetWakeEndpoint(ctx, id); err == nil && saved.endpoint.NetworkID == endpoint.NetworkID {
+					endpoint.State = "reserved"
+					endpoint.ID = saved.endpoint.AttachmentID
+					endpoint.PrivateIPv4 = saved.endpoint.PrivateIPv4
+					endpoint.GuestIPv4 = saved.endpoint.GuestIPv4
+					endpoint.DNSName = saved.endpoint.DNSName
 				}
 			}
 		}

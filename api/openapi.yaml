@@ -1844,11 +1844,48 @@ paths:
                 properties:
                   network_id: {type: string}
                   mode: {type: string, enum: [native, fixed_internal]}
-                  state: {type: string, enum: [published, unavailable]}
+                  state: {type: string, enum: [published, reserved, unavailable]}
                   attachment_id: {type: string}
                   private_ipv4: {type: string, format: ipv4}
                   guest_ipv4: {type: string, format: ipv4}
                   dns_name: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/network/wake-rules/{source}/{transport}/{port}:
+    parameters:
+    - {name: machine, in: path, required: true, schema: {type: string}}
+    - {name: source, in: path, required: true, schema: {type: string}}
+    - {name: transport, in: path, required: true, schema: {type: string, enum: [tcp, udp]}}
+    - {name: port, in: path, required: true, schema: {type: integer, minimum: 1, maximum: 65535}}
+    get:
+      operationId: get_private_packet_wake_rule
+      summary: Read the wake authorization for a private peer and destination port
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivatePacketWakeRule'
+        default: {$ref: '#/components/responses/Error'}
+    put:
+      operationId: set_private_packet_wake_rule
+      summary: Authorize or revoke packet wake from a private peer
+      description: Requires manage access to both machines. Enabling binds the rule to the source's current execution and Worker attachment.
+      parameters:
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/Revision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled, expected_revision, expected_generation]
+              properties:
+                enabled: {type: boolean}
+                expected_revision: {type: integer, minimum: 0}
+                expected_generation: {type: integer, minimum: 1}
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivatePacketWakeRule'
         default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/desktop-sessions:
     parameters:
@@ -2566,6 +2603,11 @@ components:
       in: query
       schema: {type: string}
   responses:
+    PrivatePacketWakeRule:
+      description: Current peer authorization and the last reconciled wake
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/PrivatePacketWakeRule'}
     VolumeOperationAccepted:
       description: Accepted operation. Follow its result for the Worker receipt.
       content:
@@ -2600,6 +2642,28 @@ components:
         started_at: {type: string, format: date-time}
         finished_at: {type: string, format: date-time}
         failure_code: {type: string}
+    PrivatePacketWakeRule:
+      type: object
+      required: [rule_id, source_attachment_id, target_attachment_id, transport, guest_port, enabled, revision, source_current]
+      properties:
+        rule_id: {type: string}
+        source_attachment_id: {type: string}
+        target_attachment_id: {type: string}
+        transport: {type: string, enum: [tcp, udp]}
+        guest_port: {type: integer, minimum: 1, maximum: 65535}
+        enabled: {type: boolean}
+        revision: {type: integer, minimum: 1}
+        source_current: {type: boolean}
+        source_incarnation_id: {type: [string, 'null']}
+        source_execution_epoch: {type: [integer, 'null']}
+        last_wake:
+          type: [object, 'null']
+          required: [operation_id, rule_revision, execution_epoch, authorized]
+          properties:
+            operation_id: {type: string}
+            rule_revision: {type: integer}
+            execution_epoch: {type: integer}
+            authorized: {type: boolean}
     VolumeRestorePolicy:
       type: string
       enum: [exact, clone_conflicts]

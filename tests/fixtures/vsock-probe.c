@@ -1,7 +1,9 @@
 #include <sys/socket.h>
 #include <linux/vm_sockets.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -19,8 +21,30 @@ static int write_all(int fd, const char *buf, size_t length)
     return 0;
 }
 
+static int serve(const char *port)
+{
+    char *end;
+    unsigned long number = strtoul(port, &end, 10);
+    if (number < 1 || number > 65535 || *end) return 1;
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) return 1;
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons(number) };
+    if (bind(listener, (struct sockaddr *)&address, sizeof(address)) || listen(listener, 8)) {
+        perror("listen");
+        return 1;
+    }
+    for (;;) {
+        int client = accept(listener, NULL, NULL);
+        if (client < 0 && errno == EINTR) continue;
+        if (client < 0) return 1;
+        (void)write_all(client, "private wake\n", sizeof("private wake\n") - 1);
+        close(client);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && strcmp(argv[1], "--serve") == 0) return serve(argv[2]);
     if (argc == 2 && strcmp(argv[1], "--cid") == 0) {
         unsigned cid;
         int device = open("/dev/vsock", O_RDONLY);
