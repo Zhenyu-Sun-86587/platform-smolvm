@@ -167,7 +167,7 @@ func (e *Engine) refreshSSH(ctx context.Context, m registry.Machine, x *registry
 		return
 	}
 	var owner string
-	if e.DB.ReadDB().QueryRowContext(ctx, "SELECT id FROM principals WHERE disabled=0 LIMIT 1").Scan(&owner) != nil {
+	if owner, err = e.DB.OwnerID(ctx); err != nil {
 		return
 	}
 	// Installation is a managed Guest write and therefore owns the machine lock.

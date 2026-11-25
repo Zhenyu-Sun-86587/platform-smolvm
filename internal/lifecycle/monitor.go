@@ -140,7 +140,7 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			continue
 		}
 		var owner string
-		if err = e.DB.ReadDB().QueryRowContext(ctx, "SELECT id FROM principals WHERE disabled=0 LIMIT 1").Scan(&owner); err != nil {
+		if owner, err = e.DB.OwnerID(ctx); err != nil {
 			continue
 		}
 		ctl, err := e.DB.Control(ctx)
