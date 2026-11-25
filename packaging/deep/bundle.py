@@ -128,7 +128,8 @@ def verify_config(path, expected):
             require(name not in actual, f"duplicate kernel config entry: {name}")
             actual[name] = assignment[2] if assignment else "n"
     for name, value in expected.items():
-        require(actual.get(name) == value, f"kernel config requires {name}={value}")
+        # Kconfig omits disabled symbols whose dependencies are unsatisfied.
+        require(actual.get(name, "n") == value, f"kernel config requires {name}={value}")
 
 
 def verify_provenance(root, lock, artifacts, required):

@@ -22,6 +22,18 @@ export interface RuntimeProfile {
 export interface ActivityPolicy {
     allow_active_tasks?: boolean;
 }
+export interface DesktopSession {
+    desktop_session_id: string;
+    machine_id: string;
+    service_id: string;
+    lease_id: string;
+    binding_id: string;
+    binding_generation: number;
+    execution_epoch: number;
+    state: "active" | "released" | "suspect";
+    revision: number;
+    expires_at: string;
+}
 export interface ForkBatch {
     children: {
         name: string;
@@ -46,11 +58,13 @@ export interface OperationChild {
     machine_id: string;
     binding_id: string;
     state: string;
+    attempt: number;
     resource_independence?: "unknown" | "verified" | "failed";
     error_code?: string;
 }
 export interface Operation {
     operation_id: string;
+    revision: number;
     state: OperationState;
     machine_id?: string;
     kind: string;
@@ -102,6 +116,7 @@ export interface CreateMachine {
 }
 export interface Machine extends CreateMachine {
     machine_id: string;
+    desktop_profile?: "software-vnc-v1";
     spec?: {
         resources?: Resources;
     };
@@ -169,7 +184,7 @@ export interface Task {
 }
 export interface ServiceSpec {
     name: string;
-    protocol: "http" | "https" | "ssh" | "tcp-mtls";
+    protocol: "http" | "https" | "ssh" | "tcp-mtls" | "vnc";
     guest_port: number;
     readiness?: unknown;
     auth?: unknown;
@@ -346,7 +361,12 @@ export declare class Client {
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;
+    retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
+    listDesktopSessions(id: string, signal?: AbortSignal): AsyncGenerator<DesktopSession, any, any>;
+    createDesktopSession(id: string, serviceId: string, ttlSeconds?: number, options?: MachineWriteOptions): Promise<DesktopSession>;
+    closeDesktopSession(id: string, options?: WriteOptions): Promise<DesktopSession>;
+    desktopSocket(id: string, signal?: AbortSignal): Promise<WebSocket>;
     getSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot>;
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;
     listVolumes(signal?: AbortSignal): AsyncGenerator<Volume, any, any>;

@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -14,6 +15,7 @@ type forkRuntime struct {
 	nativePowerRuntime
 	references  map[string]rt.ExecutionRef
 	forkReceipt rt.OperationReceipt
+	retries     int
 }
 
 func (n *forkRuntime) DiscoverExecution(_ context.Context, name string) (rt.ExecutionRef, error) {
@@ -61,6 +63,25 @@ func (n *forkRuntime) QueryOperation(_ context.Context, id string) (rt.Operation
 		return rt.OperationReceipt{}, &rt.Error{Code: "NOT_FOUND", NativeCode: "E_NOT_FOUND"}
 	}
 	return n.forkReceipt, nil
+}
+
+func (n *forkRuntime) RetryFork(_ context.Context, id string, control rt.ForkControl) (rt.OperationReceipt, error) {
+	n.retries++
+	if id != n.forkReceipt.OperationID || control.RequestDigest != n.forkReceipt.RequestDigest ||
+		control.Expected.InstanceID != n.forkReceipt.InstanceID || control.Expected.ExecutionEpoch != n.forkReceipt.ExpectedExecutionEpoch ||
+		control.ExpectedRevision != n.forkReceipt.Revision {
+		return rt.OperationReceipt{}, rt.ErrInvalid
+	}
+	n.forkReceipt.Revision++
+	failed := &n.forkReceipt.Fork.Children[1]
+	failed.Attempt++
+	failed.ExecutionEpoch++
+	failed.OperationID += "-retry"
+	inc := "child-vmm-retry"
+	failed.IncarnationID = &inc
+	failed.Phase = "COMPLETED"
+	n.references[failed.Name] = rt.ExecutionRef{InstanceID: failed.InstanceID, IncarnationID: inc, ExecutionEpoch: failed.ExecutionEpoch}
+	return rt.OperationReceipt{}, rt.ErrUnavailable
 }
 
 func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
@@ -137,11 +158,39 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 		t.Fatal(machine, err)
 	}
 	worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage, worker.forkReceipt.Fork.Children[1].Phase = "COMPLETED", "complete", "ABORTED"
+	worker.forkReceipt.Revision++
 	drive(partial)
 	replayed, found, err := db.Accept(ctx, request)
 	if err != nil || !found || replayed.ID != accepted.ID || worker.submissions != 1 || replayed.Effect != registry.EffectPartial ||
 		replayed.State != registry.Succeeded || replayed.Children[0].MachineID != accepted.Children[0].MachineID ||
 		replayed.Children[1].MachineID != accepted.Children[1].MachineID || replayed.Children[1].State != "quarantined" {
 		t.Fatal(replayed, found, worker.submissions, err)
+	}
+	previous := read()
+	envelope := registry.MutationRequest{PrincipalID: owner, Epoch: epoch, Key: "retry-key", Scope: "POST /v1/operations/" + previous.ID + "/retry", Request: JSON(struct{}{}), ExpectedRevision: previous.Version}
+	apply := func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+		op, err := engine.RetryNativeFork(ctx, tx, previous, previous.Version)
+		return registry.MutationResult{Response: JSON(op)}, err
+	}
+	if _, replay, err := db.Mutate(ctx, envelope, apply); err != nil || replay {
+		t.Fatal(replay, err)
+	}
+	if err := engine.drive(ctx, read()); err != rt.ErrUnavailable || worker.retries != 1 {
+		t.Fatal(worker.retries, err)
+	}
+	engine = New(db, engine.runtimes, engine.Config)
+	drive(read())
+	if op := read(); op.Children[0].State != "ready" || op.Children[1].State != "pending" || op.Children[1].Attempt != 1 {
+		t.Fatal(op)
+	}
+	drive(read())
+	completed := read()
+	if completed.State != registry.Succeeded || completed.Effect != registry.EffectApplied || worker.retries != 1 || !completed.SourceLockReleased ||
+		completed.Children[0].MachineID != previous.Children[0].MachineID || completed.Children[0].Attempt != 0 ||
+		completed.Children[1].MachineID != previous.Children[1].MachineID || completed.Children[1].State != "ready" {
+		t.Fatal(completed, worker.retries)
+	}
+	if _, replay, err := db.Mutate(ctx, envelope, apply); err != nil || !replay {
+		t.Fatal(replay, err)
 	}
 }

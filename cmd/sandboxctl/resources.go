@@ -347,6 +347,20 @@ func (c *client) operations() *cobra.Command {
 			return c.mutation(cmd, "POST", res("operations", args[0])+"/"+act, struct{}{}, 0)
 		}))
 	}
+	group.AddCommand(sub("retry OPERATION", "Retry failed targets from the retained fork cut", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		path := res("operations", args[0])
+		revision := c.revision
+		if revision == 0 {
+			var op struct {
+				Revision int64 `json:"revision"`
+			}
+			if err := c.get(cmd.Context(), path, &op); err != nil {
+				return err
+			}
+			revision = op.Revision
+		}
+		return c.mutation(cmd, "POST", path+"/retry", struct{}{}, revision)
+	}))
 	return group
 }
 

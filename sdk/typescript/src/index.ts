@@ -20,6 +20,18 @@ export interface RuntimeProfile {
   capabilities: Record<string, Capability>
 }
 export interface ActivityPolicy { allow_active_tasks?: boolean }
+export interface DesktopSession {
+  desktop_session_id: string
+  machine_id: string
+  service_id: string
+  lease_id: string
+  binding_id: string
+  binding_generation: number
+  execution_epoch: number
+  state: "active" | "released" | "suspect"
+  revision: number
+  expires_at: string
+}
 export interface ForkBatch {
   children: { name: string }[]
   require_independent?: boolean
@@ -40,11 +52,13 @@ export interface OperationChild {
   machine_id: string
   binding_id: string
   state: string
+  attempt: number
   resource_independence?: "unknown" | "verified" | "failed"
   error_code?: string
 }
 export interface Operation {
   operation_id: string
+  revision: number
   state: OperationState
   machine_id?: string
   kind: string
@@ -80,6 +94,7 @@ export interface CreateMachine {
 }
 export interface Machine extends CreateMachine {
   machine_id: string
+  desktop_profile?: "software-vnc-v1"
   spec?: { resources?: Resources }
   revision: number
   binding_generation: number
@@ -132,7 +147,7 @@ export interface Task {
 }
 export interface ServiceSpec {
   name: string
-  protocol: "http" | "https" | "ssh" | "tcp-mtls"
+  protocol: "http" | "https" | "ssh" | "tcp-mtls" | "vnc"
   guest_port: number
   readiness?: unknown
   auth?: unknown
@@ -468,7 +483,27 @@ export class Client {
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
   getOperation(id: string, signal?: AbortSignal) { return this.get<Operation>(operation(id), signal) }
+  async retryForkTargets(id: string, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
+    return this.mutate<Operation>(operation(id) + "/retry", {}, { ...options, revision })
+  }
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
+  listDesktopSessions(id: string, signal?: AbortSignal) {
+    return this.pages<DesktopSession>(machine(id) + "/desktop-sessions", 100, signal)
+  }
+  async createDesktopSession(id: string, serviceId: string, ttlSeconds?: number, options: MachineWriteOptions = {}) {
+    const current = options.generation === undefined || options.revision === undefined ? await this.getMachine(id, options.signal) : undefined
+    return this.mutate<DesktopSession>(machine(id) + "/desktop-sessions", {
+      service_id: serviceId, expected_generation: options.generation ?? current?.binding_generation, ttl_seconds: ttlSeconds,
+    }, { ...options, revision: options.revision ?? current?.revision })
+  }
+  closeDesktopSession(id: string, options?: WriteOptions) {
+    return this.mutate<DesktopSession>("desktop-sessions/" + segment(id), {}, { ...options, method: "DELETE" })
+  }
+  desktopSocket(id: string, signal?: AbortSignal) {
+    const path = "desktop-sessions/" + segment(id)
+    return this.browserSocket(path + "/tunnel", path + "/tunnel-tickets", "sandbox.rfb.v1", signal)
+  }
   getSnapshot(id: string, signal?: AbortSignal) { return this.get<Snapshot>(snapshot(id), signal) }
   listMachines(signal?: AbortSignal) { return this.pages<Machine>("machines", 100, signal) }
   listVolumes(signal?: AbortSignal) { return this.pages<Volume>("volumes", 100, signal) }

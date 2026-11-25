@@ -162,6 +162,12 @@ class Client:
     def wait(self, operation_id, timeout=180):
         return self.wait_operation(operation_id, timeout)
 
+    def retry_fork_targets(self, operation_id, *, revision=None, intent=None):
+        path = _item("operations", operation_id)
+        if revision is None:
+            revision = self.get(path)["revision"]
+        return self.mutate(path + "/retry", revision=revision, intent=intent)
+
     def pages(self, path, *, limit=100, **filters) -> Iterator[dict]:
         cursor = ""
         while True:
@@ -312,6 +318,20 @@ class Client:
 
     def start_task(self, machine_id, spec, **options):
         return self._machine_mutation(machine_id, "tasks", spec, **options)
+
+    def list_desktop_sessions(self, machine_id, *, limit=100):
+        return self.pages(_item("machines", machine_id) + "/desktop-sessions", limit=limit)
+
+    def create_desktop_session(self, machine_id, service_id, *, ttl_seconds=900, **options):
+        return self._machine_mutation(machine_id, "desktop-sessions", {
+            "service_id": service_id, "ttl_seconds": ttl_seconds,
+        }, **options)
+
+    def close_desktop_session(self, session_id, *, intent=None):
+        return self.mutate(_item("desktop-sessions", session_id), method="DELETE", intent=intent)
+
+    def desktop_socket(self, session_id, **options):
+        return self.tunnel(_item("desktop-sessions", session_id) + "/tunnel", **options)
 
     def get_task(self, task_id):
         return self.get(_item("tasks", task_id))

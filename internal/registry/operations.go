@@ -47,7 +47,7 @@ func readOperation(ctx context.Context, q queryer, id string) (Operation, error)
 		return op, err
 	}
 	rows, err := q.QueryContext(ctx, `SELECT c.ordinal, b.machine_id, c.binding_id, c.state,
-		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, ''), c.resource_proof_json
+		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, ''), c.resource_proof_json, c.attempt
 		FROM operation_children c JOIN runtime_bindings b ON b.id = c.binding_id
 		WHERE c.operation_id = ? ORDER BY c.ordinal`, op.ID)
 	if err != nil {
@@ -57,7 +57,7 @@ func readOperation(ctx context.Context, q queryer, id string) (Operation, error)
 	for rows.Next() {
 		var child OperationChild
 		var proof string
-		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode, &proof); err != nil {
+		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode, &proof, &child.Attempt); err != nil {
 			return Operation{}, err
 		}
 		if err := json.Unmarshal([]byte(proof), &child.ResourceProof); err != nil {
@@ -465,7 +465,7 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	if r.ExpectedVersion != 0 && r.ExpectedVersion != op.Version {
 		return Operation{}, ErrOperationState
 	}
-	if !allowedTransition(op, r.State) {
+	if !allowedTransition(op, r.State) && !verifiedForkCancellation(op, r) {
 		return Operation{}, fmt.Errorf("%w: %s to %s", ErrOperationState, op.State, r.State)
 	}
 	if r.Stage == "" {

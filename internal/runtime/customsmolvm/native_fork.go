@@ -11,6 +11,27 @@ import (
 )
 
 var _ rt.NativeForkControl = (*Adapter)(nil)
+var _ rt.ForkRetryControl = (*Adapter)(nil)
+
+func (a *Adapter) RetryFork(ctx context.Context, id string, control rt.ForkControl) (OperationReceipt, error) {
+	if !identifier.MatchString(id) || !validDigest(control.RequestDigest) || !validExecution(control.Expected) || control.ExpectedRevision < 1 {
+		return OperationReceipt{}, fmt.Errorf("%w: invalid fork retry scope", rt.ErrInvalid)
+	}
+	payload, err := json.Marshal(control)
+	if err != nil {
+		return OperationReceipt{}, err
+	}
+	endpoint, _, err := a.connect(ctx)
+	if err != nil {
+		return OperationReceipt{}, err
+	}
+	defer endpoint.CloseIdleConnections()
+	var receipt OperationReceipt
+	if err := exchange(ctx, endpoint, http.MethodPost, extensionPath+"/operations/"+id+"/retry", payload, &receipt); err != nil {
+		return OperationReceipt{}, err
+	}
+	return receipt, validateReceipt(receipt, a.route.Bundle, id)
+}
 
 func (a *Adapter) SubmitFork(ctx context.Context, request rt.ForkSubmission) (OperationReceipt, error) {
 	children := request.Parameters.Children

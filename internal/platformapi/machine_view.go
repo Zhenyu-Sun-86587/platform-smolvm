@@ -23,11 +23,12 @@ type machineHealth struct {
 }
 
 type machineView struct {
-	Lifecycle  *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
-	PowerState registry.PowerState         `json:"power_state"`
-	Health     machineHealth               `json:"health"`
-	BootMode   rt.BootMode                 `json:"boot_mode"`
-	Network    *rt.LaunchNetwork           `json:"network,omitempty"`
+	PowerState     registry.PowerState         `json:"power_state"`
+	Health         machineHealth               `json:"health"`
+	BootMode       rt.BootMode                 `json:"boot_mode"`
+	DesktopProfile string                      `json:"desktop_profile,omitempty"`
+	Network        *rt.LaunchNetwork           `json:"network,omitempty"`
+	Lifecycle      *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -68,6 +69,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		return v, err
 	}
 	v.BootMode = boot.BootMode
+	v.DesktopProfile = boot.DesktopProfile
 	if len(t.Capabilities) > 0 {
 		var raw map[string]json.RawMessage
 		if err = json.Unmarshal(t.Capabilities, &raw); err != nil {

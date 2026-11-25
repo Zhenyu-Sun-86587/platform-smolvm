@@ -462,6 +462,7 @@ func (s *Server) routes() {
 	s.settingsRoutes()
 	s.previewRoutes()
 	s.leaseRoutes()
+	s.desktopRoutes()
 	s.serviceRoutes()
 	s.snapshotRoutes()
 	s.volumeRoutes()
