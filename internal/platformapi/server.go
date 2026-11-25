@@ -366,6 +366,8 @@ func (s *Server) routes() {
 			return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"token_id": r.PathValue("token")})}, s.Auth.RevokeTx(ctx, tx, p, r.PathValue("token"), "api_token")
 		})
 	})
+	s.clientCertRoutes()
+	s.settingsRoutes()
 	s.previewRoutes()
 	s.leaseRoutes()
 	s.serviceRoutes()
@@ -384,13 +386,17 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
-		visible := ms[:0]
+		visible := make([]machineView, 0, len(ms))
 		for _, m := range ms {
 			if p.Allows("read", m.ID) {
-				visible = append(visible, m)
+				v, err := s.viewMachine(r.Context(), m)
+				if err != nil {
+					return err
+				}
+				visible = append(visible, v)
 			}
 		}
-		return list(w, r, visible, func(m registry.Machine) string { return m.ID })
+		return list(w, r, visible, func(m machineView) string { return m.ID })
 	})
 	s.route("GET /v1/machines/{machine}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
@@ -401,7 +407,11 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
-		return write(w, 200, m)
+		v, err := s.viewMachine(r.Context(), m)
+		if err != nil {
+			return err
+		}
+		return write(w, 200, v)
 	})
 	s.route("POST /v1/machines", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize("manage", ""); err != nil {
@@ -427,6 +437,17 @@ func (s *Server) machineRoutes() {
 			v.Resources.Overlay = 2
 		}
 		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true}
+		if v.IdlePolicy == nil {
+			tpl, err := s.DB.GetTemplate(r.Context(), v.TemplateID)
+			if err != nil {
+				return err
+			}
+			defaults, err := s.settings(r.Context())
+			if err != nil {
+				return err
+			}
+			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: tpl.GuestRelease != "", Timeout: defaults.IdleSeconds})
+		}
 		if v.IdlePolicy != nil {
 			if v.IdlePolicy.Enabled && v.IdlePolicy.Timeout < 1 {
 				return registry.ErrInvalid

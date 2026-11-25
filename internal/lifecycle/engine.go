@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,11 +29,12 @@ type Engine struct {
 	running map[string]bool
 	holds   map[string]int
 	workers sync.WaitGroup
+	Recover map[string]func(context.Context, *Job) error
 	Extra   map[string]func(context.Context, *Job) error
 }
 
 func New(db *registry.Store, r *smolvm.Client, c config.Config) *Engine {
-	return &Engine{DB: db, Runtime: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, Extra: map[string]func(context.Context, *Job) error{}}
+	return &Engine{DB: db, Runtime: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, Recover: map[string]func(context.Context, *Job) error{}, Extra: map[string]func(context.Context, *Job) error{}}
 }
 
 type Create struct {
@@ -129,6 +131,7 @@ func (e *Engine) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		e.wakeSuccessors(ctx)
 		ops, err := e.DB.ListPending(ctx)
 		if err != nil {
 			slog.Error("read pending operations", "error", err)
@@ -302,6 +305,9 @@ func (j *Job) loadOwned(ctx context.Context) (rt.Observation, error) {
 }
 func (j *Job) power(ctx context.Context) error {
 	op := j.Op
+	if op.Kind == "sync_keys" {
+		return j.updateSSH(ctx)
+	}
 	name := op.RuntimeName
 	if op.Kind == "create" {
 		var req Create
@@ -398,7 +404,7 @@ func (j *Job) power(ctx context.Context) error {
 			x := Evidence(o)
 			return j.Done(ctx, registry.TransitionRequest{Observation: &x, Effect: registry.EffectNone})
 		case "paused":
-			if o.StateReason == "pressurePaused" {
+			if o.PressurePaused() {
 				return &Failure{"RESOURCE_EXHAUSTED", "runtime pressure guard currently owns pause"}
 			}
 			action = "resume"
@@ -430,7 +436,7 @@ func (j *Job) power(ctx context.Context) error {
 	if action == "resume" {
 		if j.Binding.PauseStatus == "active" {
 			j.Intent.PauseID = j.Binding.RuntimePauseID
-		} else if o.StateReason != "pressurePaused" {
+		} else if !o.PressurePaused() {
 			return &Failure{"RECOVERY_REQUIRED", "saved execution has no matching pause identity"}
 		}
 	}
@@ -468,6 +474,12 @@ func (j *Job) power(ctx context.Context) error {
 }
 func (j *Job) reconcile(ctx context.Context) error {
 	j.Written = true
+	if fn := j.Recover[j.Op.Kind]; fn != nil {
+		if err := fn(ctx, j); err != nil {
+			return j.fail(ctx, err)
+		}
+		return nil
+	}
 	if j.Intent.Target == "" {
 		return j.fail(ctx, errors.New("dispatched operation needs specific outcome evidence"))
 	}
@@ -480,8 +492,14 @@ func (j *Job) verify(ctx context.Context) error {
 	o, err := j.loadOwned(ctx)
 	if j.Intent.Target == "absent" && errors.Is(err, rt.ErrNotFound) {
 		return j.Done(ctx, registry.TransitionRequest{MarkDeleted: true, Effect: registry.EffectApplied, DesiredPower: "deleted", Apply: func(ctx context.Context, tx *sql.Tx) error {
-			_, e := tx.ExecContext(ctx, "UPDATE dependencies SET status='released' WHERE child_binding_id=? AND kind='live_branch_resource'", j.Binding.ID)
-			return e
+			if _, err := tx.ExecContext(ctx, "UPDATE dependencies SET status='released' WHERE child_binding_id=? AND kind='live_branch_resource'", j.Binding.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE port_allocations SET state='released' WHERE binding_id=?", j.Binding.ID); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "DELETE FROM snapshot_pins WHERE owner_kind='binding' AND owner_id=? OR owner_kind='pre_replacement' AND owner_id IN (SELECT id FROM operations WHERE machine_id=? AND kind='rollback')", j.Binding.ID, j.Binding.MachineID)
+			return err
 		}})
 	}
 	if err != nil {
@@ -542,11 +560,12 @@ func (j *Job) verify(ctx context.Context) error {
 	if o.State == "running" {
 		adopted := j.guestReady(ctx, &x)
 		if x.GuestManagementStatus == "ready" {
+			keyRev, _ := j.keyVersion(ctx)
 			pub, sshErr := j.InstallSSH(ctx, j.Binding)
 			if sshErr != nil {
 				x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_ready": false})
 			} else {
-				x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_ready": true, "ssh_host_key": pub})
+				x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_ready": true, "ssh_key_revision": keyRev, "ssh_host_key": pub})
 			}
 		}
 		if len(adopted) > 0 {
@@ -677,6 +696,97 @@ func SaveAdopted(ctx context.Context, tx *sql.Tx, b registry.Binding, ts []tasks
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// TaskRunning performs any necessary wake under the already accepted task's
+// durable ownership. A restart after the resume intent reobserves the same VM.
+func (j *Job) TaskRunning(ctx context.Context, recovering bool) error {
+	o, err := j.loadOwned(ctx)
+	if err != nil {
+		return err
+	}
+	if o.State != "running" {
+		if recovering {
+			return errors.New("task wake was dispatched and its execution is unconfirmed")
+		}
+		action := "resume"
+		pid := ""
+		switch o.State {
+		case "paused":
+			if strings.Contains(strings.ToLower(o.StateReason), "pressure") {
+				return &Failure{"RESOURCE_EXHAUSTED", "pressure pause requires explicit resume"}
+			}
+			if j.Binding.PauseStatus != "active" || j.Binding.RuntimePauseID == "" {
+				return &Failure{"RECOVERY_REQUIRED", "saved execution identity requires reconciliation"}
+			}
+			pid = j.Binding.RuntimePauseID
+		case "stopped", "created":
+			if !j.Config.Lifecycle.WakeStopped {
+				return &Failure{"SERVICE_NOT_READY", "cold wake is disabled"}
+			}
+			action = "start"
+		default:
+			return &Failure{"RECOVERY_REQUIRED", "unusable task execution state"}
+		}
+		// Acquire the node heavy permit in the same transaction that upgrades this
+		// light task operation. Never queue a second resume under another owner.
+		if !j.Op.Heavy {
+			tx, err := j.DB.DB().BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			var n int
+			if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM operations WHERE heavy=1 AND state IN ('dispatching','observing','recovery_required') AND id!=?", j.Op.ID).Scan(&n); err != nil {
+				return err
+			}
+			if n >= j.Config.Lifecycle.Heavy {
+				return &Failure{"RESOURCE_EXHAUSTED", "heavy operation already in flight"}
+			}
+			if _, err = tx.ExecContext(ctx, "UPDATE operations SET heavy=1 WHERE id=? AND state='dispatching'", j.Op.ID); err != nil {
+				return err
+			}
+			if err = tx.Commit(); err != nil {
+				return err
+			}
+			j.Op.Heavy = true
+		}
+		j.Intent.PauseID = pid
+		if err = j.Stage(ctx, "task_wake", ""); err != nil {
+			return err
+		}
+		if action == "resume" {
+			_, err = j.Runtime.Resume(ctx, j.Binding.RuntimeName, pid)
+		} else {
+			_, err = j.Runtime.Start(ctx, j.Binding.RuntimeName)
+		}
+		if err != nil {
+			return err
+		}
+		j.Written = true
+		o, err = j.loadOwned(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	if o.State != "running" || !o.Identity.Complete() {
+		return errors.New("task requires confirmed current execution")
+	}
+	if !recovering && j.Intent.Stage != "task_wake" && j.Binding.GuestManagementStatus == "ready" {
+		return nil
+	}
+	x := Evidence(o)
+	if j.Binding.PauseStatus == "active" {
+		x.PauseStatus = "consumed"
+	}
+	j.guestReady(ctx, &x)
+	if err = j.transition(ctx, registry.TransitionRequest{State: registry.Dispatching, Stage: "task_ready", Dispatch: JSON(j.Intent), Observation: &x}); err != nil {
+		return err
+	}
+	if x.GuestManagementStatus != "ready" {
+		return &Failure{"CAPABILITY_NOT_VERIFIED", "Guest Task Manager handshake unavailable"}
 	}
 	return nil
 }

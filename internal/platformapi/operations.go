@@ -46,37 +46,39 @@ func (s *Server) operationsRoutes() {
 			})
 		})
 	}
-	s.route("GET /v1/operations", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-		rows, err := s.DB.ReadDB().QueryContext(r.Context(), "SELECT id,COALESCE(machine_id,'') FROM operations ORDER BY created_at DESC,id")
-		if err != nil {
-			return err
-		}
-		var ids []string
-		for rows.Next() {
-			var id, mid string
-			if err = rows.Scan(&id, &mid); err != nil {
-				rows.Close()
-				return err
-			}
-			if p.Allows("read", mid) {
-				ids = append(ids, id)
-			}
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		items := make([]registry.Operation, 0, len(ids))
-		for _, id := range ids {
-			op, err := s.DB.GetOperation(r.Context(), id)
+	for route, kind := range map[string]string{"GET /v1/operations": "", "GET /v1/restores": "restore"} {
+		s.route(route, func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+			rows, err := s.DB.ReadDB().QueryContext(r.Context(), "SELECT id,COALESCE(machine_id,'') FROM operations WHERE (?='' OR kind=?) ORDER BY created_at DESC,id", kind, kind)
 			if err != nil {
 				return err
 			}
-			items = append(items, op)
-		}
-		return list(w, r, items, func(op registry.Operation) string { return op.ID })
-	})
+			var ids []string
+			for rows.Next() {
+				var id, mid string
+				if err = rows.Scan(&id, &mid); err != nil {
+					rows.Close()
+					return err
+				}
+				if p.Allows("read", mid) {
+					ids = append(ids, id)
+				}
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return err
+			}
+			items := make([]registry.Operation, 0, len(ids))
+			for _, id := range ids {
+				op, err := s.DB.GetOperation(r.Context(), id)
+				if err != nil {
+					return err
+				}
+				items = append(items, op)
+			}
+			return list(w, r, items, func(op registry.Operation) string { return op.ID })
+		})
+	}
 	s.route("GET /v1/machines/{machine}/dependencies", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
 		if err := p.Authorize("read", id); err != nil {

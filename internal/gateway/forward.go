@@ -142,6 +142,7 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 		return err
 	}
 	result := make(chan error, 2)
+	clientHalf, backendHalf := make(chan struct{}), make(chan struct{})
 	go func() {
 		half := false
 		for {
@@ -165,6 +166,7 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 				return
 			}
 			half = true
+			close(clientHalf)
 			e = conn.(*net.TCPConn).CloseWrite()
 			if e != nil {
 				result <- e
@@ -185,11 +187,37 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 			if e != nil {
 				if e == io.EOF {
 					e = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"close_write"}`))
+					if e == nil {
+						close(backendHalf)
+						return
+					}
 				}
 				result <- e
 				return
 			}
 		}
 	}()
-	return <-result
+	select {
+	case err := <-result:
+		return err
+	case <-backendHalf:
+		select {
+		case <-clientHalf:
+			return nil
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b Backend) URL() string {
+	scheme := "http"
+	if b.Protocol == "https" {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(int(b.Port)))
 }

@@ -69,10 +69,15 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 			if err != nil {
 				return zero, err
 			}
+			if op.Kind == "idle_pause" {
+				if e := e.rememberWake(ctx, op); e != nil {
+					return zero, e
+				}
+			}
 			switch op.Kind {
-			case "wake", "resume", "idle_pause", "start":
+			case "wake", "resume", "idle_pause", "start", "sync_keys":
 				if op.State == registry.RecoveryRequired {
-					return zero, &Failure{"RECOVERY_REQUIRED", "pending wake outcome requires observation"}
+					return zero, &Failure{"RECOVERY_REQUIRED", "pending machine operation requires observation"}
 				}
 			default:
 				return zero, &registry.ActiveOperationError{MachineID: id, OperationID: op.ID}
@@ -118,5 +123,63 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 			return zero, ctx.Err()
 		case <-time.After(80 * time.Millisecond):
 		}
+	}
+}
+
+// rememberWake persists demand once native idle capture may be in progress.
+// The successor is scheduled even if the originating HTTP connection closes.
+func (e *Engine) rememberWake(ctx context.Context, op registry.Operation) error {
+	if op.WakePending {
+		return nil
+	}
+	if op.State == registry.Queued {
+		_, err := e.DB.Cancel(ctx, op.ID)
+		if err == nil || errors.Is(err, registry.ErrOperationState) {
+			return nil
+		}
+		return err
+	}
+	_, err := e.DB.DB().ExecContext(ctx, "UPDATE operations SET wake_pending=1 WHERE id=? AND state IN ('dispatching','observing')", op.ID)
+	return err
+}
+func (e *Engine) wakeSuccessors(ctx context.Context) {
+	rows, err := e.DB.ReadDB().QueryContext(ctx, `SELECT o.id,o.machine_id,o.binding_generation,o.control_epoch,o.principal_id FROM operations o JOIN machines m ON m.id=o.machine_id JOIN meta ON meta.id=1 WHERE o.kind='idle_pause' AND o.wake_pending AND o.state='succeeded' AND o.control_epoch=meta.control_epoch AND meta.maintenance=0 AND m.deleted_at IS NULL AND m.binding_generation=o.binding_generation`)
+	if err != nil {
+		return
+	}
+	var pending []registry.AcceptRequest
+	for rows.Next() {
+		var r registry.AcceptRequest
+		var id string
+		if err = rows.Scan(&id, &r.MachineID, &r.ExpectedGeneration, &r.Epoch, &r.PrincipalID); err != nil {
+			break
+		}
+		r.Kind = "wake"
+		r.Heavy = true
+		r.Key = id
+		r.Scope = "POST /internal/wake-pending/" + r.MachineID
+		r.Request = JSON(map[string]string{"reason": "activity_during_idle", "pause_operation_id": id})
+		pending = append(pending, r)
+	}
+	rows.Close()
+	for _, r := range pending {
+		m, err := e.DB.GetMachine(ctx, r.MachineID)
+		if err != nil {
+			continue
+		}
+		var newer int
+		err = e.DB.ReadDB().QueryRowContext(ctx, `SELECT COUNT(*) FROM operations WHERE machine_id=? AND created_at>(SELECT created_at FROM operations WHERE id=?) AND kind IN ('pause','stop','delete','rollback','start','resume','wake')`, r.MachineID, r.Key).Scan(&newer)
+		if err != nil {
+			continue
+		}
+		if newer == 0 && m.ObservedState == "paused" {
+			_, _, err = e.DB.Accept(ctx, r)
+			if err != nil {
+				continue
+			}
+		} else if newer == 0 {
+			continue
+		}
+		_, _ = e.DB.DB().ExecContext(ctx, "UPDATE operations SET wake_pending=0 WHERE id=?", r.Key)
 	}
 }

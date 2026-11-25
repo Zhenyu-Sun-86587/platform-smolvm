@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -77,6 +78,9 @@ type Observation struct {
 	Branchable     bool                  `json:"branchable"`
 	StateReason    string                `json:"state_reason,omitempty"`
 	Ports          []Port                `json:"ports"`
+	AllowedCIDRs   []string              `json:"allowed_cidrs,omitempty"`
+	AllowedHosts   []string              `json:"allowed_hosts,omitempty"`
+	EgressRules    []json.RawMessage     `json:"egress_rules,omitempty"`
 	ObservedAt     time.Time             `json:"observed_at"`
 	Image          string                `json:"image,omitempty"`
 	Labels         map[string]string     `json:"labels,omitempty"`
@@ -86,6 +90,12 @@ type Observation struct {
 	OverlayGB      uint64                `json:"overlay_gb"`
 	DiskChainDepth *uint                 `json:"disk_chain_depth,omitempty"`
 	Capabilities   map[string]Capability `json:"capabilities,omitempty"`
+}
+
+func (o Observation) PressurePaused() bool {
+	return o.StateReason == "pressurePaused" ||
+		strings.HasPrefix(o.StateReason, "host memory pressure: ") ||
+		strings.HasPrefix(o.StateReason, "VM memory slice pressure: ")
 }
 
 type CreateRequest struct {

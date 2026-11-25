@@ -75,6 +75,9 @@ func (e *Engine) sample(ctx context.Context, started time.Time) {
 				}
 			}
 		}
+		if x.GuestManagementStatus == "ready" {
+			e.refreshSSH(ctx, m, &x)
+		}
 		if err = e.DB.ObserveMachine(ctx, b.ID, x); err != nil {
 			continue
 		}

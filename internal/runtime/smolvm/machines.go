@@ -52,6 +52,9 @@ type machineInfo struct {
 	Branchable     bool              `json:"branchable"`
 	StateReason    string            `json:"stateReason"`
 	Ports          []runtime.Port    `json:"ports"`
+	AllowedCIDRs   []string          `json:"allowedCidrs"`
+	AllowedHosts   []string          `json:"allowedHosts"`
+	EgressRules    []json.RawMessage `json:"egressRules"`
 	Image          string            `json:"image"`
 	Labels         map[string]string `json:"labels"`
 	CPUs           uint8             `json:"cpus"`
@@ -99,6 +102,7 @@ func (m machineInfo) observe() runtime.Observation {
 	return runtime.Observation{
 		Name: m.Name, State: state, RawState: m.State, Identity: identity, ParentMachine: m.ParentMachine,
 		Branchable: m.Branchable, StateReason: m.StateReason, Ports: m.Ports, ObservedAt: time.Now().UTC(),
+		AllowedCIDRs: m.AllowedCIDRs, AllowedHosts: m.AllowedHosts, EgressRules: m.EgressRules,
 		Image: m.Image, Labels: m.Labels, CPUs: m.CPUs, MemoryMB: m.MemoryMB, StorageGB: m.StorageGB,
 		OverlayGB: m.OverlayGB, DiskChainDepth: m.DiskChainDepth, Capabilities: capabilities,
 	}
@@ -167,6 +171,9 @@ type createBody struct {
 	DiskDurability string            `json:"diskDurability"`
 	AllowedCIDRs   []string          `json:"allowedCidrs"`
 	EgressRules    []struct{}        `json:"egressRules"`
+	Restart        struct {
+		Policy string `json:"policy"`
+	} `json:"restart"`
 }
 
 func (client *Client) Create(ctx context.Context, request runtime.CreateRequest) (runtime.Observation, error) {
@@ -192,6 +199,7 @@ func (client *Client) Create(ctx context.Context, request runtime.CreateRequest)
 		Command: request.Command, EntryPoint: request.EntryPoint, Env: request.Env,
 		NetworkBackend: "virtio-net", DiskDurability: "full", AllowedCIDRs: publicCIDRs(), EgressRules: []struct{}{},
 	}
+	body.Restart.Policy = "never"
 	return client.machine(ctx, http.MethodPost, machinesPath, request.Name, nil, body)
 }
 

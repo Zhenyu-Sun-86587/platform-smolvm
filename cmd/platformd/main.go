@@ -99,6 +99,7 @@ func run() error {
 	}
 	api := platformapi.New(engine, catalog, web.Handler())
 	httpServer := &http.Server{Addr: c.API.Listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10}
+	go api.StartTCP(ctx)
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); engine.Run(ctx) }()
 	errs := make(chan error, 1)

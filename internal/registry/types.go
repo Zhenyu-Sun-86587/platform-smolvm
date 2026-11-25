@@ -10,21 +10,21 @@ import (
 )
 
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrConflict           = errors.New("object already exists")
-	ErrLocked             = errors.New("registry writer already running")
-	ErrControlEpoch       = errors.New("control epoch changed")
-	ErrMaintenance        = errors.New("control plane in maintenance")
-	ErrIdempotency        = errors.New("idempotency key reused for a different request")
-	ErrRevision           = errors.New("object revision changed")
-	ErrGeneration         = errors.New("binding generation changed")
-	ErrInvalid            = errors.New("invalid request")
-	ErrOperationActive    = errors.New("machine has an active operation")
-	ErrOperationState     = errors.New("operation state changed")
-	ErrHeavyBusy          = errors.New("heavy operation limit reached")
-	ErrCursorExpired      = errors.New("event cursor expired")
-	ErrStaleObservation   = errors.New("stale binding observation")
-	ErrUnauthorized       = errors.New("principal or credential unavailable")
+	ErrNotFound         = errors.New("not found")
+	ErrConflict         = errors.New("object already exists")
+	ErrLocked           = errors.New("registry writer already running")
+	ErrControlEpoch     = errors.New("control epoch changed")
+	ErrMaintenance      = errors.New("control plane in maintenance")
+	ErrIdempotency      = errors.New("idempotency key reused for a different request")
+	ErrRevision         = errors.New("object revision changed")
+	ErrGeneration       = errors.New("binding generation changed")
+	ErrInvalid          = errors.New("invalid request")
+	ErrOperationActive  = errors.New("machine has an active operation")
+	ErrOperationState   = errors.New("operation state changed")
+	ErrHeavyBusy        = errors.New("heavy operation limit reached")
+	ErrCursorExpired    = errors.New("event cursor expired")
+	ErrStaleObservation = errors.New("stale binding observation")
+	ErrUnauthorized     = errors.New("principal or credential unavailable")
 )
 
 type ActiveOperationError struct {
@@ -76,13 +76,13 @@ type Machine struct {
 }
 
 type Binding struct {
-	ID           string `json:"binding_id"`
-	MachineID    string `json:"machine_id"`
-	Generation   int64  `json:"binding_generation"`
-	RuntimeName  string `json:"runtime_name"`
-	Status       string `json:"status"`
+	ID            string `json:"binding_id"`
+	MachineID     string `json:"machine_id"`
+	Generation    int64  `json:"binding_generation"`
+	RuntimeName   string `json:"runtime_name"`
+	Status        string `json:"status"`
 	TaskNamespace string `json:"task_namespace"`
-	SpecHash     string `json:"spec_hash"`
+	SpecHash      string `json:"spec_hash"`
 	Observation
 }
 
@@ -170,6 +170,7 @@ type AcceptRequest struct {
 	ExpectedGeneration int64
 	Request            json.RawMessage
 	IdlePolicy         json.RawMessage
+	DefaultIdlePolicy  json.RawMessage // resolved for a new machine, outside the caller fingerprint
 	DesiredPower       string
 	KeepRunning        bool
 	Heavy              bool

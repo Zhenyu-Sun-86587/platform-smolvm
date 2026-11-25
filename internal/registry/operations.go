@@ -126,6 +126,12 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		op, err := readOperation(ctx, tx, existing.OperationID)
 		return op, true, err
 	}
+	if len(r.IdlePolicy) == 0 && len(r.DefaultIdlePolicy) != 0 {
+		idle, err = ensureJSON(r.DefaultIdlePolicy, "{}")
+		if err != nil {
+			return Operation{}, false, err
+		}
+	}
 	if err := checkWritable(ctx, tx); err != nil {
 		return Operation{}, false, err
 	}

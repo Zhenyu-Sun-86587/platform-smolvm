@@ -21,36 +21,75 @@ import (
 )
 
 type service struct {
-	ID         string `json:"service_id"`
-	MachineID  string `json:"machine_id"`
-	Name       string `json:"name"`
-	Revision   int64  `json:"revision"`
-	Protocol   string `json:"protocol"`
-	GuestPort  uint16 `json:"guest_port"`
-	PublicHost string `json:"public_host,omitempty"`
-	PublicPort int    `json:"public_port,omitempty"`
-	Enabled    bool   `json:"enabled"`
+	Readiness  readiness    `json:"readiness"`
+	Auth       accessPolicy `json:"auth"`
+	SSHKey     string       `json:"ssh_host_key,omitempty"`
+	ID         string       `json:"service_id"`
+	MachineID  string       `json:"machine_id"`
+	Name       string       `json:"name"`
+	Revision   int64        `json:"revision"`
+	Protocol   string       `json:"protocol"`
+	GuestPort  uint16       `json:"guest_port"`
+	PublicHost string       `json:"public_host,omitempty"`
+	PublicPort int          `json:"public_port,omitempty"`
+	Enabled    bool         `json:"enabled"`
 }
 
-const serviceCols = "id,machine_id,name,revision,kind,guest_port,coalesce(public_host,''),coalesce(public_port,0),enabled"
+const serviceCols = "id,machine_id,name,revision,kind,guest_port,coalesce(public_host,''),coalesce(public_port,0),enabled,readiness_json,access_json"
 
 type row interface{ Scan(...any) error }
 
 func readService(r row) (service, error) {
 	var v service
-	err := r.Scan(&v.ID, &v.MachineID, &v.Name, &v.Revision, &v.Protocol, &v.GuestPort, &v.PublicHost, &v.PublicPort, &v.Enabled)
+	var raw, access string
+	err := r.Scan(&v.ID, &v.MachineID, &v.Name, &v.Revision, &v.Protocol, &v.GuestPort, &v.PublicHost, &v.PublicPort, &v.Enabled, &raw, &access)
+	if err == nil {
+		err = json.Unmarshal([]byte(raw), &v.Readiness)
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(access), &v.Auth)
+	}
 	return v, err
 }
+func (s *Server) serviceIdentity(ctx context.Context, v *service) error {
+	if v.Protocol != "ssh" {
+		return nil
+	}
+	m, err := s.DB.GetMachine(ctx, v.MachineID)
+	if err != nil {
+		return err
+	}
+	if m.CurrentBinding == nil {
+		return nil
+	}
+	var e struct {
+		Ready bool   `json:"ssh_ready"`
+		Key   string `json:"ssh_host_key"`
+	}
+	if err = json.Unmarshal(m.CurrentBinding.GuestManagementEvidence, &e); err != nil {
+		return err
+	}
+	if e.Ready {
+		v.SSHKey = e.Key
+	}
+	return nil
+}
 func (s *Server) getService(ctx context.Context, id string) (service, error) {
-	return readService(s.DB.ReadDB().QueryRowContext(ctx, "SELECT "+serviceCols+" FROM services WHERE id=?", id))
+	v, err := readService(s.DB.ReadDB().QueryRowContext(ctx, "SELECT "+serviceCols+" FROM services WHERE id=?", id))
+	if err == nil {
+		err = s.serviceIdentity(ctx, &v)
+	}
+	return v, err
 }
 
 type serviceEdit struct {
-	ID                 string `json:"-"`
-	Name               string `json:"name"`
-	GuestPort          uint16 `json:"guest_port"`
-	Protocol           string `json:"protocol"`
-	ExpectedGeneration int64  `json:"expected_generation,omitempty"`
+	Readiness          *readiness    `json:"readiness,omitempty"`
+	Auth               *accessPolicy `json:"auth,omitempty"`
+	ID                 string        `json:"-"`
+	Name               string        `json:"name"`
+	GuestPort          uint16        `json:"guest_port"`
+	Protocol           string        `json:"protocol"`
+	ExpectedGeneration int64         `json:"expected_generation,omitempty"`
 }
 type ticket struct {
 	Origin, Target, Secret string
@@ -59,6 +98,7 @@ type ticket struct {
 }
 
 func (s *Server) serviceRoutes() {
+	s.servicePatchRoute()
 	s.Extra["service_create"] = s.editService
 	s.Extra["service_delete"] = s.editService
 	s.route("POST /v1/machines/{machine}/services", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -70,6 +110,9 @@ func (s *Server) serviceRoutes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
+		if err := v.validate(); err != nil {
+			return err
+		}
 		if len(v.Name) == 0 || len(v.Name) > 100 || v.GuestPort == 0 {
 			return registry.ErrInvalid
 		}
@@ -78,7 +121,7 @@ func (s *Server) serviceRoutes() {
 		default:
 			return registry.ErrInvalid
 		}
-		if v.Protocol == "tcp-mtls" && s.Config.Gateway.ClientCA == "" {
+		if v.Protocol == "tcp-mtls" && (s.Config.Gateway.ClientCA == "" || s.Config.API.TLSCert == "") {
 			return &lifecycle.Failure{Code: "CAPABILITY_NOT_VERIFIED", Message: "TCP listener requires configured mTLS client CA"}
 		}
 		return s.accept(w, r, p, v, registry.AcceptRequest{Kind: "service_create", MachineID: mid, ExpectedGeneration: v.ExpectedGeneration})
@@ -120,6 +163,9 @@ func (s *Server) serviceRoutes() {
 		for rows.Next() {
 			v, e := readService(rows)
 			if e != nil {
+				return e
+			}
+			if e = s.serviceIdentity(r.Context(), &v); e != nil {
 				return e
 			}
 			out = append(out, v)
@@ -265,6 +311,12 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	if err != nil {
 		return empty, nil, nil, err
 	}
+	if v.Protocol == "ssh" {
+		if err := s.serviceIdentity(ctx, &v); err != nil || v.SSHKey == "" {
+			end()
+			return empty, nil, nil, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
+		}
+	}
 	o, err := s.Runtime.Observe(ctx, b.RuntimeName)
 	if err != nil {
 		end()
@@ -305,7 +357,18 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		}
 		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "runtime port publication changed"}
 	}
-	return gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}, check, end, nil
+	backend := gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}
+	if v.Readiness.Type == "http" {
+		if err := check(ctx); err != nil {
+			end()
+			return empty, nil, nil, err
+		}
+		if err := probeHTTP(ctx, backend, v.Readiness); err != nil {
+			end()
+			return empty, nil, nil, err
+		}
+	}
+	return backend, check, end, nil
 }
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
@@ -370,11 +433,37 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 			return err
 		}
 		defer tx.Rollback()
+		if v.Readiness != nil {
+			svc.Readiness = *v.Readiness
+		}
 		var domain any
 		if svc.PublicHost != "" {
 			domain = svc.PublicHost
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,public_host,readiness_json,access_json,enabled) VALUES(?,?,?,1,?,?,?,'{}','{"private":true}',0)`, svc.ID, svc.MachineID, svc.Name, svc.Protocol, svc.GuestPort, domain)
+		var publicPort any
+		if v.Protocol == "tcp-mtls" {
+			rng := s.Config.Gateway.TCPRange
+			for n := rng[0]; n <= rng[1]; n++ {
+				var count int
+				if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM services WHERE public_port=?", n).Scan(&count); err != nil {
+					return err
+				}
+				if count == 0 {
+					host, _, _ := net.SplitHostPort(s.Config.API.Listen)
+					l, e := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(n)))
+					if e == nil {
+						l.Close()
+						publicPort = n
+						svc.PublicPort = n
+						break
+					}
+				}
+			}
+			if publicPort == nil {
+				return errors.New("no free mTLS port")
+			}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,public_host,public_port,readiness_json,access_json,enabled) VALUES(?,?,?,1,?,?,?,?,?, '{"private":true}',0)`, svc.ID, svc.MachineID, svc.Name, svc.Protocol, svc.GuestPort, domain, publicPort, string(lifecycle.JSON(svc.Readiness)))
 		if err != nil {
 			return err
 		}

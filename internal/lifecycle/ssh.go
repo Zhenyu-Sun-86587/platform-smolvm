@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"sandbox-platform/internal/registry"
@@ -134,4 +137,62 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
 		return "", errors.New("guest SSH host key installation not verified")
 	}
 	return string(bytes.TrimSpace(public)), nil
+}
+
+type sshEvidence struct {
+	Revision *int64 `json:"ssh_key_revision"`
+	Ready    bool   `json:"ssh_ready"`
+	Key      string `json:"ssh_host_key"`
+}
+
+func (e *Engine) keyVersion(ctx context.Context) (int64, error) {
+	var n int64
+	err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COALESCE(MAX(MAX(created_at,COALESCE(revoked_at,0))),0) FROM credentials WHERE kind='ssh_public_key'").Scan(&n)
+	return n, err
+}
+func (e *Engine) refreshSSH(ctx context.Context, m registry.Machine, x *registry.Observation) {
+	var prev sshEvidence
+	_ = json.Unmarshal(m.CurrentBinding.GuestManagementEvidence, &prev)
+	x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_key_revision": prev.Revision, "ssh_ready": prev.Ready, "ssh_host_key": prev.Key})
+	version, err := e.keyVersion(ctx)
+	if err != nil || (prev.Revision != nil && *prev.Revision == version && prev.Ready) {
+		return
+	}
+	ctl, err := e.DB.Control(ctx)
+	if err != nil {
+		return
+	}
+	var owner string
+	if e.DB.ReadDB().QueryRowContext(ctx, "SELECT id FROM principals WHERE disabled=0 LIMIT 1").Scan(&owner) != nil {
+		return
+	}
+	// Installation is a managed Guest write and therefore owns the machine lock.
+	key := fmt.Sprintf("ssh-%s-%d-%d", m.CurrentBinding.ID, version, time.Now().Unix()/60)
+	_, _, _ = e.DB.Accept(ctx, registry.AcceptRequest{PrincipalID: owner, Epoch: ctl.ControlEpoch, Key: key, Scope: "POST /internal/ssh/" + m.ID, MachineID: m.ID, ExpectedGeneration: m.BindingGeneration, Kind: "sync_keys", Request: JSON(map[string]int64{"key_set_revision": version})})
+}
+func (j *Job) updateSSH(ctx context.Context) error {
+	var r struct {
+		Revision int64 `json:"key_set_revision"`
+	}
+	if err := json.Unmarshal(j.Op.Request, &r); err != nil {
+		return err
+	}
+	o, err := j.loadOwned(ctx)
+	if err != nil {
+		return err
+	}
+	if o.State != "running" {
+		return registry.ErrConflict
+	}
+	if err = j.Stage(ctx, "sync_keys", ""); err != nil {
+		return err
+	}
+	key, err := j.InstallSSH(ctx, j.Binding)
+	if err != nil {
+		return err
+	}
+	x := Evidence(o)
+	x.GuestManagementStatus = j.Binding.GuestManagementStatus
+	x.GuestManagementEvidence = JSON(map[string]any{"ssh_ready": true, "ssh_key_revision": r.Revision, "ssh_host_key": key})
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: &x})
 }

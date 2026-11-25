@@ -26,6 +26,8 @@ type Config struct {
 	}
 	Runtime struct {
 		LocalImageDir               string `yaml:"local_image_dir"`
+		StatusSocket                string `yaml:"status_socket"`
+		VerifySocket                string `yaml:"verify_socket"`
 		Version, Socket, Executable string
 		DataDir                     string `yaml:"data_dir"`
 	}
@@ -48,6 +50,7 @@ type Config struct {
 		BackendRange []int  `yaml:"backend_port_range"`
 		TCPRange     []int  `yaml:"tcp_mtls_port_range"`
 		ClientCA     string `yaml:"client_ca_file"`
+		ClientCAKey  string `yaml:"client_ca_key_file"`
 	}
 	Storage struct {
 		MinBytes   uint64 `yaml:"minimum_free_bytes"`
@@ -83,6 +86,7 @@ func Defaults() Config {
 	c.Runtime.LocalImageDir = "/var/lib/smolvm-platform-images"
 	c.Runtime.Version = "1.37.1"
 	c.Runtime.Socket = "/run/smolvm-platform/api.sock"
+	c.Runtime.StatusSocket = "/run/smolvm-platform/status.sock"
 	c.Runtime.Executable = "/opt/sandbox-platform/runtime/1.37.1/bin/smolvm"
 	c.Runtime.DataDir = "/var/lib/smolvm-platform-runtime"
 	c.Database.BusyTimeout = 5000
@@ -140,6 +144,12 @@ func Load(path string) (Config, error) {
 		if !filepath.IsAbs(p) {
 			return c, fmt.Errorf("absolute path required for %q", p)
 		}
+	}
+	if c.Runtime.StatusSocket != "" && (!filepath.IsAbs(c.Runtime.StatusSocket) || c.Runtime.StatusSocket == c.Runtime.Socket) {
+		return c, errors.New("runtime status_socket must be a separate absolute socket path")
+	}
+	if c.Runtime.VerifySocket != "" && (!filepath.IsAbs(c.Runtime.VerifySocket) || c.Runtime.VerifySocket == c.Runtime.Socket || c.Runtime.VerifySocket == c.Runtime.StatusSocket) {
+		return c, errors.New("runtime verify_socket must be an independent absolute socket path")
 	}
 	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
 		return c, errors.New("invalid capacity settings")
