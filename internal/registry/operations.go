@@ -18,7 +18,8 @@ import (
 const operationColumns = `id, control_epoch, COALESCE(principal_id, ''), COALESCE(machine_id, ''),
 	COALESCE(source_machine_id, ''), COALESCE(binding_id, ''), binding_generation, runtime_name,
 	kind, state, stage, request_json, COALESCE(dispatch_json, ''), COALESCE(result_json, ''),
-	COALESCE(error_json, ''), effect, created_at, updated_at, version, heavy, wake_pending`
+	COALESCE(error_json, ''), effect, created_at, updated_at, version, heavy, wake_pending,
+	COALESCE(source_disposition, '')`
 
 func scanOperation(row scanner) (Operation, error) {
 	var op Operation
@@ -26,7 +27,7 @@ func scanOperation(row scanner) (Operation, error) {
 	var created, updated int64
 	err := row.Scan(&op.ID, &op.ControlEpoch, &op.PrincipalID, &op.MachineID, &op.SourceMachineID, &op.BindingID,
 		&op.BindingGeneration, &op.RuntimeName, &op.Kind, &op.State, &op.Stage, &request, &dispatch, &result, &failure,
-		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending)
+		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending, &op.SourceDisposition)
 	op.Request = json.RawMessage(request)
 	op.Dispatch = json.RawMessage(dispatch)
 	if result != "" {
@@ -41,11 +42,39 @@ func scanOperation(row scanner) (Operation, error) {
 }
 
 func readOperation(ctx context.Context, q queryer, id string) (Operation, error) {
-	return scanOperation(q.QueryRowContext(ctx, "SELECT "+operationColumns+" FROM operations WHERE id = ?", id))
+	op, err := scanOperation(q.QueryRowContext(ctx, "SELECT "+operationColumns+" FROM operations WHERE id = ?", id))
+	if err != nil || op.Kind != rt.ForkBatch {
+		return op, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT c.ordinal, b.machine_id, c.binding_id, c.state,
+		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, '')
+		FROM operation_children c JOIN runtime_bindings b ON b.id = c.binding_id
+		WHERE c.operation_id = ? ORDER BY c.ordinal`, op.ID)
+	if err != nil {
+		return Operation{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var child OperationChild
+		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode); err != nil {
+			return Operation{}, err
+		}
+		op.Children = append(op.Children, child)
+	}
+	return op, rows.Err()
 }
 
 func (s *Store) GetOperation(ctx context.Context, id string) (Operation, error) {
-	return readOperation(ctx, s.reader, id)
+	tx, err := s.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Operation{}, err
+	}
+	defer tx.Rollback()
+	op, err := readOperation(ctx, tx, id)
+	if err != nil {
+		return Operation{}, err
+	}
+	return op, tx.Commit()
 }
 
 func (s *Store) ListPending(ctx context.Context) ([]Operation, error) {
@@ -194,7 +223,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	if route != (rt.BundleRoute{}) {
+	if route != (rt.BundleRoute{}) || rt.FullStateOperationCapability(r.Kind) != "" {
 		if r.AdmitRuntime == nil {
 			return Operation{}, false, rt.ErrUnsupported
 		}
@@ -458,6 +487,12 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	if r.Effect != "" {
 		op.Effect = r.Effect
 	}
+	if r.SourceDisposition != "" {
+		if !oneOf(string(r.SourceDisposition), string(SourceRunning), string(SourceStandby), string(SourceHeld), string(SourceExited), string(SourceUnknown)) {
+			return Operation{}, fmt.Errorf("%w: invalid source disposition", ErrInvalid)
+		}
+		op.SourceDisposition = r.SourceDisposition
+	}
 	if r.State == RecoveryRequired {
 		op.Effect = EffectUnknown
 	}
@@ -492,9 +527,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	op.Version++
 
 	_, err = tx.ExecContext(ctx, `UPDATE operations SET state = ?, stage = ?, effect = ?, dispatch_json = ?,
-		result_json = ?, error_json = ?, updated_at = ?, version = ?, wake_pending = ? WHERE id = ?`,
+		result_json = ?, error_json = ?, updated_at = ?, version = ?, wake_pending = ?, source_disposition = ? WHERE id = ?`,
 		op.State, op.Stage, op.Effect, rawValue(op.Dispatch), rawValue(op.Result), rawValue(op.Error),
-		op.UpdatedAt.UnixMilli(), op.Version, op.WakePending, op.ID)
+		op.UpdatedAt.UnixMilli(), op.Version, op.WakePending, nullable(string(op.SourceDisposition)), op.ID)
 	if err != nil {
 		return Operation{}, err
 	}

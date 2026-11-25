@@ -77,13 +77,23 @@ type Machine struct {
 	ObservedAt         *time.Time      `json:"observed_at,omitempty"`
 }
 
+type PowerState string
+
+const (
+	PowerRunning    PowerState = "running"
+	PowerStandby    PowerState = "standby"
+	PowerHibernated PowerState = "hibernated"
+	PowerStopped    PowerState = "stopped"
+	PowerUnknown    PowerState = "unknown"
+)
+
 type Binding struct {
 	RuntimeInstanceID       string          `json:"runtime_instance_id,omitempty"`
 	RuntimeBundleID         string          `json:"runtime_bundle_id,omitempty"`
 	RuntimeInstanceObjectID string          `json:"runtime_instance_object_id,omitempty"`
 	IncarnationID           string          `json:"incarnation_id,omitempty"`
 	ExecutionEpoch          int64           `json:"execution_epoch,omitempty"`
-	PowerState              string          `json:"power_state"`
+	PowerState              PowerState      `json:"power_state"`
 	Health                  json.RawMessage `json:"health"`
 	CapabilityProfileID     string          `json:"capability_profile_id,omitempty"`
 	LastCaptureID           string          `json:"last_capture_id,omitempty"`
@@ -139,27 +149,48 @@ const (
 )
 
 type Operation struct {
-	ID                string          `json:"operation_id"`
-	ControlEpoch      string          `json:"control_epoch"`
-	PrincipalID       string          `json:"-"`
-	MachineID         string          `json:"machine_id,omitempty"`
-	SourceMachineID   string          `json:"source_machine_id,omitempty"`
-	BindingID         string          `json:"binding_id,omitempty"`
-	BindingGeneration int64           `json:"binding_generation"`
-	RuntimeName       string          `json:"runtime_name,omitempty"`
-	Kind              string          `json:"kind"`
-	State             string          `json:"state"`
-	Stage             string          `json:"stage"`
-	Request           json.RawMessage `json:"-"`
-	Dispatch          json.RawMessage `json:"-"`
-	Result            json.RawMessage `json:"result"`
-	Error             json.RawMessage `json:"error"`
-	Effect            string          `json:"effect"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	Version           int64           `json:"-"`
-	Heavy             bool            `json:"-"`
-	WakePending       bool            `json:"-"`
+	ID                string            `json:"operation_id"`
+	ControlEpoch      string            `json:"control_epoch"`
+	PrincipalID       string            `json:"-"`
+	MachineID         string            `json:"machine_id,omitempty"`
+	SourceMachineID   string            `json:"source_machine_id,omitempty"`
+	BindingID         string            `json:"binding_id,omitempty"`
+	BindingGeneration int64             `json:"binding_generation"`
+	RuntimeName       string            `json:"runtime_name,omitempty"`
+	Kind              string            `json:"kind"`
+	State             string            `json:"state"`
+	Stage             string            `json:"stage"`
+	Request           json.RawMessage   `json:"-"`
+	Dispatch          json.RawMessage   `json:"-"`
+	Result            json.RawMessage   `json:"result"`
+	Error             json.RawMessage   `json:"error"`
+	Effect            string            `json:"effect"`
+	SourceDisposition SourceDisposition `json:"source_disposition,omitempty"`
+	Children          []OperationChild  `json:"children,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	Version           int64             `json:"-"`
+	Heavy             bool              `json:"-"`
+	WakePending       bool              `json:"-"`
+}
+
+type SourceDisposition string
+
+const (
+	SourceRunning SourceDisposition = "RUNNING"
+	SourceStandby SourceDisposition = "STANDBY"
+	SourceHeld    SourceDisposition = "HELD"
+	SourceExited  SourceDisposition = "EXITED"
+	SourceUnknown SourceDisposition = "UNKNOWN"
+)
+
+type OperationChild struct {
+	Ordinal              int    `json:"ordinal"`
+	MachineID            string `json:"machine_id"`
+	BindingID            string `json:"binding_id"`
+	State                string `json:"state"`
+	ResourceIndependence string `json:"resource_independence,omitempty"`
+	ErrorCode            string `json:"error_code,omitempty"`
 }
 
 func (o Operation) Terminal() bool {
@@ -202,20 +233,21 @@ type AcceptRequest struct {
 }
 
 type TransitionRequest struct {
-	State           string
-	Stage           string
-	Effect          string
-	Result          json.RawMessage
-	Error           json.RawMessage
-	Dispatch        json.RawMessage
-	ExpectedVersion int64
-	Observation     *Observation
-	PromoteBinding  bool
-	MarkDeleted     bool
-	DesiredPower    string
-	WakePending     *bool
-	MaxHeavy        int
-	Apply           func(context.Context, *sql.Tx) error
+	State             string
+	Stage             string
+	Effect            string
+	SourceDisposition SourceDisposition
+	Result            json.RawMessage
+	Error             json.RawMessage
+	Dispatch          json.RawMessage
+	ExpectedVersion   int64
+	Observation       *Observation
+	PromoteBinding    bool
+	MarkDeleted       bool
+	DesiredPower      string
+	WakePending       *bool
+	MaxHeavy          int
+	Apply             func(context.Context, *sql.Tx) error
 }
 
 type Event struct {

@@ -1,15 +1,70 @@
 package runtime
 
+const (
+	Standby         = "standby"
+	Hibernate       = "hibernate"
+	IndependentFork = "independent_fork"
+	ForkBatch       = "fork_batch"
+	VMSnapshot      = "vm_snapshot"
+	VMRestore       = "vm_restore"
+	VMRollback      = "vm_rollback"
+)
+
+func FullStateOperationCapability(kind string) string {
+	switch kind {
+	case Standby:
+		return "lifecycle.standby"
+	case Hibernate:
+		return "state.hibernate"
+	case IndependentFork:
+		return "state.independent_fork"
+	case ForkBatch:
+		return "state.fork_batch"
+	case VMSnapshot:
+		return "state.checkpoint"
+	case VMRestore:
+		return "state.restore"
+	case VMRollback:
+		return "state.rollback"
+	default:
+		return ""
+	}
+}
+
+// CapabilityError records the missing admission evidence before any effect.
+type CapabilityError struct {
+	Capability string
+	Status     Capability
+}
+
+func (e *CapabilityError) Error() string {
+	return e.Capability + " is " + e.Status.Status + " for this runtime"
+}
+
+func FullStateUnavailable(kind string, official bool) error {
+	return &CapabilityError{Capability: FullStateOperationCapability(kind), Status: fullStateCapability(official)}
+}
+
+func fullStateCapability(official bool) Capability {
+	if official {
+		return Capability{Status: "unsupported", ReasonCode: "RUNTIME_EXT_REQUIRED"}
+	}
+	return Capability{Status: "unknown", ReasonCode: "CAPABILITY_NOT_VERIFIED"}
+}
+
 // FullStateCapabilities names operations whose meaning differs from the legacy
 // pause, checkpoint and branch APIs. Template declarations alone cannot open them.
 func FullStateCapabilities(official bool) map[string]Capability {
-	c := Capability{Status: "unknown", ReasonCode: "CAPABILITY_NOT_VERIFIED"}
-	if official {
-		c = Capability{Status: "unsupported", ReasonCode: "RUNTIME_EXT_REQUIRED"}
+	c := fullStateCapability(official)
+	result := map[string]Capability{
+		"state.live_fork":           c,
+		"state.clone_ready":         c,
+		"storage.multidisk_capture": c,
+		"network.native_reidentity": c,
+		"boot.system_state_restore": c,
 	}
-	result := make(map[string]Capability)
-	for _, key := range []string{"lifecycle.standby", "state.independent_fork", "state.fork_batch", "state.hibernate", "state.clone_ready", "storage.multidisk_capture", "network.native_reidentity", "boot.system_state_restore"} {
-		result[key] = c
+	for _, kind := range []string{Standby, Hibernate, IndependentFork, ForkBatch, VMSnapshot, VMRestore, VMRollback} {
+		result[FullStateOperationCapability(kind)] = c
 	}
 	return result
 }

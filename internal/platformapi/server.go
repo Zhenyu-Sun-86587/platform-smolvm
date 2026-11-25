@@ -133,7 +133,13 @@ func write(w http.ResponseWriter, status int, v any) error {
 }
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	code, status := "INTERNAL", 500
+	var capability *rt.CapabilityError
 	switch {
+	case errors.As(err, &capability):
+		code, status = "CAPABILITY_UNKNOWN", 409
+		if capability.Status.Status == "unsupported" {
+			code = "CAPABILITY_UNSUPPORTED"
+		}
 	case errors.Is(err, auth.ErrUnauthenticated), errors.Is(err, registry.ErrUnauthorized):
 		code, status = "UNAUTHENTICATED", 401
 	case errors.Is(err, auth.ErrForbidden):
@@ -176,6 +182,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	id, _ := registry.NewID("req_")
 	detail := map[string]any{"request_id": id, "code": code, "message": msg, "effect": "none", "retry": "after_precondition"}
+	if capability != nil {
+		detail["capability"] = capability.Capability
+		detail["reason_code"] = capability.Status.ReasonCode
+	}
 	if status == 500 {
 		detail["effect"] = "unknown"
 		detail["retry"] = "client_decision"
@@ -371,7 +381,7 @@ func (s *Server) routes() {
 		official := s.OfficialRuntime()
 		h, healthErr := official.Health(r.Context())
 		ready := healthErr == nil && official.Ready(r.Context()) == nil
-		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(ready), "principal": p}
+		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)
 		}
@@ -432,6 +442,7 @@ func (s *Server) routes() {
 	s.leaseRoutes()
 	s.serviceRoutes()
 	s.snapshotRoutes()
+	s.fullStateRoutes()
 	s.artifactRoutes()
 	s.taskRoutes()
 	s.execRoutes()
@@ -537,12 +548,19 @@ func (s *Server) machineRoutes() {
 				var v struct {
 					ChildName          string `json:"child_name"`
 					ExpectedGeneration int64  `json:"expected_generation"`
+					RequireIndependent bool   `json:"require_independent,omitempty"`
 				}
 				if err := decode(r, &v); err != nil {
 					return err
 				}
 				req.Name = v.ChildName
 				req.ExpectedGeneration = v.ExpectedGeneration
+				if v.RequireIndependent {
+					if v.ExpectedGeneration < 1 || !validChildName(v.ChildName) {
+						return registry.ErrInvalid
+					}
+					req.Kind = rt.IndependentFork
+				}
 				return s.accept(w, r, p, v, req)
 			}
 			var v lifecycle.Action

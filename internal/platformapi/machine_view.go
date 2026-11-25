@@ -3,9 +3,10 @@ package platformapi
 import (
 	"context"
 	"encoding/json"
+	"time"
+
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
-	"time"
 )
 
 type machineHealth struct {
@@ -18,8 +19,8 @@ type machineHealth struct {
 }
 
 type machineView struct {
-	PowerState string        `json:"power_state"`
-	Health     machineHealth `json:"health"`
+	PowerState registry.PowerState `json:"power_state"`
+	Health     machineHealth       `json:"health"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -30,7 +31,7 @@ type machineView struct {
 }
 
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineView, error) {
-	v := machineView{Machine: m, PowerState: "unknown", Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
+	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
 	var spec struct {
 		Resources json.RawMessage `json:"resources"`
 	}
@@ -73,12 +74,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		}
 		v.PowerState = b.PowerState
 		if official {
-			switch m.ObservedState {
-			case "running", "stopped":
-				v.PowerState = m.ObservedState
-			default:
-				v.PowerState = "unknown"
-			}
+			v.PowerState = officialPowerState(*b)
 			v.Health.VM = m.ObservedState
 			v.Health.GuestManagement = b.GuestManagementStatus
 		}
@@ -88,7 +84,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 	}
 	if m.DeletedAt == nil && m.CurrentBinding != nil && (m.ObservedAt == nil || time.Since(*m.ObservedAt) > time.Duration(s.Config.Lifecycle.StatusStale)*time.Second) {
 		v.Availability = "unknown"
-		v.PowerState = "unknown"
+		v.PowerState = registry.PowerUnknown
 		v.Health.VM = "unknown"
 		v.Blocked = append(v.Blocked, "observation_stale")
 	}
@@ -102,4 +98,23 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		}
 	}
 	return v, nil
+}
+
+func officialPowerState(b registry.Binding) registry.PowerState {
+	switch b.ObservedState {
+	case "running":
+		return registry.PowerRunning
+	case "created", "stopped":
+		return registry.PowerStopped
+	case "paused":
+		var reason string
+		if len(b.StateReason) > 0 && json.Unmarshal(b.StateReason, &reason) != nil {
+			return registry.PowerUnknown
+		}
+		observation := rt.Observation{StateReason: reason}
+		if !observation.PressurePaused() && b.PauseStatus == "active" && b.RuntimePauseID != "" {
+			return registry.PowerHibernated
+		}
+	}
+	return registry.PowerUnknown
 }

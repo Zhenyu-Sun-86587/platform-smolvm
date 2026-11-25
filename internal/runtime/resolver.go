@@ -32,6 +32,9 @@ func (r *Resolver) Official() Adapter { return r.official }
 // Admit checks whether the adapter implements the native dispatch path for a
 // binding operation. A wire capability alone cannot admit a mutation.
 func (r *Resolver) Admit(route BundleRoute, kind string) error {
+	if FullStateOperationCapability(kind) != "" {
+		return FullStateUnavailable(kind, route == (BundleRoute{}))
+	}
 	if route == (BundleRoute{}) {
 		return nil
 	}

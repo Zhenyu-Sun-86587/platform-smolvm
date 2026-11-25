@@ -588,6 +588,50 @@ paths:
             application/json:
               schema: {type: object, additionalProperties: true}
         default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/standby:
+    post:
+      operationId: standby_machine
+      summary: Hold a running VM in standby
+      parameters: &full_state_parameters
+      - name: machine
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody: &full_state_request
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/FullStateAction'}
+      responses: &full_state_responses
+        '202':
+          description: Durably accepted on a verified runtime
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/hibernate:
+    post:
+      operationId: hibernate_machine
+      summary: Save a durable VM checkpoint and end the active execution
+      parameters: *full_state_parameters
+      requestBody: *full_state_request
+      responses: *full_state_responses
+  /machines/{machine}/fork-batches:
+    post:
+      operationId: fork_batch
+      summary: Create children from one verified source capture
+      parameters: *full_state_parameters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ForkBatchRequest'}
+      responses: *full_state_responses
   /machines/{machine}/forks:
     post:
       operationId: post_machines_machine_forks
@@ -610,8 +654,15 @@ paths:
               properties:
                 child_name: {type: string, minLength: 1}
                 expected_generation: {type: integer, minimum: 1}
+                require_independent: {type: boolean, default: false}
               required:
               - child_name
+              if:
+                required: [require_independent]
+                properties:
+                  require_independent: {const: true}
+              then:
+                required: [expected_generation]
               additionalProperties: false
       responses:
         '202':
@@ -715,8 +766,15 @@ paths:
                 purpose: {type: string, enum: [clone, recovery]}
                 label: {type: string}
                 expected_generation: {type: integer, minimum: 1}
-              required:
-              - purpose
+                capture_mode: {type: string, enum: [vm, managed_tasks], default: managed_tasks}
+              if:
+                required: [capture_mode]
+                properties:
+                  capture_mode: {const: vm}
+              then:
+                required: [expected_generation]
+              else:
+                required: [purpose]
               additionalProperties: false
       responses:
         '202':
@@ -2037,6 +2095,8 @@ components:
         request_id: {type: string, minLength: 1}
         operation_id: {type: string, minLength: 1}
         code: {type: string, minLength: 1}
+        capability: {type: string}
+        reason_code: {type: string}
         message: {type: string}
         effect: {type: string, enum: [none, applied, partial, unknown]}
         retry: {type: string, enum: [never, same_key, poll_operation, after_precondition, client_decision]}
@@ -2052,6 +2112,49 @@ components:
       required:
       - error
       additionalProperties: false
+    FullStateAction:
+      type: object
+      required: [expected_generation]
+      additionalProperties: false
+      properties:
+        expected_generation: {type: integer, minimum: 1}
+        activity_policy:
+          type: object
+          additionalProperties: false
+          properties:
+            allow_active_tasks: {type: boolean}
+    ForkBatchRequest:
+      type: object
+      required: [expected_generation, children]
+      additionalProperties: false
+      properties:
+        expected_generation: {type: integer, minimum: 1}
+        require_independent: {type: boolean}
+        children:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [name]
+            properties:
+              name: {type: string, minLength: 1, maxLength: 255}
+        volume_policy:
+          type: object
+          additionalProperties: false
+          properties:
+            default: {const: clone}
+    OperationChild:
+      type: object
+      required: [ordinal, machine_id, binding_id, state]
+      properties:
+        ordinal: {type: integer, minimum: 0}
+        machine_id: {type: string}
+        binding_id: {type: string}
+        state: {type: string}
+        resource_independence: {type: string, enum: [unknown, verified, failed]}
+        error_code: {type: string}
     Operation:
       type: object
       properties:
@@ -2062,6 +2165,10 @@ components:
         state: {type: string, enum: [queued, dispatching, observing, succeeded, failed, cancelled, recovery_required]}
         effect: {type: string, enum: [none, applied, partial, unknown]}
         binding_generation: {type: integer, minimum: 1}
+        source_disposition: {type: string, enum: [RUNNING, STANDBY, HELD, EXITED, UNKNOWN]}
+        children:
+          type: array
+          items: {$ref: '#/components/schemas/OperationChild'}
         error: {anyOf: [{$ref: '#/components/schemas/Error'}, {type: 'null'}]}
         result: {type: [object, 'null']}
       required:
@@ -2205,6 +2312,16 @@ components:
         snapshot_id: {type: string, minLength: 1}
         revision: {type: integer, minimum: 1}
         source_machine_id: {type: string, minLength: 1}
+        capture_mode: {type: string, enum: [managed_tasks, vm]}
+        vm_provenance:
+          type: object
+          required: [operation_id, runtime_instance_id, runtime_bundle_id, state_reader_id, runtime_capture_id]
+          properties:
+            operation_id: {type: string}
+            runtime_instance_id: {type: string}
+            runtime_bundle_id: {type: string}
+            state_reader_id: {type: string}
+            runtime_capture_id: {type: string}
         purpose: {type: string, enum: [clone, recovery]}
         task_content: {type: string, enum: [clean, active, unknown]}
         label: {type: string}
