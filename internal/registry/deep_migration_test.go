@@ -77,7 +77,7 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 	}
 	defer store.Close()
 	control, err := store.Control(ctx)
-	if err != nil || control.SchemaVersion != 1013 || control.ControlEpoch != "control" {
+	if err != nil || control.SchemaVersion != 1014 || control.ControlEpoch != "control" {
 		t.Fatal(control, err)
 	}
 	owner, err := auth.New(store).Bootstrap(ctx, "owner", "existing-password")
@@ -146,5 +146,50 @@ func TestRejectOtherRouteSchema(t *testing.T) {
 	if store, err := registry.Open(context.Background(), path); err == nil {
 		store.Close()
 		t.Fatal("accepted a Phase 2 registry")
+	}
+}
+
+func TestHistoricalRegistryRollsBackFailedBundleSecurityMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	db := legacyRegistry(t, path, 2)
+	_, err := db.Exec(`INSERT INTO meta(id,schema_version,installation_id,control_epoch) VALUES(1,2,'install','control');
+		INSERT INTO principals(id,username,created_at) VALUES('historical','historical',1);
+		CREATE TABLE runtime_bundle_security(injected_failure INTEGER)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if store, err := registry.Open(ctx, path); err == nil {
+		store.Close()
+		t.Fatal("expected the final migration to fail")
+	}
+	var version, metadata, historical, earlierTables int
+	for query, value := range map[string]*int{
+		"PRAGMA user_version":                                             &version,
+		"SELECT schema_version FROM meta WHERE id=1":                      &metadata,
+		"SELECT COUNT(*) FROM principals WHERE id='historical'":           &historical,
+		"SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_bundles'": &earlierTables,
+	} {
+		if err := db.QueryRow(query).Scan(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if version != 2 || metadata != 2 || historical != 1 || earlierTables != 0 {
+		t.Fatalf("migration left partial effects: version=%d metadata=%d historical=%d tables=%d", version, metadata, historical, earlierTables)
+	}
+	if _, err := db.Exec("DROP TABLE runtime_bundle_security"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := registry.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	control, err := store.Control(ctx)
+	if err != nil || control.SchemaVersion < 1014 || control.ControlEpoch != "control" {
+		t.Fatal(control, err)
 	}
 }

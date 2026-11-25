@@ -44,6 +44,20 @@ func (s *Store) GetRuntimeRoute(ctx context.Context, instanceID string) (rt.Bund
 	return loadRuntimeRoute(ctx, s.reader, instanceID)
 }
 
+func (s *Store) RuntimeBundleRouteAllowed(ctx context.Context, bundle string) (bool, error) {
+	var status string
+	err := s.reader.QueryRowContext(ctx, `SELECT security_status FROM runtime_bundles WHERE id = ?`, bundle).Scan(&status)
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case "unknown", "active", "legacy-allowed", "ready":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 func loadRuntimeRoute(ctx context.Context, db queryer, instanceID string) (rt.BundleRoute, error) {
 	route := rt.BundleRoute{InstanceID: instanceID}
 	err := db.QueryRowContext(ctx, `SELECT runtime_bundle_id FROM runtime_instances WHERE id = ?`, instanceID).Scan(&route.BundleID)
@@ -54,19 +68,21 @@ func loadRuntimeRoute(ctx context.Context, db queryer, instanceID string) (rt.Bu
 }
 
 type RuntimeProfile struct {
-	RuntimeInstanceID  string                   `json:"runtime_instance_id"`
-	RuntimeBundleID    string                   `json:"runtime_bundle_id"`
-	StateReaderID      string                   `json:"state_reader_id"`
-	Status             string                   `json:"status"`
-	VerificationStatus string                   `json:"verification_status"`
-	SecurityStatus     string                   `json:"security_status"`
-	BootProfiles       []string                 `json:"boot_profiles"`
-	RunningBindings    int64                    `json:"running_bindings"`
-	StandbyBindings    int64                    `json:"standby_bindings"`
-	HibernatedBindings int64                    `json:"hibernated_bindings"`
-	BundleBindingRefs  int64                    `json:"bundle_binding_refs"`
-	BundleSnapshotRefs int64                    `json:"bundle_snapshot_refs"`
-	Capabilities       map[string]rt.Capability `json:"capabilities"`
+	RuntimeInstanceID    string                   `json:"runtime_instance_id"`
+	RuntimeBundleID      string                   `json:"runtime_bundle_id"`
+	StateReaderID        string                   `json:"state_reader_id"`
+	Status               string                   `json:"status"`
+	VerificationStatus   string                   `json:"verification_status"`
+	SecurityStatus       string                   `json:"security_status"`
+	SecurityReason       string                   `json:"security_reason,omitempty"`
+	BootProfiles         []string                 `json:"boot_profiles"`
+	RunningBindings      int64                    `json:"running_bindings"`
+	StandbyBindings      int64                    `json:"standby_bindings"`
+	HibernatedBindings   int64                    `json:"hibernated_bindings"`
+	BundleBindingRefs    int64                    `json:"bundle_binding_refs"`
+	BundleSnapshotRefs   int64                    `json:"bundle_snapshot_refs"`
+	BundleStatePointRefs int64                    `json:"bundle_statepoint_refs"`
+	Capabilities         map[string]rt.Capability `json:"capabilities"`
 }
 
 func (s *Store) ListRuntimeProfiles(ctx context.Context) ([]RuntimeProfile, error) {
@@ -81,17 +97,19 @@ func (s *Store) ListRuntimeProfiles(ctx context.Context) ([]RuntimeProfile, erro
 		GROUP BY b.runtime_instance_id
 	), bundle_refs AS (
 		SELECT bundle_id, COUNT(*) FILTER (WHERE owner_kind='binding') AS bindings,
-			COUNT(*) FILTER (WHERE owner_kind='snapshot') AS snapshots
+			COUNT(*) FILTER (WHERE owner_kind='snapshot') AS snapshots,
+			COUNT(*) FILTER (WHERE owner_kind='statepoint') AS statepoints
 		FROM runtime_bundle_refs GROUP BY bundle_id
 	)
 	SELECT i.id, b.id, COALESCE(json_extract(b.manifest_json, '$.contracts.state_reader_id'), ''),
-		i.status, b.verification_status, b.security_status,
+		i.status, b.verification_status, b.security_status, COALESCE(s.reason, ''),
 		COALESCE(json_extract(b.manifest_json, '$.guest.boot_profiles'), '[]'),
 		COALESCE(c.running, 0), COALESCE(c.standby, 0), COALESCE(c.hibernated, 0),
-		COALESCE(r.bindings, 0), COALESCE(r.snapshots, 0)
+		COALESCE(r.bindings, 0), COALESCE(r.snapshots, 0), COALESCE(r.statepoints, 0)
 	FROM runtime_instances i JOIN runtime_bundles b ON b.id = i.runtime_bundle_id
 	LEFT JOIN current_bindings c ON c.runtime_instance_id = i.id
 	LEFT JOIN bundle_refs r ON r.bundle_id = b.id
+	LEFT JOIN runtime_bundle_security s ON s.bundle_id = b.id
 	ORDER BY i.id`)
 	if err != nil {
 		return nil, err
@@ -102,9 +120,9 @@ func (s *Store) ListRuntimeProfiles(ctx context.Context) ([]RuntimeProfile, erro
 		var profile RuntimeProfile
 		var bootProfiles string
 		if err = rows.Scan(&profile.RuntimeInstanceID, &profile.RuntimeBundleID, &profile.StateReaderID,
-			&profile.Status, &profile.VerificationStatus, &profile.SecurityStatus, &bootProfiles,
+			&profile.Status, &profile.VerificationStatus, &profile.SecurityStatus, &profile.SecurityReason, &bootProfiles,
 			&profile.RunningBindings, &profile.StandbyBindings, &profile.HibernatedBindings,
-			&profile.BundleBindingRefs, &profile.BundleSnapshotRefs); err != nil {
+			&profile.BundleBindingRefs, &profile.BundleSnapshotRefs, &profile.BundleStatePointRefs); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(bootProfiles), &profile.BootProfiles); err != nil {

@@ -96,6 +96,7 @@ func run() error {
 		return err
 	}
 	custom := make(map[runtime.BundleRoute]runtime.Adapter, len(c.Runtime.Custom))
+	allowedRoutes := make([]customsmolvm.Route, 0, len(c.Runtime.Custom))
 	for _, route := range c.Runtime.Custom {
 		adapter, err := customsmolvm.New(route)
 		if err != nil {
@@ -108,8 +109,16 @@ func run() error {
 		if err := db.RegisterRuntime(ctx, route.Key(), route.Socket, manifest); err != nil {
 			return err
 		}
-		custom[route.Key()] = adapter
+		allowed, err := db.RuntimeBundleRouteAllowed(ctx, route.Bundle)
+		if err != nil {
+			return err
+		}
+		if allowed {
+			custom[route.Key()] = adapter
+			allowedRoutes = append(allowedRoutes, route)
+		}
 	}
+	c.Runtime.Custom = allowedRoutes
 	engine := lifecycle.New(db, runtime.NewResolver(official, custom), c)
 	catalog, err := snapshots.Open(db, c)
 	if err != nil {

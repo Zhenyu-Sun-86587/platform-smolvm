@@ -192,6 +192,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1011, "1011_desktop_sessions.sql"},
 		{1012, "1012_backup_events.sql"},
 		{1013, "1013_deep_lifecycle.sql"},
+		{1014, "1014_runtime_bundle_security.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0
