@@ -108,7 +108,8 @@ file_list=(bin/platformd bin/sandboxctl runtime-manifest.json systemd/platformd.
 [[ $(jq -er '.files | length' "$manifest") -eq ${#file_list[@]} ]] || fail "Invalid manifest file count"
 for member in "${file_list[@]}"; do
     expected=$(jq -er --arg member "$member" '.files[] | select(.path == $member) | .sha256' "$manifest")
-    [[ $expected =~ ^[a-f0-9]{64}$ && -f $src/$member && ! -L $src/$member ]] || fail "Invalid release file $member"
+    [[ $expected =~ ^[a-f0-9]{64}$ && -f $src/$member && $(realpath -e "$src/$member") == "$src/$member" ]] ||
+        fail "Invalid release file $member"
     actual=$(sha256sum -- "$src/$member" | cut -d ' ' -f 1)
     [[ $expected == "$actual" ]] || fail "Checksum mismatch for $member"
 done
@@ -119,6 +120,36 @@ runtime_sha=f8d5d1aaa198c7b9e676fa4365998e22fc9051a2199b208741be5f38fef5e404
 template_hash=$(sha256sum "$src/managed-template.tar" | cut -d ' ' -f 1)
 template_name=debian-managed-${template_hash:0:12}.tar
 jq -e --arg digest "sha256:$template_hash" --arg name "$template_name"     'length == 1 and .[0].image_digest == $digest and .[0].spec.local_image == $name' "$src/templates.json" >/dev/null
+if [[ -n $runtime_asset ]]; then
+    [[ $(sha256sum "$runtime_asset" | cut -d ' ' -f 1) == "$runtime_sha" ]] || fail "Official runtime archive checksum mismatch"
+fi
+python3 - "$src/managed-template.tar" <<'PY_CHECK'
+import json
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "r:") as image:
+    members = {}
+    for member in image:
+        components = member.name.split("/")
+        if any(p in ("", ".", "..") for p in components) or member.name in members:
+            raise SystemExit("Managed template archive contains an invalid member path")
+        if not (member.isfile() or member.isdir()):
+            raise SystemExit("Managed template archive members must be regular files or directories")
+        members[member.name] = member
+    manifest = members.get("manifest.json")
+    if manifest is None or not manifest.isfile() or manifest.size > 65536:
+        raise SystemExit("Managed template archive has no bounded Docker-save manifest")
+    entries = json.load(image.extractfile(manifest))
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        raise SystemExit("Managed template archive must contain exactly one image")
+    config, layers = entries[0].get("Config"), entries[0].get("Layers")
+    if not isinstance(config, str) or not isinstance(layers, list) or len(layers) == 0:
+        raise SystemExit("Managed template image configuration or layers are missing")
+    for name in [config, *layers]:
+        if not isinstance(name, str) or name not in members or not members[name].isfile():
+            raise SystemExit("Managed template manifest references a missing file")
+PY_CHECK
 if [[ -n $config ]]; then
     "$src/bin/platformd" -check-config -config "$config"
 fi

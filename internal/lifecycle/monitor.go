@@ -12,10 +12,11 @@ import (
 // monitor samples public execution state without extending user idle time.
 func (e *Engine) monitor(ctx context.Context) {
 	started := time.Now()
+	bootID := hostBootID()
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
-		e.sample(ctx, started)
+		e.sample(ctx, started, bootID)
 		select {
 		case <-ctx.Done():
 			return
@@ -23,7 +24,7 @@ func (e *Engine) monitor(ctx context.Context) {
 		}
 	}
 }
-func (e *Engine) sample(ctx context.Context, started time.Time) {
+func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 	if e.ready(ctx) != nil {
 		return
 	}
@@ -45,6 +46,11 @@ func (e *Engine) sample(ctx context.Context, started time.Time) {
 		if o.Labels["platform.binding"] != b.ID {
 			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked"})
 			continue
+		}
+		if stoppedAfterHostReboot(bootID, b, o) {
+			if err := e.recordHostBootLoss(ctx, b, o.ObservedAt); err != nil {
+				continue
+			}
 		}
 		x := Evidence(o)
 		x.ExpectedRuntimeIdentity = b.RuntimeIdentity
