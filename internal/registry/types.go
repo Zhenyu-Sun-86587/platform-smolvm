@@ -185,7 +185,7 @@ type Operation struct {
 	Children           []OperationChild  `json:"children,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
-	Version            int64             `json:"-"`
+	Version            int64             `json:"revision"`
 	Heavy              bool              `json:"-"`
 	WakePending        bool              `json:"-"`
 }
@@ -205,6 +205,7 @@ type OperationChild struct {
 	MachineID            string                `json:"machine_id"`
 	BindingID            string                `json:"binding_id"`
 	State                string                `json:"state"`
+	Attempt              int64                 `json:"attempt"`
 	ResourceIndependence string                `json:"resource_independence,omitempty"`
 	ErrorCode            string                `json:"error_code,omitempty"`
 	ResourceProof        []rt.ForkDiskEvidence `json:"-"`
@@ -244,7 +245,7 @@ type AcceptRequest struct {
 	RuntimeInstanceID     string
 	ForkChildren          []string
 	Locks                 []Lock
-	MachineSpec        json.RawMessage
+	MachineSpec           json.RawMessage
 	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
 	AdmitRuntime func(rt.BundleRoute, string) error
 	// AdmitNative checks the binding's persisted capability and execution evidence.
@@ -272,6 +273,7 @@ type TransitionRequest struct {
 	Apply             func(context.Context, *sql.Tx) error
 	ReleaseSourceLock bool
 	ForkChildren      []ForkChildTransition
+	ForkRetryOrdinals []int
 }
 
 type ForkChildTransition struct {

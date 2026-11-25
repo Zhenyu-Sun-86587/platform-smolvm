@@ -46,11 +46,13 @@ export interface OperationChild {
     machine_id: string;
     binding_id: string;
     state: string;
+    attempt: number;
     resource_independence?: "unknown" | "verified" | "failed";
     error_code?: string;
 }
 export interface Operation {
     operation_id: string;
+    revision: number;
     state: OperationState;
     machine_id?: string;
     kind: string;
@@ -346,6 +348,7 @@ export declare class Client {
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;
+    retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     getSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot>;
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;

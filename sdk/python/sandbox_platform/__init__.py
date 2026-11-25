@@ -162,6 +162,12 @@ class Client:
     def wait(self, operation_id, timeout=180):
         return self.wait_operation(operation_id, timeout)
 
+    def retry_fork_targets(self, operation_id, *, revision=None, intent=None):
+        path = _item("operations", operation_id)
+        if revision is None:
+            revision = self.get(path)["revision"]
+        return self.mutate(path + "/retry", revision=revision, intent=intent)
+
     def pages(self, path, *, limit=100, **filters) -> Iterator[dict]:
         cursor = ""
         while True:

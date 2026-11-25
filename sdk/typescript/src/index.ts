@@ -40,11 +40,13 @@ export interface OperationChild {
   machine_id: string
   binding_id: string
   state: string
+  attempt: number
   resource_independence?: "unknown" | "verified" | "failed"
   error_code?: string
 }
 export interface Operation {
   operation_id: string
+  revision: number
   state: OperationState
   machine_id?: string
   kind: string
@@ -468,6 +470,10 @@ export class Client {
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
   getOperation(id: string, signal?: AbortSignal) { return this.get<Operation>(operation(id), signal) }
+  async retryForkTargets(id: string, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
+    return this.mutate<Operation>(operation(id) + "/retry", {}, { ...options, revision })
+  }
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
   getSnapshot(id: string, signal?: AbortSignal) { return this.get<Snapshot>(snapshot(id), signal) }
   listMachines(signal?: AbortSignal) { return this.pages<Machine>("machines", 100, signal) }

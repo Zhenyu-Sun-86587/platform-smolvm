@@ -37,9 +37,10 @@ type NativeInventory struct {
 }
 
 type NativeDevice struct {
-	VirtioType int              `json:"virtio_type"`
-	Tap        *json.RawMessage `json:"tap"`
-	Block      *NativeBlock     `json:"block"`
+	VirtioType        int              `json:"virtio_type"`
+	Tap               *json.RawMessage `json:"tap"`
+	Block             *NativeBlock     `json:"block"`
+	ParkedVSockRebind bool             `json:"parked_vsock_rebind"`
 }
 
 func (i NativeInventory) ManagedStandby() bool {
