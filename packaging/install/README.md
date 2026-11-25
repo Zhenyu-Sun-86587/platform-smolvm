@@ -19,6 +19,17 @@ SANDBOX_MANAGED_TEMPLATE_DIR=/path/to/verified-artifacts \
 
 The explicit three-argument build also accepts other archives. The builder assigns verified capabilities only to exact digests recorded for the pinned runtime and architecture. A newly built archive with a different SHA-256 starts with an empty capability declaration. [Managed archive evidence registry](../managed-template-gates.json) [Local gate records](../../docs/phase1/LOCAL_GUEST_EVIDENCE.md)
 
+Build a self-contained release archive and checksum from a committed source tree. The archive includes the pinned official runtime for offline installation and identifies the source commit in BUILD-INFO.json.
+
+```sh
+packaging/install/archive-release.sh 0.1.0 /path/to/smolvm-1.37.1-linux-x86_64.tar.gz .build/releases
+cd .build/releases
+sha256sum -c sandbox-platform-0.1.0-linux-amd64.tar.gz.sha256
+tar -xzf sandbox-platform-0.1.0-linux-amd64.tar.gz
+```
+
+The optional fourth argument selects a Git reference. The default is the current commit.
+
 ## Install
 
 Prepare an owner password file with mode 0600 and an operator configuration based on the included example. The example binds management to loopback on port 8443. Configure TLS and a distinct management origin before changing that bind to a public address. The units expect the fixed runtime and platform directories in the example.
