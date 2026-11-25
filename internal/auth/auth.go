@@ -229,7 +229,7 @@ func (s *Service) AuthenticateSession(ctx context.Context, secret string) (Princ
 }
 
 func (s *Service) authenticate(ctx context.Context, secret, kind string) (Principal, error) {
-	if secret == "" || len(secret) > 256 {
+	if secret == "" || len(secret) > 256 || strings.HasPrefix(secret, "sbg_") {
 		return Principal{}, ErrUnauthenticated
 	}
 	var p Principal

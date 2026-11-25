@@ -184,6 +184,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1001, "1001_deep_runtime.sql"},
 		{1002, "1002_deep_full_state.sql"},
 		{1005, "1005_deep_authorization.sql"},
+		{1006, "1006_deep_guest_grants.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0
