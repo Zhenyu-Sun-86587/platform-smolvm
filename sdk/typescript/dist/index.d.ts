@@ -20,6 +20,9 @@ export interface Operation {
     result?: Record<string, unknown> | null;
 }
 export interface Capability {
+    status?: "supported" | "unsupported" | "unknown";
+    contract_version?: number;
+    constraints?: Record<string, unknown>;
     supported: boolean;
     reason_code?: string | null;
     message?: string;
@@ -57,6 +60,18 @@ export interface Machine extends CreateMachine {
     };
     revision: number;
     binding_generation: number;
+    power_state?: "running" | "standby" | "hibernated" | "stopped" | "unknown";
+    health?: {
+        vm: string;
+        guest_management: string;
+        workload: string;
+        workload_error?: {
+            code: string;
+            message: string;
+        };
+        network_identity: string;
+        services: string;
+    };
     observed_state: string;
     availability: string;
     desired_power: string;

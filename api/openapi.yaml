@@ -2073,6 +2073,9 @@ components:
     Capability:
       type: object
       properties:
+        status: {type: string, enum: [supported, unsupported, unknown]}
+        contract_version: {type: integer}
+        constraints: {type: object, additionalProperties: true}
         supported: {type: boolean}
         reason_code: {type: [string, 'null']}
         message: {type: string}
@@ -2126,6 +2129,16 @@ components:
         keep_running: {type: boolean}
         revision: {type: integer, minimum: 1}
         binding_generation: {type: integer, minimum: 1}
+        power_state: {type: string, enum: [running, standby, hibernated, stopped, unknown]}
+        health:
+          type: object
+          properties:
+            vm: {type: string}
+            guest_management: {type: string}
+            workload: {type: string}
+            workload_error: {type: object, properties: {code: {type: string}, message: {type: string}}}
+            network_identity: {type: string}
+            services: {type: string}
         observed_state: {type: string}
         availability: {type: string}
         desired_power: {type: string}

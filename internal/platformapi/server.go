@@ -367,7 +367,7 @@ func (s *Server) routes() {
 		}
 		h, healthErr := s.Runtime.Health(r.Context())
 		ready := healthErr == nil && s.Runtime.Ready(r.Context()) == nil
-		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": map[string]any{}, "principal": p}
+		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(ready), "principal": p}
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)
 		}

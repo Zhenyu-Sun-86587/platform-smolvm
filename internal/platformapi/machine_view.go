@@ -8,7 +8,18 @@ import (
 	"time"
 )
 
+type machineHealth struct {
+	VM              string          `json:"vm"`
+	GuestManagement string          `json:"guest_management"`
+	Workload        string          `json:"workload"`
+	WorkloadError   json.RawMessage `json:"workload_error,omitempty"`
+	NetworkIdentity string          `json:"network_identity"`
+	Services        string          `json:"services"`
+}
+
 type machineView struct {
+	PowerState string        `json:"power_state"`
+	Health     machineHealth `json:"health"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -19,7 +30,7 @@ type machineView struct {
 }
 
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineView, error) {
-	v := machineView{Machine: m, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
+	v := machineView{Machine: m, PowerState: "unknown", Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
 	var spec struct {
 		Resources json.RawMessage `json:"resources"`
 	}
@@ -39,26 +50,55 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		for name, decl := range raw {
 			var c rt.Capability
 			if len(decl) > 0 && decl[0] == '{' && json.Unmarshal(decl, &c) == nil {
-				v.Capabilities[name] = c
+				v.Capabilities[name] = rt.TemplateCapability(c)
 			}
 		}
 	}
+	official := m.CurrentBinding == nil || (m.CurrentBinding.RuntimeBundleID == "" && m.CurrentBinding.RuntimeInstanceID == "")
+	if !official {
+		// Template evidence from the legacy lane does not qualify a new Bundle.
+		for k := range v.Capabilities {
+			v.Capabilities[k] = rt.Capability{Status: "unknown", ReasonCode: "CAPABILITY_NOT_VERIFIED"}
+		}
+	}
+	for k, c := range rt.FullStateCapabilities(official) {
+		v.Capabilities[k] = c
+	}
 	if m.CurrentBinding != nil {
+		b := m.CurrentBinding
+		if len(b.Health) > 0 {
+			if err := json.Unmarshal(b.Health, &v.Health); err != nil {
+				return v, err
+			}
+		}
+		v.PowerState = b.PowerState
+		if official {
+			switch m.ObservedState {
+			case "running", "stopped":
+				v.PowerState = m.ObservedState
+			default:
+				v.PowerState = "unknown"
+			}
+			v.Health.VM = m.ObservedState
+			v.Health.GuestManagement = b.GuestManagementStatus
+		}
 		v.Binding = m.CurrentBinding
 		v.RuntimeName = m.CurrentBinding.RuntimeName
 		v.GuestStatus = m.CurrentBinding.GuestManagementStatus
 	}
 	if m.DeletedAt == nil && m.CurrentBinding != nil && (m.ObservedAt == nil || time.Since(*m.ObservedAt) > time.Duration(s.Config.Lifecycle.StatusStale)*time.Second) {
 		v.Availability = "unknown"
+		v.PowerState = "unknown"
+		v.Health.VM = "unknown"
 		v.Blocked = append(v.Blocked, "observation_stale")
 	}
 	if m.ActiveOperationID != "" {
 		v.Blocked = append(v.Blocked, "operation_in_progress")
 	}
-	if v.GuestStatus != "ready" && m.ObservedState == "running" {
+	if official && v.GuestStatus != "ready" && m.ObservedState == "running" {
 		v.Blocked = append(v.Blocked, "guest_management_"+v.GuestStatus)
 		for _, k := range []string{"persistent_task", "clean_checkpoint", "independent_clone", "active_recovery", "automatic_idle"} {
-			v.Capabilities[k] = rt.Capability{Supported: false, ReasonCode: "GUEST_MANAGEMENT_UNAVAILABLE", Message: "Guest Task Manager handshake required"}
+			v.Capabilities[k] = rt.Capability{Status: "unknown", Supported: false, ReasonCode: "GUEST_MANAGEMENT_UNAVAILABLE", Message: "Guest Task Manager handshake required"}
 		}
 	}
 	return v, nil

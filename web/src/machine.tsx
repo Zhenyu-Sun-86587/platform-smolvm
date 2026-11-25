@@ -85,7 +85,7 @@ function Overview({ machine, actions }: Context) {
         }, { method: "PATCH", revision: machine.revision })
       }
     })}>Edit</button>}>
-      <Details value={{template:machine.template_id,guest_management:machine.guest_management_status,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
+      <Details value={{template:machine.template_id,power_state:machine.power_state,guest_management:machine.health?.guest_management ?? machine.guest_management_status,workload:machine.health?.workload,workload_error:machine.health?.workload_error?.message,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
       <details className="disclosure"><summary>Runtime binding and identity</summary>      <Details value={{
         template: machine.template_id, desired_power: machine.desired_power,
         binding_generation: machine.binding_generation, revision: machine.revision,
@@ -106,7 +106,7 @@ function Overview({ machine, actions }: Context) {
         const capability = machine.capabilities?.[key]
         return <div className="row" key={key}>
           <strong title={capability?.verified_profile}>{label(key)}</strong>
-          <State value={capability ? capability.supported ? "enabled" : "unavailable" : "verification_pending"} />
+          <State value={capability?.status ?? (capability ? capability.supported ? "enabled" : "unavailable" : "verification_pending")} />
           <span className="muted">{capability?.message ?? capability?.reason_code ?? ""}</span>
         </div>
       })}</div>
