@@ -38,7 +38,11 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			continue
 		}
 		b := *m.CurrentBinding
-		o, err := e.Runtime.Observe(ctx, b.RuntimeName)
+		adapter, err := e.ForBinding(b)
+		if err != nil {
+			continue
+		}
+		o, err := adapter.Observe(ctx, b.RuntimeName)
 		if err != nil {
 			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked", GuestManagementStatus: "unknown"})
 			continue
@@ -96,7 +100,7 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		if err = e.DB.ObserveMachine(ctx, b.ID, x); err != nil {
 			continue
 		}
-		if time.Since(started) < time.Duration(e.Config.Lifecycle.StartupGuard)*time.Second || !idleAllowed || m.KeepRunning || m.LastUserActivityAt == nil || strings.Contains(strings.ToLower(o.StateReason), "pressure") {
+		if !bindingRuntime(b).Legacy() || time.Since(started) < time.Duration(e.Config.Lifecycle.StartupGuard)*time.Second || !idleAllowed || m.KeepRunning || m.LastUserActivityAt == nil || strings.Contains(strings.ToLower(o.StateReason), "pressure") {
 			continue
 		}
 		var policy IdlePolicy

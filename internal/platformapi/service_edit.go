@@ -125,7 +125,7 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 		if err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, j.Binding.ID).Scan(&port); err != nil {
 			return err
 		}
-		o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+		o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 		if err != nil {
 			return err
 		}
@@ -148,11 +148,11 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 		if err = j.Stage(ctx, "set_ports", ""); err != nil {
 			return err
 		}
-		if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, o.Ports); err != nil {
+		if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, o.Ports); err != nil {
 			return err
 		}
 		j.Written = true
-		latest, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+		latest, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 		if err != nil {
 			return err
 		}

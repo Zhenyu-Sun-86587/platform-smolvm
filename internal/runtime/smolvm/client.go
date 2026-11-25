@@ -28,7 +28,10 @@ const (
 type Client struct {
 	http          *http.Client
 	localImageDir string
+	statusSocket  string
 }
+
+var _ runtime.Adapter = (*Client)(nil)
 
 type Option func(*Client) error
 
@@ -39,6 +42,14 @@ func WithLocalImageDir(dir string) Option {
 			return invalid("local image directory must be an absolute, canonical path")
 		}
 		client.localImageDir = dir
+		return nil
+	}
+}
+
+// WithStatusSocket selects the read-only helper used to verify restart policy.
+func WithStatusSocket(socket string) Option {
+	return func(client *Client) error {
+		client.statusSocket = socket
 		return nil
 	}
 }

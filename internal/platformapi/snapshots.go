@@ -167,6 +167,9 @@ func (s *Server) copyJob(ctx context.Context, j *lifecycle.Job) error {
 		if source == nil {
 			return registry.ErrGeneration
 		}
+		if err := j.CheckSameRuntime(*source); err != nil {
+			return err
+		}
 	}
 	if j.Op.Kind == "snapshot" || j.Op.Kind == "clone" {
 		purpose := v.Purpose
@@ -185,6 +188,10 @@ func (s *Server) copyJob(ctx context.Context, j *lifecycle.Job) error {
 	return s.restore(ctx, j, source, v)
 }
 func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Binding, purpose, label string, paused bool) (string, error) {
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		return "", err
+	}
 	m, err := s.DB.GetMachine(ctx, b.MachineID)
 	if err != nil {
 		return "", err
@@ -193,7 +200,7 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 	if err != nil {
 		return "", err
 	}
-	observed, err := s.Runtime.Observe(ctx, b.RuntimeName)
+	observed, err := adapter.Observe(ctx, b.RuntimeName)
 	if err != nil {
 		return "", err
 	}
@@ -251,12 +258,12 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 		var err error
 		if paused {
 			if b.PauseStatus == "active" && b.RuntimePauseID != "" && !observed.PressurePaused() {
-				_, err = s.Runtime.ExportPausedCheckpoint(ctx, b.RuntimeName, pw, b.RuntimePauseID)
+				_, err = adapter.ExportPausedCheckpoint(ctx, b.RuntimeName, pw, b.RuntimePauseID)
 			} else {
-				_, err = s.Runtime.ExportPausedCheckpoint(ctx, b.RuntimeName, pw)
+				_, err = adapter.ExportPausedCheckpoint(ctx, b.RuntimeName, pw)
 			}
 		} else {
-			_, err = s.Runtime.CaptureCheckpoint(ctx, b.RuntimeName, pw)
+			_, err = adapter.CaptureCheckpoint(ctx, b.RuntimeName, pw)
 		}
 		pw.CloseWithError(err)
 	}()
@@ -362,13 +369,13 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 		if err = j.Stage(ctx, "import_candidate", ""); err != nil {
 			return err
 		}
-		if _, err = s.Runtime.RestoreCheckpoint(ctx, j.Binding.RuntimeName, f, item.Size); err != nil {
+		if _, err = j.Runtime.RestoreCheckpoint(ctx, j.Binding.RuntimeName, f, item.Size); err != nil {
 			keepPin = keepPin || errors.Is(err, rt.ErrUncertain)
 			return err
 		}
 		keepPin = true
 		j.Written = true
-		if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, []rt.Port{}); err != nil {
+		if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, []rt.Port{}); err != nil {
 			return err
 		}
 		labels := map[string]*string{}
@@ -376,11 +383,11 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 			val := v
 			labels[k] = &val
 		}
-		if _, err = s.Runtime.SetLabels(ctx, j.Binding.RuntimeName, labels); err != nil {
+		if _, err = j.Runtime.SetLabels(ctx, j.Binding.RuntimeName, labels); err != nil {
 			return err
 		}
 	}
-	o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
 	}
@@ -400,7 +407,7 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if err = j.Stage(ctx, "start_candidate", ""); err != nil {
 		return err
 	}
-	if _, err = s.Runtime.Start(ctx, j.Binding.RuntimeName); err != nil {
+	if _, err = j.Runtime.Start(ctx, j.Binding.RuntimeName); err != nil {
 		return err
 	}
 	method := "complete_copy"
@@ -444,10 +451,10 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 			return err
 		}
 	}
-	if _, err = s.Runtime.EnablePublicNetwork(ctx, j.Binding.RuntimeName); err != nil {
+	if _, err = j.Runtime.EnablePublicNetwork(ctx, j.Binding.RuntimeName); err != nil {
 		return err
 	}
-	o, err = s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
 	}

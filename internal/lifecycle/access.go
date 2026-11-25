@@ -73,6 +73,10 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 		if b == nil || m.DeletedAt != nil {
 			return zero, registry.ErrNotFound
 		}
+		adapter, err := e.ForBinding(*b)
+		if err != nil {
+			return zero, err
+		}
 		if m.ActiveOperationID != "" {
 			op, err := e.DB.GetOperation(ctx, m.ActiveOperationID)
 			if err != nil {
@@ -92,7 +96,7 @@ func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl re
 				return zero, &registry.ActiveOperationError{MachineID: id, OperationID: op.ID}
 			}
 		} else {
-			o, err := e.Runtime.Observe(ctx, b.RuntimeName)
+			o, err := adapter.Observe(ctx, b.RuntimeName)
 			if err != nil {
 				return zero, err
 			}

@@ -147,7 +147,7 @@ func verifyBlockedNetwork(o rt.Observation) bool {
 		o.AllowedHosts != nil && len(o.AllowedHosts) == 0 && len(o.EgressRules) == 0
 }
 
-func checkVerificationGuest(ctx context.Context, runtime *smolvm.Client, name string, capture tasks.Capture) error {
+func checkVerificationGuest(ctx context.Context, runtime rt.Adapter, name string, capture tasks.Capture) error {
 	reply, err := tasks.Call(ctx, func(ctx context.Context, argv []string, in []byte) ([]byte, error) {
 		out, err := runtime.Exec(ctx, name, rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 8})
 		if err != nil {

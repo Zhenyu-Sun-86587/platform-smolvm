@@ -47,7 +47,11 @@ func (s *Server) metricsRoutes() {
 		if m.CurrentBinding == nil {
 			return registry.ErrGeneration
 		}
-		native, err := s.Runtime.Metrics(r.Context(), m.CurrentBinding.RuntimeName)
+		adapter, err := s.ForBinding(*m.CurrentBinding)
+		if err != nil {
+			return err
+		}
+		native, err := adapter.Metrics(r.Context(), m.CurrentBinding.RuntimeName)
 		if err != nil {
 			return err
 		}
@@ -64,7 +68,7 @@ func (s *Server) metricsRoutes() {
 		if err := p.Authorize("read", ""); err != nil {
 			return err
 		}
-		native, err := s.Runtime.Capacity(r.Context())
+		native, err := s.OfficialRuntime().Capacity(r.Context())
 		if err != nil {
 			return err
 		}

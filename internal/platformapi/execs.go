@@ -245,6 +245,12 @@ func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecor
 		s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
 		return x, registry.ErrGeneration
 	}
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		release()
+		s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
+		return x, err
+	}
 	stream := execbridge.New(0, "starting")
 	s.execStreams.Store(x.ID, stream)
 	if _, err := s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state='starting' WHERE id=? AND state='reserved'", x.ID); err != nil {
@@ -252,7 +258,7 @@ func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecor
 		release()
 		return x, err
 	}
-	native, err := s.Runtime.StartExec(ctx, x.Runtime, rt.ExecSessionRequest{
+	native, err := adapter.StartExec(ctx, x.Runtime, rt.ExecSessionRequest{
 		ExecRequest: rt.ExecRequest{Command: spec.Argv, Cwd: spec.Cwd, User: spec.User, Env: spec.Env, TimeoutSeconds: spec.Timeout},
 		ID:          x.Upstream, TTY: spec.TTY, Interactive: spec.Interactive, Cols: spec.Cols, Rows: spec.Rows,
 		WaitSeconds: spec.Wait, MaxBytes: 64 << 10,
@@ -312,13 +318,36 @@ func (s *Server) runExec(x execRecord, stream *execbridge.Stream, initial *rt.Ex
 		s.saveExec(x.ID, view)
 	}
 	go func() {
+		defer func() {
+			time.AfterFunc(5*time.Minute, func() { s.execStreams.CompareAndDelete(x.ID, stream) })
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		adapter, err := s.execRuntime(ctx, x)
+		cancel()
+		if err != nil {
+			stream.Lost("native exec session is unavailable")
+			view, _ := stream.Read(0, 0)
+			s.saveExec(x.ID, view)
+			release()
+			return
+		}
 		stream.Run(context.Background(), func(ctx context.Context, read rt.ExecRead) (rt.ExecSession, error) {
-			return s.Runtime.ReadExec(ctx, x.Runtime, x.Upstream, read)
+			return adapter.ReadExec(ctx, x.Runtime, x.Upstream, read)
 		}, func(view execbridge.Snapshot) {
 			s.saveExec(x.ID, view)
 		}, release)
-		time.AfterFunc(5*time.Minute, func() { s.execStreams.CompareAndDelete(x.ID, stream) })
 	}()
+}
+
+func (s *Server) execRuntime(ctx context.Context, x execRecord) (rt.Adapter, error) {
+	b, err := s.DB.GetBinding(ctx, x.Binding)
+	if err != nil {
+		return nil, err
+	}
+	if b.MachineID != x.Machine || b.RuntimeName != x.Runtime || b.Status != "current" {
+		return nil, registry.ErrStaleObservation
+	}
+	return s.ForBinding(b)
 }
 
 func (s *Server) streamFor(x execRecord) *execbridge.Stream {
@@ -414,7 +443,11 @@ func (s *Server) applyExecInput(ctx context.Context, x execRecord, in terminalIn
 	if x.Binding != x.Current || execTerminal(x.State) {
 		return 0, &lifecycle.Failure{Code: "SESSION_LOST", Message: "native exec session has ended or is unavailable"}
 	}
-	seq, err := s.Runtime.WriteExec(ctx, x.Runtime, x.Upstream, in.Seq, in.Data, in.EOF)
+	adapter, err := s.execRuntime(ctx, x)
+	if err != nil {
+		return 0, err
+	}
+	seq, err := adapter.WriteExec(ctx, x.Runtime, x.Upstream, in.Seq, in.Data, in.EOF)
 	if err == nil {
 		s.streamFor(x).Applied(seq)
 	}
@@ -440,7 +473,11 @@ func (s *Server) resizeExec(ctx context.Context, x execRecord, in terminalInput)
 	if x.Binding != x.Current || execTerminal(x.State) {
 		return &lifecycle.Failure{Code: "SESSION_LOST", Message: "native exec session has ended or is unavailable"}
 	}
-	return s.Runtime.ResizeExec(ctx, x.Runtime, x.Upstream, in.Cols, in.Rows)
+	adapter, err := s.execRuntime(ctx, x)
+	if err != nil {
+		return err
+	}
+	return adapter.ResizeExec(ctx, x.Runtime, x.Upstream, in.Cols, in.Rows)
 }
 
 func (s *Server) deleteExec(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -449,7 +486,11 @@ func (s *Server) deleteExec(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	if x.Binding == x.Current && !execTerminal(x.State) {
-		err = s.Runtime.DeleteExec(r.Context(), x.Runtime, x.Upstream)
+		adapter, err := s.execRuntime(r.Context(), x)
+		if err != nil {
+			return err
+		}
+		err = adapter.DeleteExec(r.Context(), x.Runtime, x.Upstream)
 		if err != nil && !errors.Is(err, rt.ErrNotFound) {
 			return err
 		}

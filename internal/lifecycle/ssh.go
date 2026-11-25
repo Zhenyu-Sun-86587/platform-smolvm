@@ -79,6 +79,10 @@ func (e *Engine) SSHHostKey(mid string) ([]byte, []byte, error) {
 	return raw, ssh.MarshalAuthorizedKey(signer.PublicKey()), nil
 }
 func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, error) {
+	adapter, err := e.ForBinding(b)
+	if err != nil {
+		return "", err
+	}
 	private, public, err := e.SSHHostKey(b.MachineID)
 	if err != nil {
 		return "", err
@@ -107,7 +111,7 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
 		name string
 		data []byte
 	}{{"/run/sandbox-taskd/host-key.new", private}, {"/run/sandbox-taskd/host-pub.new", public}, {"/run/sandbox-taskd/authorized-keys.new", authorized.Bytes()}} {
-		if err = e.Runtime.UploadFileWithOptions(ctx, b.RuntimeName, v.name, bytes.NewReader(v.data), rt.FileOptions{Size: int64(len(v.data)), Mode: &mode}); err != nil {
+		if err = adapter.UploadFileWithOptions(ctx, b.RuntimeName, v.name, bytes.NewReader(v.data), rt.FileOptions{Size: int64(len(v.data)), Mode: &mode}); err != nil {
 			return "", err
 		}
 	}
@@ -128,7 +132,7 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
  fi
  rm -f "$d/host-key.new" "$d/host-pub.new" "$d/authorized-keys.new"
  ssh-keygen -y -f /etc/ssh/sandbox_host_ed25519_key`
-	res, err := e.Runtime.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: []string{"/bin/sh", "-c", install}, TimeoutSeconds: 30})
+	res, err := adapter.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: []string{"/bin/sh", "-c", install}, TimeoutSeconds: 30})
 	if err != nil {
 		return "", err
 	}

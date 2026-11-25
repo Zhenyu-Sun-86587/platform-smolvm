@@ -19,6 +19,7 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/platformapi"
 	"sandbox-platform/internal/registry"
+	"sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/smolvm"
 	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/templates"
@@ -88,11 +89,11 @@ func run() error {
 			}
 		}
 	}
-	runtime, err := smolvm.New(c.Runtime.Socket, smolvm.WithLocalImageDir(c.Runtime.LocalImageDir))
+	official, err := smolvm.New(c.Runtime.Socket, smolvm.WithLocalImageDir(c.Runtime.LocalImageDir), smolvm.WithStatusSocket(c.Runtime.StatusSocket))
 	if err != nil {
 		return err
 	}
-	engine := lifecycle.New(db, runtime, c)
+	engine := lifecycle.New(db, runtime.NewResolver(official, nil), c)
 	catalog, err := snapshots.Open(db, c)
 	if err != nil {
 		return err

@@ -14,14 +14,14 @@ var ownedName = regexp.MustCompile(`^sbox_[a-f0-9]{32}$`)
 
 // CheckRestartNever reads the official CLI's status JSON from the operator's
 // read-only helper. HTTP MachineInfo does not expose this policy in v1.37.1.
-func CheckRestartNever(ctx context.Context, socket, name, binding, state string) error {
-	if socket == "" || !ownedName.MatchString(name) || binding == "" {
+func (client *Client) CheckRestartNever(ctx context.Context, name, binding, state string) error {
+	if client.statusSocket == "" || !ownedName.MatchString(name) || binding == "" {
 		return errors.New("managed runtime status helper or object identity is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, "unix", socket)
+	conn, err := d.DialContext(ctx, "unix", client.statusSocket)
 	if err != nil {
 		return err
 	}

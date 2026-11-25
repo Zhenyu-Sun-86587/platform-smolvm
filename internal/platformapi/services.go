@@ -300,13 +300,18 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	if err != nil {
 		return empty, nil, nil, err
 	}
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		end()
+		return empty, nil, nil, err
+	}
 	if v.Protocol == "ssh" {
 		if err := s.serviceIdentity(ctx, &v); err != nil || v.SSHKey == "" {
 			end()
 			return empty, nil, nil, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
 		}
 	}
-	o, err := s.Runtime.Observe(ctx, b.RuntimeName)
+	o, err := adapter.Observe(ctx, b.RuntimeName)
 	if err != nil {
 		end()
 		return empty, nil, nil, err
@@ -332,7 +337,7 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		if !now.Enabled || v.Revision != now.Revision {
 			return registry.ErrRevision
 		}
-		fresh, err := s.Runtime.Observe(ctx, b.RuntimeName)
+		fresh, err := adapter.Observe(ctx, b.RuntimeName)
 		if err != nil {
 			return err
 		}
@@ -386,7 +391,7 @@ func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string
 	b.HTTP(w, r, check)
 }
 func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
-	o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
 	}
@@ -510,11 +515,11 @@ func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
 	if err = j.Stage(ctx, "set_ports", ""); err != nil {
 		return err
 	}
-	if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
+	if _, err = j.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
 		return err
 	}
 	j.Written = true
-	o, err = s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	o, err = j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 	if err != nil {
 		return err
 	}

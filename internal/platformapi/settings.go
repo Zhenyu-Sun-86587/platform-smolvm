@@ -150,7 +150,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 	var obs *registry.Observation
 	status := "applied"
 	if r := v.Resources; r != nil {
-		o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+		o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 		if err != nil {
 			return err
 		}
@@ -167,7 +167,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 				if err = j.Stage(ctx, "resize", ""); err != nil {
 					return err
 				}
-				o, err = s.Runtime.Resize(ctx, j.Binding.RuntimeName, rt.ResizeRequest{OperationID: j.Op.ID, ExpectedRuntime: o.Identity, CPUs: r.CPU, MemoryMB: r.Memory, StorageGB: r.Storage, OverlayGB: r.Overlay})
+				o, err = j.Runtime.Resize(ctx, j.Binding.RuntimeName, rt.ResizeRequest{OperationID: j.Op.ID, ExpectedRuntime: o.Identity, CPUs: r.CPU, MemoryMB: r.Memory, StorageGB: r.Storage, OverlayGB: r.Overlay})
 				if err != nil {
 					return err
 				}
@@ -178,7 +178,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 			if err = j.Stage(ctx, "cpu_limit", ""); err != nil {
 				return err
 			}
-			o, err = s.Runtime.SetCPULimit(ctx, j.Binding.RuntimeName, r.Limit)
+			o, err = j.Runtime.SetCPULimit(ctx, j.Binding.RuntimeName, r.Limit)
 			if err != nil {
 				return err
 			}
