@@ -305,6 +305,9 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)
+	if op.Kind == "sync_keys" && !bindingRuntime(j.Binding).Legacy() {
+		return j.driveNativeSSH(ctx, err)
+	}
 	if op.Kind == "create" {
 		var request Create
 		if err := json.Unmarshal(op.Request, &request); err != nil {

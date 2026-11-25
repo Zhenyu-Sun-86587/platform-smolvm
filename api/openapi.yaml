@@ -2457,6 +2457,7 @@ components:
             boot_mode: {$ref: '#/components/schemas/BootMode'}
             local_image: {type: string, description: Filename of an administrator-registered OCI archive.}
             root_generation_id: {type: string, description: Imported immutable Worker block generation for a System root disk.}
+            managed_ssh: {type: boolean, description: Provision the System template's managed SSH listener on guest TCP port 2222.}
         capabilities: {type: object, additionalProperties: true}
     Exec:
       type: object

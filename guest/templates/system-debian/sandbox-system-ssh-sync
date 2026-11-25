@@ -6,23 +6,62 @@ uploads=/run/sandbox-taskd
 ssh_dir=/etc/ssh/sandbox-managed
 service=sandbox-managed-sshd.service
 
+key_fields() {
+    awk 'NR == 1 && $1 == "ssh-ed25519" && NF >= 2 { print $1, $2 }'
+}
+
+verify_listener() {
+    expected=$1
+    if [ -z "$expected" ] || ! systemctl is-active --quiet "$service"; then
+        echo "managed SSH service is inactive" >&2
+        return 1
+    fi
+    for attempt in $(seq "$2"); do
+        presented=$(ssh-keyscan -T 1 -p 2222 -t ed25519 127.0.0.1 2>/dev/null |
+            awk 'NR == 1 && $2 == "ssh-ed25519" { print $2, $3 }')
+        if [ "$presented" = "$expected" ]; then
+            printf '%s\n' "$expected"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "managed SSH listener did not present the expected key" >&2
+    return 1
+}
+
+input=${1-}
+if [ "$input" = --check ]; then
+    verify_listener "$(ssh-keygen -y -P '' -f "$ssh_dir/host_ed25519_key" 2>/dev/null | key_fields)" 1
+    exit
+fi
+case "$input" in
+    ''|--stdin) ;;
+    *) exit 2 ;;
+esac
+
 exec 9>"$ssh_dir/keys.lock"
 flock -x 9
 staging=$(mktemp -d -- "$ssh_dir/.keys.XXXXXXXX")
 cleanup() {
     rm -rf -- "$staging"
-    rm -f -- "$uploads/host-key.new" "$uploads/host-pub.new" "$uploads/authorized-keys.new"
+    if [ -z "$input" ]; then
+        rm -f -- "$uploads/host-key.new" "$uploads/host-pub.new" "$uploads/authorized-keys.new"
+    fi
 }
 trap cleanup EXIT
 
-key_fields() {
-    awk 'NR == 1 && $1 == "ssh-ed25519" && NF >= 2 { print $1, $2 }'
-}
-
-install -m 0600 "$uploads/host-key.new" "$staging/host_ed25519_key"
-install -m 0600 "$uploads/authorized-keys.new" "$staging/authorized_keys"
+if [ "$input" = --stdin ]; then
+    for file in host_ed25519_key host_ed25519_pub authorized_keys; do
+        IFS= read -r encoded
+        printf '%s' "$encoded" | base64 -d >"$staging/$file"
+    done
+else
+    install -m 0600 "$uploads/host-key.new" "$staging/host_ed25519_key"
+    install -m 0600 "$uploads/host-pub.new" "$staging/host_ed25519_pub"
+    install -m 0600 "$uploads/authorized-keys.new" "$staging/authorized_keys"
+fi
 public=$(ssh-keygen -y -P '' -f "$staging/host_ed25519_key" | key_fields)
-if [ -z "$public" ] || [ "$public" != "$(key_fields < "$uploads/host-pub.new")" ]; then
+if [ -z "$public" ] || [ "$public" != "$(key_fields < "$staging/host_ed25519_pub")" ]; then
     echo "managed SSH public key does not match the staged private key" >&2
     exit 1
 fi
@@ -51,18 +90,4 @@ if [ "$current" != "$public" ]; then
     fi
 fi
 
-if ! systemctl is-active --quiet "$service"; then
-    echo "managed SSH service is inactive" >&2
-    exit 1
-fi
-for attempt in 1 2 3 4 5; do
-    presented=$(ssh-keyscan -T 1 -p 2222 -t ed25519 127.0.0.1 2>/dev/null |
-        awk 'NR == 1 && $2 == "ssh-ed25519" { print $2, $3 }')
-    if [ "$presented" = "$public" ]; then
-        printf '%s\n' "$public"
-        exit 0
-    fi
-    sleep 0.2
-done
-echo "managed SSH listener did not present the expected key" >&2
-exit 1
+verify_listener "$public" 5

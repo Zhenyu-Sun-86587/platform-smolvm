@@ -19,6 +19,7 @@ type Spec struct {
 	BootMode         rt.BootMode `json:"boot_mode,omitempty"`
 	LocalImage       string      `json:"local_image,omitempty"`
 	RootGenerationID string      `json:"root_generation_id,omitempty"`
+	ManagedSSH       bool        `json:"managed_ssh,omitempty"`
 }
 
 var generationID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)

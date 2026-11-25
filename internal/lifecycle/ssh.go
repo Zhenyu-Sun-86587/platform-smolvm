@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/templates"
 )
 
 // Keys belong to a logical machine. Its current and replacement binding share
@@ -83,34 +85,44 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
 	if err != nil {
 		return "", err
 	}
+	var guest rt.NativeGuestControl
+	if b.RuntimeBundleID != "" {
+		machine, err := e.DB.GetMachine(ctx, b.MachineID)
+		if err != nil {
+			return "", err
+		}
+		template, err := e.DB.GetTemplate(ctx, machine.TemplateID)
+		if err != nil {
+			return "", err
+		}
+		boot, err := templates.ReadSpec(template)
+		if err != nil {
+			return "", err
+		}
+		if boot.BootMode == rt.BootSystem {
+			var ok bool
+			guest, ok = adapter.(rt.NativeGuestControl)
+			if !ok || !boot.ManagedSSH || b.ExecutionEpoch < 1 || b.IncarnationID == "" {
+				return "", rt.ErrUnsupported
+			}
+		}
+	}
 	private, public, err := e.SSHHostKey(b.MachineID)
 	if err != nil {
 		return "", err
 	}
-	keys, err := e.DB.ReadDB().QueryContext(ctx, "SELECT public_material FROM credentials WHERE kind='ssh_public_key' AND revoked_at IS NULL ORDER BY id")
+	authorized, err := e.authorizedSSHKeys(ctx)
 	if err != nil {
 		return "", err
 	}
-	var authorized bytes.Buffer
-	for keys.Next() {
-		var key string
-		if err = keys.Scan(&key); err != nil {
-			keys.Close()
-			return "", err
-		}
-		authorized.WriteString(strings.TrimSpace(key))
-		authorized.WriteByte('\n')
-	}
-	err = keys.Err()
-	keys.Close()
-	if err != nil {
-		return "", err
+	if guest != nil {
+		return installSystemSSH(ctx, b.ExecutionRef(), guest, private, public, authorized)
 	}
 	mode := uint32(0600)
 	for _, v := range []struct {
 		name string
 		data []byte
-	}{{"/run/sandbox-taskd/host-key.new", private}, {"/run/sandbox-taskd/host-pub.new", public}, {"/run/sandbox-taskd/authorized-keys.new", authorized.Bytes()}} {
+	}{{"/run/sandbox-taskd/host-key.new", private}, {"/run/sandbox-taskd/host-pub.new", public}, {"/run/sandbox-taskd/authorized-keys.new", authorized}} {
 		if err = adapter.UploadFileWithOptions(ctx, b.RuntimeName, v.name, bytes.NewReader(v.data), rt.FileOptions{Size: int64(len(v.data)), Mode: &mode}); err != nil {
 			return "", err
 		}
@@ -133,11 +145,45 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
  rm -f "$d/host-key.new" "$d/host-pub.new" "$d/authorized-keys.new"
  ssh-keygen -y -f /etc/ssh/sandbox_host_ed25519_key`
 	res, err := adapter.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: []string{"/bin/sh", "-c", install}, TimeoutSeconds: 30})
+	return verifySSHHostKey(res, public, err)
+}
+
+func (e *Engine) authorizedSSHKeys(ctx context.Context) ([]byte, error) {
+	keys, err := e.DB.ReadDB().QueryContext(ctx, "SELECT public_material FROM credentials WHERE kind='ssh_public_key' AND revoked_at IS NULL ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer keys.Close()
+	var authorized bytes.Buffer
+	for keys.Next() {
+		var key string
+		if err := keys.Scan(&key); err != nil {
+			return nil, err
+		}
+		authorized.WriteString(strings.TrimSpace(key))
+		authorized.WriteByte('\n')
+	}
+	return authorized.Bytes(), keys.Err()
+}
+
+func installSystemSSH(ctx context.Context, execution rt.ExecutionRef, guest rt.NativeGuestControl, private, public, authorized []byte) (string, error) {
+	var input strings.Builder
+	for _, data := range [][]byte{private, public, authorized} {
+		input.WriteString(base64.StdEncoding.EncodeToString(data))
+		input.WriteByte('\n')
+	}
+	res, err := guest.GuestExec(ctx, execution, rt.ExecRequest{
+		Command: []string{systemSSHCommand, "--stdin"}, Stdin: input.String(), TimeoutSeconds: 30,
+	})
+	return verifySSHHostKey(res, public, err)
+}
+
+func verifySSHHostKey(res rt.ExecResult, public []byte, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
 	a, _, _, _, err := ssh.ParseAuthorizedKey(res.Stdout)
-	if res.ExitCode != 0 || err != nil || !bytes.HasPrefix(public, bytes.TrimSpace(ssh.MarshalAuthorizedKey(a))) {
+	if res.ExitCode != 0 || err != nil || !bytes.Equal(bytes.TrimSpace(public), bytes.TrimSpace(ssh.MarshalAuthorizedKey(a))) {
 		return "", errors.New("guest SSH host key installation not verified")
 	}
 	return string(bytes.TrimSpace(public)), nil

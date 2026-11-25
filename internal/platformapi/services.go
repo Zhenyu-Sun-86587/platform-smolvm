@@ -59,8 +59,12 @@ func (s *Server) serviceIdentity(ctx context.Context, v *service) error {
 	if err != nil {
 		return err
 	}
-	if m.CurrentBinding == nil {
+	if m.CurrentBinding == nil || m.DeletedAt != nil {
 		return nil
+	}
+	if m.CurrentBinding.RuntimeBundleID != "" {
+		v.SSHKey, err = s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		return err
 	}
 	var e struct {
 		Ready bool   `json:"ssh_ready"`
@@ -339,6 +343,9 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		}
 		if !now.Enabled || v.Revision != now.Revision {
 			return registry.ErrRevision
+		}
+		if b.RuntimeBundleID != "" && v.Protocol == "ssh" && now.SSHKey != v.SSHKey {
+			return registry.ErrGeneration
 		}
 		return nil
 	}
