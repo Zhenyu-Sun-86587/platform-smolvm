@@ -4,6 +4,15 @@ import "context"
 
 const NativeForkProfile = "managed-parked-v1"
 const MaxForkChildren = 32
+const ForkAllOrReject = "all_or_reject"
+const ForkBestEffort = "best_effort"
+
+func ForkAdmission(value string) string {
+	if value == "" {
+		return ForkAllOrReject
+	}
+	return value
+}
 
 func IsNativeFork(kind string) bool {
 	return kind == IndependentFork || kind == ForkBatch
@@ -15,7 +24,8 @@ type ForkSubmission struct {
 	Expected      ExecutionRef `json:"expected"`
 	Kind          string       `json:"kind"`
 	Parameters    struct {
-		Children []string `json:"children"`
+		Children  []string `json:"children"`
+		Admission string   `json:"admission,omitempty"`
 	} `json:"parameters"`
 }
 
@@ -24,6 +34,7 @@ type ForkProgress struct {
 	CaptureID                 string             `json:"capture_id"`
 	OriginalSourceDisposition string             `json:"original_source_disposition"`
 	SourceReleased            bool               `json:"source_released"`
+	Admission                 string             `json:"admission,omitempty"`
 	Children                  []ForkChildReceipt `json:"children"`
 	Outcome                   string             `json:"outcome"`
 	Error                     *string            `json:"error"`
@@ -38,6 +49,7 @@ type ForkChildReceipt struct {
 	ExecutionEpoch int64   `json:"execution_epoch"`
 	Attempt        int64   `json:"attempt"`
 	Cancelled      bool    `json:"cancelled"`
+	AdmissionError string  `json:"admission_error,omitempty"`
 }
 
 type ForkControl struct {
