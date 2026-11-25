@@ -29,7 +29,7 @@ EXT = "/api/v1/runtime-ext/v1"
 
 class UnixHTTPConnection(HTTPConnection):
     def __init__(self, path):
-        super().__init__("localhost", timeout=30)
+        super().__init__("localhost", timeout=60)
         self.path = path
 
     def connect(self):
@@ -92,7 +92,7 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack):
+    def __init__(self, args, root, stack, networks=()):
         self.args = args
         self.root = root
         self.stack = stack
@@ -102,6 +102,7 @@ class Platform:
         self.cookie = ""
         self.csrf = ""
         self.epoch = ""
+        self.networks = networks
 
     def start(self):
         root = self.root
@@ -170,6 +171,7 @@ class Platform:
                              state_reader_id=handshake["state_reader_id"], socket=str(self.serve),
                              manifest=str(self.bundle / "runtime-bundle.json"),
                              worker_socket=str(self.worker), guest_relay_dir=str(self.relay_dir),
+                             private_networks=self.networks,
                          )]),
         )))
         self.platform_command = [self.args.platformd, "--config", config]
@@ -246,7 +248,7 @@ class Platform:
         return view, ref
 
     def guest(self, ref, command, stdin=None, expected=0):
-        command = dict(command=command, timeout_seconds=35)
+        command = dict(command=command, timeout_seconds=45)
         if stdin is not None:
             command["stdin"] = stdin
         result = self.native(f"/instances/{ref['instance_id']}/guest/exec",
@@ -354,6 +356,133 @@ def hibernate_case(platform, source, ref, probe, seen_cids):
     print("System hibernate fenced the old VMM and restored the Agent on a new CID.")
 
 
+def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
+    serial = 0
+    port = 45713
+
+    def call(method, ref, payload=None):
+        nonlocal serial
+        serial += 1
+        key = f"packet-lifecycle-{serial}"
+        scope = {k: ref[k] for k in ("instance_id", "incarnation_id", "execution_epoch")}
+        return worker(platform.worker, method, payload, route_id="deep", bundle_digest=platform.bundle_id,
+                      operation_id=key, request_digest="sha256:" + hashlib.sha256(key.encode()).hexdigest(),
+                      expected=scope)
+
+    def target(phase):
+        created = platform.change("machines", "create-" + phase, dict(
+            name="Packet destination " + phase, template_id="t_system", boot_mode="system",
+            runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=512),
+            network=dict(network_id="packet-net", mode=target_mode),
+        ))
+        platform.complete(created)
+        machine_id = created["machine_id"]
+        machine, ref = platform.context(machine_id)
+        wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
+                 retry=(RuntimeError, OSError))
+        probe = platform.place_probe(ref, binary)
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=packet-wake-service", probe, "--serve", str(port)])
+        wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["/bin/cat", "/proc/net/tcp"]))
+        endpoint = platform.app(f"machines/{machine_id}/network")
+        return f"machines/{machine_id}", machine, ref, endpoint
+
+    def policy(ref, allowed, expected_revision):
+        return call("ApplyLifecyclePolicy", ref, dict(effective_policy=dict(
+            wake_conditions=dict(private_network_packet=allowed),
+        ), expected_applied_revision=expected_revision, new_revision=expected_revision + 1))
+
+    def get_binding(machine):
+        return platform.native(f"/machines/{machine['runtime_name']}/binding")
+
+    def update_rule(path, key, enabled, revision):
+        machine = platform.app(path.split("/network/", 1)[0])
+        return platform.change(path, key, dict(enabled=enabled, expected_revision=revision), machine,
+                               method="PUT", status=200)
+
+    def send(ip, transport="tcp", destination=port, limit=15):
+        command = ['/usr/bin/timeout', str(limit), '/bin/bash', '-c',
+                   f'cat < /dev/tcp/{ip}/{destination}' if transport == 'tcp' else
+                   f'echo wake > /dev/udp/{ip}/{destination}']
+        try:
+            return platform.guest(source_ref, command)
+        except RuntimeError as error:
+            return str(error).encode()
+
+    def status(ref):
+        return call("GetLifecycleStatus", ref)["power"]
+
+    def authorized(path, epoch):
+        decision = platform.app(path)["last_wake"]
+        return decision and decision["authorized"] and decision["execution_epoch"] == epoch
+
+    def expect_tcp(address, ref, limit=15):
+        answer = send(address, limit=limit)
+        if answer != b"private wake\n":
+            diagnostics = []
+            for guest in (source_ref, ref):
+                with suppress(RuntimeError, OSError):
+                    diagnostics.append(platform.guest(guest, ["/bin/sh", "-c", "ip -4 addr; ip -4 route; cat /proc/net/tcp"]))
+            raise AssertionError((answer, diagnostics))
+
+    machine, view, ref, endpoint = target("standby")
+    address = endpoint["private_ipv4"]
+    rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
+    policy(ref, False, 0)
+    assert update_rule(rule_path, "allow-standby-peer", True, 0)["source_current"]
+    assert platform.app(rule_path)["revision"] == 1
+    source_endpoint = call("QueryPrivatePacketWakeEndpoint", source_ref)
+    try:
+        call("ApplyPrivatePacketWakeRule", ref, dict(source_attachment_id=source_endpoint["attachment_id"],
+            target_attachment_id=endpoint["attachment_id"], transport="tcp", guest_port=port, enabled=True,
+            expected_revision=1, source_execution={**source_ref, "execution_epoch": source_ref["execution_epoch"] + 1}))
+    except RuntimeError as error:
+        assert error.args[0]["code"] == "E_STALE_EXECUTION", error
+    else:
+        raise AssertionError("next source epoch was authorized by the current lease")
+    expect_tcp(address, ref)
+    platform.complete(platform.change(machine + "/standby", "standby-on-peer", {}, view))
+    assert status(ref) == "STANDBY"
+    send(address, limit=4)
+    assert status(ref) == "STANDBY", "a disabled lifecycle trigger caused wake"
+    policy(ref, True, 1)
+    send(address, "udp")
+    send(address, destination=port + 1, limit=4)
+    assert status(ref) == "STANDBY", "a different destination port or transport caused wake"
+    expect_tcp(address, ref)
+    assert status(ref) == "RUNNING" and get_binding(view)["execution_epoch"] == ref["execution_epoch"]
+    events = call("QueryLifecycleEvents", ref, dict(after=0))["events"]
+    assert len({event["operation_id"] for event in events if event["origin"] == "wake"}) == 1, events
+    wait_for(lambda: authorized(rule_path, ref["execution_epoch"]), timeout=8)
+    print("Private TCP woke a real standby VMM once. Policy off, another port, and UDP left it suspended.")
+
+    machine, view, ref, endpoint = target("hibernate")
+    address = endpoint["private_ipv4"]
+    rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
+    policy(ref, True, 0)
+    assert update_rule(rule_path, "allow-hibernated-peer", True, 0)["source_current"]
+    platform.complete(platform.change(machine + "/hibernate", "durable-packet-sleep", {}, view))
+    asleep = get_binding(view)
+    assert asleep["incarnation_id"] is None and status(asleep) == "HIBERNATED"
+    reserved = platform.app(machine + "/network")
+    assert reserved["private_ipv4"] == address and reserved["dns_name"] == endpoint["dns_name"] and reserved["state"] == "reserved"
+    assert not update_rule(rule_path, "revoke-sleeping-peer", False, 1)["enabled"]
+    send(address, limit=4)
+    assert status(asleep) == "HIBERNATED", "revoked rule caused durable wake"
+    assert update_rule(rule_path, "reauthorize-sleeping-peer", True, 2)["source_current"]
+    resolved = platform.guest(source_ref, ["/usr/bin/getent", "ahostsv4", endpoint["dns_name"]])
+    assert address.encode() in resolved
+    assert status(asleep) == "HIBERNATED", "DNS alone caused wake"
+    expect_tcp(address, get_binding(view), limit=31)
+    awake = get_binding(view)
+    assert awake["incarnation_id"] != ref["incarnation_id"] and awake["execution_epoch"] == ref["execution_epoch"] + 1
+    rebound = call("QueryPrivatePacketWakeEndpoint", awake)
+    assert rebound["private_ipv4"] == address and rebound["attachment_id"] == endpoint["attachment_id"]
+    events = call("QueryLifecycleEvents", awake, dict(after=0))["events"]
+    assert len({event["operation_id"] for event in events if event["origin"] == "wake"}) == 1, events
+    wait_for(lambda: authorized(rule_path, awake["execution_epoch"]), timeout=8)
+    print("A private SYN restored a durable VM at its reserved address and a new execution epoch.")
+
+
 class ResponseBytes:
     def __init__(self, data):
         self.data = data
@@ -405,12 +534,17 @@ def relay_case(platform, source, machine_id, ref, probe):
 
 
 def test(args, root, stack, case):
-    platform = Platform(args, root, stack)
+    packet_case = case.startswith("packet-")
+    networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case else ()
+    platform = Platform(args, root, stack, networks)
     platform.start()
-    created = platform.change("machines", "create", dict(
+    intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
-    ))
+    )
+    if packet_case:
+        intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case == "packet-native" else "native")
+    created = platform.change("machines", "create", intent)
     platform.complete(created)
     machine_id = created["machine_id"]
     source = "machines/" + machine_id
@@ -425,6 +559,9 @@ def test(args, root, stack, case):
         binary = root / "vsock-probe"
         source_file = Path(__file__).resolve().parents[1] / "fixtures/vsock-probe.c"
         subprocess.run([args.cc, "-static", "-Os", "-s", "-o", binary, source_file], check=True)
+    if packet_case:
+        packet_wake_case(platform, machine_id, ref, binary, "native" if case == "packet-native" else "fixed_internal")
+        return
     probe = platform.place_probe(ref, binary)
     seen = {int(platform.guest(ref, [probe, "--cid"]))}
     platform.guest(ref, ["/bin/sh", "-c", "printf 'held-source\\n' > /var/tmp/platform-cut-marker; sync"])
@@ -451,7 +588,7 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=cases, action="append")
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

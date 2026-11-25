@@ -312,6 +312,24 @@ export interface WriteOptions {
 export interface MachineWriteOptions extends WriteOptions {
     generation?: number;
 }
+export interface PrivatePacketWakeRule {
+    rule_id: string;
+    source_attachment_id: string;
+    target_attachment_id: string;
+    transport: "tcp" | "udp";
+    guest_port: number;
+    enabled: boolean;
+    revision: number;
+    source_current: boolean;
+    source_incarnation_id?: string | null;
+    source_execution_epoch?: number | null;
+    last_wake?: {
+        operation_id: string;
+        rule_revision: number;
+        execution_epoch: number;
+        authorized: boolean;
+    } | null;
+}
 export interface Page<T> {
     items: T[];
     next_cursor?: string;
@@ -390,6 +408,8 @@ export declare class Client {
     socket<T>(path: string, protocol: string, connect: (url: URL, protocol: string, headers: Headers) => T): T;
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
+    getPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, signal?: AbortSignal): Promise<PrivatePacketWakeRule>;
+    setPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, enabled: boolean, ruleRevision: number, options?: MachineWriteOptions): Promise<PrivatePacketWakeRule>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;
     listBackupPolicies(signal?: AbortSignal): AsyncGenerator<BackupPolicy, any, any>;
     listBackups(signal?: AbortSignal): AsyncGenerator<BackupRun, any, any>;

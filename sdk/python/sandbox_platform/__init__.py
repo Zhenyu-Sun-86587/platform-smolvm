@@ -255,6 +255,19 @@ class Client:
     def get_machine(self, id):
         return self.get(_item("machines", id))
 
+    def get_private_packet_wake_rule(self, machine_id, source_id, transport, port):
+        return self.get(_item("machines", machine_id) + "/network/" + _item("wake-rules", source_id) + f"/{transport}/{port}")
+
+    def set_private_packet_wake_rule(self, machine_id, source_id, transport, port, *, enabled,
+                                     rule_revision, generation=None, revision=None, intent=None):
+        if generation is None or revision is None:
+            current = self.get_machine(machine_id)
+            generation = current["binding_generation"] if generation is None else generation
+            revision = current["revision"] if revision is None else revision
+        path = _item("machines", machine_id) + "/network/" + _item("wake-rules", source_id) + f"/{transport}/{port}"
+        return self.mutate(path, {"enabled": enabled, "expected_revision": rule_revision,
+                                  "expected_generation": generation}, method="PUT", revision=revision, intent=intent)
+
     def list_volumes(self, *, limit=100):
         return self.pages("volumes", limit=limit)
 
