@@ -65,7 +65,7 @@ python3 packaging/deep/preflight.py --inventory /path/to/deep-isolation.json
 
 现场命令均为读取。结果是首次安装前的快照。安装时仍需再次确认端口和地址预留、配置归属和磁盘挂载。实际 KVM 功能与 VMM scope 的运行状态由后续 Worker 门验证。
 
-当前开发容器对示例清单的静态结果为 `clear`。现场结果为 `unknown`，netlink 和 systemd 系统总线访问受限，且没有 `/dev/kvm`。已读取 cgroup v2 控制器、内存 PSI 和目标路径容量。生产 Worker 的现场隔离仍待带实际清单复核。
+2026-11-25 主线程在开发 Worker 上用示例清单运行了宿主预检。以 root 只读盘点返回 `clear`，以普通用户运行时因无法检查受限的 Unix socket 返回 `unknown`。以 dev 用户和临时 kvm 附加组打开 `/dev/kvm`，`KVM_GET_API_VERSION` 返回 12。19 个 smolvm LFS 对象已下载，`git lfs fsck` 通过。部署前仍须用实际保留的路径、端口和 IP 池复核。
 
 ```bash
 python3 -m unittest discover -s packaging/deep -p 'test_wp00.py' -v
