@@ -49,6 +49,9 @@ func bindingRuntime(b registry.Binding) rt.BindingRuntime {
 }
 
 func (e *Engine) ForBinding(b registry.Binding) (rt.Adapter, error) {
+	if e.runtimes == nil {
+		return nil, errors.New("runtime resolver unavailable")
+	}
 	return e.runtimes.ForBinding(bindingRuntime(b))
 }
 
