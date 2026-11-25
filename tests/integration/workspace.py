@@ -1,5 +1,7 @@
 """Run M1 against a private local serve and the real platformd binary."""
 import argparse
+from contextlib import ExitStack
+from dispatch_proxy import DispatchProxy
 import hashlib
 import http.client
 import json
@@ -17,9 +19,12 @@ def main():
     parser.add_argument("--binary", default=".build/platformd")
     parser.add_argument("--socket", default="/run/smolvm-phase1/api.sock")
     parser.add_argument("--image", type=pathlib.Path, required=True)
+    parser.add_argument("--interrupt-dispatch", action="store_true",
+                        help="use a managed image and kill platformd after native Create and task start have executed")
     args = parser.parse_args()
     image = args.image.resolve(strict=True)
-    with tempfile.TemporaryDirectory(prefix="platform-m1-") as tmp:
+    with ExitStack() as stack:
+        tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="platform-m1-"))
         root = pathlib.Path(tmp)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -34,10 +39,15 @@ def main():
             digest = hashlib.file_digest(f, "sha256").hexdigest()
         template = {"template_id":"m1", "name":"m1", "version":1, "image_digest":"sha256:"+digest,
                     "spec":{"local_image":image.name}, "capabilities":{}}
+        runtime_socket = args.socket
+        if args.interrupt_dispatch:
+            template["guest_release"] = "v1"
+            runtime_socket = str(root / "proxy.sock")
+            proxy = stack.enter_context(DispatchProxy(runtime_socket, args.socket))
         (root / "templates").write_text(json.dumps([template]))
         config = root / "config.json"
         config.write_text(json.dumps({"state_dir":tmp, "api":{"listen":address,"public_origin":origin},
-            "runtime":{"socket":args.socket, "local_image_dir":str(image.parent)},
+            "runtime":{"socket":runtime_socket, "local_image_dir":str(image.parent)},
             "templates_file":str(root/"templates")}))
         import os
         def launch():
@@ -75,7 +85,17 @@ def main():
             newkey=lambda: {"Idempotency-Key":str(uuid.uuid4())}
             key=newkey()
             intent={"name":"workspace-"+uuid.uuid4().hex[:10],"template_id":"m1","start":True}
-            _,accepted=request("POST","machines",intent,key,202)
+            if args.interrupt_dispatch:
+                with proxy.intercept("create"):
+                    _, accepted = request("POST", "machines", intent, key, 202)
+                    assert proxy.response_ready.wait(80), "successful upstream create missing"
+                    busy=request("GET", "operations/"+accepted["operation_id"],expect=200)[1]
+                    assert busy["state"]=="dispatching" and busy["stage"]=="create",busy
+                    proc.kill()
+                    proc.wait()
+                proc=launch()
+            else:
+                _,accepted=request("POST","machines",intent,key,202)
             mid=accepted["machine_id"]
             def wait(opid):
                 end=time.monotonic()+180
@@ -103,6 +123,28 @@ def main():
                     _,op=request(method,"machines/"+mid+("/"+kind if kind else ""),{"expected_generation":1},
                          newkey()|{"If-Match":f'"{m["revision"]}"'},202)
                     return wait(op["operation_id"])
+                if args.interrupt_dispatch:
+                    assert proxy.count["create"] == 1
+                    current = request("GET", "machines/"+mid,expect=200)[1]
+                    task_headers = newkey() | {"If-Match": f'"{current["revision"]}"'}
+                    task_body = {"argv":["/bin/sh","-c","echo dispatched >> /workspace/dispatch-count; cat /workspace/dispatch-count"],"env":{"GATE_PRIVATE":"LOCAL-ENV-CHECK-71394"},"task_key":"dispatch-proof"}
+                    with proxy.intercept("task_start"):
+                        _, accepted_task = request("POST","machines/"+mid+"/tasks",task_body,task_headers,202)
+                        assert proxy.response_ready.wait(70), "successful guest start missing"
+                        proc.kill()
+                        proc.wait()
+                    proc=launch()
+                    result=wait(accepted_task["operation_id"])
+                    tid=result["result"]["task_id"]
+                    again=request("POST","machines/"+mid+"/tasks",task_body,task_headers,202)[1]
+                    assert again["operation_id"]==accepted_task["operation_id"] and proxy.count["task_start"]==1
+                    status=request("GET","tasks/"+tid,expect=200)[1]
+                    import base64
+                    output=request("GET","tasks/"+tid+"/output",expect=200)[1]
+                    assert status["state"]=="succeeded" and base64.b64decode(output["data_base64"])==b"dispatched\n"
+                    for dbfile in root.glob("platform.db*"):
+                        assert b"LOCAL-ENV-CHECK-71394" not in dbfile.read_bytes()
+                    print("single native create and guest task dispatch across two SIGKILLs",tid,flush=True)
                 for act in ("pause","resume","stop","start"):
                     mutate(act)
                 mutate("","DELETE")

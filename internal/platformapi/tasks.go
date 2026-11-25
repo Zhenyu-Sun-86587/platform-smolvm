@@ -24,6 +24,7 @@ type taskRequest struct {
 func (s *Server) taskRoutes() {
 	s.Extra["task_start"] = s.startTask
 	s.Extra["task_cancel"] = s.cancelTask
+	s.Recover["task_start"] = s.recoverTask
 	s.route("POST /v1/machines/{machine}/tasks", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
 		if err := p.Authorize("manage", id); err != nil {
@@ -33,13 +34,18 @@ func (s *Server) taskRoutes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
-		if len(v.Argv) == 0 {
+		if _, err := tasks.HashSpec(v.Spec); err != nil || len(v.TaskKey) > 512 {
 			return registry.ErrInvalid
 		}
 		if v.TaskKey == "" {
 			v.TaskKey = r.Header.Get("Idempotency-Key")
 		}
-		return s.accept(w, r, p, v, registry.AcceptRequest{Kind: "task_start", MachineID: id, ExpectedGeneration: v.ExpectedGeneration})
+		digest, err := s.storeEnv(v.Env)
+		if err != nil {
+			return err
+		}
+		v.Env = nil
+		return s.accept(w, r, p, storedTask{v, digest}, registry.AcceptRequest{Kind: "task_start", MachineID: id, ExpectedGeneration: v.ExpectedGeneration})
 	})
 	s.route("GET /v1/machines/{machine}/tasks", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
@@ -154,26 +160,39 @@ func (s *Server) taskRoutes() {
 	}
 }
 func (s *Server) startTask(ctx context.Context, j *lifecycle.Job) error {
-	var req taskRequest
-	if err := json.Unmarshal(j.Op.Request, &req); err != nil {
-		return err
-	}
-	m, err := s.DB.GetMachine(ctx, j.Op.MachineID)
+	req, err := s.loadTask(j.Op.Request)
 	if err != nil {
 		return err
 	}
-	if m.CurrentBinding == nil || m.ObservedState != "running" {
-		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "task start needs a running managed workspace"}
-	}
-	if j.Binding.GuestManagementStatus != "ready" {
-		return &lifecycle.Failure{Code: "CAPABILITY_NOT_VERIFIED", Message: "guest manager is unavailable"}
+	if err = j.TaskRunning(ctx, j.Intent.Stage == "task_wake"); err != nil {
+		return err
 	}
 	id := "task_" + j.Op.ID[3:]
 	specHash, err := tasks.HashSpec(req.Spec)
 	if err != nil {
 		return err
 	}
-	if err = j.Stage(ctx, "guest_start", ""); err != nil {
+	var priorID, priorHash string
+	err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT id,spec_hash FROM tasks WHERE task_namespace=? AND start_token=?", j.Binding.TaskNamespace, req.TaskKey).Scan(&priorID, &priorHash)
+	if err == nil {
+		if priorHash != specHash {
+			return registry.ErrIdempotency
+		}
+		if err := j.Stage(ctx, "guest_start", priorID); err != nil {
+			return err
+		}
+		return s.recoverTask(ctx, j)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	now := time.Now().UTC()
+	intent := tasks.Task{ID: id, MachineID: j.Op.MachineID, Generation: j.Binding.Generation, Namespace: j.Binding.TaskNamespace, State: "unknown", Reason: "awaiting_guest_receipt", CreatedAt: now, ObservedAt: now}
+	if err = j.StageApply(ctx, "guest_start", id, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,machine_id,binding_generation,task_namespace,guest_task_id,start_token,spec_hash,spec_json,state,observed_at,result_json)
+			VALUES(?,?,?,?,?,?,?,'{}','unknown',?,?)`, id, j.Op.MachineID, j.Binding.Generation, j.Binding.TaskNamespace, id, req.TaskKey, specHash, now.UnixMilli(), string(lifecycle.JSON(intent)))
+		return err
+	}); err != nil {
 		return err
 	}
 	res, err := s.Call(ctx, j.Binding, tasks.Request{Method: "start", StartToken: req.TaskKey, TaskID: id, Spec: &req.Spec, SpecHash: specHash, OperationID: j.Op.ID})
@@ -181,21 +200,57 @@ func (s *Server) startTask(ctx context.Context, j *lifecycle.Job) error {
 		var rpc *tasks.RPCError
 		if !errors.As(err, &rpc) || rpc.Code == "OUTCOME_UNKNOWN" {
 			j.Written = true
+		} else if _, cleanupErr := s.DB.DB().ExecContext(ctx, "DELETE FROM tasks WHERE id=? AND task_namespace=? AND state='unknown'", id, j.Binding.TaskNamespace); cleanupErr != nil {
+			j.Written = true
+			return cleanupErr
 		}
 		return err
 	}
 	j.Written = true
-	if res.Task == nil || res.Task.Namespace != j.Binding.TaskNamespace || res.Task.MachineID != m.ID {
+	if res.Task == nil || res.Task.ID != id || res.Task.Namespace != j.Binding.TaskNamespace || res.Task.MachineID != j.Op.MachineID || res.Task.Generation != j.Binding.Generation {
 		return errors.New("guest task identity mismatch")
 	}
-	t := *res.Task
+	return s.taskReceipt(ctx, j, req, specHash, *res.Task)
+}
+func (s *Server) recoverTask(ctx context.Context, j *lifecycle.Job) error {
+	if j.Intent.Stage == "task_wake" && j.Op.State == registry.Dispatching {
+		return s.startTask(ctx, j)
+	}
+	if j.Intent.Stage != "guest_start" {
+		return errors.New("task dispatch identity unavailable")
+	}
+	req, err := s.loadTask(j.Op.Request)
+	if err != nil {
+		return err
+	}
+	h, err := tasks.HashSpec(req.Spec)
+	if err != nil {
+		return err
+	}
+	id := "task_" + j.Op.ID[3:]
+	var prior string
+	if err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT id FROM tasks WHERE task_namespace=? AND start_token=? AND spec_hash=?", j.Binding.TaskNamespace, req.TaskKey, h).Scan(&prior); err == nil {
+		id = prior
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	res, err := s.Call(ctx, j.Binding, tasks.Request{Method: "status", TaskID: id})
+	if err != nil {
+		return err
+	}
+	if res.Task == nil || res.Task.ID != id || res.Task.Namespace != j.Binding.TaskNamespace || res.Task.MachineID != j.Op.MachineID || res.Task.Generation != j.Binding.Generation {
+		return errors.New("guest task receipt not verified")
+	}
+	return s.taskReceipt(ctx, j, req, h, *res.Task)
+}
+func (s *Server) taskReceipt(ctx context.Context, j *lifecycle.Job, req taskRequest, specHash string, t tasks.Task) error {
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]string{"task_id": t.ID}), Apply: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,machine_id,binding_generation,task_namespace,guest_task_id,start_token,spec_hash,spec_json,state,exit_code,observed_at,result_json)
- VALUES(?,?,?,?,?,?,?,'{}',?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,result_json=excluded.result_json,exit_code=excluded.exit_code,observed_at=excluded.observed_at WHERE tasks.task_namespace=excluded.task_namespace AND tasks.start_token=excluded.start_token AND tasks.spec_hash=excluded.spec_hash`, t.ID, m.ID, j.Binding.Generation, t.Namespace, t.ID, req.TaskKey, specHash, t.State, t.ExitCode, t.ObservedAt.UnixMilli(), string(lifecycle.JSON(t)))
+ VALUES(?,?,?,?,?,?,?,'{}',?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,result_json=excluded.result_json,exit_code=excluded.exit_code,observed_at=excluded.observed_at WHERE tasks.task_namespace=excluded.task_namespace AND tasks.start_token=excluded.start_token AND tasks.spec_hash=excluded.spec_hash`, t.ID, j.Op.MachineID, j.Binding.Generation, t.Namespace, t.ID, req.TaskKey, specHash, t.State, t.ExitCode, t.ObservedAt.UnixMilli(), string(lifecycle.JSON(t)))
 		if err != nil {
 			return err
 		}
-		return registry.AppendEvent(ctx, tx, "task", m.ID, j.Op.ID, map[string]string{"task_id": t.ID, "state": t.State}, false)
+		return registry.AppendEvent(ctx, tx, "task", j.Op.MachineID, j.Op.ID, map[string]string{"task_id": t.ID, "state": t.State}, false)
 	}})
 }
 func (s *Server) cancelTask(ctx context.Context, j *lifecycle.Job) error {

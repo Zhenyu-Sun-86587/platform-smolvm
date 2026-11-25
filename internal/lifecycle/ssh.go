@@ -145,7 +145,7 @@ type sshEvidence struct {
 	Key      string `json:"ssh_host_key"`
 }
 
-func (e *Engine) keyVersion(ctx context.Context) (int64, error) {
+func (e *Engine) SSHKeyRevision(ctx context.Context) (int64, error) {
 	var n int64
 	err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COALESCE(MAX(MAX(created_at,COALESCE(revoked_at,0))),0) FROM credentials WHERE kind='ssh_public_key'").Scan(&n)
 	return n, err
@@ -154,7 +154,7 @@ func (e *Engine) refreshSSH(ctx context.Context, m registry.Machine, x *registry
 	var prev sshEvidence
 	_ = json.Unmarshal(m.CurrentBinding.GuestManagementEvidence, &prev)
 	x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_key_revision": prev.Revision, "ssh_ready": prev.Ready, "ssh_host_key": prev.Key})
-	version, err := e.keyVersion(ctx)
+	version, err := e.SSHKeyRevision(ctx)
 	if err != nil || (prev.Revision != nil && *prev.Revision == version && prev.Ready) {
 		return
 	}

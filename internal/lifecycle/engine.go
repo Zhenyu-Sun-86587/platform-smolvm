@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -184,9 +183,14 @@ func (j *Job) transition(ctx context.Context, r registry.TransitionRequest) erro
 	return err
 }
 func (j *Job) Stage(ctx context.Context, stage, target string) error {
+	return j.StageApply(ctx, stage, target, nil)
+}
+
+// StageApply commits related state and the outgoing intent before the RPC.
+func (j *Job) StageApply(ctx context.Context, stage, target string, apply func(context.Context, *sql.Tx) error) error {
 	j.Intent.Stage = stage
 	j.Intent.Target = target
-	return j.transition(ctx, registry.TransitionRequest{State: registry.Dispatching, Stage: stage, Dispatch: JSON(j.Intent), MaxHeavy: j.Config.Lifecycle.Heavy})
+	return j.transition(ctx, registry.TransitionRequest{State: registry.Dispatching, Stage: stage, Dispatch: JSON(j.Intent), MaxHeavy: j.Config.Lifecycle.Heavy, Apply: apply})
 }
 func (j *Job) Done(ctx context.Context, r registry.TransitionRequest) error {
 	if j.Op.State != registry.Observing {
@@ -560,7 +564,7 @@ func (j *Job) verify(ctx context.Context) error {
 	if o.State == "running" {
 		adopted := j.guestReady(ctx, &x)
 		if x.GuestManagementStatus == "ready" {
-			keyRev, _ := j.keyVersion(ctx)
+			keyRev, _ := j.SSHKeyRevision(ctx)
 			pub, sshErr := j.InstallSSH(ctx, j.Binding)
 			if sshErr != nil {
 				x.GuestManagementEvidence = JSON(map[string]any{"task_manager": x.GuestManagementEvidence, "ssh_ready": false})
@@ -715,7 +719,7 @@ func (j *Job) TaskRunning(ctx context.Context, recovering bool) error {
 		pid := ""
 		switch o.State {
 		case "paused":
-			if strings.Contains(strings.ToLower(o.StateReason), "pressure") {
+			if o.PressurePaused() {
 				return &Failure{"RESOURCE_EXHAUSTED", "pressure pause requires explicit resume"}
 			}
 			if j.Binding.PauseStatus != "active" || j.Binding.RuntimePauseID == "" {
