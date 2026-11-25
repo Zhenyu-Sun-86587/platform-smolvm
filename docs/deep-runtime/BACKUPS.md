@@ -23,4 +23,6 @@ sandboxctl admin backup recover-native --archive "$archive" --recovery-key-file 
 
 Verification authenticates the manifest, reads every listed file and checks the original StatePoint and block digests with the pinned reader. Recovery material for the installation signer, managed SSH identities and task environments is stored in an encrypted file. `recover-native` creates an isolated directory of verified native StatePoint and disk representations. Use a matching installed Worker reader with the bundle digest and reader ID declared by the backup.
 
+Add `--worker-catalog` to prepare a new Worker catalog under each recovered route directory. Start a fresh Worker and a separate Serve instance against that catalog, then restore the selected StatePoint in clone-conflicts mode into a new logical machine. Catalog recovery currently supports StatePoints captured without a managed network attachment.
+
 The SSE record includes `event_name`, `resource_kind`, `resource_id` and `schema_version`. Use the `Last-Event-ID` cursor to resume and deduplicate records. A `410` response requires reading current resources and starting a new stream. Volume events follow the owner scope. Auth and backup events require administrator scope.

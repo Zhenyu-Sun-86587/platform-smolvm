@@ -143,8 +143,12 @@ func exportNativeRoute(ctx context.Context, stage, runID string, plan nativeSele
 	slices.Sort(captures)
 	client := workerclient.Client{Socket: plan.Route.WorkerSocket, Bundle: plan.Route.Bundle}
 	backupID := runID + "-" + suffix
+	registeredBundle, err := plan.Route.LoadManifest()
+	if err != nil {
+		return archive, nil, err
+	}
 	file, expected, err := client.PrepareBackup(ctx, workerclient.BackupSelection{
-		ID: backupID, Reader: plan.Route.Reader, Captures: captures, Generations: plan.Generations,
+		ID: backupID, Reader: plan.Route.Reader, Captures: captures, Generations: plan.Generations, BundleManifest: registeredBundle,
 	})
 	if err != nil {
 		return archive, nil, err
@@ -320,7 +324,7 @@ func verifyNative(ctx context.Context, db *sql.DB, cfg config.Config, archive st
 		if err := verifyNativeBundle(archive, native, verified); err != nil {
 			return err
 		}
-		if err := nativeReader(ctx, archive, native, plan.Route, ""); err != nil {
+		if err := nativeReader(ctx, archive, native, plan.Route, "", false); err != nil {
 			return err
 		}
 	}
@@ -357,7 +361,7 @@ func verifyNativeBundle(archive string, native NativeArchive, verified map[strin
 	return nil
 }
 
-func nativeReader(ctx context.Context, archive string, native NativeArchive, route customsmolvm.Route, output string) error {
+func nativeReader(ctx context.Context, archive string, native NativeArchive, route customsmolvm.Route, output string, workerCatalog bool) error {
 	raw, err := route.LoadManifest()
 	if err != nil {
 		return err
@@ -367,7 +371,11 @@ func nativeReader(ctx context.Context, archive string, native NativeArchive, rou
 		return err
 	}
 	worker := ""
+	executableHash := ""
 	for _, item := range spec.Artifacts {
+		if item.Path == "smolvm-bin" {
+			executableHash = item.SHA
+		}
 		if item.Path != "smolvm-resourced" {
 			continue
 		}
@@ -376,7 +384,6 @@ func nativeReader(ctx context.Context, archive string, native NativeArchive, rou
 			return ErrNativeClosure
 		}
 		worker = filepath.Join(filepath.Dir(route.Manifest), item.Path)
-		break
 	}
 	if worker == "" {
 		return ErrNativeClosure
@@ -385,6 +392,12 @@ func nativeReader(ctx context.Context, archive string, native NativeArchive, rou
 		"--bundle-digest", native.Bundle, "--state-reader-id", native.Reader}
 	if output != "" {
 		args = append(args, "--output", output)
+	}
+	if workerCatalog {
+		if executableHash == "" {
+			return ErrNativeClosure
+		}
+		args = append(args, "--bundle-manifest", route.Manifest, "--executable-sha256", executableHash)
 	}
 	if raw, err := exec.CommandContext(ctx, worker, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: installed reader rejected the closure: %s", ErrNativeClosure, strings.TrimSpace(string(raw)))
@@ -410,7 +423,7 @@ func ReleaseNativeBackup(ctx context.Context, cfg config.Config, runID string) e
 
 // RecoverNativeBackup verifies the authenticated archive and materializes each
 // selected native closure in an independent directory before publishing it.
-func RecoverNativeBackup(ctx context.Context, cfg config.Config, archive, keyFile, output string) (Backup, error) {
+func RecoverNativeBackup(ctx context.Context, cfg config.Config, archive, keyFile, output string, workerCatalog bool) (Backup, error) {
 	metadata, err := VerifyPlannedBackup(ctx, cfg, archive, keyFile)
 	if err != nil {
 		return metadata, err
@@ -430,7 +443,7 @@ func RecoverNativeBackup(ctx context.Context, cfg config.Config, archive, keyFil
 	for _, native := range metadata.Native {
 		for _, route := range cfg.Runtime.Custom {
 			if route.InstanceID == native.RuntimeInstance && route.Bundle == native.Bundle && route.Reader == native.Reader {
-				if err := nativeReader(ctx, archive, native, route, filepath.Join(stage, filepath.Base(native.Directory))); err != nil {
+				if err := nativeReader(ctx, archive, native, route, filepath.Join(stage, filepath.Base(native.Directory)), workerCatalog); err != nil {
 					return metadata, err
 				}
 				break

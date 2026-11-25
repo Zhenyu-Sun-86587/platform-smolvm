@@ -10,10 +10,11 @@ import (
 )
 
 type BackupSelection struct {
-	ID          string   `json:"backup_id"`
-	Reader      string   `json:"state_reader_id"`
-	Captures    []string `json:"capture_ids"`
-	Generations []string `json:"generation_ids"`
+	ID             string          `json:"backup_id"`
+	Reader         string          `json:"state_reader_id"`
+	Captures       []string        `json:"capture_ids"`
+	Generations    []string        `json:"generation_ids"`
+	BundleManifest json.RawMessage `json:"bundle_manifest"`
 }
 
 func (c Client) PrepareBackup(ctx context.Context, selected BackupSelection) (*os.File, string, error) {
