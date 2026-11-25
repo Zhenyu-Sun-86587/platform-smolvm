@@ -32,11 +32,11 @@ type AttestedGuestContext struct {
 }
 
 type GuestGrantSpec struct {
-	SourceMachineID string
-	Action          string
-	TargetMachineID string
-	ExpiresAt       time.Time
-	MaximumUses     int64
+	SourceMachineID string    `json:"source_machine_id"`
+	Action          string    `json:"action"`
+	TargetMachineID string    `json:"target_machine_id,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	MaximumUses     int64     `json:"maximum_uses"`
 }
 
 type GuestPrincipal struct {
@@ -79,16 +79,24 @@ func requireGrantOwner(ctx context.Context, tx *sql.Tx, owner Principal) error {
 }
 
 func (s *Service) CreateGuestGrant(ctx context.Context, owner Principal, grant GuestGrantSpec) (string, error) {
-	if !validMachineID(grant.SourceMachineID) || !guestTarget(grant.Action, grant.TargetMachineID) ||
-		grant.MaximumUses < 1 || !grant.ExpiresAt.After(time.Now()) {
-		return "", registry.ErrInvalid
-	}
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	if err = requireGrantOwner(ctx, tx, owner); err != nil {
+	id, err := s.CreateGuestGrantTx(ctx, tx, owner, grant)
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+func (s *Service) CreateGuestGrantTx(ctx context.Context, tx *sql.Tx, owner Principal, grant GuestGrantSpec) (string, error) {
+	if !validMachineID(grant.SourceMachineID) || !guestTarget(grant.Action, grant.TargetMachineID) ||
+		grant.MaximumUses < 1 || !grant.ExpiresAt.After(time.Now()) {
+		return "", registry.ErrInvalid
+	}
+	if err := requireGrantOwner(ctx, tx, owner); err != nil {
 		return "", err
 	}
 	var source string
@@ -104,7 +112,7 @@ func (s *Service) CreateGuestGrant(ctx context.Context, owner Principal, grant G
 		target = machine
 	}
 	var principal string
-	err = tx.QueryRowContext(ctx, `SELECT principal_id FROM guest_identities WHERE machine_id=?`, source).Scan(&principal)
+	err := tx.QueryRowContext(ctx, `SELECT principal_id FROM guest_identities WHERE machine_id=?`, source).Scan(&principal)
 	if errors.Is(err, sql.ErrNoRows) {
 		if principal, err = registry.NewID("gp_"); err != nil {
 			return "", err
@@ -131,7 +139,7 @@ func (s *Service) CreateGuestGrant(ctx context.Context, owner Principal, grant G
 	if err = registry.AppendEvent(ctx, tx, "auth", source, "", map[string]string{"action": "guest_grant_created", "grant_id": id}, true); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	return id, nil
 }
 
 const currentGuest = `m.id=? AND b.id=? AND b.runtime_instance_id=? AND b.runtime_bundle_id=?
@@ -149,19 +157,30 @@ func (peer AttestedGuestContext) valid() bool {
 }
 
 func (s *Service) IssueGuestCredential(ctx context.Context, owner Principal, peer AttestedGuestContext, grantID string, ttl time.Duration) (string, error) {
-	if !peer.valid() || grantID == "" || ttl < time.Second || ttl > 10*time.Minute {
-		return "", registry.ErrInvalid
-	}
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	if err = requireGrantOwner(ctx, tx, owner); err != nil {
+	secret, err := s.IssueGuestCredentialTx(ctx, tx, owner, peer, grantID, ttl)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return secret, nil
+}
+
+func (s *Service) IssueGuestCredentialTx(ctx context.Context, tx *sql.Tx, owner Principal, peer AttestedGuestContext, grantID string, ttl time.Duration) (string, error) {
+	if !peer.valid() || grantID == "" || ttl < time.Second || ttl > 10*time.Minute {
+		return "", registry.ErrInvalid
+	}
+	if err := requireGrantOwner(ctx, tx, owner); err != nil {
 		return "", err
 	}
 	var random [32]byte
-	if _, err = rand.Read(random[:]); err != nil {
+	if _, err := rand.Read(random[:]); err != nil {
 		return "", err
 	}
 	secret := "sbg_" + base64.RawURLEncoding.EncodeToString(random[:])
@@ -186,7 +205,7 @@ func (s *Service) IssueGuestCredential(ctx context.Context, owner Principal, pee
 	if n, err := result.RowsAffected(); err != nil || n != 1 {
 		return "", errors.Join(ErrForbidden, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := registry.AppendEvent(ctx, tx, "auth", peer.MachineID, "", map[string]string{"action": "guest_credential_issued", "grant_id": grantID, "credential_id": id}, true); err != nil {
 		return "", err
 	}
 	return secret, nil
@@ -198,11 +217,18 @@ func (s *Service) RevokeGuestGrant(ctx context.Context, owner Principal, id stri
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.RevokeGuestGrantTx(ctx, tx, owner, id, revision); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) RevokeGuestGrantTx(ctx context.Context, tx *sql.Tx, owner Principal, id string, revision int64) error {
 	if err := requireGrantOwner(ctx, tx, owner); err != nil {
 		return err
 	}
 	var machine string
-	err = tx.QueryRowContext(ctx, `UPDATE guest_grants SET revoked_at=?,revision=revision+1
+	err := tx.QueryRowContext(ctx, `UPDATE guest_grants SET revoked_at=?,revision=revision+1
 		WHERE id=? AND revision=? AND revoked_at IS NULL AND source_machine_id IN (
 			SELECT machine_id FROM guest_identities WHERE owner_principal_id=?
 		) RETURNING source_machine_id`, time.Now().UnixMilli(), id, revision, owner.ID).Scan(&machine)
@@ -212,19 +238,13 @@ func (s *Service) RevokeGuestGrant(ctx context.Context, owner Principal, id stri
 	if err != nil {
 		return err
 	}
-	if err := registry.AppendEvent(ctx, tx, "auth", machine, "", map[string]string{"action": "guest_grant_revoked", "grant_id": id}, true); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return registry.AppendEvent(ctx, tx, "auth", machine, "", map[string]string{"action": "guest_grant_revoked", "grant_id": id}, true)
 }
 
 // UseGuestGrant checks a request against its host identity, current execution
 // and exact grant. The callback records the admitted action in the same transaction.
 func (s *Service) UseGuestGrant(ctx context.Context, peer AttestedGuestContext, secret, action, target string, accept func(*sql.Tx, GuestPrincipal) error) error {
-	if !peer.valid() || len(secret) != 47 || !strings.HasPrefix(secret, "sbg_") {
-		return ErrUnauthenticated
-	}
-	if accept == nil || !guestTarget(action, target) {
+	if accept == nil {
 		return ErrForbidden
 	}
 	tx, err := s.store.DB().BeginTx(ctx, nil)
@@ -232,29 +252,9 @@ func (s *Service) UseGuestGrant(ctx context.Context, peer AttestedGuestContext, 
 		return err
 	}
 	defer tx.Rollback()
-	now := time.Now().UnixMilli()
-	fields := append([]any{credentialDigest(secret), now, now}, peer.fields()...)
-	var p GuestPrincipal
-	err = tx.QueryRowContext(ctx, `SELECT i.principal_id,g.id,g.action,COALESCE(g.target_machine_id,'')
-		FROM guest_credentials c JOIN guest_grants g ON g.id=c.grant_id
-		JOIN guest_identities i ON i.machine_id=g.source_machine_id
-		JOIN principals p ON p.id=i.principal_id JOIN machines m ON m.id=i.machine_id
-		JOIN runtime_bindings b ON b.id=m.current_binding_id AND b.machine_id=m.id
-		WHERE c.digest=? AND c.expires_at>? AND g.expires_at>? AND g.revoked_at IS NULL AND p.disabled=0
-			AND (g.target_machine_id IS NULL OR EXISTS (SELECT 1 FROM machines target
-				WHERE target.id=g.target_machine_id AND target.deleted_at IS NULL))
-			AND c.binding_id=b.id AND c.runtime_instance_id=b.runtime_instance_id
-			AND c.runtime_bundle_id=b.runtime_bundle_id AND c.runtime_object_id=b.runtime_instance_object_id
-			AND c.incarnation_id=b.incarnation_id AND c.execution_epoch=b.execution_epoch AND `+currentGuest,
-		fields...).Scan(&p.ID, &p.GrantID, &p.Action, &p.Target)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrUnauthenticated
-	}
+	p, err := verifyGuestGrant(ctx, tx, peer, secret, action, target)
 	if err != nil {
 		return err
-	}
-	if p.Action != action || p.Target != target {
-		return ErrForbidden
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE guest_grants SET used_count=used_count+1
 		WHERE id=? AND used_count<maximum_uses`, p.GrantID)
@@ -268,4 +268,52 @@ func (s *Service) UseGuestGrant(ctx context.Context, peer AttestedGuestContext, 
 		return err
 	}
 	return tx.Commit()
+}
+
+// CheckGuestGrant rechecks a previously admitted use without acquiring a second use.
+func (s *Service) CheckGuestGrant(ctx context.Context, peer AttestedGuestContext, secret string, admitted GuestPrincipal) error {
+	current, err := verifyGuestGrant(ctx, s.store.ReadDB(), peer, secret, admitted.Action, admitted.Target)
+	if err != nil {
+		return err
+	}
+	if current != admitted {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func verifyGuestGrant(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, peer AttestedGuestContext, secret, action, target string) (GuestPrincipal, error) {
+	var p GuestPrincipal
+	if !peer.valid() || len(secret) != 47 || !strings.HasPrefix(secret, "sbg_") {
+		return p, ErrUnauthenticated
+	}
+	if !guestTarget(action, target) {
+		return p, ErrForbidden
+	}
+	now := time.Now().UnixMilli()
+	fields := append([]any{credentialDigest(secret), now, now}, peer.fields()...)
+	err := db.QueryRowContext(ctx, `SELECT i.principal_id,g.id,g.action,COALESCE(g.target_machine_id,'')
+		FROM guest_credentials c JOIN guest_grants g ON g.id=c.grant_id
+		JOIN guest_identities i ON i.machine_id=g.source_machine_id
+		JOIN principals p ON p.id=i.principal_id JOIN machines m ON m.id=i.machine_id
+		JOIN runtime_bindings b ON b.id=m.current_binding_id AND b.machine_id=m.id
+		WHERE c.digest=? AND c.expires_at>? AND g.expires_at>? AND g.revoked_at IS NULL AND p.disabled=0
+			AND (g.target_machine_id IS NULL OR EXISTS (SELECT 1 FROM machines target
+				WHERE target.id=g.target_machine_id AND target.deleted_at IS NULL))
+			AND c.binding_id=b.id AND c.runtime_instance_id=b.runtime_instance_id
+			AND c.runtime_bundle_id=b.runtime_bundle_id AND c.runtime_object_id=b.runtime_instance_object_id
+			AND c.incarnation_id=b.incarnation_id AND c.execution_epoch=b.execution_epoch AND `+currentGuest,
+		fields...).Scan(&p.ID, &p.GrantID, &p.Action, &p.Target)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrUnauthenticated
+	}
+	if err != nil {
+		return p, err
+	}
+	if p.Action != action || p.Target != target {
+		return p, ErrForbidden
+	}
+	return p, nil
 }
