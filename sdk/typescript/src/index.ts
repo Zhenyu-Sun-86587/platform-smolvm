@@ -82,6 +82,7 @@ export interface Operation {
 export interface Capability { status?: "supported" | "unsupported" | "unknown"; contract_version?: number; constraints?: Record<string, unknown>; supported: boolean; reason_code?: string | null; message?: string; verified_profile?: string }
 export interface Control {
   control_epoch: string
+  default_boot_mode?: BootMode
   runtime_version?: string
   build?: string
   maintenance?: boolean

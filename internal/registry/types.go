@@ -235,7 +235,7 @@ type AcceptRequest struct {
 	ExpectedRevision      int64
 	ExpectedGeneration    int64
 	Request               json.RawMessage
-	ResolvedCreateRequest json.RawMessage // operator defaults resolved outside the caller fingerprint
+	ResolveCreateDefaults func(context.Context, *sql.Tx) (spec, idle json.RawMessage, err error)
 	IdlePolicy            json.RawMessage
 	DefaultIdlePolicy     json.RawMessage // resolved for a new machine, outside the caller fingerprint
 	DesiredPower          string

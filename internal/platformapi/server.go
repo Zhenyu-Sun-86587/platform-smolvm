@@ -395,9 +395,14 @@ func (s *Server) routes() {
 			return err
 		}
 		official := s.OfficialRuntime()
+		defaults, err := s.settings(r.Context())
+		if err != nil {
+			return err
+		}
 		h, healthErr := official.Health(r.Context())
 		ready := healthErr == nil && official.Ready(r.Context()) == nil
 		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
+		v["default_boot_mode"] = defaults.BootMode
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)
 		}
@@ -546,6 +551,7 @@ func (s *Server) machineRoutes() {
 		if v.BootMode != "" && v.BootMode != boot.BootMode {
 			return fmt.Errorf("%w: boot mode differs from the selected template", registry.ErrInvalid)
 		}
+		useDefaultBoot := v.BootMode == "" && !boot.BootModeExplicit
 		if v.Resources.CPUs == 0 {
 			v.Resources.CPUs = 1
 		}
@@ -566,8 +572,6 @@ func (s *Server) machineRoutes() {
 				return err
 			}
 			req.AdmitRuntime = admission
-			s.resolveSystemNetwork(r.Context(), v, &req)
-			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
 			req.DesiredPower = "stopped"
 			if v.Start {
 				req.DesiredPower = "running"
@@ -584,13 +588,7 @@ func (s *Server) machineRoutes() {
 				v.Resources.Overlay = 2
 			}
 		}
-		if v.IdlePolicy == nil && boot.BootMode == rt.BootOCI {
-			defaults, err := s.settings(r.Context())
-			if err != nil {
-				return err
-			}
-			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: tpl.GuestRelease != "", Timeout: defaults.IdleSeconds})
-		}
+		req.ResolveCreateDefaults = s.createDefaults(v, boot, useDefaultBoot, tpl.GuestRelease != "", true)
 		if v.IdlePolicy != nil {
 			if v.IdlePolicy.Enabled && v.IdlePolicy.Timeout < 1 {
 				return registry.ErrInvalid

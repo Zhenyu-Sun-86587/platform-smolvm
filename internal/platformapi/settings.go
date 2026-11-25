@@ -26,14 +26,21 @@ type settings struct {
 	LifecycleRevision int64           `json:"default_lifecycle_revision,omitempty"`
 	Revision          int64           `json:"revision"`
 	IdleSeconds       int             `json:"default_idle_seconds"`
+	BootMode          rt.BootMode     `json:"default_boot_mode,omitempty"`
 	NetworkMode       string          `json:"default_network_mode,omitempty"`
 	NetworkID         string          `json:"default_network_id,omitempty"`
 }
 
 func (s *Server) settings(ctx context.Context) (settings, error) {
+	return s.readSettings(ctx, s.DB.ReadDB())
+}
+
+func (s *Server) readSettings(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (settings, error) {
 	var raw string
-	v := settings{Revision: 1, IdleSeconds: s.Config.Lifecycle.IdleSeconds}
-	err := s.DB.ReadDB().QueryRowContext(ctx, "SELECT settings_json FROM meta WHERE id=1").Scan(&raw)
+	v := settings{Revision: 1, IdleSeconds: s.Config.Lifecycle.IdleSeconds, BootMode: rt.BootOCI}
+	err := db.QueryRowContext(ctx, "SELECT settings_json FROM meta WHERE id=1").Scan(&raw)
 	if err != nil {
 		return v, err
 	}
@@ -70,7 +77,7 @@ func (s *Server) settingsRoutes() {
 		if v.LifecycleRevision == 0 {
 			v.LifecycleRevision = 1
 		}
-		return write(w, 200, map[string]any{"default_lifecycle_policy": policy, "default_lifecycle_revision": v.LifecycleRevision, "revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "default_network_mode": mode,
+		return write(w, 200, map[string]any{"default_lifecycle_policy": policy, "default_lifecycle_revision": v.LifecycleRevision, "revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "default_network_mode": mode, "default_boot_mode": v.BootMode,
 			"default_network_id": v.NetworkID, "public_origin": s.Config.API.PublicOrigin, "apps_domain": s.Config.Gateway.AppsDomain,
 			"tcp_mtls_port_range": s.Config.Gateway.TCPRange, "max_heavy_operations": s.Config.Lifecycle.Heavy, "runtime_socket": s.Config.Runtime.Socket})
 	})
@@ -81,13 +88,15 @@ func (s *Server) settingsRoutes() {
 		var body struct {
 			Lifecycle   json.RawMessage `json:"default_lifecycle_policy,omitempty"`
 			Idle        *int            `json:"default_idle_seconds,omitempty"`
+			BootMode    *rt.BootMode    `json:"default_boot_mode,omitempty"`
 			NetworkMode *string         `json:"default_network_mode,omitempty"`
 			NetworkID   *string         `json:"default_network_id,omitempty"`
 		}
 		if err := decode(r, &body); err != nil {
 			return err
 		}
-		if (body.Lifecycle == nil && body.Idle == nil && body.NetworkMode == nil && body.NetworkID == nil) ||
+		if (body.Lifecycle == nil && body.Idle == nil && body.BootMode == nil && body.NetworkMode == nil && body.NetworkID == nil) ||
+			(body.BootMode != nil && *body.BootMode != rt.BootOCI && *body.BootMode != rt.BootSystem) ||
 			(body.Idle != nil && (*body.Idle < 1 || *body.Idle > 31536000)) ||
 			(body.NetworkMode != nil && *body.NetworkMode != rt.NativeNetwork && *body.NetworkMode != rt.FixedInternalNetwork) {
 			return registry.ErrInvalid
@@ -97,13 +106,12 @@ func (s *Server) settingsRoutes() {
 			return err
 		}
 		return s.mutate(w, r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
-			v := settings{Revision: 1, IdleSeconds: s.Config.Lifecycle.IdleSeconds}
-			var previous string
-			if err := tx.QueryRowContext(ctx, "SELECT settings_json FROM meta WHERE id=1").Scan(&previous); err != nil {
+			v, err := s.readSettings(ctx, tx)
+			if err != nil {
 				return registry.MutationResult{}, err
 			}
-			if err := json.Unmarshal([]byte(previous), &v); err != nil {
-				return registry.MutationResult{}, err
+			if body.BootMode != nil {
+				v.BootMode = *body.BootMode
 			}
 			if body.Lifecycle != nil {
 				prior, err := rt.DefaultLifecyclePolicy().WithPatch(v.Lifecycle)

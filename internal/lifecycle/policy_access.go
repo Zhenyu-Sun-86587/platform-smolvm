@@ -153,15 +153,23 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				if err != nil {
 					return none, nil, err
 				}
-				if err = e.projectAutoPower(ctx, b, adapter, st, ack.Wake); err != nil {
+				if err = e.projectAutoPower(ctx, b, adapter, st, ack.Wake); err != nil && !errors.Is(err, registry.ErrStaleObservation) {
 					return none, nil, err
 				}
 				fresh, err := e.DB.GetMachine(ctx, m.ID)
 				if err != nil {
 					return none, nil, err
 				}
-				if fresh.CurrentBinding == nil || WorkerExecution(*fresh.CurrentBinding) != scope {
+				if fresh.CurrentBinding == nil || fresh.CurrentBinding.ID != b.ID || fresh.DeletedAt != nil {
 					return none, nil, registry.ErrGeneration
+				}
+				if WorkerExecution(*fresh.CurrentBinding) != scope || fresh.CurrentBinding.PowerState != registry.PowerRunning {
+					select {
+					case <-ctx.Done():
+						return none, nil, ctx.Err()
+					case <-time.After(100 * time.Millisecond):
+						continue
+					}
 				}
 				b = *fresh.CurrentBinding
 			}
@@ -187,23 +195,20 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 // Confirm a Worker automatic transition with the same native receipt and live
 // inventory used by explicit platform operations before updating the binding.
 func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapter rt.Adapter, st WorkerLifecycleStatus, operation string) error {
-	if operation == "" {
-		return nil
-	}
 	control, ok := adapter.(rt.StatePointControl)
 	if !ok {
 		return rt.ErrUnsupported
 	}
-	op, err := control.QueryOperation(ctx, operation)
-	if err != nil {
-		return err
-	}
-	if op.Phase != "COMPLETED" || op.InstanceID != st.Instance || op.BundleDigest != b.RuntimeBundleID {
-		return registry.ErrStaleObservation
-	}
-	if st.Power == "HIBERNATED" && op.Kind == "hibernate" && op.StatePoint != nil && op.StatePoint.Phase == "hibernated" &&
-		op.StatePoint.SourceReleased && op.ExpectedExecutionEpoch == b.ExecutionEpoch && op.StatePoint.CaptureID == st.StatePoint &&
-		statePointDigestValid(op.StatePoint.ManifestDigest) {
+	if st.Power == "HIBERNATED" && operation != "" {
+		op, err := control.QueryOperation(ctx, operation)
+		if err != nil {
+			return err
+		}
+		if op.Phase != "COMPLETED" || op.InstanceID != st.Instance || op.BundleDigest != b.RuntimeBundleID ||
+			op.Kind != "hibernate" || op.StatePoint == nil || op.StatePoint.Phase != "hibernated" || !op.StatePoint.SourceReleased ||
+			op.ExpectedExecutionEpoch != b.ExecutionEpoch || op.StatePoint.CaptureID != st.StatePoint || !statePointDigestValid(op.StatePoint.ManifestDigest) {
+			return registry.ErrStaleObservation
+		}
 		target, err := control.DiscoverLaunchBinding(ctx, b.RuntimeName)
 		if err != nil {
 			return err
@@ -217,15 +222,11 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		return e.DB.ObserveMachine(ctx, b.ID, x)
 	}
 	if st.Power == "RUNNING" && st.Incarnation != "" && st.Epoch > b.ExecutionEpoch {
-		if op.Execution == nil || op.Execution.InstanceID != st.Instance || op.Execution.ExecutionEpoch != st.Epoch || op.Execution.IncarnationID != st.Incarnation ||
-			(op.Kind != "launch" && (op.StatePoint == nil || op.StatePoint.ActivationDecision != "commit" || op.StatePoint.Stage != "released")) {
-			return registry.ErrStaleObservation
-		}
 		current, err := control.DiscoverExecution(ctx, b.RuntimeName)
 		if err != nil {
 			return err
 		}
-		if current != *op.Execution {
+		if current.InstanceID != st.Instance || current.ExecutionEpoch != st.Epoch || current.IncarnationID != st.Incarnation {
 			return registry.ErrStaleObservation
 		}
 		inv, err := control.NativeInventory(ctx, current)
@@ -234,6 +235,23 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		}
 		vm := inv.Execution
 		if vm.ExecutionRef != current || vm.BundleDigest != b.RuntimeBundleID || vm.Phase != "registered" || vm.PIDStartTime <= 0 || vm.PID <= 0 || vm.HostBootID == "" || inv.Inventory.SourceDisposition != "RUNNING" {
+			return registry.ErrStaleObservation
+		}
+		// A concurrent access can journal a newer authorization decision.
+		// The registered VMM identifies the actual launch or restore receipt.
+		if vm.LastOperationID != "" {
+			operation = vm.LastOperationID
+		}
+		if operation == "" {
+			return registry.ErrStaleObservation
+		}
+		op, err := control.QueryOperation(ctx, operation)
+		if err != nil {
+			return err
+		}
+		if op.Phase != "COMPLETED" || op.InstanceID != st.Instance || op.BundleDigest != b.RuntimeBundleID ||
+			op.Execution == nil || *op.Execution != current ||
+			(op.Kind != "launch" && (op.StatePoint == nil || op.StatePoint.ActivationDecision != "commit" || op.StatePoint.Stage != "released")) {
 			return registry.ErrStaleObservation
 		}
 		profile := ""

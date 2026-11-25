@@ -2407,6 +2407,7 @@ paths:
               properties:
                 default_idle_seconds: {type: integer, minimum: 1}
                 default_network_mode: {type: string, enum: [native, fixed_internal]}
+                default_boot_mode: {type: string, enum: [oci, system], default: oci}
                 default_network_id: {type: string}
                 default_lifecycle_policy: {$ref: '#/components/schemas/LifecyclePolicy'}
               minProperties: 1

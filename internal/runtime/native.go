@@ -20,12 +20,13 @@ type NativeInventory struct {
 	Capabilities map[string]Capability `json:"-"`
 	Execution    struct {
 		ExecutionRef
-		RouteID      string `json:"route_id"`
-		BundleDigest string `json:"bundle_digest"`
-		Phase        string `json:"phase"`
-		HostBootID   string `json:"host_boot_id"`
-		PID          int    `json:"pid"`
-		PIDStartTime int64  `json:"pid_start_time"`
+		RouteID         string `json:"route_id"`
+		BundleDigest    string `json:"bundle_digest"`
+		Phase           string `json:"phase"`
+		HostBootID      string `json:"host_boot_id"`
+		PID             int    `json:"pid"`
+		PIDStartTime    int64  `json:"pid_start_time"`
+		LastOperationID string `json:"last_operation_id"`
 	} `json:"execution"`
 	Inventory struct {
 		Protocol          string          `json:"protocol"`

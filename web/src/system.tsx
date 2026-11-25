@@ -239,8 +239,10 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     <Section title="Platform settings" actions={<button disabled={!settings.data} onClick={() => actions.dialog({
       title: "Update settings", submit: "Save",
       fields: [{ name: "default_idle_seconds", label: "Default idle timeout (seconds)", type: "number", min: 1,
-        value: typeof settings.data?.default_idle_seconds === "number" ? settings.data.default_idle_seconds : undefined, required: true }],
-      act: form => actions.mutate("system/settings", { default_idle_seconds: num(form, "default_idle_seconds") }, {
+        value: typeof settings.data?.default_idle_seconds === "number" ? settings.data.default_idle_seconds : undefined, required: true },
+        { name: "default_boot_mode", label: "Default boot mode", value: String(settings.data?.default_boot_mode ?? "oci"),
+          options: [{value: "oci", label: "OCI"}, {value: "system", label: "System"}] }],
+      act: form => actions.mutate("system/settings", { default_idle_seconds: num(form, "default_idle_seconds"), default_boot_mode: str(form, "default_boot_mode") }, {
         method: "PATCH", revision: typeof settings.data?.revision === "number" ? settings.data.revision : undefined
       })
     })}>Update</button>}>

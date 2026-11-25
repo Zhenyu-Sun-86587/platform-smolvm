@@ -33,11 +33,13 @@ export function MachineList({
   error,
   actions,
   revision,
+  defaultBoot = "oci",
 }: {
   rows?: Machine[]
   error: unknown
   actions: Actions
   revision: number
+  defaultBoot?: BootMode
 }) {
   const templates = useCollection<Template>("templates", revision)
   const hasSystemTemplates = templates.items?.some(template => template.spec?.boot_mode === "system") ?? false
@@ -50,7 +52,9 @@ export function MachineList({
     return [{value, label: system ? `${template.name} · System` : template.name, system,
       version: template.version, disabled: system && systemRuntimes.length === 0}]
   })
-  const preferred = choices.filter(item => !item.disabled).reduce<typeof choices[number] | undefined>(
+  const available = choices.filter(item => !item.disabled)
+  const matchingBoot = available.filter(item => item.system === (defaultBoot === "system"))
+  const preferred = (matchingBoot.length ? matchingBoot : available).reduce<typeof choices[number] | undefined>(
     (last, item) => (!last || item.version > last.version ? item : last),
     undefined,
   )
@@ -128,6 +132,7 @@ export function MachineList({
           body.boot_mode = "system"
           body.runtime_instance_id = str(form, "runtime_instance_id")
         } else {
+          body.boot_mode = "oci"
           body.resources = {...resources, storage_gib: num(form, "storage"), overlay_gib: num(form, "overlay")}
           const idle = str(form, "auto_idle")
           if (idle !== "default") body.idle_policy = {enabled: idle === "enabled", timeout_seconds: idle === "enabled" ? num(form, "idle") : 1800}

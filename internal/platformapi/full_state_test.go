@@ -191,6 +191,32 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"CAPABILITY_UNKNOWN"`) {
 		t.Fatalf("VM restore = %d %s", w.Code, w.Body.String())
 	}
+	const implicit = `{"name":"implicit-boot","template_id":"template"}`
+	w = post("/v1/machines", implicit, "implicit-boot")
+	var original registry.Operation
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &original) != nil {
+		t.Fatalf("implicit OCI create = %d %s", w.Code, w.Body.String())
+	}
+	machine, err := db.GetMachine(ctx, original.MachineID)
+	if err != nil || !strings.Contains(string(machine.Spec), `"boot_mode":"oci"`) {
+		t.Fatalf("persisted boot mode = %s, %v", machine.Spec, err)
+	}
+	if _, err = db.DB().ExecContext(ctx, `UPDATE meta SET settings_json=json_set(settings_json,'$.default_boot_mode','system') WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	w = post("/v1/machines", implicit, "implicit-boot")
+	var replay registry.Operation
+	if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &replay) != nil || replay.ID != original.ID {
+		t.Fatalf("replay after changing default = %d %s", w.Code, w.Body.String())
+	}
+	w = post("/v1/machines", `{"name":"needs-root","template_id":"template"}`, "needs-root")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "default boot mode") {
+		t.Fatalf("implicit System with OCI template = %d %s", w.Code, w.Body.String())
+	}
+	w = post("/v1/machines", `{"name":"explicit-oci","template_id":"template","boot_mode":"oci"}`, "explicit-oci")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("explicit OCI with System default = %d %s", w.Code, w.Body.String())
+	}
 }
 
 func TestOfficialPowerStateRequiresPauseEvidence(t *testing.T) {

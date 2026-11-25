@@ -2,17 +2,20 @@ package platformapi
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/templates"
 )
 
 func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (func(rt.BundleRoute, string) error, error) {
 	route, err := s.DB.GetRuntimeRoute(ctx, instanceID)
 	if errors.Is(err, rt.ErrUnsupported) {
-		return nil, rt.SystemBootUnavailable(false)
+		return func(rt.BundleRoute, string) error { return rt.SystemBootUnavailable(false) }, nil
 	}
 	if err != nil {
 		return nil, err
@@ -31,9 +34,35 @@ func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (
 	}, nil
 }
 
-func (s *Server) resolveSystemNetwork(ctx context.Context, input lifecycle.Create, accept *registry.AcceptRequest) {
-	admit := accept.AdmitRuntime
-	defaults, defaultsErr := s.settings(ctx)
+// Resolve operator defaults under the registry writer transaction. The
+// idempotency check precedes this callback, including on a recovered request.
+func (s *Server) createDefaults(input lifecycle.Create, boot templates.Spec, useDefaultBoot, managed, useDefaultNetwork bool) func(context.Context, *sql.Tx) (json.RawMessage, json.RawMessage, error) {
+	return func(ctx context.Context, tx *sql.Tx) (json.RawMessage, json.RawMessage, error) {
+		defaults, err := s.readSettings(ctx, tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if useDefaultBoot && defaults.BootMode != boot.BootMode {
+			return nil, nil, errors.Join(registry.ErrInvalid, errors.New("the selected template cannot use the default boot mode"))
+		}
+		resolved := input
+		resolved.BootMode = boot.BootMode
+		idle := lifecycle.IdlePolicy{}
+		if boot.BootMode == rt.BootSystem {
+			if useDefaultNetwork || input.Network != nil {
+				resolved.Network, err = s.systemNetwork(input, defaults)
+				if err != nil {
+					return nil, nil, errors.Join(registry.ErrInvalid, err)
+				}
+			}
+		} else {
+			idle = lifecycle.IdlePolicy{Enabled: managed, Timeout: defaults.IdleSeconds}
+		}
+		return lifecycle.JSON(resolved), lifecycle.JSON(idle), nil
+	}
+}
+
+func (s *Server) systemNetwork(input lifecycle.Create, defaults settings) (*rt.LaunchNetwork, error) {
 	for _, route := range s.Config.Runtime.Custom {
 		if route.InstanceID != input.RuntimeInstanceID {
 			continue
@@ -52,26 +81,10 @@ func (s *Server) resolveSystemNetwork(ctx context.Context, input lifecycle.Creat
 			}
 			selection = &resolved
 		}
-		network, err := route.ResolvePrivateNetwork(selection)
-		if err == nil && network != nil {
-			input.Network = network
-			accept.ResolvedCreateRequest = lifecycle.JSON(input)
-		}
-		accept.AdmitRuntime = func(accepted rt.BundleRoute, kind string) error {
-			if accepted != route.Key() {
-				return rt.SystemBootUnavailable(false)
-			}
-			if defaultsErr != nil {
-				return defaultsErr
-			}
-			if err != nil {
-				return errors.Join(registry.ErrInvalid, err)
-			}
-			return admit(accepted, kind)
-		}
-		return
+		return route.ResolvePrivateNetwork(selection)
 	}
 	if input.Network != nil {
-		accept.AdmitRuntime = func(rt.BundleRoute, string) error { return registry.ErrInvalid }
+		return nil, registry.ErrInvalid
 	}
+	return nil, nil
 }

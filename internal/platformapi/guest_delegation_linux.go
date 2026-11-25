@@ -107,10 +107,7 @@ func (s *Server) guestCreate(w http.ResponseWriter, r *http.Request, peer auth.A
 	}
 	accept := registry.AcceptRequest{Kind: "create", Name: request.Name, TemplateID: request.TemplateID,
 		RuntimeInstanceID: request.RuntimeInstanceID, Heavy: true, DesiredPower: "running", AdmitRuntime: admit,
-		DefaultIdlePolicy: lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})}
-	if request.Network != nil {
-		s.resolveSystemNetwork(r.Context(), request, &accept)
-	}
+		ResolveCreateDefaults: s.createDefaults(request, boot, false, true, false)}
 	accept.AdmitGuest = s.guestOperationAdmission(peer, secret, caller, int64(profile.MemoryMiB))
 	return s.accept(w, r, auth.Principal{ID: caller.ID}, request, accept)
 }

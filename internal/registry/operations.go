@@ -197,14 +197,19 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		}
 		return replay, true, nil
 	}
-	if len(r.ResolvedCreateRequest) != 0 {
+	if r.ResolveCreateDefaults != nil {
 		if r.Kind != "create" {
 			return Operation{}, false, ErrInvalid
 		}
-		request, err = ensureJSON(r.ResolvedCreateRequest, "{}")
+		resolved, defaultIdle, err := r.ResolveCreateDefaults(ctx, tx)
 		if err != nil {
 			return Operation{}, false, err
 		}
+		request, err = ensureJSON(resolved, "{}")
+		if err != nil {
+			return Operation{}, false, err
+		}
+		r.DefaultIdlePolicy = defaultIdle
 	}
 	if len(r.IdlePolicy) == 0 && len(r.DefaultIdlePolicy) != 0 {
 		idle, err = ensureJSON(r.DefaultIdlePolicy, "{}")

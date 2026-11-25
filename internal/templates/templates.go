@@ -17,6 +17,7 @@ import (
 
 type Spec struct {
 	BootMode         rt.BootMode `json:"boot_mode,omitempty"`
+	BootModeExplicit bool        `json:"-"`
 	LocalImage       string      `json:"local_image,omitempty"`
 	RootGenerationID string      `json:"root_generation_id,omitempty"`
 	ManagedSSH       bool        `json:"managed_ssh,omitempty"`
@@ -35,7 +36,8 @@ func ReadSpec(t registry.Template) (Spec, error) {
 			return spec, fmt.Errorf("%w: malformed template specification: %v", registry.ErrInvalid, err)
 		}
 	}
-	if spec.BootMode == "" {
+	spec.BootModeExplicit = spec.BootMode != ""
+	if !spec.BootModeExplicit {
 		spec.BootMode = rt.BootOCI
 	}
 	if spec.DesktopProfile != "" && (spec.BootMode != rt.BootSystem || spec.DesktopProfile != DesktopSoftwareVNC) {

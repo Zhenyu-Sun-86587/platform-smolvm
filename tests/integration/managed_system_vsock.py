@@ -4,6 +4,7 @@
 import argparse
 import array
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
 from datetime import datetime, timedelta, timezone
 import grp
@@ -666,8 +667,10 @@ def policy_case(platform, source, machine_id, execution):
     status = platform.app(source + "/lifecycle")
     assert status["supported"] and status["applied_revision"] == status["desired_revision"], status
     defaults = platform.app("system/settings")
+    assert defaults["default_boot_mode"] == "oci" and platform.app("control")["default_boot_mode"] == "oci"
     values = {"auto_standby": True, "standby_after_seconds": 10, "auto_hibernate": True, "hibernate_after_seconds": 72}
-    new = change("system/settings", "PATCH", "set-defaults", {"default_lifecycle_policy": values}, defaults["revision"])
+    new = change("system/settings", "PATCH", "set-defaults", {"default_lifecycle_policy": values, "default_boot_mode": "system"}, defaults["revision"])
+    assert new["default_boot_mode"] == "system" and platform.app("control")["default_boot_mode"] == "system"
     assert platform.app(source + "/lifecycle")["default_revision"] == status["default_revision"]
     view = platform.app(source)
     patch = {"expected_policy_revision": status["desired_revision"],
@@ -698,7 +701,7 @@ def policy_case(platform, source, machine_id, execution):
     assert app["machines"][1]["reason"] == "MACHINE_NOT_FOUND"
     state = platform.app(source + "/lifecycle")
     assert state["overrides"] == {} and state["applied"]["hibernate_after_seconds"] == 72, state
-    change("system/settings", "PATCH", "later-default", {"default_lifecycle_policy": {"hibernate_after_seconds": 99}}, new["revision"])
+    change("system/settings", "PATCH", "later-default", {"default_lifecycle_policy": {"hibernate_after_seconds": 99}, "default_boot_mode": "oci"}, new["revision"])
     platform.restart()
     assert platform.change("lifecycle-policy-applications", "apply-list", selected, status=200) == app
     assert platform.app("lifecycle-policy-applications/" + app["application_id"]) == app
@@ -708,7 +711,12 @@ def policy_case(platform, source, machine_id, execution):
     assert sleeping["power_state"] == "hibernated", sleeping
     change(source + "/leases", "POST", "offline-stale", body, sleeping["revision"] + 1, 409)
     assert platform.app(source)["power_state"] == "hibernated"
-    after = change(source + "/leases", "POST", "offline-acquire", body, sleeping["revision"], timeout=105)
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        concurrent = [clients.submit(change, source + "/leases", "POST", "offline-acquire", body, sleeping["revision"], timeout=105)
+                      for _ in range(2)]
+        replies = [request.result() for request in concurrent]
+    assert len({item["lease_id"] for item in replies}) == 1 and sum("lease_token" in item for item in replies) == 1, [item["state"] for item in replies]
+    after = next(item for item in replies if "lease_token" in item)
     assert after["state"] == "active" and after["execution_epoch"] == execution["execution_epoch"] + 1, after
     assert platform.app(source)["power_state"] == "running"
     assert "lease_token" not in change(source + "/leases", "POST", "offline-acquire", body, sleeping["revision"])

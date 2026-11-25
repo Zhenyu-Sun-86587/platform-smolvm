@@ -2,6 +2,7 @@ package registry_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -31,8 +32,9 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := registry.AcceptRequest{PrincipalID: p.ID, PrincipalScope: []byte(`{"access":"manage"}`), Kind: "create", Name: "example", TemplateID: "t1", Key: "lost-response", Epoch: ctl.ControlEpoch, Scope: "POST /v1/machines", Heavy: true, Request: []byte(`{"name":"example"}`)}
-	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":1800}`)
-	req.ResolvedCreateRequest = []byte(`{"name":"example","network":{"network_id":"test","mode":"native"}}`)
+	req.ResolveCreateDefaults = func(context.Context, *sql.Tx) (json.RawMessage, json.RawMessage, error) {
+		return []byte(`{"name":"example","network":{"network_id":"test","mode":"native"}}`), []byte(`{"enabled":true,"timeout_seconds":1800}`), nil
+	}
 	op, again, err := s.Accept(ctx, req)
 	if err != nil || again {
 		t.Fatal(again, err)
@@ -48,8 +50,10 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":60}`)
-	req.ResolvedCreateRequest = []byte(`{"name":"example","network":{"network_id":"test","mode":"fixed_internal"}}`)
+	req.ResolveCreateDefaults = func(context.Context, *sql.Tx) (json.RawMessage, json.RawMessage, error) {
+		t.Fatal("idempotent replay consulted new operator defaults")
+		return nil, nil, registry.ErrInvalid
+	}
 	replay, again, err := s.Accept(ctx, req)
 	if err != nil || !again || op.ID != replay.ID || op.RuntimeName != replay.RuntimeName {
 		t.Fatal(replay, again, err)

@@ -186,7 +186,7 @@ function App() {
         {notice.effect === "partial" && <State value="partial" />}
         {notice.error?.message && <span>{notice.error.message}</span>}{notice.result?.status === "requires_restart" && <span>Resource changes require restart</span>}<button aria-label="Dismiss operation" onClick={() => setNotice(undefined)}>×</button>
       </div>}
-      {at.page === "machines" && <MachineList rows={machines.items} error={machines.error} actions={actions} revision={revision} />}
+      {at.page === "machines" && <MachineList rows={machines.items} error={machines.error} actions={actions} revision={revision} defaultBoot={control?.default_boot_mode} />}
       {at.page === "machine" && <><Callout error={match.error} />{!match.data && !match.error && <Skeleton className="h-24"/>}{match.data && <MachineView key={match.data.machine_id} machine={match.data} tab={at.tab ?? "overview"} actions={actions} revision={revision} />}</>}
       {catalog && <><Callout error={machines.error}/><Catalog key={catalog} page={catalog} machines={machines.items} actions={actions} revision={revision}/></>}
       {at.page === "volumes" && <VolumeCatalog machines={machines.items} actions={actions} revision={revision} />}
