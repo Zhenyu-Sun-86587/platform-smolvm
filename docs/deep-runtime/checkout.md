@@ -112,3 +112,16 @@ Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐
 | D 态阻塞和未应答 FUSE LOOKUP | 两条路径均返回 `-EBUSY`，冻结尝试耗时 159.92–167.89 ms，进入已武装状态的时间为零 |
 
 每种情形结束后三个计数器均继续推进，解除 FUSE 阻塞后再次释放也通过。可重复的程序和运行方法在 libkrunfw 的 `tests/guest-gate/`。使用宿主 UID 映射的 virtiofs 作为 `/run` 时，计数文件显示为 UID 1000，helper 拒绝注册，Guest 仍可运行。受管身份、网络隔离和设备写入闭包另有验收项，严格克隆能力保持 `unknown`。
+
+### 原生控制、资源恢复和 System 启动实测
+
+2026-11-25，同一隔离 Worker 的 x86_64 KVM 复测取得以下结果。平台的能力结果仍按已安装 Bundle、运行实例和验证配置绑定。
+
+| 测试入口 | 可重复观察 |
+| --- | --- |
+| libkrun 的 `tests/guest_gate/probe.py` | 宿主通过专用 virtio 配置通道冻结和释放 Guest，包括嵌套 PID 命名空间的进程。静态 helper 经 Guest 内核校验后登记。故意配置错误 SHA-256 时，注册返回 `-EKEYREJECTED`，三个用户进程继续计数。 |
+| 同一程序的 raw Standby 测试 | Guest 有一块可写盘和一块只读盘。实际设备清单包含两盘。停驻两秒期间三个计数器和盘上写入标记均保持固定，唤醒后继续推进，一次实测的 Guest 单调时钟增量为 44.85 ms。返回的 `clone_ready` 为 false。 |
+| smolvm 的 `crates/smolvm-resourced/tests/kvm-generation.py` | 源 VMM 退出并删除捕获目录后，新进程通过 broker 持有的三个密封 memfd 还原同一 Guest 进程和冷页。子 VM 写入后重新捕获，孙 VM 使用六个基页和增量 memfd。broker 重启时分别从存活的生产者、持有租约的消费者取回原 inode。 |
+| 同目录的 `kvm-block.py` | 同一个合法 writer 获得两块可写 qcow2 设备。broker 重启后核对两个原 OFD。VMM 退出而另一个进程仍持有其中的 FD 时，后续写权被拒绝。最后一个 FD 关闭后，两盘均可由新 Guest 读取先前写入的独立标记，公共只读基盘的摘要保持一致。 |
+| 两次连续的原生 OCI 启动 | 相同 Worker 上使用真实 image seed 的两台 KVM Guest 都执行了镜像命令，内核为 6.18.60。已有 UID claim 保留，宿主 registry 权限在两次启动后均为 0700。 |
+| Debian 11 System 根盘 | 以 ext4 块设备启动 systemd 247，完成 daemon-reexec、SSH 命令、Docker 本地镜像构建及 Compose 任务。停止并重新启动 Agent 后，独立用户服务的 PID 与启动时间保持一致。Guest 完成关机服务，裸 VMM 由测试宿主回收。 |

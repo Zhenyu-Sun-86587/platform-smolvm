@@ -223,41 +223,50 @@ def glibc_version(value):
     return int(major), int(minor), int(patch)
 
 
-def verify_rootfs(root, artifacts):
-    expected = artifacts[AGENT]
-    found = False
+def verify_rootfs(root, artifacts, *, measured_helper):
+    programs = {"usr/local/bin/smolvm-agent": AGENT}
+    if measured_helper:
+        programs["sbin/smolvm-identity-helper"] = IDENTITY_HELPER
+    found = set()
     with tarfile.open(root / ROOTFS, "r|gz") as archive:
         for member in archive:
-            if posixpath.normpath(member.name).lstrip("/") != "usr/local/bin/smolvm-agent":
+            path = posixpath.normpath(member.name).lstrip("/")
+            if path not in programs:
                 continue
+            expected = artifacts[programs[path]]
+            name = posixpath.basename(path)
             require(
-                not found and not member.name.startswith("/") and ".." not in member.name.split("/")
+                path not in found and not member.name.startswith("/") and ".." not in member.name.split("/")
                 and member.isfile() and member.mode & 0o111 and member.size == expected["size"],
-                "OCI rootfs must contain one executable smolvm-agent matching the bundle",
+                f"OCI rootfs must contain one executable {name} matching the bundle",
             )
             checksum = hashlib.sha256()
             with archive.extractfile(member) as handle:
                 while chunk := handle.read(1024 * 1024):
                     checksum.update(chunk)
-            require(checksum.hexdigest() == expected["sha256"], "OCI rootfs has a different smolvm-agent")
-            found = True
-    require(found, "OCI rootfs is missing smolvm-agent")
+            require(checksum.hexdigest() == expected["sha256"], f"OCI rootfs has a different {name}")
+            found.add(path)
+    for path in programs:
+        require(path in found, f"OCI rootfs is missing {posixpath.basename(path)}")
 
 
-def verify_rootfs_provenance(root, artifacts, toolchain):
+def verify_rootfs_provenance(root, artifacts, toolchain, provenance):
     seed = read_json(root / ROOTFS_INPUT_LOCK)
     fields(seed, "schema recipe " + " ".join(ROOTFS_INPUT_DIGESTS), "rootfs input lock")
     require(seed["schema"] == "RuntimeRootfsSeed/1", "unsupported rootfs input lock schema")
     require(seed["recipe"] == ROOTFS_RECIPE, "unsupported rootfs build recipe")
 
-    provenance = read_json(root / ROOTFS_PROVENANCE)
+    require(provenance.get("schema") in ("RuntimeRootfsProvenance/1", "RuntimeRootfsProvenance/2"),
+            "unsupported rootfs provenance schema")
+    measured = provenance["schema"] == "RuntimeRootfsProvenance/2"
     fields(
         provenance, "schema input_lock_path input_lock_sha256 recipe_sha256 agent_sha256 rootfs_sha256 "
-        + " ".join(ROOTFS_INPUT_DIGESTS), "rootfs provenance",
+        + ("identity_helper_sha256 " if measured else "") + " ".join(ROOTFS_INPUT_DIGESTS), "rootfs provenance",
     )
-    require(provenance["schema"] == "RuntimeRootfsProvenance/1", "unsupported rootfs provenance schema")
     input_path = relative(provenance["input_lock_path"], "rootfs input lock source path")
     pins = {entry["path"]: entry["sha256"] for entry in toolchain["lockfiles"] if entry["repository"] == "smolvm"}
+    require(measured == ("crates/smolvm-identity-helper/Cargo.toml" in pins),
+            "rootfs helper measurement must match the toolchain lock")
     require(pins.get(input_path) == provenance["input_lock_sha256"], "rootfs input lock is not pinned by the toolchain lock")
     recipe = digest(provenance["recipe_sha256"], "rootfs recipe SHA-256")
     if ROOTFS_RECIPE in pins:
@@ -265,13 +274,21 @@ def verify_rootfs_provenance(root, artifacts, toolchain):
     for name in ROOTFS_INPUT_DIGESTS:
         value = digest(seed[name], f"rootfs input lock {name}")
         require(provenance[name] == value, f"rootfs provenance {name} differs from the input lock")
-    for key, path in {
-        "input_lock_sha256": ROOTFS_INPUT_LOCK, "agent_sha256": AGENT, "rootfs_sha256": ROOTFS,
-    }.items():
+    binaries = {"input_lock_sha256": ROOTFS_INPUT_LOCK, "agent_sha256": AGENT, "rootfs_sha256": ROOTFS}
+    if measured:
+        binaries["identity_helper_sha256"] = IDENTITY_HELPER
+    for key, path in binaries.items():
         require(provenance[key] == "sha256:" + artifacts[path]["sha256"], f"rootfs provenance {key} does not match {path}")
 
 
 def checked_artifacts(root, files, required, outputs, executables):
+    metadata = read_json(root / ROOTFS_PROVENANCE) if ROOTFS_PROVENANCE in outputs and ROOTFS_PROVENANCE in files else {}
+    require(isinstance(metadata, dict), "rootfs provenance must be an object")
+    measured = metadata.get("schema") == "RuntimeRootfsProvenance/2"
+    if measured:
+        required = required | {IDENTITY_HELPER}
+        outputs = outputs | {IDENTITY_HELPER}
+        executables = set(executables) | {IDENTITY_HELPER}
     missing = sorted(required - files.keys())
     require(not missing, f"missing required bundle artifacts: {', '.join(missing)}")
     for name in executables:
@@ -283,9 +300,9 @@ def checked_artifacts(root, files, required, outputs, executables):
     verify_provenance(root, build, artifacts, outputs)
     check_elf_artifacts(root, build, artifacts, executables)
     if ROOTFS in outputs:
-        verify_rootfs(root, artifacts)
+        verify_rootfs(root, artifacts, measured_helper=measured)
     if ROOTFS_METADATA <= outputs:
-        verify_rootfs_provenance(root, artifacts, toolchain)
+        verify_rootfs_provenance(root, artifacts, toolchain, metadata)
     return build, artifacts
 
 

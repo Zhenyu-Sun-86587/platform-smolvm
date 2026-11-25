@@ -109,12 +109,16 @@ class BundleTests(unittest.TestCase):
     def json(self, name, data):
         self.write(name, json.dumps(data).encode())
 
-    def make_rootfs(self, agent):
+    def make_rootfs(self, agent, helper=None):
         with tarfile.open(self.stage / "guest/oci-rootfs.tar.gz", "w:gz") as archive:
             member = tarfile.TarInfo("./usr/local/bin/smolvm-agent")
             member.mode = 0o755
             member.size = len(agent)
             archive.addfile(member, io.BytesIO(agent))
+            if helper is not None:
+                member = tarfile.TarInfo("./sbin/smolvm-identity-helper")
+                member.mode, member.size = 0o755, len(helper)
+                archive.addfile(member, io.BytesIO(helper))
 
     def write_record(self, *, refresh_rootfs=True):
         if refresh_rootfs:
@@ -254,6 +258,28 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(BundleError, "missing required bundle artifacts: metadata/rootfs"):
             bundle.verify_bundle(self.stage)
         self.assertEqual(bundle.verify_bundle(self.stage, allow_legacy_rootfs=True), manifest["bundle_digest"])
+
+    def test_measured_helper_must_match_the_oci_bytes(self):
+        toolchain = json.loads((self.stage / bundle.TOOLCHAIN_LOCK).read_bytes())
+        toolchain["lockfiles"].append({"repository": "smolvm", "path": "crates/smolvm-identity-helper/Cargo.toml",
+                                      "sha256": sha(b"helper crate")})
+        self.json(bundle.TOOLCHAIN_LOCK, toolchain)
+        build = json.loads((self.stage / bundle.BUILD_LOCK).read_bytes())
+        build["toolchain_lock_digest"] = sha((self.stage / bundle.TOOLCHAIN_LOCK).read_bytes())
+        self.json(bundle.BUILD_LOCK, build)
+        helper = (self.stage / bundle.IDENTITY_HELPER).read_bytes()
+        for actual in (helper, b"x" * len(helper)):
+            self.make_rootfs((self.stage / bundle.AGENT).read_bytes(), actual)
+            self.write_record()
+            provenance = json.loads((self.stage / bundle.ROOTFS_PROVENANCE).read_bytes())
+            provenance.update(schema="RuntimeRootfsProvenance/2", identity_helper_sha256=sha(helper))
+            self.json(bundle.ROOTFS_PROVENANCE, provenance)
+            self.write_record(refresh_rootfs=False)
+            if actual == helper:
+                bundle.check_runtime(self.stage)
+            else:
+                with self.assertRaisesRegex(BundleError, "different smolvm-identity-helper"):
+                    bundle.check_runtime(self.stage)
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in ("as", "ld", "readelf")), "requires GNU binutils")
     def test_pack_with_real_static_elf_and_soname_files(self):
