@@ -2,7 +2,7 @@ import { PageIntro } from "./daytona/page"
 import { RefreshCw } from "lucide-react"
 import { Button } from "./daytona/button"
 import { useState } from "react"
-import type { Operation, Page } from "../../sdk/typescript/src/index"
+import type { Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, num, Records, Section, segment, State, str, useRemote } from "./common"
 import type { Actions } from "./main"
@@ -70,6 +70,7 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
 
 function Diagnostics({ revision }: { revision: number }) {
   const status = useRemote<Record<string, unknown>>("control", revision)
+  const profiles = useRemote<Page<RuntimeProfile>>("runtime-profiles", revision)
   const metrics = useRemote<Record<string, unknown>>("system/metrics", revision)
   const diagnostic = useRemote<Record<string, unknown>>("system/diagnostics", revision)
   const [machineId, setMachineId] = useState("")
@@ -79,6 +80,20 @@ function Diagnostics({ revision }: { revision: number }) {
   const { csrf_token: _secret, ...details } = status.data ?? {}
   return <>
     <Section title="Control status"><Callout error={status.error} />{status.data && <Details value={details} />}</Section>
+    <Section title="Registered runtime profiles">
+      <Callout error={profiles.error} />
+      {profiles.data?.items.length === 0 && <p className="empty">No deep runtime profiles registered.</p>}
+      {profiles.data?.items.map(profile => <details className="disclosure" key={profile.runtime_instance_id}>
+        <summary>{profile.runtime_instance_id} · {profile.boot_profiles.join(", ") || label(profile.status)}</summary>
+        <Details value={{
+          bundle: profile.runtime_bundle_id, state_reader: profile.state_reader_id,
+          verification: label(profile.verification_status), security: label(profile.security_status),
+          running: profile.running_bindings, standby: profile.standby_bindings,
+          hibernated: profile.hibernated_bindings, bundle_binding_references: profile.bundle_binding_refs,
+          bundle_snapshot_references: profile.bundle_snapshot_refs,
+        }} />
+      </details>)}
+    </Section>
     <Section title="Node metrics"><Callout error={metrics.error} />{metrics.data && <Details value={metrics.data} />}</Section>
     <Section title="Diagnostics">
       <form className="inline-form" onSubmit={event => {

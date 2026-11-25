@@ -3,6 +3,21 @@ export type OperationState = "queued" | "dispatching" | "observing" | "succeeded
 export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown";
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN";
 export type CaptureMode = "vm" | "managed_tasks";
+export interface RuntimeProfile {
+    runtime_instance_id: string;
+    runtime_bundle_id: string;
+    state_reader_id: string;
+    status: string;
+    verification_status: string;
+    security_status: string;
+    boot_profiles: string[];
+    running_bindings: number;
+    standby_bindings: number;
+    hibernated_bindings: number;
+    bundle_binding_refs: number;
+    bundle_snapshot_refs: number;
+    capabilities: Record<string, Capability>;
+}
 export interface ActivityPolicy {
     allow_active_tasks?: boolean;
 }
@@ -280,6 +295,7 @@ export declare class Client {
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     getSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot>;
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;
+    listRuntimeProfiles(signal?: AbortSignal): AsyncGenerator<RuntimeProfile, any, any>;
     machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions): Promise<Operation>;
     private machineMutation;
     standby(id: string, activityPolicy?: ActivityPolicy, options?: MachineWriteOptions): Promise<Operation>;

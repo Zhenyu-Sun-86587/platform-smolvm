@@ -94,10 +94,17 @@ func main() {
 		}
 		var apiErr *apiError
 		if cli.jsonOutput && errors.As(err, &apiErr) {
-			_ = json.NewEncoder(root.ErrOrStderr()).Encode(map[string]any{"status": apiErr.Status, "error": map[string]string{
+			detail := map[string]string{
 				"code": apiErr.Detail.Code, "message": apiErr.Detail.Message, "operation_id": apiErr.Detail.OperationID,
 				"effect": apiErr.Detail.Effect, "retry": apiErr.Detail.Retry,
-			}})
+			}
+			if apiErr.Detail.Capability != "" {
+				detail["capability"] = apiErr.Detail.Capability
+			}
+			if apiErr.Detail.ReasonCode != "" {
+				detail["reason_code"] = apiErr.Detail.ReasonCode
+			}
+			_ = json.NewEncoder(root.ErrOrStderr()).Encode(map[string]any{"status": apiErr.Status, "error": detail})
 		} else {
 			fmt.Fprintln(root.ErrOrStderr(), err)
 		}
@@ -125,6 +132,9 @@ func rootCommand() (*cobra.Command, *client) {
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.services(),
 		api.files(), api.leases(), api.credentials(), api.templates(), api.settings(), api.events(),
 		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
+	profiles := api.list("runtime-profiles", "runtime-profiles", false)
+	profiles.Short = "List registered runtime profiles and bundle references"
+	root.AddCommand(profiles)
 	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())
 	return root, api
 }
@@ -234,6 +244,8 @@ type apiErrorDetail = struct {
 	OperationID string `json:"operation_id"`
 	Effect      string `json:"effect"`
 	Retry       string `json:"retry"`
+	Capability  string `json:"capability"`
+	ReasonCode  string `json:"reason_code"`
 }
 
 func (c *client) get(ctx context.Context, path string, dest any) error {

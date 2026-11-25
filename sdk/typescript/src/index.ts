@@ -3,6 +3,21 @@ export type OperationState = "queued" | "dispatching" | "observing" | "succeeded
 export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown"
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN"
 export type CaptureMode = "vm" | "managed_tasks"
+export interface RuntimeProfile {
+  runtime_instance_id: string
+  runtime_bundle_id: string
+  state_reader_id: string
+  status: string
+  verification_status: string
+  security_status: string
+  boot_profiles: string[]
+  running_bindings: number
+  standby_bindings: number
+  hibernated_bindings: number
+  bundle_binding_refs: number
+  bundle_snapshot_refs: number
+  capabilities: Record<string, Capability>
+}
 export interface ActivityPolicy { allow_active_tasks?: boolean }
 export interface ForkBatch {
   children: { name: string }[]
@@ -402,6 +417,7 @@ export class Client {
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
   getSnapshot(id: string, signal?: AbortSignal) { return this.get<Snapshot>(snapshot(id), signal) }
   listMachines(signal?: AbortSignal) { return this.pages<Machine>("machines", 100, signal) }
+  listRuntimeProfiles(signal?: AbortSignal) { return this.pages<RuntimeProfile>("runtime-profiles", 100, signal) }
   machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions) {
     return this.mutate(machine(id) + "/" + action, { expected_generation: generation }, options)
   }

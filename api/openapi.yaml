@@ -31,6 +31,27 @@ paths:
                 required:
                 - control_epoch
         default: {$ref: '#/components/responses/Error'}
+  /runtime-profiles:
+    get:
+      operationId: list_runtime_profiles
+      summary: List the registered deep runtime instances and pinned bundles
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Registered runtime profiles and persisted reference counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/RuntimeProfile'}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
   /auth/login:
     post:
       operationId: post_auth_login
@@ -2112,6 +2133,27 @@ components:
       required:
       - error
       additionalProperties: false
+    RuntimeProfile:
+      type: object
+      required: [runtime_instance_id, runtime_bundle_id, state_reader_id, status, verification_status, security_status, boot_profiles, running_bindings, standby_bindings, hibernated_bindings, bundle_binding_refs, bundle_snapshot_refs, capabilities]
+      properties:
+        runtime_instance_id: {type: string}
+        runtime_bundle_id: {type: string}
+        state_reader_id: {type: string}
+        status: {type: string}
+        verification_status: {type: string}
+        security_status: {type: string}
+        boot_profiles:
+          type: array
+          items: {type: string}
+        running_bindings: {type: integer, minimum: 0}
+        standby_bindings: {type: integer, minimum: 0}
+        hibernated_bindings: {type: integer, minimum: 0}
+        bundle_binding_refs: {type: integer, minimum: 0}
+        bundle_snapshot_refs: {type: integer, minimum: 0}
+        capabilities:
+          type: object
+          additionalProperties: {$ref: '#/components/schemas/Capability'}
     FullStateAction:
       type: object
       required: [expected_generation]
