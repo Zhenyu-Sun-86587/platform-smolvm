@@ -467,6 +467,7 @@ func (s *Server) routes() {
 	s.execRoutes()
 	s.fileRoutes()
 	s.machineRoutes()
+	s.networkRoutes()
 	s.operationsRoutes()
 	s.eventRoutes()
 }
@@ -548,7 +549,7 @@ func (s *Server) machineRoutes() {
 				return err
 			}
 			req.AdmitRuntime = admission
-			s.resolveSystemNetwork(v, &req)
+			s.resolveSystemNetwork(r.Context(), v, &req)
 			req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
 			req.DesiredPower = "stopped"
 			if v.Start {

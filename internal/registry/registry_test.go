@@ -32,6 +32,7 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 	}
 	req := registry.AcceptRequest{PrincipalID: p.ID, PrincipalScope: []byte(`{"access":"manage"}`), Kind: "create", Name: "example", TemplateID: "t1", Key: "lost-response", Epoch: ctl.ControlEpoch, Scope: "POST /v1/machines", Heavy: true, Request: []byte(`{"name":"example"}`)}
 	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":1800}`)
+	req.ResolvedCreateRequest = []byte(`{"name":"example","network":{"network_id":"test","mode":"native"}}`)
 	op, again, err := s.Accept(ctx, req)
 	if err != nil || again {
 		t.Fatal(again, err)
@@ -48,6 +49,7 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 	}
 	defer s.Close()
 	req.DefaultIdlePolicy = []byte(`{"enabled":true,"timeout_seconds":60}`)
+	req.ResolvedCreateRequest = []byte(`{"name":"example","network":{"network_id":"test","mode":"fixed_internal"}}`)
 	replay, again, err := s.Accept(ctx, req)
 	if err != nil || !again || op.ID != replay.ID || op.RuntimeName != replay.RuntimeName {
 		t.Fatal(replay, again, err)
@@ -55,6 +57,10 @@ func TestAcceptedCreateSurvivesLostResponse(t *testing.T) {
 	originalMachine, err := s.GetMachine(ctx, op.MachineID)
 	if err != nil || string(originalMachine.IdlePolicy) != `{"enabled":true,"timeout_seconds":1800}` {
 		t.Fatal(string(originalMachine.IdlePolicy), err)
+	}
+	const expected = `{"name":"example","network":{"network_id":"test","mode":"native"}}`
+	if string(originalMachine.Spec) != expected || string(replay.Request) != expected {
+		t.Fatal(string(originalMachine.Spec), string(replay.Request))
 	}
 	if _, err = json.Marshal(replay); err != nil {
 		t.Fatal(err)

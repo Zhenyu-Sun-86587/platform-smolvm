@@ -31,27 +31,41 @@ func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (
 	}, nil
 }
 
-func (s *Server) resolveSystemNetwork(input lifecycle.Create, accept *registry.AcceptRequest) {
+func (s *Server) resolveSystemNetwork(ctx context.Context, input lifecycle.Create, accept *registry.AcceptRequest) {
 	admit := accept.AdmitRuntime
-	var topologyError error
+	defaults, defaultsErr := s.settings(ctx)
 	for _, route := range s.Config.Runtime.Custom {
 		if route.InstanceID != input.RuntimeInstanceID {
 			continue
 		}
-		network, err := route.ResolvePrivateNetwork(input.Network)
+		if defaults.NetworkID != "" {
+			route.DefaultNetworkID = defaults.NetworkID
+		}
+		selection := input.Network
+		if defaults.NetworkMode != "" && (selection != nil || route.DefaultNetworkID != "") {
+			resolved := rt.LaunchNetwork{Mode: defaults.NetworkMode}
+			if selection != nil {
+				resolved.NetworkID = selection.NetworkID
+				if selection.Mode != "" {
+					resolved.Mode = selection.Mode
+				}
+			}
+			selection = &resolved
+		}
+		network, err := route.ResolvePrivateNetwork(selection)
 		if err == nil && network != nil {
 			input.Network = network
 			accept.ResolvedCreateRequest = lifecycle.JSON(input)
-		}
-		if err != nil {
-			topologyError = errors.Join(registry.ErrInvalid, err)
 		}
 		accept.AdmitRuntime = func(accepted rt.BundleRoute, kind string) error {
 			if accepted != route.Key() {
 				return rt.SystemBootUnavailable(false)
 			}
-			if topologyError != nil {
-				return topologyError
+			if defaultsErr != nil {
+				return defaultsErr
+			}
+			if err != nil {
+				return errors.Join(registry.ErrInvalid, err)
 			}
 			return admit(accepted, kind)
 		}

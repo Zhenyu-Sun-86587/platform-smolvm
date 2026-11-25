@@ -103,7 +103,7 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 			Name: j.Binding.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
 			MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
 			Network: request.Network,
-			Disks: disks,
+			Disks:   disks,
 		},
 	}
 	intent.RequestDigest = launchDigest(intent)

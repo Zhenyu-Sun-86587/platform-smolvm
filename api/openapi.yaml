@@ -1804,6 +1804,49 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Lease'}
         default: {$ref: '#/components/responses/Error'}
+  /networks:
+    get:
+      operationId: list_private_networks
+      summary: List registered Worker networks
+      responses:
+        '200':
+          description: Network registry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        network_id: {type: string}
+                        runtime_instance_id: {type: string}
+                        cidr: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/network:
+    parameters:
+    - {name: machine, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: get_machine_network_endpoint
+      summary: Read the machine network and current Worker attachment
+      responses:
+        '200':
+          description: Machine network endpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  network_id: {type: string}
+                  mode: {type: string, enum: [native, fixed_internal]}
+                  state: {type: string, enum: [published, unavailable]}
+                  attachment_id: {type: string}
+                  private_ipv4: {type: string, format: ipv4}
+                  guest_ipv4: {type: string, format: ipv4}
+                  dns_name: {type: string}
+        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/services:
     get:
       operationId: get_machines_machine_services
@@ -2154,8 +2197,9 @@ paths:
               type: object
               properties:
                 default_idle_seconds: {type: integer, minimum: 1}
-              required:
-              - default_idle_seconds
+                default_network_mode: {type: string, enum: [native, fixed_internal]}
+                default_network_id: {type: string}
+              minProperties: 1
               additionalProperties: false
       responses:
         '200':
