@@ -13,9 +13,9 @@ import {
   Search,
   Server,
 } from "lucide-react"
-import type { BootMode, CreateMachine, Machine, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
+import type { BootMode, CreateMachine, Machine, Operation, Page, PrivateNetwork, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { useCollection } from "./api"
-import { Callout, label, machinePowerState, num, segment, State, str, time, useRemote } from "./common"
+import { Callout, label, machinePowerState, networkModes, num, segment, State, str, time, useRemote } from "./common"
 import { WorkspaceActions } from "./workspace-actions"
 import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
@@ -43,6 +43,7 @@ export function MachineList({
   const hasSystemTemplates = templates.items?.some(template => template.spec?.boot_mode === "system") ?? false
   const profiles = useCollection<RuntimeProfile>(hasSystemTemplates ? "runtime-profiles" : "", revision)
   const systemRuntimes = profiles.items?.filter(profile => profile.capabilities["boot.system"]?.status === "supported") ?? []
+  const networks = useCollection<PrivateNetwork>(systemRuntimes.length ? "networks" : "", revision)
   const choices = (templates.items ?? []).flatMap(template => {
     const value = template.template_id ?? template.id
     if (!value) return []
@@ -97,8 +98,21 @@ export function MachineList({
           {name: "memory", label: "Memory (MiB)", type: "number" as const, min: 1, value: 2048, required: true},
         ]
         if (selected?.system) {
-          return [...common, {name: "runtime_instance_id", label: "Runtime", required: true,
-            options: systemRuntimes.map(runtime => ({value: runtime.runtime_instance_id}))}]
+          const runtimeID = values?.get("runtime_instance_id") ?? systemRuntimes[0]?.runtime_instance_id
+          const available = (networks.items ?? []).filter(network => network.runtime_instance_id === runtimeID)
+          return [...common,
+            {name: "runtime_instance_id", label: "Runtime", required: true,
+              options: systemRuntimes.map(runtime => ({value: runtime.runtime_instance_id}))},
+            ...(available.length ? [
+              {name: "network_id", label: "Private network", options: [
+                {value: "", label: "Use configured default"}, ...available.map(network => ({value: network.network_id, label: network.network_id})),
+              ]},
+              {name: "network_mode", label: "Network mode", options: [{value: "", label: "Use platform default"}, ...networkModes],
+                note: "Native uses a private address inside the guest. Fixed internal keeps a stable guest address and assigns a separate private address."},
+            ] : []),
+            {name: "start", label: "Start after creation", type: "checkbox" as const, value: true,
+              note: "Leave the machine stopped to attach volumes before the first boot."},
+          ]
         }
         const idle = [
           {value: "default", label: "Use template default"},
@@ -122,11 +136,14 @@ export function MachineList({
           name: str(form, "name"),
           template_id: str(form, "template_id"),
           resources,
-          start: selected?.system || form.has("start"),
+          start: form.has("start"),
         }
         if (selected?.system) {
           body.boot_mode = "system"
           body.runtime_instance_id = str(form, "runtime_instance_id")
+          const networkID = str(form, "network_id")
+          const mode = networkModes.find(mode => mode.value === str(form, "network_mode"))?.value
+          if (networkID || mode) body.network = { network_id: networkID || undefined, mode }
         } else {
           body.resources = {...resources, storage_gib: num(form, "storage"), overlay_gib: num(form, "overlay")}
           const idle = str(form, "auto_idle")

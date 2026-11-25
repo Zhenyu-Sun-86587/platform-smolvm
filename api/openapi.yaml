@@ -3003,7 +3003,7 @@ components:
         runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. System templates require a verified System runtime.}
         resources: {$ref: '#/components/schemas/Resources'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
-        start: {type: boolean, description: Must be true for System templates.}
+        start: {type: boolean, description: Start after creation. Leave false to attach volumes to a stopped System machine before first boot.}
       required:
       - name
       - template_id

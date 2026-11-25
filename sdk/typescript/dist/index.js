@@ -231,6 +231,12 @@ export class Client {
     }
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
+    listPrivateNetworks(signal) { return this.pages("networks", 100, signal); }
+    getMachineNetwork(id, signal) { return this.get(machine(id) + "/network", signal); }
+    async setNetworkDefaults(defaults, options = {}) {
+        const revision = options.revision ?? (await this.get("system/settings", options.signal)).revision;
+        return this.mutate("system/settings", defaults, { ...options, method: "PATCH", revision });
+    }
     getLifecycleStatus(id, signal) {
         return this.get(machine(id) + "/lifecycle", signal);
     }

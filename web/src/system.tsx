@@ -2,10 +2,11 @@ import { PageIntro } from "./daytona/page"
 import { RefreshCw } from "lucide-react"
 import { Button } from "./daytona/button"
 import { useState } from "react"
-import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, Operation, Page, PolicyApplication, RuntimeProfile } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
-import { api, Callout, Details, label, num, Records, Section, segment, State, str, time, useRemote } from "./common"
+import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
+import { useCollection } from "./api"
 import type { Actions } from "./main"
 
 export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups"
@@ -220,7 +221,9 @@ function ApplyDefaults({ actions, revision, defaultRevision }: Pick<Props, "acti
 }
 
 function Settings({ actions, revision }: Omit<Props, "tab">) {
-  const settings = useRemote<Record<string, unknown> & { default_lifecycle_policy?: LifecyclePolicy }>("system/settings", revision)
+  const settings = useRemote<Record<string, unknown> & NetworkDefaults & { default_lifecycle_policy?: LifecyclePolicy }>("system/settings", revision)
+  const networks = useCollection<PrivateNetwork>("networks", revision)
+  const networkIDs = Array.from(new Set((networks.items ?? []).map(network => network.network_id)))
   const tokens = useRemote<Page<Credential>>("tokens", revision)
   const keys = useRemote<Page<Credential>>("ssh-keys", revision)
   const certificates = useRemote<Page<Credential>>("client-certificates", revision)
@@ -246,6 +249,21 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     })}>Update</button>}>
       <Callout error={settings.error} />{settings.data && <Details value={settings.data} />}
     </Section>
+    {settings.data && networkIDs.length > 0 && <Section title="Private network defaults" actions={<button onClick={() => actions.dialog({
+      title: "Edit private network defaults", submit: "Save",
+      fields: [
+        { name: "network_id", label: "Default private network", value: settings.data?.default_network_id ?? "",
+          options: [{value: "", label: "Use each runtime’s configured network"}, ...networkIDs.map(value => ({value}))] },
+        { name: "network_mode", label: "Default network mode", value: settings.data?.default_network_mode, options: networkModes },
+      ],
+      act: form => actions.mutate("system/settings", {
+        default_network_id: str(form, "network_id"), default_network_mode: str(form, "network_mode"),
+      }, { method: "PATCH", revision: Number(settings.data!.revision) }),
+    })}>Edit network defaults</button>}>
+      <p>These defaults apply to new System machines.</p>
+      <Details value={{ network: settings.data.default_network_id || "Runtime default",
+        mode: networkModes.find(mode => mode.value === settings.data?.default_network_mode)?.label }} />
+    </Section>}
     {settings.data?.default_lifecycle_policy && <Section title="Default lifecycle policy" actions={<button onClick={() => actions.dialog({
       title: "Edit default lifecycle policy", submit: "Save", sheet: true,
       fields: policyFields(settings.data!.default_lifecycle_policy!),

@@ -251,11 +251,29 @@ class Client:
         )
 
     def create_machine(self, spec, **options):
-        """Create from a template. System templates require runtime_instance_id and start=True."""
+        """Create from a template. System templates accept a registered runtime and private network selection."""
         return self.mutate("machines", spec, **options)
 
     def get_machine(self, id):
         return self.get(_item("machines", id))
+
+    def list_private_networks(self, *, limit=100):
+        return self.pages("networks", limit=limit)
+
+    def get_machine_network(self, machine_id):
+        return self.get(_item("machines", machine_id) + "/network")
+
+    def set_network_defaults(self, *, mode=None, network_id=None, revision=None, intent=None):
+        body = {}
+        if mode is not None:
+            body["default_network_mode"] = mode
+        if network_id is not None:
+            body["default_network_id"] = network_id
+        if not body:
+            raise ValueError("provide a network mode or an ID")
+        if revision is None:
+            revision = self.get("system/settings")["revision"]
+        return self.mutate("system/settings", body, method="PATCH", revision=revision, intent=intent)
 
     def get_lifecycle_status(self, machine_id):
         return self.get(_item("machines", machine_id) + "/lifecycle")

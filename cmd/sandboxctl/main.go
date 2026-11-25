@@ -134,7 +134,9 @@ func rootCommand() (*cobra.Command, *client) {
 		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
-	root.AddCommand(profiles)
+	networks := api.list("networks", "networks", false)
+	networks.Short = "List registered Worker private networks"
+	root.AddCommand(profiles, networks)
 	root.AddCommand(api.mcpCommand())
 	root.AddCommand(api.backups())
 	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())
