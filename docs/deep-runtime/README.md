@@ -35,11 +35,13 @@
 
 选择新 main 的理由很具体：相对研究时的 `53a04b9`，新增 [#2448](https://github.com/smol-machines/smolvm/commit/829dd655587292e0338507b6119d93223771868f) 修复旧 packed layer 在 per-VM uid 下的可读性及缓存修复；[#2449](https://github.com/smol-machines/smolvm/commit/5bd7c2f8e8e2d29869226a91f766bf4147b5e693) 在“VM 已启动但 OCI workload 启动失败”时返回 `workload_error`。共 7 个文件变化，底层 gitlink 不变。工程采用这两项已合入修复；并不声称新 main 已通过本项目 KVM 验收。main 中 Cargo 仍写 `1.37.2`，因此发布必须使用独立的下游 bundle ID，不靠该字符串判断版本。
 
-### 本次已经做了什么
+### 计划编制时的起点
 
 本地已在独立 worktree 建立平台 `deep-runtime/main`，起点是 `582a6f1`；smolvm 本地也建立同名分支，起点是 `5bd7c2f`。五份文档位于平台 `docs/deep-runtime/`。没有修改生产源码、推送远端、创建远端依赖 Fork、部署服务、运行新的 VM 性能测试或改动 PVE。`libkrun` / `libkrunfw` 个人 Fork 的匿名访问未能确认，因此仓库创建/权限核实仍属于 WP-00，不能宣称它们已存在或不存在。
 
 ## 3. 文档导航与阅读顺序
+
+11 月 26 日的冻结候选已在独立 Worker 上完成安装、OCI 和 Debian System 的实机验收。[候选 91e2c72 的安装与 KVM 验收](candidate-91e2c72.md)
 
 | 文件 | 用途 | 首次执行必须阅读的部分 |
 | --- | --- | --- |
