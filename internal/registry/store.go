@@ -174,30 +174,37 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
 		return Control{}, err
 	}
-	files, err := migrations.Files.ReadDir(".")
-	if err != nil {
-		return Control{}, err
+	// The official Phase 2 route uses versions 3–7 for different migrations.
+	files := []struct {
+		version int
+		name    string
+	}{
+		{1, "001_registry.sql"},
+		{2, "002_product.sql"},
+		{1001, "1001_deep_runtime.sql"},
 	}
-	if current < 0 || current > len(files) {
+	latest := files[len(files)-1].version
+	known := current == 0
+	for _, file := range files {
+		known = known || current == file.version
+	}
+	if !known {
 		return Control{}, fmt.Errorf("unsupported registry schema version %d", current)
 	}
 	if current == 0 && hasMarker {
 		return Control{}, fmt.Errorf("registry installation marker exists but database is uninitialized")
 	}
-	for i, file := range files {
-		version := i + 1
-		if !strings.HasPrefix(file.Name(), fmt.Sprintf("%03d_", version)) {
-			return Control{}, fmt.Errorf("invalid migration order at %q", file.Name())
-		}
+	for _, file := range files {
+		version := file.version
 		if version <= current {
 			continue
 		}
-		script, err := migrations.Files.ReadFile(file.Name())
+		script, err := migrations.Files.ReadFile(file.name)
 		if err != nil {
 			return Control{}, err
 		}
 		if _, err := tx.ExecContext(ctx, string(script)); err != nil {
-			return Control{}, fmt.Errorf("apply %s: %w", file.Name(), err)
+			return Control{}, fmt.Errorf("apply %s: %w", file.name, err)
 		}
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
 			return Control{}, err
@@ -214,7 +221,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 			return Control{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO meta (id, schema_version, installation_id, control_epoch)
-			VALUES (1, ?, ?, ?)`, len(files), installation, epoch); err != nil {
+			VALUES (1, ?, ?, ?)`, latest, installation, epoch); err != nil {
 			return Control{}, err
 		}
 	}
@@ -228,11 +235,11 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 	if current > 0 && current != control.SchemaVersion {
 		return Control{}, fmt.Errorf("inconsistent registry schema version %d (metadata %d)", current, control.SchemaVersion)
 	}
-	if control.SchemaVersion < len(files) {
-		if _, err := tx.ExecContext(ctx, "UPDATE meta SET schema_version = ? WHERE id = 1", len(files)); err != nil {
+	if control.SchemaVersion < latest {
+		if _, err := tx.ExecContext(ctx, "UPDATE meta SET schema_version = ? WHERE id = 1", latest); err != nil {
 			return Control{}, err
 		}
-		control.SchemaVersion = len(files)
+		control.SchemaVersion = latest
 	}
 	return control, tx.Commit()
 }
