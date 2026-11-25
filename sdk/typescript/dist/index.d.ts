@@ -4,6 +4,23 @@ export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unk
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN";
 export type CaptureMode = "vm" | "managed_tasks";
 export type VolumeRestorePolicy = "exact" | "clone_conflicts";
+export type BackupScope = "platform_snapshots" | "durable_runtime";
+export interface BackupPolicy {
+    policy_id: string;
+    scope: BackupScope;
+    interval_seconds: number;
+    retain: number;
+}
+export interface BackupRun {
+    backup_id: string;
+    policy_id: string;
+    scope: BackupScope;
+    control_epoch: string;
+    state: "running" | "verified" | "failed" | "retiring" | "retired";
+    started_at: string;
+    finished_at?: string;
+    failure_code?: string;
+}
 export interface RuntimeProfile {
     runtime_instance_id: string;
     runtime_bundle_id: string;
@@ -308,7 +325,20 @@ export interface TaskChunk {
 export interface PlatformEvent {
     id: string;
     type: string;
-    data: unknown;
+    data: {
+        id: string;
+        control_epoch: string;
+        seq: number;
+        type: string;
+        created_at: string;
+        payload: unknown;
+        machine_id?: string;
+        operation_id?: string;
+        event_name?: string;
+        resource_kind?: string;
+        resource_id?: string;
+        schema_version?: number;
+    };
 }
 export interface StreamTicket {
     ticket: string;
@@ -361,6 +391,10 @@ export declare class Client {
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;
+    listBackupPolicies(signal?: AbortSignal): AsyncGenerator<BackupPolicy, any, any>;
+    listBackups(signal?: AbortSignal): AsyncGenerator<BackupRun, any, any>;
+    getBackup(id: string, signal?: AbortSignal): Promise<BackupRun>;
+    runBackup(policy: string, options?: WriteOptions): Promise<BackupRun>;
     retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     listDesktopSessions(id: string, signal?: AbortSignal): AsyncGenerator<DesktopSession, any, any>;

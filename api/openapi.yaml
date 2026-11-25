@@ -2441,11 +2441,79 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Operation'}
         default: {$ref: '#/components/responses/Error'}
+  /backups:
+    get:
+      operationId: list_backup_runs
+      summary: List scheduled or manually requested backup runs
+      parameters:
+      - {name: policy_id, in: query, schema: {type: string}}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Backup history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/BackupRun'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /backups/{backup}:
+    get:
+      operationId: get_backup_run
+      summary: Inspect a backup run
+      parameters:
+      - {name: backup, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Backup run
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BackupRun'}
+        default: {$ref: '#/components/responses/Error'}
+  /backups/policies:
+    get:
+      operationId: list_backup_policies
+      summary: List operator-configured backup schedules
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Backup policy summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/BackupPolicy'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /backups/policies/{policy}/runs:
+    post:
+      operationId: run_backup_policy
+      summary: Request a backup under an existing policy
+      parameters:
+      - {name: policy, in: path, required: true, schema: {type: string}}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202':
+          description: Backup accepted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BackupRun'}
+        default: {$ref: '#/components/responses/Error'}
   /events:
     get:
       operationId: get_events
       summary: Replay and follow durable events
-      description: Send the last processed event ID when reconnecting. HTTP 410 requires fetching current state before resubscribing.
+      description: Send the last processed event ID when reconnecting. HTTP 410 requires fetching current state before resubscribing. JSON data includes event_name, resource_kind, resource_id, schema_version and the scoped payload.
       parameters:
       - name: Last-Event-ID
         in: header
@@ -2509,6 +2577,29 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    BackupScope:
+      type: string
+      enum: [platform_snapshots, durable_runtime]
+    BackupPolicy:
+      type: object
+      required: [policy_id, scope, interval_seconds, retain]
+      properties:
+        policy_id: {type: string}
+        scope: {$ref: '#/components/schemas/BackupScope'}
+        interval_seconds: {type: integer, minimum: 1}
+        retain: {type: integer, minimum: 1}
+    BackupRun:
+      type: object
+      required: [backup_id, policy_id, scope, control_epoch, state, started_at]
+      properties:
+        backup_id: {type: string}
+        policy_id: {type: string}
+        scope: {$ref: '#/components/schemas/BackupScope'}
+        control_epoch: {type: string}
+        state: {type: string, enum: [running, verified, failed, retiring, retired]}
+        started_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
+        failure_code: {type: string}
     VolumeRestorePolicy:
       type: string
       enum: [exact, clone_conflicts]

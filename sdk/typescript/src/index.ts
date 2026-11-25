@@ -4,6 +4,13 @@ export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unk
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN"
 export type CaptureMode = "vm" | "managed_tasks"
 export type VolumeRestorePolicy = "exact" | "clone_conflicts"
+export type BackupScope = "platform_snapshots" | "durable_runtime"
+export interface BackupPolicy { policy_id: string; scope: BackupScope; interval_seconds: number; retain: number }
+export interface BackupRun {
+  backup_id: string; policy_id: string; scope: BackupScope; control_epoch: string
+  state: "running" | "verified" | "failed" | "retiring" | "retired"
+  started_at: string; finished_at?: string; failure_code?: string
+}
 export interface RuntimeProfile {
   runtime_instance_id: string
   runtime_bundle_id: string
@@ -247,7 +254,10 @@ export interface WriteOptions { method?: string; revision?: number; intent?: Mut
 export interface MachineWriteOptions extends WriteOptions { generation?: number }
 export interface Page<T> { items: T[]; next_cursor?: string }
 export interface TaskChunk { start: number; next: number; gap: boolean; bytes: Uint8Array }
-export interface PlatformEvent { id: string; type: string; data: unknown }
+export interface PlatformEvent { id: string; type: string; data: {
+  id: string; control_epoch: string; seq: number; type: string; created_at: string; payload: unknown
+  machine_id?: string; operation_id?: string; event_name?: string; resource_kind?: string; resource_id?: string; schema_version?: number
+} }
 export interface StreamTicket { ticket: string; protocol?: string }
 export const terminalStates = new Set<OperationState>(["succeeded", "failed", "cancelled", "recovery_required"])
 
@@ -483,6 +493,12 @@ export class Client {
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
   getOperation(id: string, signal?: AbortSignal) { return this.get<Operation>(operation(id), signal) }
+  listBackupPolicies(signal?: AbortSignal) { return this.pages<BackupPolicy>("backups/policies", 100, signal) }
+  listBackups(signal?: AbortSignal) { return this.pages<BackupRun>("backups", 100, signal) }
+  getBackup(id: string, signal?: AbortSignal) { return this.get<BackupRun>("backups/" + segment(id), signal) }
+  runBackup(policy: string, options?: WriteOptions) {
+    return this.mutate<BackupRun>("backups/policies/" + segment(policy) + "/runs", {}, options)
+  }
   async retryForkTargets(id: string, options: WriteOptions = {}) {
     const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
     return this.mutate<Operation>(operation(id) + "/retry", {}, { ...options, revision })

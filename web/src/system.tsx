@@ -2,19 +2,41 @@ import { PageIntro } from "./daytona/page"
 import { RefreshCw } from "lucide-react"
 import { Button } from "./daytona/button"
 import { useState } from "react"
-import type { Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
 import { operation } from "../../sdk/typescript/src/index"
-import { api, Callout, Details, label, num, Records, Section, segment, State, str, useRemote } from "./common"
+import { api, Callout, Details, label, num, Records, Section, segment, State, str, time, useRemote } from "./common"
 import type { Actions } from "./main"
 
-export type SystemTab = "operations" | "settings" | "diagnostics" | "templates"
+export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups"
 type Props = { tab: SystemTab; id?: string; actions: Actions; revision: number; operationIds: string[] }
 
 export function System({ tab, ...props }: Props) {
   return <><PageIntro title={tab==="operations"?"Operations":"Settings"} desc={tab==="operations"?"Inspect lifecycle progress, results, and recovery.":"Manage credentials, templates, and your local platform."} actions={<Button variant="outline" onClick={props.actions.refresh}><RefreshCw/>Refresh</Button>}/>
-    {tab!=="operations"&&<nav className="tabs" aria-label="Settings sections">{[["settings","Credentials"],["templates","Templates"],["diagnostics","Diagnostics"]].map(([key,title])=><a key={key} className={tab===key?"active":""} href={"#/"+key}>{title}</a>)}</nav>}
+    {tab!=="operations"&&<nav className="tabs" aria-label="Settings sections">{[["settings","Credentials"],["templates","Templates"],["backups","Backups"],["diagnostics","Diagnostics"]].map(([key,title])=><a key={key} className={tab===key?"active":""} href={"#/"+key}>{title}</a>)}</nav>}
     {tab === "operations" ? <Operations {...props} /> : tab === "templates" ? <Templates {...props} />
-      : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : <Settings {...props} />}</>
+      : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : tab === "backups" ? <Backups {...props} /> : <Settings {...props} />}</>
+}
+
+function Backups({ actions, revision }: Omit<Props,"tab">) {
+  const policies = useRemote<Page<BackupPolicy>>("backups/policies",revision)
+  const runs = useRemote<Page<BackupRun>>("backups?limit=50",revision)
+  return <>
+    <Section title="Backup policies"><Callout error={policies.error} />
+      {policies.data?.items.length === 0 && <p className="empty">Configure a backup policy in platformd to schedule backups.</p>}
+      <div className="rows">{policies.data?.items.map(policy => <div className="row" key={policy.policy_id}>
+        <strong>{policy.policy_id}</strong><span>{label(policy.scope)}</span><span>Every {policy.interval_seconds} seconds</span><span>Keep {policy.retain}</span>
+        <Button variant="outline" disabled={runs.data?.items.some(run => run.policy_id === policy.policy_id && run.state === "running")}
+          onClick={() => actions.dialog({title:"Run backup",act:() => actions.mutate("backups/policies/" + segment(policy.policy_id) + "/runs")})}>Run now</Button>
+      </div>)}</div>
+    </Section>
+    <Section title="Backup history"><Callout error={runs.error} />
+      {runs.data?.items.length === 0 && <p className="empty">No backups yet.</p>}
+      <div className="rows">{runs.data?.items.map(run => <div className="row" key={run.backup_id}>
+        <strong>{run.policy_id}</strong><State value={run.state}/><span>{time(run.started_at)}</span><code>{run.backup_id}</code>
+        {run.failure_code && <span>{label(run.failure_code)}</span>}
+      </div>)}</div>
+    </Section>
+  </>
 }
 
 function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">) {

@@ -168,6 +168,18 @@ class Client:
             revision = self.get(path)["revision"]
         return self.mutate(path + "/retry", revision=revision, intent=intent)
 
+    def list_backup_policies(self):
+        return self.pages("backups/policies")
+
+    def list_backups(self, *, policy_id=None):
+        return self.pages("backups", **({"policy_id": policy_id} if policy_id else {}))
+
+    def get_backup(self, backup_id):
+        return self.get(_item("backups", backup_id))
+
+    def run_backup(self, policy_id, *, intent=None):
+        return self.mutate(_item("backups/policies", policy_id) + "/runs", intent=intent)
+
     def pages(self, path, *, limit=100, **filters) -> Iterator[dict]:
         cursor = ""
         while True:

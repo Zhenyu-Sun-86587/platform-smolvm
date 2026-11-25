@@ -30,7 +30,7 @@ function route(): Location {
   if (head === "machines" && id) {
     try { return { page: "machine", id: decodeURIComponent(id), tab: tab ?? "overview" } } catch { return { page: "machines" } }
   }
-  if (head === "snapshots" || head === "volumes" || head === "tasks" || head === "networking" || head === "operations" || head === "settings" || head === "diagnostics" || head === "templates") return { page: head, id: id || undefined }
+  if (head === "snapshots" || head === "volumes" || head === "tasks" || head === "networking" || head === "operations" || head === "settings" || head === "diagnostics" || head === "templates" || head === "backups") return { page: head, id: id || undefined }
   return { page: "machines" }
 }
 

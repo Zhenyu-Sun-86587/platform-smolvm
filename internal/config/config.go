@@ -79,6 +79,19 @@ type Config struct {
 		EventsDays int    `yaml:"events_retention_days"`
 		AuditDays  int    `yaml:"audit_retention_days"`
 	}
+	Backups []BackupPolicy `yaml:"backups"`
+}
+
+const BackupPortable = "platform_snapshots"
+const BackupNative = "durable_runtime"
+
+type BackupPolicy struct {
+	ID              string `yaml:"id" json:"policy_id"`
+	Scope           string `yaml:"scope" json:"scope"`
+	Directory       string `yaml:"directory" json:"-"`
+	IntervalSeconds int    `yaml:"interval_seconds" json:"interval_seconds"`
+	Retain          int    `yaml:"retain" json:"retain"`
+	RecoveryKeyFile string `yaml:"recovery_key_file" json:"-"`
 }
 
 func Defaults() Config {
@@ -178,6 +191,20 @@ func Load(path string) (Config, error) {
 	}
 	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxConnections < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
 		return c, errors.New("invalid capacity settings")
+	}
+	seenPolicy := map[string]bool{}
+	for _, policy := range c.Backups {
+		if len(policy.ID) == 0 || len(policy.ID) > 64 || strings.Trim(policy.ID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != "" || seenPolicy[policy.ID] {
+			return c, errors.New("backup policies require distinct IDs containing letters, digits, underscores or dashes")
+		}
+		if (policy.Scope != BackupPortable && policy.Scope != BackupNative) || policy.IntervalSeconds < 1 || policy.IntervalSeconds > 31*86400 || policy.Retain < 1 {
+			return c, errors.New("backup policy requires a supported scope, a positive interval and retention of at least one verified backup")
+		}
+		if !filepath.IsAbs(policy.Directory) || filepath.Clean(policy.Directory) != policy.Directory || policy.Directory == "/" ||
+			!filepath.IsAbs(policy.RecoveryKeyFile) {
+			return c, errors.New("backup destination and recovery key require absolute paths")
+		}
+		seenPolicy[policy.ID] = true
 	}
 	host, _, e := net.SplitHostPort(c.API.Listen)
 	if e != nil {
