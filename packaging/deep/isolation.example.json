@@ -1,0 +1,51 @@
+{
+  "schema": "deep-isolation/v1",
+  "routes": [
+    {
+      "route_id": "deep",
+      "present": true,
+      "paths": {
+        "runtime_bundles": "/opt/smolvm-custom/bundles",
+        "platform_releases": "/opt/sandbox-platform-deep/releases",
+        "worker_state": "/var/lib/smolvm-custom/worker",
+        "serve_state": "/var/lib/smolvm-custom/engines",
+        "platform_state": "/var/lib/sandbox-platform-deep",
+        "platform_config": "/etc/sandbox-platform-deep",
+        "runtime_sockets": "/run/smolvm-custom",
+        "build_work": "/var/tmp/smolvm-deep-build"
+      },
+      "units": ["platformd-deep.service", "smolvm-deep-resourced.service", "smolvm-deep-serve@.service"],
+      "slices": ["smolvmdeep.slice"],
+      "ports": [
+        {"protocol": "tcp", "bind": "127.0.0.1", "range": [18443, 18443]},
+        {"protocol": "tcp", "bind": "127.0.0.1", "range": [21100, 21163]}
+      ],
+      "address_pools": ["172.31.240.0/24"]
+    },
+    {
+      "route_id": "official",
+      "present": true,
+      "paths": {
+        "installation": "/opt/sandbox-platform",
+        "platform_state": "/var/lib/sandbox-platform",
+        "platform_config": "/etc/sandbox-platform",
+        "runtime_state": "/var/lib/smolvm-platform-runtime",
+        "runtime_images": "/var/lib/smolvm-platform-images",
+        "runtime_sockets": "/run/smolvm-platform"
+      },
+      "units": ["platformd.service", "smolvm-serve.service", "smolvm-status.socket", "smolvm-status@.service"],
+      "slices": ["smolvm.slice"],
+      "ports": [
+        {"protocol": "tcp", "bind": "127.0.0.1", "range": [8443, 8443]},
+        {"protocol": "tcp", "bind": "127.0.0.1", "range": [10081, 10081]},
+        {"protocol": "tcp", "bind": "127.0.0.1", "range": [21000, 21063]}
+      ],
+      "address_pools": []
+    },
+    {
+      "route_id": "cocoon",
+      "present": false
+    }
+  ],
+  "host_address_reservations": {}
+}
