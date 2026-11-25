@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Preflight a deep runtime build, or pack and verify its output."""
+
+import argparse
+import hashlib
+import mmap
+import os
+import posixpath
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+from bundle_inputs import (
+    BundleError,
+    REPOSITORIES,
+    canonical_json,
+    check_inputs,
+    check_toolchain,
+    digest,
+    fields,
+    file_digest,
+    match,
+    names,
+    read_json,
+    read_locks,
+    relative,
+    require,
+)
+
+
+MANIFEST = "runtime-bundle.json"
+BUILD_LOCK = "metadata/build-lock.json"
+TOOLCHAIN_LOCK = "metadata/toolchain-lock.json"
+BUILD_RECORD = "metadata/build-record.json"
+VERIFICATION_PROFILE = "profiles/verification.json"
+PROVENANCE = "lib/libkrun.provenance"
+LIBKRUN = "lib/libkrun.so"
+FIRMWARE = "lib/libkrunfw.so"
+ROOTFS = "guest/oci-rootfs.tar.gz"
+AGENT = "guest/agent"
+INIT = "guest/init"
+IDENTITY_HELPER = "guest/identity-helper"
+CONFIG = "guest/kernel.config"
+KERNEL = "guest/vmlinux"
+BOOT_TEMPLATES = {"oci-v1": ROOTFS, "system-debian-v1": "guest/system-debian.tar.gz"}
+PROTOCOLS = ("worker_resource", "capture_control", "statepoint", "guest_identity", "network_attachment", "block_attachment")
+PROFILES = {
+    "cpu_profile_digest": "profiles/cpu.json",
+    "device_profile_digest": "profiles/device.json",
+    "clock_contract_digest": "profiles/clock.json",
+}
+EXECUTABLES = ("smolvm", "smolvm-bin", "smolvm-resourced", INIT, AGENT, IDENTITY_HELPER)
+LIBRARY_OUTPUTS = {LIBKRUN, FIRMWARE, KERNEL, CONFIG, INIT}
+LIBRARY_FILES = {BUILD_LOCK, TOOLCHAIN_LOCK, BUILD_RECORD, PROVENANCE, *LIBRARY_OUTPUTS}
+REQUIRED_FILES = {
+    *LIBRARY_FILES, VERIFICATION_PROFILE, "LICENSE", "NOTICE",
+    *EXECUTABLES, *PROFILES.values(), *(f"sources/{repo}.tar.gz" for repo in REPOSITORIES),
+}
+
+
+def manifest_digest(manifest):
+    payload = {key: value for key, value in manifest.items() if key not in {"bundle_digest", "signature"}}
+    return "sha256:" + hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def list_files(root):
+    require(stat.S_ISDIR(root.lstat().st_mode), f"{root} must be a directory")
+    files = {}
+    directories = [root]
+    while directories:
+        for path in directories.pop().iterdir():
+            name = relative(path.relative_to(root).as_posix(), "artifact path")
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                directories.append(path)
+            else:
+                require(stat.S_ISREG(mode), f"bundle entries must be regular files: {name}")
+                files[name] = mode
+    return files
+
+
+def artifact_index(root, files):
+    artifacts = {}
+    for name in sorted(files):
+        checksum, size = file_digest(root / name)
+        artifacts[name] = {"path": name, "size": size, "sha256": checksum}
+    return artifacts
+
+
+def read_profile(root):
+    profile = read_json(root / VERIFICATION_PROFILE)
+    fields(profile, "schema boot_profiles contracts state_reader_id required_kvm_caps optional_features", "verification profile")
+    require(profile["schema"] == "RuntimeVerificationProfile/1", "unsupported verification profile schema")
+    boot_profiles = names(profile["boot_profiles"], r"[a-z0-9-]+", "boot_profiles", required=True)
+    require("oci-v1" in boot_profiles and set(boot_profiles) <= BOOT_TEMPLATES.keys(), "unsupported boot profiles")
+    fields(profile["contracts"], " ".join(PROTOCOLS), "contracts")
+    for name, version in profile["contracts"].items():
+        require(type(version) is int and version == 1, f"unsupported contract version: {name}")
+    match(profile["state_reader_id"], r"[A-Za-z0-9][A-Za-z0-9._:+/-]*", "state_reader_id")
+    names(profile["required_kvm_caps"], r"KVM_CAP_[A-Z0-9_]+", "required_kvm_caps", required=True)
+    names(profile["optional_features"], r"[A-Za-z0-9][A-Za-z0-9._-]*", "optional_features")
+    for name in PROFILES.values():
+        contract = read_json(root / name)
+        require(isinstance(contract, dict) and contract, f"{name} must contain the runtime's contract")
+    return profile
+
+
+def verify_config(path, expected):
+    actual = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        assignment = re.fullmatch(r"(CONFIG_[A-Z0-9_]+)=(.*)", line)
+        disabled = re.fullmatch(r"# (CONFIG_[A-Z0-9_]+) is not set", line)
+        if assignment or disabled:
+            name = (assignment or disabled)[1]
+            require(name not in actual, f"duplicate kernel config entry: {name}")
+            actual[name] = assignment[2] if assignment else "n"
+    for name, value in expected.items():
+        require(actual.get(name) == value, f"kernel config requires {name}={value}")
+
+
+def verify_provenance(root, lock, artifacts, required):
+    recorded = {}
+    for line in (root / PROVENANCE).read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith("#"):
+            name, sep, commit = line.partition("=")
+            require(sep and name not in recorded, "invalid libkrun provenance record")
+            recorded[name] = commit
+    expected = {name: lock["sources"][name]["commit"] for name in ("libkrun", "libkrunfw")}
+    require(recorded == expected, "libkrun provenance does not match the pinned source commits")
+
+    record = read_json(root / BUILD_RECORD)
+    fields(record, "schema build_lock_digest outputs", "build record")
+    require(record["schema"] == "RuntimeBuildRecord/1", "unsupported build record schema")
+    require(
+        record["build_lock_digest"] == "sha256:" + artifacts[BUILD_LOCK]["sha256"],
+        "build record belongs to a different build lock",
+    )
+    outputs = record["outputs"]
+    require(isinstance(outputs, dict), "build record outputs must be an object")
+    require(required <= outputs.keys(), "build record is missing required output digests")
+    for name, checksum in outputs.items():
+        require(name in artifacts and name != BUILD_RECORD, f"invalid build record output path: {name}")
+        require(checksum == "sha256:" + artifacts[name]["sha256"], f"build record output digest mismatch: {name}")
+
+    with (root / LIBKRUN).open("rb") as library:
+        with mmap.mmap(library.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            require(mapped.find((root / INIT).read_bytes()) >= 0, "libkrun has a different embedded init")
+
+
+def elf(path, kind, *, static=False):
+    result = subprocess.run(
+        ["readelf", "-W", "-h", "-l", "-d", "--dyn-syms", "--version-info", str(path)],
+        capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"},
+    )
+    require(result.returncode == 0 and not result.stderr, f"readelf failed for {path}: {result.stderr.strip()}")
+    data = result.stdout
+    require(re.search(r"^\s*Class:\s+ELF64\s*$", data, re.M) and
+            re.search(r"^\s*Data:.*little endian\s*$", data, re.M) and
+            re.search(r"^\s*Machine:\s+Advanced Micro Devices X86-64\s*$", data, re.M),
+            f"{path} must be an x86-64 ELF")
+    elf_type = re.search(r"^\s*Type:\s+(\S+)", data, re.M)
+    require(elf_type and elf_type[1] in kind, f"{path} has an unexpected ELF type")
+    require(re.search(r"^\s*LOAD\s", data, re.M), f"{path} has no loadable ELF segments")
+    if kind != {"DYN"}:
+        entry = re.search(r"^\s*Entry point address:\s+(0x[0-9a-f]+)", data, re.M)
+        require(entry and int(entry[1], 16) > 0, f"{path} has no executable entry point")
+    if static:
+        require(not re.search(r"^\s*INTERP\s|\(NEEDED\)", data, re.M), f"{path} must be statically linked")
+    return data
+
+
+def check_elf_artifacts(root, lock, artifacts, *, libraries_only=False):
+    elf(root / INIT, {"EXEC", "DYN"}, static=True)
+    host = []
+    if not libraries_only:
+        elf(root / IDENTITY_HELPER, {"EXEC", "DYN"}, static=True)
+        elf(root / AGENT, {"EXEC", "DYN"})
+        host = [root / "smolvm-bin", root / "smolvm-resourced"]
+    maximum = glibc_version(lock["maximum_glibc"])
+    for path in host + [root / LIBKRUN, root / FIRMWARE]:
+        library = path.parent == root / "lib"
+        data = elf(path, {"DYN"} if library else {"EXEC", "DYN"})
+        needs = data.partition("Version needs section")[2]
+        for version in re.findall(r"\bName:\s+GLIBC_(\S+)", needs):
+            match(version, r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", f"{path} GLIBC requirement")
+            require(glibc_version(version) <= maximum, f"{path} needs GLIBC_{version}, above the build lock")
+        required_libraries = re.findall(r"\(NEEDED\).*?\[([^\]]+)\]", data)
+        require(
+            not any(name.startswith(("libvirglrenderer", "libepoxy", "libvulkan")) for name in required_libraries),
+            f"{path} has a host GPU dependency",
+        )
+        if library:
+            soname = re.search(r"\(SONAME\).*?\[([^\]]+)\]", data)
+            require(soname is not None, f"{path} has no SONAME")
+            alias = artifacts.get("lib/" + relative(soname[1], "library SONAME"))
+            require(alias and alias["sha256"] == artifacts["lib/" + path.name]["sha256"],
+                    f"{path} is missing the matching SONAME file {soname[1]}")
+        if path == root / LIBKRUN:
+            exports = set(re.findall(
+                r"^\s*\d+:\s+\S+\s+\d+\s+(?:FUNC|IFUNC)\s+(?:GLOBAL|WEAK)\s+"
+                r"(?:DEFAULT|PROTECTED)\s+\d+\s+(krun_[a-zA-Z0-9_]+)(?:@\S+)?(?:\s|$)",
+                data, re.M,
+            ))
+            missing = sorted(set(lock["required_libkrun_exports"]) - exports)
+            require(not missing, f"libkrun is missing required exports: {', '.join(missing)}")
+
+
+def glibc_version(value):
+    major, minor, patch, *_ = value.split(".") + ["0"]
+    return int(major), int(minor), int(patch)
+
+
+def verify_rootfs(root, artifacts):
+    expected = artifacts[AGENT]
+    found = False
+    with tarfile.open(root / ROOTFS, "r|gz") as archive:
+        for member in archive:
+            if posixpath.normpath(member.name).lstrip("/") != "usr/local/bin/smolvm-agent":
+                continue
+            require(
+                not found and not member.name.startswith("/") and ".." not in member.name.split("/")
+                and member.isfile() and member.mode & 0o111 and member.size == expected["size"],
+                "OCI rootfs must contain one executable smolvm-agent matching the bundle",
+            )
+            checksum = hashlib.sha256()
+            with archive.extractfile(member) as handle:
+                while chunk := handle.read(1024 * 1024):
+                    checksum.update(chunk)
+            require(checksum.hexdigest() == expected["sha256"], "OCI rootfs has a different smolvm-agent")
+            found = True
+    require(found, "OCI rootfs is missing smolvm-agent")
+
+
+def build_manifest(root, files):
+    missing = sorted(REQUIRED_FILES - files.keys())
+    require(not missing, f"missing required bundle artifacts: {', '.join(missing)}")
+    for name in EXECUTABLES:
+        require(files[name] & stat.S_IXUSR, f"bundle executable is missing its executable mode: {name}")
+    build, _ = read_locks(root / BUILD_LOCK, root / TOOLCHAIN_LOCK)
+    profile = read_profile(root)
+    for name in profile["boot_profiles"]:
+        require(BOOT_TEMPLATES[name] in files, f"missing template for {name}")
+    artifacts = artifact_index(root, files)
+
+    verify_config(root / CONFIG, build["kernel"]["required_config"])
+    verify_provenance(root, build, artifacts, {*LIBRARY_OUTPUTS, ROOTFS, *EXECUTABLES})
+    check_elf_artifacts(root, build, artifacts)
+    verify_rootfs(root, artifacts)
+
+    def artifact_digest(name):
+        return "sha256:" + artifacts[name]["sha256"]
+
+    manifest = {
+        "schema": "RuntimeBundle/1",
+        "platform": "linux-x86_64",
+        "sources": build["sources"],
+        "guest": {
+            "kernel_release": build["kernel"]["release"],
+            "kernel_digest": artifact_digest(KERNEL),
+            "config_digest": artifact_digest(CONFIG),
+            "init_digest": artifact_digest(INIT),
+            "agent_digest": artifact_digest(AGENT),
+            "identity_helper_digest": artifact_digest(IDENTITY_HELPER),
+            "boot_profiles": profile["boot_profiles"],
+        },
+        "build": {
+            "toolchain_lock_digest": build["toolchain_lock_digest"],
+            "flags": build["flags"],
+            "patch_ids": [patch["id"] for patch in build["patches"]],
+        },
+        "artifacts": list(artifacts.values()),
+        "contracts": {
+            **profile["contracts"],
+            "state_reader_id": profile["state_reader_id"],
+            **{label: artifact_digest(name) for label, name in PROFILES.items()},
+        },
+        "host_requirements": {
+            "os": "linux",
+            "arch": "x86_64",
+            "kvm_required": True,
+            "required_kvm_caps": profile["required_kvm_caps"],
+            "optional_features": profile["optional_features"],
+        },
+        "verification_profile_digest": artifact_digest(VERIFICATION_PROFILE),
+    }
+    manifest["bundle_digest"] = manifest_digest(manifest)
+    return manifest
+
+
+def check_libraries(root):
+    files = list_files(root)
+    missing = sorted(LIBRARY_FILES - files.keys())
+    require(not missing, f"missing required build outputs: {', '.join(missing)}")
+    require(files[INIT] & stat.S_IXUSR, f"build output is missing its executable mode: {INIT}")
+    build, _ = read_locks(root / BUILD_LOCK, root / TOOLCHAIN_LOCK)
+    artifacts = artifact_index(root, files)
+    verify_config(root / CONFIG, build["kernel"]["required_config"])
+    verify_provenance(root, build, artifacts, LIBRARY_OUTPUTS)
+    check_elf_artifacts(root, build, artifacts, libraries_only=True)
+
+
+def verify_bundle(root, expected=None):
+    files = list_files(root)
+    require(MANIFEST in files, f"missing {MANIFEST}")
+    del files[MANIFEST]
+    manifest = read_json(root / MANIFEST)
+    require(isinstance(manifest, dict) and manifest.get("schema") == "RuntimeBundle/1", "unsupported bundle schema")
+    actual_digest = digest(manifest.get("bundle_digest"), "bundle_digest")
+    require(actual_digest == manifest_digest(manifest), "bundle manifest digest mismatch")
+    if expected is not None:
+        require(actual_digest == digest(expected, "expected bundle digest"), "unexpected bundle digest")
+
+    entries = manifest.get("artifacts")
+    require(isinstance(entries, list), "artifacts must be an array")
+    indexed = set()
+    for entry in entries:
+        fields(entry, "path size sha256", "artifact")
+        name = relative(entry["path"], "artifact path")
+        require(name not in indexed, f"duplicate artifact path: {name}")
+        indexed.add(name)
+        require(type(entry["size"]) is int and entry["size"] > 0, f"invalid artifact size: {name}")
+        digest(entry["sha256"], f"{name} SHA-256", prefixed=False)
+        require(name in files, f"missing artifact: {name}")
+        info = (root / name).stat()
+        require(info.st_size == entry["size"], f"artifact size mismatch: {name}")
+        require(info.st_nlink == 1, f"hardlinked bundle artifact: {name}")
+    require(indexed == files.keys(), f"unindexed bundle artifacts: {', '.join(sorted(files.keys() - indexed))}")
+
+    actual = build_manifest(root, files)
+    if actual["bundle_digest"] != actual_digest:
+        for actual_entry, expected_entry in zip(actual["artifacts"], entries):
+            require(actual_entry == expected_entry, f"artifact digest or order mismatch: {expected_entry['path']}")
+        raise BundleError("bundle manifest fields do not match the locked build and artifacts")
+    return actual_digest
+
+
+def pack_bundle(staging, output):
+    files = list_files(staging)
+    require(MANIFEST not in files, "staged outputs already contain a bundle manifest")
+    staging = staging.resolve(strict=True)
+    output = output.parent.resolve(strict=True) / output.name
+    require(output != staging and staging not in output.parents, "output must be outside artifact staging")
+    require(not output.exists() and not output.is_symlink(), f"output already exists: {output}")
+    with tempfile.TemporaryDirectory(prefix=".deep-bundle-", dir=output.parent) as work:
+        candidate = Path(work) / "candidate"
+        candidate.mkdir()
+        for name, mode in files.items():
+            path = candidate / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(staging / name, path)
+            path.chmod(0o555 if mode & stat.S_IXUSR else 0o444)
+        manifest = build_manifest(candidate, list_files(candidate))
+        path = candidate / MANIFEST
+        path.write_bytes(canonical_json(manifest) + b"\n")
+        path.chmod(0o444)
+        subprocess.run(["mv", "-nT", "--", str(candidate), str(output)], check=True)
+        require(not candidate.exists(), f"output already exists: {output}")
+    return manifest["bundle_digest"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    check = commands.add_parser("check-inputs", help="verify clean locked sources and the builder before compilation")
+    check.add_argument("--build-lock", type=Path, required=True)
+    check.add_argument("--toolchain-lock", type=Path, required=True)
+    check.add_argument("--smolvm", type=Path, required=True)
+    check.add_argument("--kernel-archive", type=Path, required=True)
+    check.add_argument("--builder-image", required=True)
+    libraries = commands.add_parser("check-libraries", help="check the isolated firmware, libkrun and init outputs")
+    libraries.add_argument("--artifacts", type=Path, required=True)
+    pack = commands.add_parser("pack", help="check staged build outputs and assemble a new bundle directory")
+    pack.add_argument("--artifacts", type=Path, required=True)
+    pack.add_argument("--output", type=Path, required=True)
+    verify = commands.add_parser("verify", help="verify a RuntimeBundle/1 directory")
+    verify.add_argument("bundle", type=Path)
+    verify.add_argument("--expect", help="expected sha256: digest from trusted release metadata")
+    args = parser.parse_args()
+    try:
+        if args.command == "check-inputs":
+            build, toolchain = read_locks(args.build_lock, args.toolchain_lock)
+            check_inputs(args.smolvm, args.kernel_archive, build, toolchain)
+            check_toolchain(toolchain, args.builder_image, args.smolvm)
+            print("Build inputs verified.")
+        elif args.command == "check-libraries":
+            check_libraries(args.artifacts)
+            print("Runtime libraries and init verified.")
+        elif args.command == "pack":
+            print(pack_bundle(args.artifacts, args.output))
+        else:
+            print(verify_bundle(args.bundle, args.expect))
+    except (BundleError, OSError, UnicodeError, tarfile.TarError, subprocess.CalledProcessError) as error:
+        print(f"deep bundle: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
