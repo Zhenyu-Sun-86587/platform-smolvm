@@ -229,6 +229,10 @@ export class Client {
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
     getOperation(id, signal) { return this.get(operation(id), signal); }
+    async retryForkTargets(id, options = {}) {
+        const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision;
+        return this.mutate(operation(id) + "/retry", {}, { ...options, revision });
+    }
     getService(id, signal) { return this.get(service(id), signal); }
     getSnapshot(id, signal) { return this.get(snapshot(id), signal); }
     listMachines(signal) { return this.pages("machines", 100, signal); }

@@ -73,7 +73,7 @@ func allocateForkChildren(ctx context.Context, tx *sql.Tx, op *Operation, source
 
 func advanceNativeFork(ctx context.Context, tx *sql.Tx, op *Operation, r TransitionRequest) ([]string, error) {
 	if !rt.IsNativeFork(op.Kind) {
-		if r.ReleaseSourceLock || len(r.ForkChildren) != 0 {
+		if r.ReleaseSourceLock || len(r.ForkChildren) != 0 || len(r.ForkRetryOrdinals) != 0 {
 			return nil, fmt.Errorf("%w: fork evidence outside a native fork", ErrInvalid)
 		}
 		return nil, nil
@@ -88,6 +88,16 @@ func advanceNativeFork(ctx context.Context, tx *sql.Tx, op *Operation, r Transit
 		}
 		op.SourceLockReleased = true
 		events = append(events, op.MachineID)
+	}
+	for _, ordinal := range r.ForkRetryOrdinals {
+		if !op.SourceLockReleased || op.State != Observing || r.State != Observing || ordinal < 0 || ordinal >= len(op.Children) {
+			return nil, ErrOperationState
+		}
+		child := &op.Children[ordinal]
+		if err := reopenForkChild(ctx, tx, op.ID, child); err != nil {
+			return nil, err
+		}
+		events = append(events, child.MachineID)
 	}
 	for _, change := range r.ForkChildren {
 		if change.Ordinal < 0 || change.Ordinal >= len(op.Children) || op.Children[change.Ordinal].Ordinal != change.Ordinal ||
@@ -121,6 +131,74 @@ func advanceNativeFork(ctx context.Context, tx *sql.Tx, op *Operation, r Transit
 		events = append(events, child.MachineID)
 	}
 	return events, nil
+}
+
+func verifiedForkCancellation(op Operation, r TransitionRequest) bool {
+	return rt.IsNativeFork(op.Kind) && op.State == Observing && r.State == Cancelled && r.Effect == EffectNone &&
+		r.Stage == "completed" && len(r.ForkChildren) == len(op.Children)
+}
+
+func reopenForkChild(ctx context.Context, tx *sql.Tx, operationID string, child *OperationChild) error {
+	if child.State != "quarantined" || child.ErrorCode != "NATIVE_CHILD_ABORTED" {
+		return ErrOperationState
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE machines SET deleted_at=NULL,desired_power='stopped',revision=revision+1
+		WHERE id=? AND deleted_at IS NOT NULL AND binding_generation=0 AND current_binding_id IS NULL`, child.MachineID)
+	if err != nil {
+		return err
+	}
+	if count, err := updated.RowsAffected(); err != nil || count != 1 {
+		return ErrGeneration
+	}
+	updated, err = tx.ExecContext(ctx, `UPDATE runtime_bindings SET status='candidate'
+		WHERE id=? AND machine_id=? AND status='retired' AND generation=1 AND execution_epoch IS NULL`, child.BindingID, child.MachineID)
+	if err != nil {
+		return err
+	}
+	if count, err := updated.RowsAffected(); err != nil || count != 1 {
+		return ErrGeneration
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO operation_locks (machine_id,operation_id,expected_generation,role)
+		VALUES(?,?,0,'child')`, child.MachineID, operationID); err != nil {
+		return err
+	}
+	child.State, child.ResourceIndependence, child.ErrorCode = "pending", "unknown", ""
+	child.Attempt++
+	_, err = tx.ExecContext(ctx, `UPDATE operation_children SET state='pending',resource_independence='unknown',error_code=NULL,attempt=?
+		WHERE operation_id=? AND ordinal=?`, child.Attempt, operationID, child.Ordinal)
+	return err
+}
+
+// BeginNativeForkRetryTx journals a retry of a settled, released cut. The
+// failed children stay hidden until the Worker confirms a new target attempt.
+func (s *Store) BeginNativeForkRetryTx(ctx context.Context, tx *sql.Tx, id string, version int64, dispatch json.RawMessage) (Operation, error) {
+	op, err := readOperation(ctx, tx, id)
+	if err != nil {
+		return op, err
+	}
+	if op.Version != version {
+		return Operation{}, ErrRevision
+	}
+	if !rt.IsNativeFork(op.Kind) || !op.SourceLockReleased ||
+		!oneOf(op.State, Succeeded, Failed) || !oneOf(op.Effect, EffectNone, EffectPartial) || !json.Valid(dispatch) {
+		return Operation{}, ErrOperationState
+	}
+	retryable := false
+	for _, child := range op.Children {
+		retryable = retryable || (child.State == "quarantined" && child.ErrorCode == "NATIVE_CHILD_ABORTED")
+	}
+	if !retryable {
+		return Operation{}, ErrOperationState
+	}
+	op.State, op.Stage, op.Dispatch, op.Error = Observing, "fork_retry", dispatch, nil
+	op.Version++
+	op.UpdatedAt = time.Now().UTC()
+	_, err = tx.ExecContext(ctx, `UPDATE operations SET state=?,stage=?,dispatch_json=?,error_json=NULL,version=?,updated_at=? WHERE id=?`,
+		op.State, op.Stage, string(op.Dispatch), op.Version, op.UpdatedAt.UnixMilli(), op.ID)
+	if err != nil {
+		return Operation{}, err
+	}
+	return op, appendOperationEvent(ctx, tx, op)
 }
 
 func applyForkChild(ctx context.Context, tx *sql.Tx, operationID string, child *OperationChild, change ForkChildTransition) error {

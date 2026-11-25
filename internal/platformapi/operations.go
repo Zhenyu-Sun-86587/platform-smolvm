@@ -13,6 +13,32 @@ import (
 )
 
 func (s *Server) operationsRoutes() {
+	s.route("POST /v1/operations/{op}/retry", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		op, err := s.DB.GetOperation(r.Context(), r.PathValue("op"))
+		if err != nil {
+			return err
+		}
+		if err = p.Authorize("manage", op.MachineID); err != nil {
+			return err
+		}
+		version, err := revision(r)
+		if err != nil {
+			return err
+		}
+		var body struct{}
+		if err = decode(r, &body); err != nil {
+			return err
+		}
+		raw, err := s.applyMutation(r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+			accepted, err := s.RetryNativeFork(ctx, tx, op, version)
+			return registry.MutationResult{Response: lifecycle.JSON(accepted)}, err
+		})
+		if err != nil {
+			return err
+		}
+		w.Header().Set("Location", "/v1/operations/"+op.ID)
+		return write(w, 202, raw)
+	})
 	for _, act := range []string{"reconcile", "cancel"} {
 		s.route("POST /v1/operations/{op}/"+act, func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 			id := r.PathValue("op")

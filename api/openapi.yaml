@@ -2261,6 +2261,26 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Operation'}
         default: {$ref: '#/components/responses/Error'}
+  /operations/{operation}/retry:
+    post:
+      operationId: retry_fork_targets
+      summary: Retry failed targets from a retained fork cut
+      parameters:
+      - name: operation
+        in: path
+        required: true
+        schema: {type: string, minLength: 1}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '202':
+          description: Retry accepted for the original durable fork operation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Error'}
   /operations/{operation}/reconcile:
     post:
       operationId: post_operations_operation_reconcile
@@ -2516,9 +2536,10 @@ components:
             default: {const: clone}
     OperationChild:
       type: object
-      required: [ordinal, machine_id, binding_id, state]
+      required: [ordinal, machine_id, binding_id, state, attempt]
       properties:
         ordinal: {type: integer, minimum: 0}
+        attempt: {type: integer, minimum: 0}
         machine_id: {type: string}
         binding_id: {type: string}
         state: {type: string}
@@ -2528,6 +2549,7 @@ components:
       type: object
       properties:
         operation_id: {type: string, minLength: 1}
+        revision: {type: integer, minimum: 1}
         machine_id: {type: string, minLength: 1}
         kind: {type: string}
         stage: {type: string}
@@ -2543,6 +2565,7 @@ components:
         result: {type: [object, 'null']}
       required:
       - operation_id
+      - revision
       - state
       - kind
       - stage

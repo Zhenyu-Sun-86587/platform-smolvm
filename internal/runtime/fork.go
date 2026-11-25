@@ -25,6 +25,7 @@ type ForkProgress struct {
 	OriginalSourceDisposition string             `json:"original_source_disposition"`
 	SourceReleased            bool               `json:"source_released"`
 	Children                  []ForkChildReceipt `json:"children"`
+	Outcome                   string             `json:"outcome"`
 	Error                     *string            `json:"error"`
 }
 
@@ -35,6 +36,18 @@ type ForkChildReceipt struct {
 	Phase          string  `json:"phase"`
 	IncarnationID  *string `json:"incarnation_id"`
 	ExecutionEpoch int64   `json:"execution_epoch"`
+	Attempt        int64   `json:"attempt"`
+	Cancelled      bool    `json:"cancelled"`
+}
+
+type ForkControl struct {
+	RequestDigest    string       `json:"request_digest"`
+	Expected         ExecutionRef `json:"expected"`
+	ExpectedRevision int64        `json:"expected_revision"`
+}
+
+type ForkRetryControl interface {
+	RetryFork(context.Context, string, ForkControl) (OperationReceipt, error)
 }
 
 type NativeForkControl interface {
@@ -93,6 +106,11 @@ func VerifiedForkProfile(c Capability) bool {
 }
 
 func (i NativeInventory) ForkEligible(kind string) bool {
+	for _, device := range i.Inventory.Devices {
+		if device.VirtioType == 19 && !device.ParkedVSockRebind {
+			return false
+		}
+	}
 	return VerifiedForkProfile(i.Capabilities[FullStateOperationCapability(kind)]) && i.ManagedStandby() &&
 		(i.Inventory.SourceDisposition == "RUNNING" || i.Inventory.SourceDisposition == "STANDBY") && len(i.ForkDisks()) > 0
 }

@@ -51,11 +51,18 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
       {item.children?.map(child => <div className="row" key={child.ordinal}>
         {child.state === "ready" ? <a href={"#/machines/" + segment(child.machine_id)}>{child.machine_id}</a> : <code>{child.machine_id}</code>}
         <State value={child.state} />
+        {child.attempt > 0 && <span>Attempt {child.attempt + 1}</span>}
         {child.resource_independence && <span>Resource independence {child.resource_independence}</span>}
         {child.error_code && <code>{child.error_code}</code>}
       </div>)}
     </div>}
     <div className="panel-footer actions">
+      {item.source_lock_released && (item.state === "succeeded" || item.state === "failed") && item.children?.some(child => child.error_code === "NATIVE_CHILD_ABORTED") &&
+        <button onClick={() => actions.dialog({
+          title: "Retry failed fork targets",
+          description: "Start a new attempt for each eligible failed target using the original captured state.",
+          act: () => actions.mutate(operation(item.operation_id) + "/retry", {}, { revision: item.revision })
+        })}>Retry failed targets</button>}
       <button onClick={() => actions.dialog({
         title: "Reconcile operation", description: "Observe the current state and resume reconciliation for this operation.",
         act: () => actions.mutate(operation(item.operation_id) + "/reconcile")
