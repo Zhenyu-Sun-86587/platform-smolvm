@@ -148,3 +148,11 @@ Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐
 | libkrun `tests/guest_gate/target_probe.py --network --host-route` | Guest 经单主机网关路由使用 /32 地址。源、子和孙机保留 Guest PID 444。Guest packet gate 在身份切换期间阻断 ICMP，释放后可通过新的上行链路通信。 |
 | smolvm `crates/smolvm-resourced/tests/kvm-native-operations.py` | 直接经 Worker 注册的真实 KVM 源机在 managed 和 raw 待机期间计数不变，唤醒后原 PID 430 的计数继续。强制终止并重启 Worker 后恢复到同一台待机中的 VMM，随后正常唤醒。操作重放、提交后断开、错 epoch、已提交后取消均检查了持久回执。 |
 | smolvm `crates/smolvm-resourced/tests/kvm-parked-block.py` | 原子捕获两个可写磁盘，源与各后代取得独立写句柄。拒绝了错误代、错误旧 epoch、同 inode 错 OFD 和内容相同的不同祖先 inode。两个祖先进程退出后再次恢复了子机的子机。 |
+
+### 平台电源操作与托管块盘启动
+
+2026-11-25 在 Linux x86_64 KVM 上，平台通过私有 Serve 对已登记的 OCI Guest 执行了托管 Standby。重启 platformd 后重放相同请求返回原操作。Worker 退出期间提交的 Wake 在 Worker 恢复后完成，Guest PID、incarnation 和 execution epoch 均保持一致。平台实现合并于 `09974d5`，实机日志位于 `.build/network-gate-libs/platform-native-power-combined.log`。
+
+smolvm 提交 `2a1d538` 的私有 Serve 从 Worker 接收完整磁盘集合。静态计数 Guest 使用一个只读根盘和两个可写数据盘，同一进程在两盘持续留下关联标记。Serve 重启后相同操作键返回原执行。终止 VMM 并确认退出后，Worker 释放预算；下一 epoch 重新取得原卷和两个可写 head。另一轮以 Debian 可写根盘启动，在该执行的 Agent socket 上读取 `/proc/1/comm` 得到 `systemd`。两轮均使用独立非 root VMM UID。重现入口为 smolvm 的 `tests/test_deep_managed_launch.py`，日志位于 `.build/network-gate-libs/managed-reattach-kvm.log` 和 `.build/network-gate-libs/managed-system-kvm.log`。
+
+Worker 提交 `c940b2b` 和 libkrun 提交 `fb04f22` 的 KVM 测试覆盖 Checkpoint 后源继续运行、Hibernate 停止决定跨 Worker 重启、读取缺少 RAM 块和磁盘内容被更改时拒绝恢复，以及 Rollback 后保留救援点。实测恢复的进程保留了原 Guest PID、内存标记和两个磁盘的内容。重现入口为 smolvm 的 `crates/smolvm-resourced/tests/kvm-parked-block.py`，日志位于 `.build/wp10/durable-statepoint.log`。这些运行使用开发构建；冻结候选包 dbe526e 的验收记录单独见本目录的 `candidate-dbe526e.md`。
