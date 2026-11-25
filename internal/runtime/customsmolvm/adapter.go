@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	rt "sandbox-platform/internal/runtime"
@@ -18,6 +19,7 @@ type Route struct {
 	Reader           string `yaml:"state_reader_id"`
 	Socket           string
 	WorkerSocket     string           `yaml:"worker_socket,omitempty"`
+	GuestRelayDir    string           `yaml:"guest_relay_dir,omitempty"`
 	PrivateNetworks  []PrivateNetwork `yaml:"private_networks,omitempty"`
 	DefaultNetworkID string           `yaml:"default_network_id,omitempty"`
 	Manifest         string
@@ -38,6 +40,9 @@ func (r Route) Validate() error {
 		if err := validateEndpoint(r.WorkerSocket, r.Bundle, r.Reader); err != nil {
 			return err
 		}
+	}
+	if r.GuestRelayDir != "" && (r.WorkerSocket == "" || !filepath.IsAbs(r.GuestRelayDir) || filepath.Clean(r.GuestRelayDir) != r.GuestRelayDir) {
+		return fmt.Errorf("%w: Guest relay needs a Worker and a canonical directory", rt.ErrInvalid)
 	}
 	if err := r.validatePrivateNetworks(); err != nil {
 		return err

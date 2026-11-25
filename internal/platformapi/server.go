@@ -471,6 +471,7 @@ func (s *Server) routes() {
 	s.fileRoutes()
 	s.machineRoutes()
 	s.networkRoutes()
+	s.guestGrantRoutes()
 	s.operationsRoutes()
 	s.eventRoutes()
 }
