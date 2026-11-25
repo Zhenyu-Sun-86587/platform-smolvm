@@ -2,7 +2,9 @@ package platformapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"sandbox-platform/internal/lifecycle"
@@ -21,10 +23,11 @@ type machineHealth struct {
 }
 
 type machineView struct {
-	PowerState registry.PowerState `json:"power_state"`
-	Health     machineHealth       `json:"health"`
-	BootMode   rt.BootMode         `json:"boot_mode"`
-	Network    *rt.LaunchNetwork   `json:"network,omitempty"`
+	Lifecycle  *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
+	PowerState registry.PowerState         `json:"power_state"`
+	Health     machineHealth               `json:"health"`
+	BootMode   rt.BootMode                 `json:"boot_mode"`
+	Network    *rt.LaunchNetwork           `json:"network,omitempty"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -42,6 +45,15 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 	}
 	if err := json.Unmarshal(m.Spec, &spec); err != nil {
 		return v, err
+	}
+	if m.CurrentBinding != nil && m.CurrentBinding.RuntimeBundleID != "" {
+		policy, err := s.DB.LifecyclePolicy(ctx, m.ID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return v, err
+		}
+		if err == nil {
+			v.Lifecycle = &policy
+		}
 	}
 	v.Resources = spec.Resources
 	if spec.Network != nil {

@@ -309,7 +309,16 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	if !v.Enabled {
 		return empty, nil, nil, registry.ErrConflict
 	}
-	b, end, err := s.Access(ctx, p, v.MachineID)
+	b, end, err := s.AccessAt(ctx, p, v.MachineID, lifecycle.AccessEndpoint{Trigger: "service_access", Revision: v.Revision, Reauthorize: func(ctx context.Context) error {
+		current, err := s.getService(ctx, v.ID)
+		if err != nil {
+			return err
+		}
+		if !current.Enabled || current.Revision != v.Revision {
+			return registry.ErrRevision
+		}
+		return nil
+	}})
 	if err != nil {
 		return empty, nil, nil, err
 	}

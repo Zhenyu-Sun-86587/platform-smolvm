@@ -20,17 +20,18 @@ import (
 )
 
 type Engine struct {
-	DB           *registry.Store
-	runtimes     *rt.Resolver
-	Config       config.Config
-	mu           sync.Mutex
-	running      map[string]bool
-	holds        map[string]int
-	waiters      map[string]int
-	activeAccess int
-	workers      sync.WaitGroup
-	Recover      map[string]func(context.Context, *Job) error
-	Extra        map[string]func(context.Context, *Job) error
+	collectorSession string
+	DB               *registry.Store
+	runtimes         *rt.Resolver
+	Config           config.Config
+	mu               sync.Mutex
+	running          map[string]bool
+	holds            map[string]int
+	waiters          map[string]int
+	activeAccess     int
+	workers          sync.WaitGroup
+	Recover          map[string]func(context.Context, *Job) error
+	Extra            map[string]func(context.Context, *Job) error
 }
 
 func New(db *registry.Store, r *rt.Resolver, c config.Config) *Engine {
@@ -49,6 +50,9 @@ func bindingRuntime(b registry.Binding) rt.BindingRuntime {
 }
 
 func (e *Engine) ForBinding(b registry.Binding) (rt.Adapter, error) {
+	if e.runtimes == nil {
+		return nil, errors.New("runtime resolver unavailable")
+	}
 	return e.runtimes.ForBinding(bindingRuntime(b))
 }
 
@@ -57,6 +61,7 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 }
 
 type Create struct {
+	LifecyclePolicy   json.RawMessage   `json:"lifecycle_policy,omitempty"`
 	Name              string            `json:"name"`
 	TemplateID        string            `json:"template_id"`
 	RuntimeInstanceID string            `json:"runtime_instance_id,omitempty"`

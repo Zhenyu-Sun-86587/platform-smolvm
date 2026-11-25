@@ -55,6 +55,14 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			continue
 		}
 		if custom && b.RuntimeInstanceObjectID != "" {
+			if client, ok := PolicyClient(adapter, b); ok {
+				if status, err := e.ObservePolicy(ctx, b, client); err == nil {
+					if status.Decision != nil && status.Decision.Stage == "completed" && (status.Power == "HIBERNATED" || status.Epoch > b.ExecutionEpoch) {
+						_ = e.projectAutoPower(ctx, b, adapter, status, status.Decision.ID)
+					}
+					e.reportActivity(ctx, m, b, adapter, client, status)
+				}
+			}
 			// Public machine metadata cannot identify a native execution epoch.
 			e.observeNativePower(ctx, b, adapter)
 			continue

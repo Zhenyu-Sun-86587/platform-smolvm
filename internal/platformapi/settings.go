@@ -21,10 +21,12 @@ import (
 )
 
 type settings struct {
-	Revision    int64  `json:"revision"`
-	IdleSeconds int    `json:"default_idle_seconds"`
-	NetworkMode string `json:"default_network_mode,omitempty"`
-	NetworkID   string `json:"default_network_id,omitempty"`
+	Lifecycle         json.RawMessage `json:"default_lifecycle_policy,omitempty"`
+	LifecycleRevision int64           `json:"default_lifecycle_revision,omitempty"`
+	Revision          int64           `json:"revision"`
+	IdleSeconds       int             `json:"default_idle_seconds"`
+	NetworkMode       string          `json:"default_network_mode,omitempty"`
+	NetworkID         string          `json:"default_network_id,omitempty"`
 }
 
 func (s *Server) settings(ctx context.Context) (settings, error) {
@@ -59,7 +61,14 @@ func (s *Server) settingsRoutes() {
 		if mode == "" {
 			mode = rt.NativeNetwork
 		}
-		return write(w, 200, map[string]any{"revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "default_network_mode": mode,
+		policy, err := rt.DefaultLifecyclePolicy().WithPatch(v.Lifecycle)
+		if err != nil {
+			return err
+		}
+		if v.LifecycleRevision == 0 {
+			v.LifecycleRevision = 1
+		}
+		return write(w, 200, map[string]any{"default_lifecycle_policy": policy, "default_lifecycle_revision": v.LifecycleRevision, "revision": v.Revision, "default_idle_seconds": v.IdleSeconds, "default_network_mode": mode,
 			"default_network_id": v.NetworkID, "public_origin": s.Config.API.PublicOrigin, "apps_domain": s.Config.Gateway.AppsDomain,
 			"tcp_mtls_port_range": s.Config.Gateway.TCPRange, "max_heavy_operations": s.Config.Lifecycle.Heavy, "runtime_socket": s.Config.Runtime.Socket})
 	})
@@ -68,14 +77,15 @@ func (s *Server) settingsRoutes() {
 			return err
 		}
 		var body struct {
-			Idle        *int    `json:"default_idle_seconds,omitempty"`
-			NetworkMode *string `json:"default_network_mode,omitempty"`
-			NetworkID   *string `json:"default_network_id,omitempty"`
+			Lifecycle   json.RawMessage `json:"default_lifecycle_policy,omitempty"`
+			Idle        *int            `json:"default_idle_seconds,omitempty"`
+			NetworkMode *string         `json:"default_network_mode,omitempty"`
+			NetworkID   *string         `json:"default_network_id,omitempty"`
 		}
 		if err := decode(r, &body); err != nil {
 			return err
 		}
-		if (body.Idle == nil && body.NetworkMode == nil && body.NetworkID == nil) ||
+		if (body.Lifecycle == nil && body.Idle == nil && body.NetworkMode == nil && body.NetworkID == nil) ||
 			(body.Idle != nil && (*body.Idle < 1 || *body.Idle > 31536000)) ||
 			(body.NetworkMode != nil && *body.NetworkMode != rt.NativeNetwork && *body.NetworkMode != rt.FixedInternalNetwork) {
 			return registry.ErrInvalid
@@ -92,6 +102,21 @@ func (s *Server) settingsRoutes() {
 			}
 			if err := json.Unmarshal([]byte(previous), &v); err != nil {
 				return registry.MutationResult{}, err
+			}
+			if body.Lifecycle != nil {
+				prior, err := rt.DefaultLifecyclePolicy().WithPatch(v.Lifecycle)
+				if err != nil {
+					return registry.MutationResult{}, err
+				}
+				value, err := prior.WithPatch(body.Lifecycle)
+				if err != nil {
+					return registry.MutationResult{}, registry.ErrInvalid
+				}
+				v.Lifecycle = lifecycle.JSON(value)
+				if v.LifecycleRevision == 0 {
+					v.LifecycleRevision = 1
+				}
+				v.LifecycleRevision++
 			}
 			if body.Idle != nil {
 				v.IdleSeconds = *body.Idle
@@ -148,6 +173,21 @@ func (s *Server) settingsRoutes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
+		if v.Idle != nil && v.Policy != nil {
+			return registry.ErrInvalid
+		}
+		if v.Policy != nil {
+			saved, err := s.DB.LifecyclePolicy(r.Context(), id)
+			if err != nil {
+				return err
+			}
+			if _, err = saved.Desired.WithPatch(v.Policy); err != nil {
+				return registry.ErrInvalid
+			}
+			if v.ExpectedPolicyRevision < 1 {
+				return registry.ErrRevision
+			}
+		}
 		if v.Idle != nil && (v.Idle.Timeout < 1 && v.Idle.Enabled) {
 			return registry.ErrInvalid
 		}
@@ -161,11 +201,13 @@ func (s *Server) settingsRoutes() {
 }
 
 type patchMachine struct {
-	Name       *string               `json:"name,omitempty"`
-	Idle       *lifecycle.IdlePolicy `json:"idle_policy,omitempty"`
-	Keep       *bool                 `json:"keep_running,omitempty"`
-	Generation int64                 `json:"expected_generation,omitempty"`
-	Resources  *struct {
+	Policy                 json.RawMessage       `json:"lifecycle_policy,omitempty"`
+	ExpectedPolicyRevision int64                 `json:"expected_policy_revision,omitempty"`
+	Name                   *string               `json:"name,omitempty"`
+	Idle                   *lifecycle.IdlePolicy `json:"idle_policy,omitempty"`
+	Keep                   *bool                 `json:"keep_running,omitempty"`
+	Generation             int64                 `json:"expected_generation,omitempty"`
+	Resources              *struct {
 		CPU     uint8   `json:"cpu_count,omitempty"`
 		Memory  uint32  `json:"memory_mib,omitempty"`
 		Storage uint64  `json:"storage_gib,omitempty"`
@@ -178,6 +220,41 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 	var v patchMachine
 	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
 		return err
+	}
+	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) {
+		prior, err := s.Engine.ApplyMachinePolicy(ctx, j.Binding, client)
+		if err != nil {
+			return err
+		}
+		policy, err := prior.Desired.WithPatch(v.Policy)
+		if err != nil {
+			return registry.ErrInvalid
+		}
+		if v.Idle != nil {
+			policy.AutoStandby = false
+			policy.AutoHibernate = v.Idle.Enabled
+			if v.Idle.Timeout > 0 {
+				policy.HibernateAfter = v.Idle.Timeout
+			}
+		}
+		if v.Keep != nil {
+			policy.KeepRunning = *v.Keep
+		}
+		rev := v.ExpectedPolicyRevision
+		if rev == 0 {
+			rev = prior.DesiredRevision
+		}
+		if err = j.Stage(ctx, "apply_lifecycle_policy", ""); err != nil {
+			return err
+		}
+		if _, err = s.DB.SetLifecycleDesired(ctx, j.Op.MachineID, j.Op.ID, "override", rev, prior.DefaultRevision, policy); err != nil {
+			return err
+		}
+		if _, err = s.Engine.ApplyMachinePolicy(ctx, j.Binding, client); err != nil {
+			return err
+		}
+	} else if v.Policy != nil {
+		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "this binding has no Worker lifecycle controller"}
 	}
 	var obs *registry.Observation
 	status := "applied"

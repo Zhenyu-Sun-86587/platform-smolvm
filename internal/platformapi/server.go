@@ -529,6 +529,9 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
+		if v.LifecyclePolicy != nil && v.IdlePolicy != nil {
+			return registry.ErrInvalid
+		}
 		if v.BootMode != "" && v.BootMode != boot.BootMode {
 			return fmt.Errorf("%w: boot mode differs from the selected template", registry.ErrInvalid)
 		}

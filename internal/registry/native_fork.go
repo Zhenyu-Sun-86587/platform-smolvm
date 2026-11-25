@@ -66,6 +66,9 @@ func allocateForkChildren(ctx context.Context, tx *sql.Tx, op *Operation, source
 			return err
 		}
 		op.Children = append(op.Children, OperationChild{Ordinal: ordinal, MachineID: mid, BindingID: child.BindingID, State: "pending", ResourceIndependence: "unknown"})
+		if err = SeedLifecycle(ctx, tx, mid, source.ID, op.Request, op.ID); err != nil {
+			return err
+		}
 		locks[mid] = Lock{MachineID: mid, Role: "child"}
 	}
 	return nil

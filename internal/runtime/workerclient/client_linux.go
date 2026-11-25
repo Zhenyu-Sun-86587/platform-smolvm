@@ -25,7 +25,7 @@ type Client struct {
 
 type Execution struct {
 	InstanceID    string `json:"instance_id"`
-	IncarnationID string `json:"incarnation_id"`
+	IncarnationID string `json:"incarnation_id,omitempty"`
 	Epoch         int64  `json:"execution_epoch"`
 }
 
@@ -57,7 +57,7 @@ func (f *Fault) Error() string { return f.Code + ": " + f.Message }
 
 func (c Client) call(ctx context.Context, q request, pass *os.File, expect *descriptor) (json.RawMessage, *os.File, error) {
 	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || q.Expected.InstanceID == "" ||
-		q.Expected.IncarnationID == "" || q.Expected.Epoch < 1 {
+		q.Expected.Epoch < 0 || (!lifecycleMethod(q.Method) && (q.Expected.IncarnationID == "" || q.Expected.Epoch < 1)) {
 		return nil, nil, errors.New("invalid local Worker execution scope")
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
