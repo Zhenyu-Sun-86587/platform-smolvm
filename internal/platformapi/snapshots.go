@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
@@ -191,6 +192,12 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 	if observed.Labels["platform.binding"] != b.ID {
 		return "", registry.ErrStaleObservation
 	}
+	if observed.Capabilities["checkpoint"].ReasonCode == "UNSUPPORTED_PROFILE" || len(observed.EgressRules) != 0 {
+		return "", &lifecycle.Failure{Code: "UNSUPPORTED_PROFILE", Message: "checkpoint requires the internal-storage profile and basic egress policy"}
+	}
+	if paused && observed.State != rt.StatePaused {
+		return "", &lifecycle.Failure{Code: "RECOVERY_REQUIRED", Message: "saved execution changed before export"}
+	}
 	mode := "prepare_copy"
 	if purpose == "recovery" {
 		mode = "prepare_recovery_capture"
@@ -206,6 +213,10 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 		}
 		res, e := j.Call(ctx, b, tasks.Request{Method: mode, OperationID: j.Op.ID})
 		if e != nil {
+			probe, probeErr := j.Call(ctx, b, tasks.Request{Method: "hello"})
+			if probeErr != nil || probe.Hello == nil || probe.Hello.Barrier != nil && probe.Hello.Barrier.OperationID == j.Op.ID {
+				j.Written = true
+			}
 			return "", e
 		}
 		j.Written = true
@@ -231,7 +242,11 @@ func (s *Server) capture(ctx context.Context, j *lifecycle.Job, b registry.Bindi
 	go func() {
 		var err error
 		if paused {
-			_, err = s.Runtime.ExportPausedCheckpoint(ctx, b.RuntimeName, pw)
+			if b.PauseStatus == "active" && b.RuntimePauseID != "" && !observed.PressurePaused() {
+				_, err = s.Runtime.ExportPausedCheckpoint(ctx, b.RuntimeName, pw, b.RuntimePauseID)
+			} else {
+				_, err = s.Runtime.ExportPausedCheckpoint(ctx, b.RuntimeName, pw)
+			}
 		} else {
 			_, err = s.Runtime.CaptureCheckpoint(ctx, b.RuntimeName, pw)
 		}
@@ -267,7 +282,12 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if err = cat.Pin(ctx, item.ID, "operation", j.Op.ID); err != nil {
 		return err
 	}
-	// An ambiguous import can retain a native dependency, so preserve its pin.
+	keepPin := false
+	defer func() {
+		if !keepPin {
+			_ = cat.Unpin(context.WithoutCancel(ctx), item.ID, "operation", j.Op.ID)
+		}
+	}()
 	if err = cat.Verify(ctx, item); err != nil {
 		return err
 	}
@@ -290,60 +310,17 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if err = json.Unmarshal(manifest.CaptureReceipt, &capture); err != nil || !capture.Ready || capture.Source.MachineID != manifest.SourceMachineID || capture.Source.Generation != manifest.SourceGeneration || capture.Content != item.Content {
 		return errors.New("capture receipt differs from signed metadata")
 	}
-	fence := ""
+	var fence rollbackFence
 	if j.Op.Kind == "rollback" {
 		if old == nil || capture.Source.MachineID != j.Op.MachineID {
 			return registry.ErrGeneration
 		}
-		o, err := s.Runtime.Observe(ctx, old.RuntimeName)
+		fence, err = s.fenceOld(ctx, j, *old, v.OldStatePolicy)
 		if err != nil {
+			keepPin = j.Written || errors.Is(err, rt.ErrUncertain)
 			return err
 		}
-		if o.Labels["platform.binding"] != old.ID {
-			return registry.ErrStaleObservation
-		}
-		switch o.State {
-		case "running":
-			if err = j.Stage(ctx, "stop_old", ""); err != nil {
-				return err
-			}
-			if _, err = s.Runtime.Stop(ctx, old.RuntimeName); err != nil {
-				return err
-			}
-			j.Written = true
-		case "paused":
-			if v.OldStatePolicy != "export_then_delete_on_paused" {
-				return &lifecycle.Failure{Code: "PRECONDITION_FAILED", Message: "paused rollback requires export_then_delete_on_paused"}
-			}
-			id, err := s.capture(ctx, j, *old, "recovery", "pre-replacement saved execution", true)
-			if err != nil {
-				return err
-			}
-			if err = cat.Pin(ctx, id, "pre_replacement", j.Op.ID); err != nil {
-				return err
-			}
-			if err = j.Stage(ctx, "delete_old", ""); err != nil {
-				return err
-			}
-			if _, err = s.Runtime.Delete(ctx, old.RuntimeName); err != nil {
-				return err
-			}
-		case "stopped", "created":
-		default:
-			return errors.New("unknown old execution cannot be fenced")
-		}
-		latest, err := s.Runtime.Observe(ctx, old.RuntimeName)
-		if o.State == "paused" {
-			if !errors.Is(err, rt.ErrNotFound) {
-				return errors.New("old paused execution still present or unreachable")
-			}
-			fence = old.RuntimeName + ":absent"
-		} else {
-			if err != nil || (latest.State != "stopped" && latest.State != "created") {
-				return errors.New("old execution did not stop")
-			}
-			fence = old.RuntimeName + ":" + latest.State
-		}
+		keepPin = j.Written
 	}
 	f, err := os.Open(filepath.Join(cat.Root, item.ID, snapshots.CheckpointFile))
 	if err != nil {
@@ -354,8 +331,10 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 		return err
 	}
 	if _, err = s.Runtime.RestoreCheckpoint(ctx, j.Binding.RuntimeName, f, item.Size); err != nil {
+		keepPin = keepPin || errors.Is(err, rt.ErrUncertain)
 		return err
 	}
+	keepPin = true
 	j.Written = true
 	if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, []rt.Port{}); err != nil {
 		return err
@@ -372,8 +351,18 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if err != nil {
 		return err
 	}
-	if o.State != "created" || len(o.Ports) != 0 || o.Labels["platform.binding"] != j.Binding.ID || o.ParentMachine != "" {
-		return errors.New("candidate creation, ownership or port fence not verified")
+	if o.State != "created" || len(o.Ports) != 0 || o.Labels["platform.binding"] != j.Binding.ID ||
+		o.ParentMachine != "" || o.AllowedCIDRs == nil || o.AllowedHosts == nil || len(o.AllowedCIDRs) != 0 ||
+		len(o.AllowedHosts) != 0 || len(o.EgressRules) != 0 {
+		return errors.New("candidate creation, ownership, port or egress fence not verified")
+	}
+	if err = s.checkRestartPolicy(ctx, j.Binding, o.State); err != nil {
+		return err
+	}
+	if j.Op.Kind == "rollback" {
+		if err = s.verifyFence(ctx, fence); err != nil {
+			return err
+		}
 	}
 	if err = j.Stage(ctx, "start_candidate", ""); err != nil {
 		return err
@@ -385,15 +374,42 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	if j.Op.Kind == "rollback" {
 		method = "complete_recovery"
 	}
-	reply, err := s.Call(ctx, j.Binding, tasks.Request{Method: method, Source: &capture.Source, OperationID: j.Op.ID, Policy: v.Disposition, StopEvidence: fence})
+	if err = candidateReady(ctx, 20*time.Second, func(ctx context.Context) error {
+		hello, e := s.Call(ctx, j.Binding, tasks.Request{Method: "hello"})
+		if e != nil {
+			return e
+		}
+		if hello.Binding == nil || *hello.Binding != capture.Source || hello.Hello == nil || !hello.Hello.Cgroup ||
+			hello.Hello.Barrier == nil || !reflect.DeepEqual(*hello.Hello.Barrier, capture) {
+			return errors.New("candidate did not preserve source task barrier")
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	stopEvidence := ""
+	if j.Op.Kind == "rollback" {
+		stopEvidence = fence.evidence()
+	}
+	reply, err := s.Call(ctx, j.Binding, tasks.Request{Method: method, Source: &capture.Source, OperationID: j.Op.ID, Policy: v.Disposition, StopEvidence: stopEvidence})
 	if err != nil {
 		return err
 	}
 	if reply.Binding == nil || *reply.Binding != *lifecycle.GuestBinding(j.Binding) {
 		return errors.New("candidate guest ownership not confirmed")
 	}
-	if _, err = s.InstallSSH(ctx, j.Binding); err != nil {
+	keyRev, err := s.SSHKeyRevision(ctx)
+	if err != nil {
 		return err
+	}
+	pub, err := s.InstallSSH(ctx, j.Binding)
+	if err != nil {
+		return err
+	}
+	if j.Op.Kind == "rollback" {
+		if err = j.RepublishServices(ctx); err != nil {
+			return err
+		}
 	}
 	if _, err = s.Runtime.EnablePublicNetwork(ctx, j.Binding.RuntimeName); err != nil {
 		return err
@@ -407,13 +423,34 @@ func (s *Server) restore(ctx context.Context, j *lifecycle.Job, old *registry.Bi
 	}
 	x := lifecycle.Evidence(o)
 	x.GuestManagementStatus = "ready"
-	x.GuestManagementEvidence = lifecycle.JSON(reply.Binding)
-	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]string{"machine_id": m.ID, "snapshot_id": item.ID}), PromoteBinding: true, Observation: &x, DesiredPower: "running", Apply: func(ctx context.Context, tx *sql.Tx) error {
+	x.GuestManagementEvidence = lifecycle.JSON(map[string]any{"task_manager": reply.Binding, "ssh_ready": true, "ssh_host_key": pub, "ssh_key_revision": keyRev})
+	result := map[string]string{"machine_id": m.ID, "snapshot_id": item.ID}
+	if fence.artifact != "" {
+		result["pre_replacement_snapshot_id"] = fence.artifact
+	}
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(result), PromoteBinding: true, Observation: &x, DesiredPower: "running", Apply: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE snapshot_pins SET owner_kind='binding',owner_id=? WHERE owner_kind='operation' AND owner_id=? AND snapshot_id=?", j.Binding.ID, j.Op.ID, item.ID); err != nil {
 			return err
 		}
 		if old != nil && old.ID != j.Binding.ID && j.Op.Kind == "clone" {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO dependencies(parent_binding_id,child_binding_id,kind,status,observed_at) VALUES(?,?,'logical_origin','active',?)", old.ID, j.Binding.ID, time.Now().UnixMilli()); err != nil {
+				return err
+			}
+		}
+		if fence.state == "absent" {
+			if _, err := tx.ExecContext(ctx, "UPDATE port_allocations SET state='released' WHERE binding_id=?", fence.binding.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM snapshot_pins WHERE owner_kind='binding' AND owner_id=?", fence.binding.ID); err != nil {
+				return err
+			}
+		}
+		if j.Op.Kind == "rollback" {
+			now := time.Now().UTC()
+			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state='interrupted',observed_at=?,result_json=
+				json_set(result_json,'$.state','interrupted','$.reason','binding_retired_after_fence','$.observed_at',?)
+				WHERE machine_id=? AND binding_generation=? AND state NOT IN ('succeeded','failed','cancelled','interrupted')`,
+				now.UnixMilli(), now.Format(time.RFC3339Nano), fence.binding.MachineID, fence.binding.Generation); err != nil {
 				return err
 			}
 		}

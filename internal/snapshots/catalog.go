@@ -260,7 +260,15 @@ func (c *Catalog) Quarantine(ctx context.Context, id string) error {
 	return err
 }
 func (c *Catalog) Pin(ctx context.Context, id, kind, owner string) error {
-	res, err := c.DB.DB().ExecContext(ctx, `INSERT INTO snapshot_pins(snapshot_id,owner_kind,owner_id,created_at) SELECT id,?,?,? FROM snapshots WHERE id=? AND state='ready' ON CONFLICT DO NOTHING`, kind, owner, time.Now().UnixMilli(), id)
+	return c.pin(ctx, id, kind, owner, false)
+}
+
+func (c *Catalog) PinChecksum(ctx context.Context, id, owner string) error {
+	return c.pin(ctx, id, "verify", owner, true)
+}
+
+func (c *Catalog) pin(ctx context.Context, id, kind, owner string, checksum bool) error {
+	res, err := c.DB.DB().ExecContext(ctx, `INSERT INTO snapshot_pins(snapshot_id,owner_kind,owner_id,created_at) SELECT id,?,?,? FROM snapshots WHERE id=? AND (state='ready' OR (? AND state='quarantined' AND sha256 IS NOT NULL)) ON CONFLICT DO NOTHING`, kind, owner, time.Now().UnixMilli(), id, checksum)
 	if err != nil {
 		return err
 	}
@@ -272,7 +280,7 @@ func (c *Catalog) Pin(ctx context.Context, id, kind, owner string) error {
 		return nil
 	}
 	var one int
-	err = c.DB.ReadDB().QueryRowContext(ctx, "SELECT 1 FROM snapshot_pins p JOIN snapshots s ON s.id=p.snapshot_id WHERE s.id=? AND s.state='ready' AND p.owner_kind=? AND p.owner_id=?", id, kind, owner).Scan(&one)
+	err = c.DB.ReadDB().QueryRowContext(ctx, "SELECT 1 FROM snapshot_pins p JOIN snapshots s ON s.id=p.snapshot_id WHERE s.id=? AND (s.state='ready' OR (? AND s.state='quarantined' AND s.sha256 IS NOT NULL)) AND p.owner_kind=? AND p.owner_id=?", id, checksum, kind, owner).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return registry.ErrConflict
 	}

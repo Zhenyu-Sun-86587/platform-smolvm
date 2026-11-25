@@ -182,7 +182,8 @@ func (m *manager) verifyCapture(t *bindingTransition) error {
 	if m.barrier == nil || !m.barrier.Ready || m.barrier.Source != t.Source {
 		return rpcError("OUTCOME_UNKNOWN", "guest lacks the source capture barrier")
 	}
-	if t.Method == "complete_copy" && (m.barrier.Content != "clean" || m.barrier.Purpose != "clone") {
+	if t.Method == "complete_copy" && (m.barrier.Content != "clean" || len(m.barrier.Frozen) != 0 ||
+		m.barrier.Purpose != "clone" && m.barrier.Purpose != "recovery") {
 		return rpcError("TASK_CAPTURE_NOT_CLEAN", "guest was not captured as a clean independent copy")
 	}
 	for _, frozen := range m.barrier.Frozen {

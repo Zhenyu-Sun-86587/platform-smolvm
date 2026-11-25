@@ -14,19 +14,23 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/snapshots"
 )
 
 type blobRequest struct {
-	Digest string `json:"sha256"`
-	Size   int64  `json:"size_bytes"`
+	Digest   string `json:"sha256"`
+	Size     int64  `json:"size_bytes"`
+	StageKey string `json:"stage_key,omitempty"`
 }
 
 func (s *Server) artifactRoutes() {
+	s.pruneCompletedUploads()
 	s.Extra["snapshot_import"] = s.importSnapshot
 	s.route("POST /v1/snapshots/import", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize("manage", ""); err != nil {
@@ -84,9 +88,14 @@ func (s *Server) artifactRoutes() {
 		if err = f.Close(); err != nil {
 			return err
 		}
-		if err = os.Link(f.Name(), filepath.Join(dir, digest)); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+		identity := sha256.Sum256([]byte(strings.Join([]string{p.ID, ctl.ControlEpoch, r.Header.Get("Idempotency-Key"), digest}, "\x00")))
+		stageKey := hex.EncodeToString(identity[:])
+		stagePath := filepath.Join(dir, stageKey)
+		linkErr := os.Link(f.Name(), stagePath)
+		if linkErr != nil && !errors.Is(linkErr, os.ErrExist) {
+			return linkErr
 		}
+		env := envelope(r, p, blobRequest{Digest: digest, Size: size, StageKey: stageKey})
 		d, err := os.Open(dir)
 		if err != nil {
 			return err
@@ -96,7 +105,22 @@ func (s *Server) artifactRoutes() {
 		if err != nil {
 			return err
 		}
-		return s.accept(w, r, p, blobRequest{Digest: digest, Size: size}, registry.AcceptRequest{Kind: "snapshot_import", Heavy: true})
+		op, _, err := s.DB.Accept(r.Context(), registry.AcceptRequest{Kind: "snapshot_import", Heavy: true, PrincipalID: p.ID,
+			CredentialID: p.CredentialID, Epoch: env.Epoch, Scope: env.Scope, Key: env.Key, Request: env.Request})
+		if err != nil {
+			// An accepting connection may disappear after its commit. Keep
+			// staging until a proven rejection or the operation completes.
+			if linkErr == nil && (errors.Is(err, registry.ErrIdempotency) || errors.Is(err, registry.ErrInvalid) ||
+				errors.Is(err, registry.ErrControlEpoch) || errors.Is(err, registry.ErrMaintenance)) {
+				_ = os.Remove(stagePath)
+			}
+			return err
+		}
+		if op.Terminal() {
+			_ = os.Remove(stagePath)
+		}
+		w.Header().Set("Location", "/v1/operations/"+op.ID)
+		return write(w, 202, op)
 	})
 	s.Extra["snapshot_delete"] = s.deleteSnapshot
 	s.Extra["snapshot_verify"] = s.verifySnapshot
@@ -137,6 +161,29 @@ func (s *Server) artifactRoutes() {
 		})
 	}
 }
+
+func (s *Server) pruneCompletedUploads() {
+	dir := filepath.Join(s.Snapshots.Stage, "uploads")
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, entry := range files {
+		key := entry.Name()
+		if raw, err := hex.DecodeString(key); err != nil || len(raw) != 32 || !entry.Type().IsRegular() {
+			continue
+		}
+		var terminal bool
+		err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM operations WHERE kind='snapshot_import' AND json_extract(request_json,'$.stage_key')=?
+			AND state IN ('succeeded','failed','cancelled'))`, key).Scan(&terminal)
+		if err == nil && terminal {
+			_ = os.Remove(filepath.Join(dir, key))
+		}
+	}
+}
 func (s *Server) importSnapshot(ctx context.Context, j *lifecycle.Job) error {
 	var v blobRequest
 	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
@@ -144,7 +191,14 @@ func (s *Server) importSnapshot(ctx context.Context, j *lifecycle.Job) error {
 	}
 	cat := s.Snapshots
 	id := "snap_" + j.Op.ID[3:]
-	file := filepath.Join(cat.Stage, "uploads", v.Digest)
+	key := v.StageKey
+	if key == "" {
+		key = v.Digest
+	}
+	if raw, err := hex.DecodeString(key); err != nil || len(raw) != 32 || key != strings.ToLower(key) {
+		return registry.ErrInvalid
+	}
+	file := filepath.Join(cat.Stage, "uploads", key)
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -162,13 +216,22 @@ func (s *Server) importSnapshot(ctx context.Context, j *lifecycle.Job) error {
 		if e := cat.Quarantine(ctx, id); e != nil {
 			return e
 		}
+		if v.StageKey != "" {
+			_ = os.Remove(file)
+		}
 		return err
 	}
 	if err = cat.Publish(ctx, id, a, false); err != nil {
 		return err
 	}
 	j.Written = true
-	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]string{"snapshot_id": id})})
+	if err := j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]string{"snapshot_id": id})}); err != nil {
+		return err
+	}
+	if v.StageKey != "" {
+		_ = os.Remove(file)
+	}
+	return nil
 }
 func (s *Server) deleteSnapshot(ctx context.Context, j *lifecycle.Job) error {
 	var v struct {
@@ -181,7 +244,11 @@ func (s *Server) deleteSnapshot(ctx context.Context, j *lifecycle.Job) error {
 	if err := j.Stage(ctx, "delete_artifact", ""); err != nil {
 		return err
 	}
-	res, err := s.DB.DB().ExecContext(ctx, `UPDATE snapshots SET state='deleting',revision=revision+1 WHERE id=? AND revision=? AND state IN ('ready','quarantined') AND NOT EXISTS (SELECT 1 FROM snapshot_pins WHERE snapshot_id=?)`, v.ID, v.Revision, v.ID)
+	res, err := s.DB.DB().ExecContext(ctx, `UPDATE snapshots SET state='deleting',revision=revision+1 WHERE id=? AND revision=? AND state IN ('ready','quarantined')
+		AND NOT EXISTS (SELECT 1 FROM snapshot_pins WHERE snapshot_id=?)
+		AND NOT EXISTS (SELECT 1 FROM operations WHERE kind IN ('restore','rollback','snapshot_verify')
+			AND state NOT IN ('succeeded','failed','cancelled') AND json_extract(request_json,'$.snapshot_id')=?)`,
+		v.ID, v.Revision, v.ID, v.ID)
 	if err != nil {
 		return err
 	}
@@ -228,14 +295,26 @@ func (s *Server) verifySnapshot(ctx context.Context, j *lifecycle.Job) error {
 	if snap.Revision != v.Revision {
 		return registry.ErrRevision
 	}
-	if v.Verification != "checksum" {
-		return &lifecycle.Failure{Code: "CAPABILITY_NOT_VERIFIED", Message: "isolated restore verification requires an independent test runtime"}
+	if v.Verification == "restore" {
+		err = s.Snapshots.Pin(ctx, v.ID, "verify", j.Op.ID)
+	} else {
+		err = s.Snapshots.PinChecksum(ctx, v.ID, j.Op.ID)
 	}
-	if err = s.Snapshots.Pin(ctx, v.ID, "verify", j.Op.ID); err != nil {
+	if err != nil {
 		return err
 	}
-	defer s.Snapshots.Unpin(context.Background(), v.ID, "verify", j.Op.ID)
+	retain := false
+	defer func() {
+		if !retain {
+			_ = s.Snapshots.Unpin(context.WithoutCancel(ctx), v.ID, "verify", j.Op.ID)
+		}
+	}()
 	if err = s.Snapshots.Verify(ctx, snap); err != nil {
+		return err
+	}
+	if v.Verification == "restore" {
+		err = s.verifySnapshotRestore(ctx, j, snap)
+		retain = err != nil && (j.Written || errors.Is(err, rt.ErrUncertain))
 		return err
 	}
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]string{"snapshot_id": v.ID, "verification": "checksum"})})
