@@ -1165,7 +1165,7 @@ paths:
         default: {$ref: '#/components/responses/Error'}
     post:
       operationId: post_restores
-      summary: Restore a clean snapshot into a new machine
+      summary: Restore a clean application snapshot or VM StatePoint into a new machine
       parameters:
       - {$ref: '#/components/parameters/IdempotencyKey'}
       - {$ref: '#/components/parameters/ControlEpoch'}
@@ -1179,6 +1179,8 @@ paths:
               properties:
                 snapshot_id: {type: string, minLength: 1}
                 name: {type: string, minLength: 1}
+                volume_restore_policy: {$ref: '#/components/schemas/VolumeRestorePolicy'}
+                network_mode: {type: string, enum: [snapshot], description: Applies to VM StatePoints}
               required:
               - snapshot_id
               - name
@@ -1198,7 +1200,7 @@ paths:
     post:
       operationId: post_machines_machine_rollback
       summary: Replace the current machine binding from a snapshot
-      description: A paused prior runtime is exported and deleted, retaining the exported artifact.
+      description: A VM rollback retains a durable rescue StatePoint before fencing the old execution. The managed-task path retains a paused runtime archive.
       parameters:
       - name: machine
         in: path
@@ -1217,6 +1219,7 @@ paths:
               properties:
                 snapshot_id: {type: string, minLength: 1}
                 expected_generation: {type: integer, minimum: 1}
+                volume_restore_policy: {$ref: '#/components/schemas/VolumeRestorePolicy'}
                 old_state_policy: {type: string, enum: [export_then_delete_on_paused]}
                 task_disposition: {type: string, enum: [cancel_captured, resume_captured]}
               required:
@@ -2336,6 +2339,10 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   schemas:
+    VolumeRestorePolicy:
+      type: string
+      enum: [exact, clone_conflicts]
+      description: For VM snapshots. Exact requires authorization for every captured volume generation. Clone conflicts creates independent writable volume IDs and returns the volume map.
     VolumePage:
       type: object
       required: [items]

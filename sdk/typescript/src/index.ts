@@ -3,6 +3,7 @@ export type OperationState = "queued" | "dispatching" | "observing" | "succeeded
 export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown"
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN"
 export type CaptureMode = "vm" | "managed_tasks"
+export type VolumeRestorePolicy = "exact" | "clone_conflicts"
 export interface RuntimeProfile {
   runtime_instance_id: string
   runtime_bundle_id: string
@@ -554,8 +555,11 @@ export class Client {
   forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions) {
     return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options)
   }
-  restore(snapshotID: string, name: string, options?: WriteOptions) {
-    return this.mutate("restores", { snapshot_id: snapshotID, name }, options)
+  restore(snapshotID: string, name: string, { volumeRestorePolicy, ...options }: WriteOptions & { volumeRestorePolicy?: VolumeRestorePolicy } = {}) {
+    return this.mutate("restores", { snapshot_id: snapshotID, name, volume_restore_policy: volumeRestorePolicy }, options)
+  }
+  rollbackVM(id: string, snapshotID: string, volumeRestorePolicy: VolumeRestorePolicy = "clone_conflicts", options?: MachineWriteOptions) {
+    return this.machineMutation(id, "rollback", { snapshot_id: snapshotID, volume_restore_policy: volumeRestorePolicy }, options)
   }
   listTokens(signal?: AbortSignal) { return this.pages<Token>("tokens", 100, signal) }
   issueToken(spec: TokenSpec, options?: WriteOptions) { return this.mutate<Token>("tokens", spec, options) }

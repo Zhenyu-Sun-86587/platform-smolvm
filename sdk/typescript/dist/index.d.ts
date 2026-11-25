@@ -3,6 +3,7 @@ export type OperationState = "queued" | "dispatching" | "observing" | "succeeded
 export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown";
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN";
 export type CaptureMode = "vm" | "managed_tasks";
+export type VolumeRestorePolicy = "exact" | "clone_conflicts";
 export interface RuntimeProfile {
     runtime_instance_id: string;
     runtime_bundle_id: string;
@@ -388,7 +389,10 @@ export declare class Client {
         requireIndependent?: boolean;
     }): Promise<Operation>;
     forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions): Promise<Operation>;
-    restore(snapshotID: string, name: string, options?: WriteOptions): Promise<Operation>;
+    restore(snapshotID: string, name: string, { volumeRestorePolicy, ...options }?: WriteOptions & {
+        volumeRestorePolicy?: VolumeRestorePolicy;
+    }): Promise<Operation>;
+    rollbackVM(id: string, snapshotID: string, volumeRestorePolicy?: VolumeRestorePolicy, options?: MachineWriteOptions): Promise<Operation>;
     listTokens(signal?: AbortSignal): AsyncGenerator<Token, any, any>;
     issueToken(spec: TokenSpec, options?: WriteOptions): Promise<Token>;
     revokeToken(id: string, revision: number, options?: WriteOptions): Promise<{

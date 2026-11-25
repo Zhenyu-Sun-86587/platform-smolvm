@@ -354,8 +354,16 @@ class Client:
     def clone(self, machine_id, child_name, **options):
         return self._machine_mutation(machine_id, "clones", {"child_name": child_name, "copy_policy": "managed_clean"}, **options)
 
-    def restore(self, snapshot_id, name, **options):
-        return self.mutate("restores", {"snapshot_id": snapshot_id, "name": name}, **options)
+    def restore(self, snapshot_id, name, *, volume_restore_policy=None, **options):
+        body = {"snapshot_id": snapshot_id, "name": name}
+        if volume_restore_policy is not None:
+            body["volume_restore_policy"] = volume_restore_policy
+        return self.mutate("restores", body, **options)
+
+    def rollback_vm(self, machine_id, snapshot_id, *, volume_restore_policy="clone_conflicts", **options):
+        return self._machine_mutation(machine_id, "rollback", {
+            "snapshot_id": snapshot_id, "volume_restore_policy": volume_restore_policy,
+        }, **options)
 
     def list_tokens(self):
         return self.pages("tokens")
