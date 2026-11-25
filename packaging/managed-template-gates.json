@@ -6,6 +6,7 @@
   },
   "archives": {
     "ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64": {
+      "catalog_version": 2,
       "runtime_version": "1.37.1",
       "architecture": "amd64",
       "verified_profile": "smolvm-1.37.1 linux/amd64 virtio-net full internal storage",
