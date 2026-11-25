@@ -63,7 +63,7 @@ sudo ./install.sh --manifest ./release-manifest.json \\
 sudo /usr/local/bin/sandboxctl doctor --json
 \`\`\`
 
-The default console is http://127.0.0.1:8443. Sign in as \`owner\` using the password provided at installation. The installed CLI is \`/usr/local/bin/sandboxctl\`. See MAINTENANCE.md for backups and upgrades and LOCAL_GUEST_EVIDENCE.md for the managed template checks.
+The default console is http://127.0.0.1:8443. Sign in as \`owner\` using the password provided at installation. The installed CLI is \`/usr/local/bin/sandboxctl\`. Use \`SANDBOX_URL=http://127.0.0.1:8443\` with the default console when running authenticated API commands from the CLI. See MAINTENANCE.md for backups and upgrades and LOCAL_GUEST_EVIDENCE.md for the managed template checks.
 INSTALL
 (
     cd "$work"

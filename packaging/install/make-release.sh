@@ -28,7 +28,9 @@ trap 'rm -rf -- "$work"' EXIT
 cd "$repo"
 mkdir "$work/bin" "$work/systemd"
 for executable in platformd sandboxctl; do
-    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -o "$work/bin/$executable" "./cmd/$executable"
+    CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath \
+        -ldflags "-X sandbox-platform/internal/buildinfo.Version=$version" \
+        -o "$work/bin/$executable" "./cmd/$executable"
 done
 cp packaging/runtime-manifest.json "$work/runtime-manifest.json"
 cp packaging/systemd/{platformd.service,smolvm-serve.service,smolvm-status.socket,smolvm-status@.service,grant-runtime-socket,read-runtime-status} "$work/systemd/"

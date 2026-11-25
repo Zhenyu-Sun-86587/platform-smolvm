@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/buildinfo"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
@@ -353,7 +354,7 @@ func (s *Server) routes() {
 		}
 		h, healthErr := s.Runtime.Health(r.Context())
 		ready := healthErr == nil && s.Runtime.Ready(r.Context()) == nil
-		v := map[string]any{"control_epoch": c.ControlEpoch, "build": "phase1-dev", "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": map[string]any{}, "principal": p}
+		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": map[string]any{}, "principal": p}
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)
 		}

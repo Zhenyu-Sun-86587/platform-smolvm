@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"sandbox-platform/internal/buildinfo"
 )
 
 type client struct {
@@ -109,7 +111,7 @@ func rootCommand() (*cobra.Command, *client) {
 	if origin == "" {
 		origin = "https://127.0.0.1:8443"
 	}
-	root := &cobra.Command{Use: "sandboxctl", Short: "Manage Sandbox Platform workspaces", SilenceUsage: true, SilenceErrors: true}
+	root := &cobra.Command{Use: "sandboxctl", Short: "Manage Sandbox Platform workspaces", Version: buildinfo.Version, SilenceUsage: true, SilenceErrors: true}
 	root.PersistentFlags().StringVar(&api.origin, "url", origin, "Platform URL (SANDBOX_URL)")
 	root.PersistentFlags().StringVar(&api.token, "token", os.Getenv("SANDBOX_TOKEN"), "Platform access token (prefer SANDBOX_TOKEN)")
 	root.PersistentFlags().StringVar(&api.caFile, "ca-file", os.Getenv("SANDBOX_CA_FILE"), "Additional trusted server CA PEM file")
