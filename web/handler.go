@@ -34,6 +34,9 @@ func Handler() http.Handler {
 				return
 			}
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			if clean == "assets/console-source.tar.gz" || clean == "assets/console-notices.txt" {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			files.ServeHTTP(w, r)
 			return
 		}
