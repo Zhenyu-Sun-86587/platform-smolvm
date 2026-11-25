@@ -1032,3 +1032,6 @@ td small {
   }
 }
 .policy-note{padding:13px 16px 0;color:var(--muted-foreground);font-size:13px}
+
+.ssh-commands { padding:12px; background:var(--code-background); border:1px solid var(--border); margin-top:12px; border-radius:6px }
+.resource-coverage {padding:0 16px 12px;font-size:11px;color:var(--muted-foreground)}

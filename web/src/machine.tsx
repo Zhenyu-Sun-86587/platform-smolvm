@@ -119,7 +119,9 @@ type ExecResult = Exec & { output?: { stream: string; data: string }[]; next?: n
 function Execs({ machine, actions, revision }: Context) {
   const path = machinePath(machine.machine_id) + "/execs"
   const sessions = useRemote<Page<Exec>>(path, revision)
-  const [current, setCurrent] = useState<string>()
+  const deepLink = location.hash.split("/")[4]
+  const [current, setCurrent] = useState<string | undefined>(deepLink)
+  useEffect(()=>setCurrent(deepLink),[deepLink])
   const [result, setResult] = useState<ExecResult>()
   const open = () => actions.dialog({
     title: "Open terminal", fields: commandFields,
@@ -150,7 +152,7 @@ function Execs({ machine, actions, revision }: Context) {
         </div>)}
       </div>}
     </Section>
-    {current && <Section title="Terminal" actions={<button onClick={() => setCurrent(undefined)}>Disconnect</button>}><Suspense fallback={<p className="empty">Loading terminal…</p>}><Terminal key={current} execId={current} /></Suspense></Section>}
+    {current && <Section title="Terminal" actions={<button onClick={() => {setCurrent(undefined);location.hash="#/"+machinePath(machine.machine_id)+"/terminal"}}>Disconnect</button>}><Suspense fallback={<p className="empty">Loading terminal…</p>}><Terminal key={current} execId={current} /></Suspense></Section>}
     {result && <Section title="Command response">
       <Details value={{ exec: result.exec_id, state: result.state, exit_code: result.exit_code, output_cursor: result.next, output_gap: result.gap, error: result.error }} />
       <pre className="record">{result.output?.map(entry => {

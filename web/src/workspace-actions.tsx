@@ -90,6 +90,7 @@ function SSHInfo({ machine }: { machine: Machine }) {
     [copyError, setError] = useState<unknown>()
   const service = data?.items.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
+  const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
   return (
     <div className="ssh-info">
       <Callout error={error || copyError} />
@@ -97,16 +98,17 @@ function SSHInfo({ machine }: { machine: Machine }) {
         "Checking published services…"
       ) : service ? (
         <>
-          <p>Generate an OpenSSH configuration with this machine’s verified host key.</p>
+          <p>Use the authenticated CLI for this platform. Add the verified key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>
+          <pre className="ssh-commands">{hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id}</pre>
           <div className="copy-line">
-            <code>{cmd}</code>
+            <span>Copy setup commands</span>
             <Button
               size="icon-sm"
               variant="outline"
               aria-label="Copy SSH command"
               onClick={() =>
                 navigator.clipboard
-                  .writeText(cmd)
+                  .writeText(hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id)
                   .then(() => setCopied(true))
                   .catch(setError)
               }
@@ -131,6 +133,18 @@ export function WorkspaceActions({
   compact?: boolean
 }) {
   const base = "#/machines/" + segment(m.machine_id)
+  const [opening,setOpening]=useState(false)
+  async function openTerminal() {
+    setOpening(true)
+    try {
+      const session=await actions.mutate<{exec_id:string}>("machines/"+segment(m.machine_id)+"/execs", {
+        argv:["/bin/sh"], cwd:"/workspace", user:"root", tty:true,interactive:true,cols:100,rows:28
+      }, {revision:m.revision})
+      location.hash=base+"/terminal/"+segment(session.exec_id)
+    } catch(error) {
+      actions.dialog({title:"Open terminal",content:<Callout error={error}/>,submit:"View sessions",act:async()=>{location.hash=base+"/terminal"}})
+    } finally {setOpening(false)}
+  }
   const running = m.observed_state === "running",
     paused = m.observed_state === "paused",
     cold = ["created", "stopped"].includes(m.observed_state)
@@ -156,12 +170,11 @@ export function WorkspaceActions({
         size={compact ? "icon-sm" : "sm"}
         aria-label={"Terminal for " + m.name}
         title="Open terminal"
-        asChild
+        onClick={openTerminal}
+        disabled={opening}
       >
-        <a href={base + "/terminal"}>
-          <SquareTerminal />
-          {!compact && "Terminal"}
-        </a>
+        <SquareTerminal />
+        {!compact && (opening?"Opening…":"Terminal")}
       </Button>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

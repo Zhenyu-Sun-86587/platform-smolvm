@@ -59,7 +59,8 @@ export function MachineList({
   )
   const lastPage = Math.max(0, Math.ceil(matching.length / 10) - 1),
     current = Math.min(lastPage, page)
-  const allocation = data.reduce(
+  const withResources=data.filter(m=>m.resources||m.spec?.resources)
+  const allocation = withResources.reduce(
     (totals, m) => {
       const r = m.resources ?? m.spec?.resources
       return {
@@ -330,10 +331,11 @@ export function MachineList({
               <div className="resource-row" key={title}>
                 <Icon size={15} />
                 <span>{title}</span>
-                <strong>{rows ? value : "—"}</strong>
+                <strong>{rows && (!rows.length || withResources.length) ? value : "—"}</strong>
               </div>
             )
           })}
+          {withResources.length<data.length&&<p className="resource-coverage">Resources reported by {withResources.length} of {data.length} machines.</p>}
         </section>
       </div>
     </>
