@@ -188,6 +188,7 @@ def proxy(platform, upstream, machine, ref, probe):
     task_scope = dict(machine_id=machine, generation=generation, task_namespace=namespace, nonce=binding)
     bound = json.loads(platform.guest(ref, ["/usr/local/bin/taskctl", "rpc"], json.dumps(dict(method="bind", binding=task_scope))))
     assert bound["binding"] == task_scope, bound
+    wait_for(lambda: not lifecycle_status()["blockers"], timeout=30)
 
     def launch_stream(pool):
         upstream.release.clear()
@@ -209,7 +210,7 @@ def proxy(platform, upstream, machine, ref, probe):
         time.sleep(5)
         assert not waiting.done() and "active" in hold_state()
         status = lifecycle_status()
-        assert status["power"] == "RUNNING" and "hold:credential_proxy" in status["blockers"], status
+        assert status["power"] == "RUNNING" and status["blockers"] == ["hold:credential_proxy"], status
         print("Worker blockers during model wait", status["blockers"], flush=True)
         upstream.release.set()
         status, output, _ = waiting.result(timeout=15)
@@ -260,6 +261,12 @@ def main():
         platform = Platform(args, root, stack, credential_proxies=[upstream.policy] if upstream else ())
         try:
             platform.start()
+            if upstream:
+                settings = platform.app("system/settings")
+                platform.app("system/settings", "PATCH", {"default_lifecycle_policy": {
+                    "auto_standby": False, "auto_hibernate": False, "min_running_after_wake_seconds": 0,
+                }}, {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "fixture-lifecycle-defaults",
+                     "If-Match": f'"{settings["revision"]}"'})
             source = platform.change("machines", "source", dict(name="Guest authority source", template_id="t_system",
                 boot_mode="system", runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2,memory_mib=768)))
             platform.complete(source)
