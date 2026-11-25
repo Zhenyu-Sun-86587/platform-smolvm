@@ -109,3 +109,15 @@ With platformd stopped, an operator can set `active`, `legacy-allowed`, `quarant
 python3 packaging/deep/bundle-history.py set-security --registry "$registry" \
   --bundle "$old_digest" --status quarantined --reason "$review_reason"
 ```
+
+## Verify the historical-reader workflow on KVM
+
+Use two Bundle revisions with measured OCI launch and StatePoint support, an earlier installed Bundle, platformd and the static Guest workload from the managed runtime benchmark. The fixture isolates its filesystem and network and uses a single temporary Worker catalog for the two managed releases.
+
+```sh
+sudo python3 tests/integration/bundle_history_kvm.py --smolvm "$smolvm_checkout" \
+  --prior "$prior_bundle" --candidate "$candidate_bundle" --archived "$archived_installation" \
+  --platformd "$platformd" --guest "$bench_guest_clean"
+```
+
+The fixture checks two independent VMM scopes, one address per slot and exclusive writer authority across Bundles, checkpoint rejection by a different Bundle, both live Serve and archived Serve restart, and old checkpoint recovery after the shared broker restarts and validates the original execution exits. It exercises the Platform security change with the registered archived route. The 2026-11-25 run against the dbe526e archive and the two managed development Bundles recorded results in `.build/wp23/coexistence-kvm.log`. The original platformd binary rejected the upgraded schema, and schema-2 migration retried after an injected final migration failure.

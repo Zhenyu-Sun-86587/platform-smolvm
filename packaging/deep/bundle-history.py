@@ -98,7 +98,7 @@ def retire(platform_path, worker_path, installation, retired_root, bundle, *, al
     verify_installed_bundle(installation, bundle, allow_legacy_rootfs=allow_legacy_rootfs)
     require(not installation.is_symlink(), "installation must be a real directory")
     original = installation.resolve(strict=True)
-    target = retired_root.resolve(strict=True) / bundle.removeprefix("sha256:")
+    target = retired_root.resolve(strict=True) / bundle.split(":", 1)[1]
     require(target != original and original not in target.parents, "retired root must be outside the installation")
     require(original.stat().st_dev == target.parent.stat().st_dev, "retirement must stay on the installation filesystem")
     require(not target.exists() and not target.is_symlink(), f"retired installation already exists: {target}")
