@@ -73,12 +73,12 @@ func mutationFingerprint(ctx context.Context, tx *sql.Tx, r MutationRequest, tar
 		return "", err
 	}
 	raw, err := json.Marshal(struct {
-		Actor       json.RawMessage
-		Business    json.RawMessage
-		Path        string
-		Revision    int64
-		Generation  int64
-		Target      any
+		Actor      json.RawMessage
+		Business   json.RawMessage
+		Path       string
+		Revision   int64
+		Generation int64
+		Target     any
 	}{scope, request, r.Scope, r.ExpectedRevision, r.ExpectedGeneration, target})
 	if err != nil {
 		return "", err
@@ -169,4 +169,26 @@ func (s *Store) Mutate(ctx context.Context, r MutationRequest, apply func(contex
 		return nil, false, err
 	}
 	return json.RawMessage(response), false, nil
+}
+
+// CompleteMutation replaces the reservation receipt for an externally
+// dispatched change. The caller may only complete the exact reservation.
+func (s *Store) CompleteMutation(ctx context.Context, r MutationRequest, reservation, receipt json.RawMessage) error {
+	if !json.Valid(receipt) {
+		return ErrInvalid
+	}
+	result, err := s.writer.ExecContext(ctx, `UPDATE idempotency SET response_json=?
+		WHERE control_epoch=? AND principal_id=? AND scope=? AND key=? AND response_json=? AND operation_id IS NULL`,
+		string(receipt), r.Epoch, r.PrincipalID, r.Scope, r.Key, string(reservation))
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrIdempotency
+	}
+	return nil
 }

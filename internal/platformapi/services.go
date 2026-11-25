@@ -1,0 +1,475 @@
+package platformapi
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/coder/websocket"
+	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/gateway"
+	"sandbox-platform/internal/lifecycle"
+	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
+)
+
+type service struct {
+	ID         string `json:"service_id"`
+	MachineID  string `json:"machine_id"`
+	Name       string `json:"name"`
+	Revision   int64  `json:"revision"`
+	Protocol   string `json:"protocol"`
+	GuestPort  uint16 `json:"guest_port"`
+	PublicHost string `json:"public_host,omitempty"`
+	PublicPort int    `json:"public_port,omitempty"`
+	Enabled    bool   `json:"enabled"`
+}
+
+const serviceCols = "id,machine_id,name,revision,kind,guest_port,coalesce(public_host,''),coalesce(public_port,0),enabled"
+
+type row interface{ Scan(...any) error }
+
+func readService(r row) (service, error) {
+	var v service
+	err := r.Scan(&v.ID, &v.MachineID, &v.Name, &v.Revision, &v.Protocol, &v.GuestPort, &v.PublicHost, &v.PublicPort, &v.Enabled)
+	return v, err
+}
+func (s *Server) getService(ctx context.Context, id string) (service, error) {
+	return readService(s.DB.ReadDB().QueryRowContext(ctx, "SELECT "+serviceCols+" FROM services WHERE id=?", id))
+}
+
+type serviceEdit struct {
+	ID                 string `json:"-"`
+	Name               string `json:"name"`
+	GuestPort          uint16 `json:"guest_port"`
+	Protocol           string `json:"protocol"`
+	ExpectedGeneration int64  `json:"expected_generation,omitempty"`
+}
+type ticket struct {
+	Origin, Target, Secret string
+	Browser                bool
+	Expiry                 time.Time
+}
+
+func (s *Server) serviceRoutes() {
+	s.Extra["service_create"] = s.editService
+	s.Extra["service_delete"] = s.editService
+	s.route("POST /v1/machines/{machine}/services", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		mid := r.PathValue("machine")
+		if err := p.Authorize("manage", mid); err != nil {
+			return err
+		}
+		var v serviceEdit
+		if err := decode(r, &v); err != nil {
+			return err
+		}
+		if len(v.Name) == 0 || len(v.Name) > 100 || v.GuestPort == 0 {
+			return registry.ErrInvalid
+		}
+		switch v.Protocol {
+		case "http", "https", "ssh", "tcp-mtls":
+		default:
+			return registry.ErrInvalid
+		}
+		if v.Protocol == "tcp-mtls" && s.Config.Gateway.ClientCA == "" {
+			return &lifecycle.Failure{Code: "CAPABILITY_NOT_VERIFIED", Message: "TCP listener requires configured mTLS client CA"}
+		}
+		return s.accept(w, r, p, v, registry.AcceptRequest{Kind: "service_create", MachineID: mid, ExpectedGeneration: v.ExpectedGeneration})
+	})
+	s.route("DELETE /v1/services/{svc}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		v, err := s.getService(r.Context(), r.PathValue("svc"))
+		if err != nil {
+			return err
+		}
+		if err = p.Authorize("manage", v.MachineID); err != nil {
+			return err
+		}
+		rev, err := revision(r)
+		if err != nil {
+			return err
+		}
+		if rev != v.Revision {
+			return registry.ErrRevision
+		}
+		env := envelope(r, p, v.ID)
+		op, _, err := s.DB.Accept(r.Context(), registry.AcceptRequest{PrincipalID: p.ID, CredentialID: p.CredentialID, Epoch: env.Epoch, Key: env.Key, Scope: env.Scope, Request: lifecycle.JSON(map[string]any{"service_id": v.ID, "revision": rev}), MachineID: v.MachineID, Kind: "service_delete"})
+		if err != nil {
+			return err
+		}
+		w.Header().Set("Location", "/v1/operations/"+op.ID)
+		return write(w, 202, op)
+	})
+	s.route("GET /v1/machines/{machine}/services", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		mid := r.PathValue("machine")
+		if err := p.Authorize("read", mid); err != nil {
+			return err
+		}
+		rows, err := s.DB.ReadDB().QueryContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE machine_id=? ORDER BY id", mid)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out := []service{}
+		for rows.Next() {
+			v, e := readService(rows)
+			if e != nil {
+				return e
+			}
+			out = append(out, v)
+		}
+		if err = rows.Err(); err != nil {
+			return err
+		}
+		return list(w, r, out, func(v service) string { return v.ID })
+	})
+	s.route("GET /v1/services/{svc}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		v, err := s.getService(r.Context(), r.PathValue("svc"))
+		if err != nil {
+			return err
+		}
+		if err = p.Authorize("read", v.MachineID); err != nil {
+			return err
+		}
+		return write(w, 200, v)
+	})
+	s.route("POST /v1/services/{svc}/tunnel-tickets", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		v, err := s.getService(r.Context(), r.PathValue("svc"))
+		if err != nil {
+			return err
+		}
+		if err = p.Authorize("tunnel", v.MachineID); err != nil {
+			return err
+		}
+		return s.issueTicket(w, r, v.ID)
+	})
+	s.mux.HandleFunc("GET /v1/services/{svc}/tunnel", func(w http.ResponseWriter, r *http.Request) {
+		v, err := s.getService(r.Context(), r.PathValue("svc"))
+		if err == nil {
+			err = s.tunnel(w, r, v)
+		}
+		if err != nil {
+			fail(w, r, err)
+		}
+	})
+	s.mux.HandleFunc("GET /v1/machines/{machine}/ssh-tunnel", func(w http.ResponseWriter, r *http.Request) {
+		mid := r.PathValue("machine")
+		p, _, err := s.authenticate(r)
+		if err == nil {
+			err = p.Authorize("tunnel", mid)
+		}
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE machine_id=? AND kind='ssh' AND enabled=1 ORDER BY id LIMIT 1", mid))
+		if err == nil {
+			err = s.tunnel(w, r, v)
+		}
+		if err != nil {
+			fail(w, r, err)
+		}
+	})
+}
+func (s *Server) issueTicket(w http.ResponseWriter, r *http.Request, target string) error {
+	if r.Header.Get("Origin") != s.Config.API.PublicOrigin {
+		return auth.ErrForbidden
+	}
+	_, secret, err := s.authenticate(r)
+	if err != nil {
+		return err
+	}
+	browser := secret != ""
+	if !browser {
+		secret = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	key, err := registry.NewID("ws_")
+	if err != nil {
+		return err
+	}
+	expiry := time.Now().Add(30 * time.Second)
+	s.tickets.Store(key, ticket{s.Config.API.PublicOrigin, target, secret, browser, expiry})
+	time.AfterFunc(30*time.Second, func() { s.tickets.Delete(key) })
+	return write(w, 200, map[string]any{"ticket": key, "expires_at": expiry.UTC()})
+}
+func (s *Server) streamPrincipal(r *http.Request, target string) (auth.Principal, error) {
+	if origin := r.Header.Get("Origin"); origin != "" && origin != s.Config.API.PublicOrigin {
+		return auth.Principal{}, auth.ErrForbidden
+	}
+	if r.Header.Get("Authorization") != "" {
+		p, _, err := s.authenticate(r)
+		return p, err
+	}
+	for _, proto := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		proto = strings.TrimSpace(proto)
+		key, ok := strings.CutPrefix(proto, "ticket.")
+		if !ok {
+			continue
+		}
+		v, ok := s.tickets.LoadAndDelete(key)
+		if !ok {
+			return auth.Principal{}, auth.ErrUnauthenticated
+		}
+		t, ok := v.(ticket)
+		if !ok {
+			return auth.Principal{}, auth.ErrForbidden
+		}
+		if t.Target != target || t.Origin != r.Header.Get("Origin") || time.Now().After(t.Expiry) {
+			return auth.Principal{}, auth.ErrForbidden
+		}
+		if t.Browser {
+			return s.Auth.AuthenticateSession(r.Context(), t.Secret)
+		}
+		return s.Auth.Authenticate(r.Context(), t.Secret)
+	}
+	return auth.Principal{}, auth.ErrUnauthenticated
+}
+func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, v service) error {
+	p, err := s.streamPrincipal(r, v.ID)
+	if err != nil {
+		return err
+	}
+	if err = p.Authorize("tunnel", v.MachineID); err != nil {
+		return err
+	}
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return registry.ErrInvalid
+	}
+	backend, check, release, err := s.resolve(r.Context(), p, v)
+	if err != nil {
+		return err
+	}
+	defer release()
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"sandbox.tunnel.v1"}})
+	if err != nil {
+		return nil
+	}
+	defer conn.CloseNow()
+	if err = backend.Tunnel(r.Context(), conn, check); err != nil {
+		_ = conn.Close(websocket.StatusInternalError, "backend closed")
+	}
+	return nil
+}
+func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gateway.Backend, func(context.Context) error, func(), error) {
+	var empty gateway.Backend
+	if !v.Enabled {
+		return empty, nil, nil, registry.ErrConflict
+	}
+	b, end, err := s.Access(ctx, p, v.MachineID)
+	if err != nil {
+		return empty, nil, nil, err
+	}
+	o, err := s.Runtime.Observe(ctx, b.RuntimeName)
+	if err != nil {
+		end()
+		return empty, nil, nil, err
+	}
+	var port uint16
+	err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, b.ID).Scan(&port)
+	if err != nil {
+		end()
+		return empty, nil, nil, err
+	}
+	check := func(ctx context.Context) error {
+		m, err := s.DB.GetMachine(ctx, v.MachineID)
+		if err != nil {
+			return err
+		}
+		if m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID {
+			return registry.ErrGeneration
+		}
+		now, err := s.getService(ctx, v.ID)
+		if err != nil {
+			return err
+		}
+		if !now.Enabled || v.Revision != now.Revision {
+			return registry.ErrRevision
+		}
+		fresh, err := s.Runtime.Observe(ctx, b.RuntimeName)
+		if err != nil {
+			return err
+		}
+		if fresh.Labels["platform.binding"] != b.ID || fresh.State != "running" || !fresh.Identity.Equal(o.Identity) {
+			return registry.ErrGeneration
+		}
+		for _, a := range fresh.Ports {
+			if a.Guest == v.GuestPort && a.Host == port && a.Protocol == "tcp" {
+				return nil
+			}
+		}
+		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "runtime port publication changed"}
+	}
+	return gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}, check, end, nil
+}
+func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
+	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
+		fail(w, r, auth.ErrForbidden)
+		return
+	}
+	v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE public_host=? AND kind IN ('http','https') AND enabled=1", host))
+	if err != nil {
+		fail(w, r, auth.ErrUnauthenticated)
+		return
+	}
+	p, handled, err := s.previewAuth(w, r, v)
+	if handled {
+		return
+	}
+	if err == nil {
+		err = p.Authorize("tunnel", v.MachineID)
+	}
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	b, check, end, err := s.resolve(r.Context(), p, v)
+	if err != nil {
+		w.Header().Set(gateway.ForwardingHeader, "not_started")
+		fail(w, r, err)
+		return
+	}
+	defer end()
+	b.HTTP(w, r, check)
+}
+func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
+	o, err := s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	if err != nil {
+		return err
+	}
+	if o.Labels["platform.binding"] != j.Binding.ID {
+		return registry.ErrGeneration
+	}
+	var svc service
+	var host uint16
+	desired := append([]rt.Port{}, o.Ports...)
+	if j.Op.Kind == "service_create" {
+		var v serviceEdit
+		if err = json.Unmarshal(j.Op.Request, &v); err != nil {
+			return err
+		}
+		svc = service{ID: "svc-" + j.Op.ID[3:], MachineID: j.Op.MachineID, Name: v.Name, Revision: 1, Protocol: v.Protocol, GuestPort: v.GuestPort, Enabled: true}
+		if v.Protocol == "http" || v.Protocol == "https" {
+			if s.Config.Gateway.AppsDomain == "" {
+				return errors.New("gateway apps_domain is required")
+			}
+			svc.PublicHost = svc.ID + "." + s.Config.Gateway.AppsDomain
+		}
+		for _, port := range desired {
+			if port.Guest == svc.GuestPort {
+				return errors.New("guest port already published")
+			}
+		}
+		tx, err := s.DB.DB().BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		var domain any
+		if svc.PublicHost != "" {
+			domain = svc.PublicHost
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,public_host,readiness_json,access_json,enabled) VALUES(?,?,?,1,?,?,?,'{}','{"private":true}',0)`, svc.ID, svc.MachineID, svc.Name, svc.Protocol, svc.GuestPort, domain)
+		if err != nil {
+			return err
+		}
+		rng := s.Config.Gateway.BackendRange
+		for n := rng[0]; n <= rng[1]; n++ {
+			var count int
+			if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol='tcp' AND host_port=? AND state!='released'", n).Scan(&count); err != nil {
+				return err
+			}
+			if count != 0 {
+				continue
+			}
+			l, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
+			if err != nil {
+				continue
+			}
+			l.Close()
+			host = uint16(n)
+			break
+		}
+		if host == 0 {
+			return errors.New("backend port range exhausted")
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO port_allocations(id,binding_id,service_id,protocol,host_port,guest_port,state) VALUES(?,?,?,'tcp',?,?,'allocated')", "port_"+j.Op.ID, j.Binding.ID, svc.ID, host, svc.GuestPort)
+		if err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		j.Written = true
+		desired = append(desired, rt.Port{Guest: svc.GuestPort, Host: host, Protocol: "tcp"})
+	} else {
+		var v struct {
+			ID       string `json:"service_id"`
+			Revision int64  `json:"revision"`
+		}
+		if err = json.Unmarshal(j.Op.Request, &v); err != nil {
+			return err
+		}
+		svc, err = s.getService(ctx, v.ID)
+		if err != nil {
+			return err
+		}
+		if svc.Revision != v.Revision || svc.MachineID != j.Op.MachineID {
+			return registry.ErrRevision
+		}
+		err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", svc.ID, j.Binding.ID).Scan(&host)
+		if err != nil {
+			return err
+		}
+		desired = nil
+		for _, a := range o.Ports {
+			if a.Host != host || a.Guest != svc.GuestPort {
+				desired = append(desired, a)
+			}
+		}
+	}
+	if err = j.Stage(ctx, "set_ports", ""); err != nil {
+		return err
+	}
+	if _, err = s.Runtime.SetPorts(ctx, j.Binding.RuntimeName, desired); err != nil {
+		return err
+	}
+	j.Written = true
+	o, err = s.Runtime.Observe(ctx, j.Binding.RuntimeName)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, a := range o.Ports {
+		if a.Host == host && a.Guest == svc.GuestPort {
+			found = true
+		}
+	}
+	if found != (j.Op.Kind == "service_create") {
+		return fmt.Errorf("port update did not match desired publication")
+	}
+	obs := lifecycle.Evidence(o)
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: &obs, Result: lifecycle.JSON(map[string]string{"service_id": svc.ID}), Apply: func(ctx context.Context, tx *sql.Tx) error {
+		if j.Op.Kind == "service_create" {
+			if _, err := tx.ExecContext(ctx, "UPDATE services SET enabled=1 WHERE id=?", svc.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE port_allocations SET state='bound' WHERE service_id=? AND binding_id=?", svc.ID, j.Binding.ID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, "UPDATE port_allocations SET state='released',service_id=NULL WHERE service_id=?", svc.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "DELETE FROM services WHERE id=?", svc.ID); err != nil {
+				return err
+			}
+		}
+		return registry.AppendEvent(ctx, tx, "service", j.Op.MachineID, j.Op.ID, map[string]string{"service_id": svc.ID}, false)
+	}})
+}
