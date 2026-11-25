@@ -43,7 +43,7 @@ type request struct {
 	Bundle        string       `json:"bundle_digest"`
 	OperationID   string       `json:"operation_id,omitempty"`
 	RequestDigest string       `json:"request_digest,omitempty"`
-	Expected      Execution    `json:"expected"`
+	Expected      *Execution   `json:"expected,omitempty"`
 	Payload       any          `json:"payload,omitempty"`
 	Descriptors   []descriptor `json:"fd_table,omitempty"`
 }
@@ -56,8 +56,11 @@ type Fault struct {
 func (f *Fault) Error() string { return f.Code + ": " + f.Message }
 
 func (c Client) call(ctx context.Context, q request, pass *os.File, expect *descriptor) (json.RawMessage, *os.File, error) {
-	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || q.Expected.InstanceID == "" ||
-		q.Expected.Epoch < 0 || (!lifecycleMethod(q.Method) && (q.Expected.IncarnationID == "" || q.Expected.Epoch < 1)) {
+	backup := q.Method == "PrepareBackupClosure" || q.Method == "ReadBackupMember" || q.Method == "ReleaseBackupClosure"
+	privateWake := q.Method == "QueryPrivatePacketWakeEndpoint" || q.Method == "QueryPrivatePacketWakeRule" || q.Method == "ApplyPrivatePacketWakeRule"
+	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || (!backup && q.Expected == nil) ||
+		(q.Expected != nil && (q.Expected.InstanceID == "" || q.Expected.Epoch < 0 ||
+			(!lifecycleMethod(q.Method) && (q.Expected.Epoch < 1 || q.Expected.IncarnationID == "" && !privateWake)))) {
 		return nil, nil, errors.New("invalid local Worker execution scope")
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -196,7 +199,7 @@ func (c Client) VerifyGuestTransport(ctx context.Context, execution Execution, c
 	}
 	file := os.NewFile(uintptr(fd), "guest-transport")
 	defer file.Close()
-	result, _, err := c.call(ctx, request{Method: "VerifyGuestTransport", Expected: execution,
+	result, _, err := c.call(ctx, request{Method: "VerifyGuestTransport", Expected: &execution,
 		Descriptors: []descriptor{{ResourceID: execution.IncarnationID, Role: "guest_transport"}}}, file, nil)
 	if err != nil {
 		return err

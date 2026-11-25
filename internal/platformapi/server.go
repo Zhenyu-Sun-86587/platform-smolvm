@@ -329,6 +329,7 @@ func list[T any](w http.ResponseWriter, r *http.Request, items []T, id func(T) s
 	return write(w, 200, map[string]any{"items": items[pos:end], "next_cursor": next})
 }
 func (s *Server) routes() {
+	s.backupRoutes()
 	s.mux.HandleFunc("POST /v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != s.Config.API.PublicOrigin {
 			fail(w, r, auth.ErrForbidden)
@@ -682,7 +683,7 @@ func (s *Server) eventRoutes() {
 				started = true
 			}
 			for _, ev := range events {
-				if p.Allows("read", ev.MachineID) {
+				if permitsEvent(p, ev) {
 					if _, err = fmt.Fprintf(w, "id: %s\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, lifecycle.JSON(ev)); err != nil {
 						return nil
 					}
@@ -698,10 +699,24 @@ func (s *Server) eventRoutes() {
 				return nil
 			case <-tick.C:
 			}
-			if _, _, err = s.authenticate(r); err != nil {
+			if p, _, err = s.authenticate(r); err != nil {
 				return nil
 			}
 		}
 	})
+}
+
+func permitsEvent(p auth.Principal, event registry.Event) bool {
+	switch event.Audience {
+	case "admin":
+		return p.Allows(auth.ActionAdmin, "")
+	case "owner":
+		return p.ID == event.AudienceOwner && p.Allows(auth.ActionRead, event.MachineID)
+	case "legacy":
+		if event.Type == "auth" || event.Type == "maintenance" || event.MachineID == "" && event.Type == "operation" {
+			return p.Allows(auth.ActionAdmin, "")
+		}
+	}
+	return p.Allows(auth.ActionRead, event.MachineID)
 }
 func (s *Server) ManagementHost() string { u, _ := url.Parse(s.Config.API.PublicOrigin); return u.Host }

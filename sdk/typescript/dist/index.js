@@ -11,6 +11,9 @@ export class PlatformError extends Error {
 }
 const segment = encodeURIComponent;
 export function machine(id) { return "machines/" + segment(id); }
+function packetWakeRule(id, source, transport, port) {
+    return machine(id) + "/network/wake-rules/" + segment(source) + "/" + transport + "/" + port;
+}
 export function task(id) { return "tasks/" + segment(id); }
 export function snapshot(id) { return "snapshots/" + segment(id); }
 export function volume(id) { return "volumes/" + segment(id); }
@@ -299,7 +302,22 @@ export class Client {
                 progress.signal.throwIfAborted();
         }
     }
+    getPrivatePacketWakeRule(id, source, transport, port, signal) {
+        return this.get(packetWakeRule(id, source, transport, port), signal);
+    }
+    async setPrivatePacketWakeRule(id, source, transport, port, enabled, ruleRevision, options = {}) {
+        const current = options.revision === undefined || options.generation === undefined ? await this.getMachine(id, options.signal) : undefined;
+        return this.mutate(packetWakeRule(id, source, transport, port), {
+            enabled, expected_revision: ruleRevision, expected_generation: options.generation ?? current?.binding_generation,
+        }, { ...options, revision: options.revision ?? current?.revision, method: "PUT" });
+    }
     getOperation(id, signal) { return this.get(operation(id), signal); }
+    listBackupPolicies(signal) { return this.pages("backups/policies", 100, signal); }
+    listBackups(signal) { return this.pages("backups", 100, signal); }
+    getBackup(id, signal) { return this.get("backups/" + segment(id), signal); }
+    runBackup(policy, options) {
+        return this.mutate("backups/policies/" + segment(policy) + "/runs", {}, options);
+    }
     async retryForkTargets(id, options = {}) {
         const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision;
         return this.mutate(operation(id) + "/retry", {}, { ...options, revision });

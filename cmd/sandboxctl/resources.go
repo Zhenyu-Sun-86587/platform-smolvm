@@ -213,7 +213,8 @@ func (c *client) machines() *cobra.Command {
 		}
 		group.AddCommand(child)
 	}
-	group.AddCommand(sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
+	var admission string
+	batch := sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
 			return err
@@ -222,10 +223,16 @@ func (c *client) machines() *cobra.Command {
 		for _, name := range args[1:] {
 			children = append(children, map[string]string{"name": name})
 		}
-		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", map[string]any{
+		body := map[string]any{
 			"children": children, "expected_generation": m.Generation, "require_independent": true,
-		}, m.Revision)
-	}))
+		}
+		if admission != "" {
+			body["admission"] = admission
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", body, m.Revision)
+	})
+	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject or best_effort)")
+	group.AddCommand(batch)
 	return group
 }
 

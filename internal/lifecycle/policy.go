@@ -167,8 +167,8 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client w
 		if event.Seq <= latest {
 			continue
 		}
-		payload := map[string]any{"event_name": "lifecycle." + event.Kind + "." + event.Stage, "decision": event}
-		if err = registry.AppendEvent(ctx, tx, "machine", b.MachineID, "", payload, false); err != nil {
+		resource := registry.ResourceEvent{Kind: "machine", ID: b.MachineID, Name: "lifecycle." + event.Kind + "." + event.Stage, Audience: "read"}
+		if err = registry.AppendResourceEvent(ctx, tx, "machine", b.MachineID, "", resource, JSON(event), false); err != nil {
 			return st, err
 		}
 		latest = event.Seq

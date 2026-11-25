@@ -4,6 +4,8 @@ package maintenance
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -30,12 +32,16 @@ const (
 )
 
 type Backup struct {
-	Format         int       `json:"format"`
-	CreatedAt      time.Time `json:"created_at"`
-	InstallationID string    `json:"installation_id"`
-	ControlEpoch   string    `json:"control_epoch"`
-	SchemaVersion  int       `json:"schema_version"`
-	Files          []File    `json:"files"`
+	Format         int             `json:"format"`
+	CreatedAt      time.Time       `json:"created_at"`
+	InstallationID string          `json:"installation_id"`
+	ControlEpoch   string          `json:"control_epoch"`
+	SchemaVersion  int             `json:"schema_version"`
+	Files          []File          `json:"files"`
+	RunID          string          `json:"backup_id,omitempty"`
+	Scope          string          `json:"scope,omitempty"`
+	MAC            string          `json:"manifest_mac,omitempty"`
+	Native         []NativeArchive `json:"native_closures,omitempty"`
 }
 
 type File struct {
@@ -45,6 +51,21 @@ type File struct {
 }
 
 func CreateBackup(ctx context.Context, cfg config.Config, configPath, output string) (Backup, error) {
+	return createBackup(ctx, cfg, configPath, output, nil)
+}
+
+type BackupPlan struct {
+	ID, Scope, RecoveryKeyFile string
+	CopyCatalog                func(func() error) error
+}
+
+var ErrNativeClosure = errors.New("native backup closure is unavailable")
+
+func CreatePlannedBackup(ctx context.Context, cfg config.Config, configPath, output string, plan BackupPlan) (Backup, error) {
+	return createBackup(ctx, cfg, configPath, output, &plan)
+}
+
+func createBackup(ctx context.Context, cfg config.Config, configPath, output string, plan *BackupPlan) (Backup, error) {
 	var result Backup
 	if output == "" {
 		return result, errors.New("backup output directory is required")
@@ -53,18 +74,41 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 	if err != nil {
 		return result, err
 	}
-	work, err := os.MkdirTemp(filepath.Dir(output), ".sandbox-backup-")
+	work, copied, cleanup, err := backupStage(output, plan)
 	if err != nil {
 		return result, err
 	}
-	defer os.RemoveAll(work)
-	source, err := openBackupDB(cfg.Database.Path)
-	if err != nil {
-		return result, err
-	}
-	defer source.Close()
-	if err := onlineCopy(ctx, filepath.Join(work, databaseName), source); err != nil {
-		return result, err
+	defer func() {
+		if plan == nil || ctx.Err() == nil {
+			cleanup()
+		}
+	}()
+	if !copied {
+		source, err := openBackupDB(cfg.Database.Path)
+		if err != nil {
+			return result, err
+		}
+		copyCatalog := func() error { return onlineCopy(ctx, filepath.Join(work, databaseName), source) }
+		if plan != nil && plan.CopyCatalog != nil {
+			err = plan.CopyCatalog(copyCatalog)
+		} else {
+			err = copyCatalog()
+		}
+		err = errors.Join(err, source.Close())
+		if err != nil {
+			return result, err
+		}
+		if plan != nil {
+			if err := syncPath(filepath.Join(work, databaseName)); err != nil {
+				return result, err
+			}
+			if err := os.WriteFile(work+".catalog-ready", nil, 0600); err != nil {
+				return result, err
+			}
+			if err := syncPath(filepath.Dir(work)); err != nil {
+				return result, err
+			}
+		}
 	}
 	db, err := openStandaloneDB(filepath.Join(work, databaseName))
 	if err != nil {
@@ -72,6 +116,12 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 	}
 	defer db.Close()
 	result = Backup{Format: 1, CreatedAt: time.Now().UTC()}
+	if plan != nil {
+		result.Format, result.RunID, result.Scope = 2, plan.ID, plan.Scope
+		if err := validatePortableScope(ctx, db, result.Scope); err != nil {
+			return result, err
+		}
+	}
 	if err := readMetadata(ctx, db, &result); err != nil {
 		return result, err
 	}
@@ -85,8 +135,23 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 	}
 	cfgFile.Path = configName
 	result.Files = append(result.Files, cfgFile, dbFile)
+	if plan != nil {
+		recovery, err := exportRecovery(ctx, db, cfg, work, *plan)
+		if err != nil {
+			return result, err
+		}
+		result.Files = append(result.Files, recovery...)
+		if result.Scope == config.BackupNative {
+			var files []File
+			result.Native, files, err = exportNative(ctx, db, cfg, work, plan.ID)
+			if err != nil {
+				return result, err
+			}
+			result.Files = append(result.Files, files...)
+		}
+	}
 
-	artifacts, err := readyArtifacts(ctx, db)
+	artifacts, err := readyArtifactsFor(ctx, db, result.Scope == config.BackupNative)
 	if err != nil {
 		return result, err
 	}
@@ -103,12 +168,23 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 		return result, err
 	}
 	sort.Slice(result.Files, func(i, j int) bool { return result.Files[i].Path < result.Files[j].Path })
+	if plan != nil {
+		result.MAC, err = backupMAC(result, plan.RecoveryKeyFile)
+		if err != nil {
+			return result, err
+		}
+	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return result, err
 	}
 	if err := os.WriteFile(filepath.Join(work, manifestName), append(data, '\n'), 0600); err != nil {
 		return result, err
+	}
+	if plan != nil {
+		if _, err := VerifyPlannedBackup(ctx, cfg, work, plan.RecoveryKeyFile); err != nil {
+			return result, err
+		}
 	}
 	if err := syncTree(work); err != nil {
 		return result, err
@@ -119,7 +195,49 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 	return result, syncPath(filepath.Dir(output))
 }
 
+func backupStage(output string, plan *BackupPlan) (string, bool, func(), error) {
+	parent := filepath.Dir(output)
+	if plan == nil {
+		stage, err := os.MkdirTemp(parent, ".sandbox-backup-")
+		return stage, false, func() { _ = os.RemoveAll(stage) }, err
+	}
+	if filepath.Base(output) != plan.ID || !strings.HasPrefix(plan.ID, "backup_") {
+		return "", false, nil, errors.New("planned backup path differs from the durable run ID")
+	}
+	stage := filepath.Join(parent, ".sandbox-"+plan.ID)
+	marker := stage + ".catalog-ready"
+	cleanup := func() { _ = os.RemoveAll(stage); _ = os.Remove(marker) }
+	if info, err := os.Lstat(stage); err == nil && !info.IsDir() {
+		return "", false, nil, errors.New("invalid existing backup stage")
+	}
+	entries, stageErr := os.ReadDir(stage)
+	if stageErr != nil && !errors.Is(stageErr, os.ErrNotExist) {
+		return "", false, nil, stageErr
+	}
+	info, markerErr := os.Lstat(marker)
+	if stageErr == nil && markerErr == nil && info.Mode().IsRegular() {
+		for _, entry := range entries {
+			if entry.Name() != databaseName {
+				if err := os.RemoveAll(filepath.Join(stage, entry.Name())); err != nil {
+					return "", false, nil, err
+				}
+			}
+		}
+		return stage, true, cleanup, nil
+	}
+	cleanup()
+	return stage, false, cleanup, os.Mkdir(stage, 0700)
+}
+
 func VerifyBackup(ctx context.Context, cfg config.Config, archive string) (Backup, error) {
+	return verifyBackup(ctx, cfg, archive, "")
+}
+
+func VerifyPlannedBackup(ctx context.Context, cfg config.Config, archive, keyFile string) (Backup, error) {
+	return verifyBackup(ctx, cfg, archive, keyFile)
+}
+
+func verifyBackup(ctx context.Context, cfg config.Config, archive, keyFile string) (Backup, error) {
 	var result Backup
 	if archive == "" {
 		return result, errors.New("backup directory is required")
@@ -137,8 +255,16 @@ func VerifyBackup(ctx context.Context, cfg config.Config, archive string) (Backu
 	if err := d.Decode(new(any)); err != io.EOF {
 		return result, errors.New("invalid trailing backup metadata")
 	}
-	if result.Format != 1 || result.CreatedAt.IsZero() {
+	if (result.Format != 1 && result.Format != 2) || result.CreatedAt.IsZero() ||
+		(result.Format == 2 && (result.RunID == "" || result.Scope == "")) {
 		return result, errors.New("unsupported backup format")
+	}
+	if result.Format == 2 {
+		keyFile = recoveryKeyPath(cfg, archive, result, keyFile)
+		want, err := backupMAC(result, keyFile)
+		if err != nil || !hmac.Equal([]byte(want), []byte(result.MAC)) {
+			return result, ErrRecoveryKey
+		}
 	}
 	verified := make(map[string]File)
 	for _, expected := range result.Files {
@@ -172,6 +298,26 @@ func VerifyBackup(ctx context.Context, cfg config.Config, archive string) (Backu
 	if actual.InstallationID != result.InstallationID || actual.ControlEpoch != result.ControlEpoch || actual.SchemaVersion != result.SchemaVersion {
 		return result, errors.New("database metadata differs from backup manifest")
 	}
+	var recovered map[string][]byte
+	if result.Format == 2 {
+		if err := validatePortableScope(ctx, db, result.Scope); err != nil {
+			return result, err
+		}
+		recovered, err = verifyRecovery(archive, result.RunID, recoveryKeyPath(cfg, archive, result, keyFile), verified)
+		if err != nil {
+			return result, err
+		}
+		if err := verifyTaskRecovery(ctx, db, recovered); err != nil {
+			return result, err
+		}
+		if result.Scope == config.BackupNative {
+			if err := verifyNative(ctx, db, cfg, archive, result, verified); err != nil {
+				return result, err
+			}
+		} else if len(result.Native) != 0 {
+			return result, ErrNativeClosure
+		}
+	}
 	var integrity string
 	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&integrity); err != nil {
 		return result, err
@@ -179,7 +325,7 @@ func VerifyBackup(ctx context.Context, cfg config.Config, archive string) (Backu
 	if integrity != "ok" {
 		return result, errors.New("backup database failed SQLite integrity check")
 	}
-	artifacts, err := readyArtifacts(ctx, db)
+	artifacts, err := readyArtifactsFor(ctx, db, result.Scope == config.BackupNative)
 	if err != nil {
 		return result, err
 	}
@@ -193,7 +339,31 @@ func VerifyBackup(ctx context.Context, cfg config.Config, archive string) (Backu
 	if len(verified) != 2+len(artifacts)*len(artifactFiles) {
 		return result, errors.New("unexpected files listed in backup manifest")
 	}
-	return result, verifyArtifacts(cfg, archive, artifacts)
+	if len(artifacts) == 0 {
+		return result, nil
+	}
+	trust, err := snapshots.LoadRecoveryTrust(cfg, recovered["signer"])
+	if err != nil {
+		return result, err
+	}
+	return result, verifySignedArtifacts(trust, archive, artifacts)
+}
+
+func validatePortableScope(ctx context.Context, db *sql.DB, scope string) error {
+	if scope == config.BackupNative {
+		return nil
+	}
+	if scope != config.BackupPortable {
+		return ErrNativeClosure
+	}
+	var native bool
+	err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM snapshots WHERE state='ready' AND provenance='worker')
+		OR EXISTS(SELECT 1 FROM runtime_bindings WHERE status='current' AND power_state='hibernated' AND runtime_bundle_id IS NOT NULL)
+		OR EXISTS(SELECT 1 FROM volumes WHERE state='available')`).Scan(&native)
+	if err == nil && native {
+		return ErrNativeClosure
+	}
+	return err
 }
 
 var artifactFiles = []string{snapshots.ManifestFile, snapshots.SignatureFile, snapshots.CheckpointFile}
@@ -206,7 +376,11 @@ type readyArtifact struct {
 }
 
 func readyArtifacts(ctx context.Context, db *sql.DB) ([]readyArtifact, error) {
-	rows, err := db.QueryContext(ctx, "SELECT relative_path, sha256, size_bytes, manifest_json FROM snapshots WHERE state = 'ready' ORDER BY relative_path")
+	return readyArtifactsFor(ctx, db, false)
+}
+
+func readyArtifactsFor(ctx context.Context, db *sql.DB, separateNative bool) ([]readyArtifact, error) {
+	rows, err := db.QueryContext(ctx, "SELECT relative_path,sha256,size_bytes,manifest_json FROM snapshots WHERE state='ready' AND (NOT ? OR provenance<>'worker') ORDER BY relative_path", separateNative)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +414,10 @@ func verifyArtifacts(cfg config.Config, archive string, artifacts []readyArtifac
 	if err != nil {
 		return err
 	}
+	return verifySignedArtifacts(keys, archive, artifacts)
+}
+
+func verifySignedArtifacts(keys map[string]ed25519.PublicKey, archive string, artifacts []readyArtifact) error {
 	for _, artifact := range artifacts {
 		verified, err := snapshots.VerifyDirectory(filepath.Join(archive, artifact.Path), keys)
 		if err != nil {

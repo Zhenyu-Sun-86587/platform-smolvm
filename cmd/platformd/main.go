@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/backups"
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/platformapi"
@@ -120,6 +121,8 @@ func run() error {
 	}
 	httpServer := &http.Server{Addr: c.API.Listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10}
 	go api.StartTCP(ctx)
+	backupDone := make(chan struct{})
+	go func() { defer close(backupDone); backups.Run(ctx, db, c, *cfg) }()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); engine.Run(ctx) }()
 	errs := make(chan error, 1)
@@ -141,6 +144,7 @@ func run() error {
 	_ = httpServer.Shutdown(shutdown)
 	_ = httpServer.Close()
 	<-workerDone
+	<-backupDone
 	if errors.Is(result, http.ErrServerClosed) {
 		return nil
 	}

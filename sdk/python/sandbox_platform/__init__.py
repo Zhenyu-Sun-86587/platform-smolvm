@@ -170,6 +170,18 @@ class Client:
             revision = self.get(path)["revision"]
         return self.mutate(path + "/retry", revision=revision, intent=intent)
 
+    def list_backup_policies(self):
+        return self.pages("backups/policies")
+
+    def list_backups(self, *, policy_id=None):
+        return self.pages("backups", **({"policy_id": policy_id} if policy_id else {}))
+
+    def get_backup(self, backup_id):
+        return self.get(_item("backups", backup_id))
+
+    def run_backup(self, policy_id, *, intent=None):
+        return self.mutate(_item("backups/policies", policy_id) + "/runs", intent=intent)
+
     def pages(self, path, *, limit=100, **filters) -> Iterator[dict]:
         cursor = ""
         while True:
@@ -320,6 +332,19 @@ class Client:
             if errors and not failed:
                 raise errors[0]
 
+    def get_private_packet_wake_rule(self, machine_id, source_id, transport, port):
+        return self.get(_item("machines", machine_id) + "/network/" + _item("wake-rules", source_id) + f"/{transport}/{port}")
+
+    def set_private_packet_wake_rule(self, machine_id, source_id, transport, port, *, enabled,
+                                     rule_revision, generation=None, revision=None, intent=None):
+        if generation is None or revision is None:
+            current = self.get_machine(machine_id)
+            generation = current["binding_generation"] if generation is None else generation
+            revision = current["revision"] if revision is None else revision
+        path = _item("machines", machine_id) + "/network/" + _item("wake-rules", source_id) + f"/{transport}/{port}"
+        return self.mutate(path, {"enabled": enabled, "expected_revision": rule_revision,
+                                  "expected_generation": generation}, method="PUT", revision=revision, intent=intent)
+
     def list_volumes(self, *, limit=100):
         return self.pages("volumes", limit=limit)
 
@@ -433,11 +458,13 @@ class Client:
             body["require_independent"] = True
         return self._machine_mutation(machine_id, "forks", body, **options)
 
-    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, **options):
+    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, admission=None, **options):
         """Submit a single capture and keep the ordered child IDs through partial completion."""
         body = {"children": children, "require_independent": require_independent}
         if volume_policy is not None:
             body["volume_policy"] = volume_policy
+        if admission is not None:
+            body["admission"] = admission
         return self._machine_mutation(machine_id, "fork-batches", body, **options)
 
     def standby(self, machine_id, *, activity_policy=None, **options):

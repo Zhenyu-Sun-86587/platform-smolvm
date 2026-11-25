@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 
+import managed_evidence
 from bundle import (
     BUILD_LOCK, BUILD_RECORD, PROTOCOLS, ROOTFS, ROOTFS_PROVENANCE, TOOLCHAIN_LOCK,
     check_runtime, pack_bundle, verify_bundle,
@@ -145,7 +146,7 @@ def source_licenses(stage, lock, kernel, crun):
     return reader[1].decode()
 
 
-def write_profiles(stage, lock, evidence, reader):
+def write_profiles(stage, lock, evidence, reader, managed=False):
     profiles = stage / "profiles"
     profiles.mkdir()
     guest, cpu, kvm = (evidence[name] for name in ("guest", "host_cpu", "kvm"))
@@ -167,12 +168,12 @@ def write_profiles(stage, lock, evidence, reader):
     write_json(profiles / "clock.json", {
         "schema": "RuntimeClockContract/1", "guest_clocksource": guest["clocksource"],
         "x86_vm_state_ioctls": ["KVM_GET_CLOCK", "KVM_SET_CLOCK"],
-        "tsc_migration_template": "intel-portable", "verified_operations": ["oci-boot"],
+        "tsc_migration_template": "intel-portable", "verified_operations": ["oci-boot", *(["managed-fork", "hibernate-restore"] if managed else [])],
     })
     sources = lock["sources"]
     write_json(profiles / "verification.json", {
-        "schema": "RuntimeVerificationProfile/1", "boot_profiles": ["oci-v1"],
-        "contracts": {name: 1 for name in PROTOCOLS},
+        "schema": "RuntimeVerificationProfile/1", "boot_profiles": ["oci-v1", *(["system-debian-v1"] if managed else [])],
+        "contracts": {name: 1 for name in (*PROTOCOLS, *(managed_evidence.MANAGED if managed else ()))},
         "state_reader_id": f"{reader}:{sources['smolvm']['commit']}:{sources['libkrun']['commit']}",
         "required_kvm_caps": sorted(KVM_CAPABILITIES), "optional_features": [],
     })
@@ -183,6 +184,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("artifacts", "evidence", "kernel-archive", "crun-archive", "output"):
         parser.add_argument(f"--{option}", type=Path, required=True)
+    parser.add_argument("--managed-evidence", type=Path, help="measured System template and acceptance output from measure-managed.py")
     args = parser.parse_args()
     try:
         runtime = args.artifacts.resolve(strict=True)
@@ -197,7 +199,18 @@ def main():
             lock, _ = read_locks(stage / BUILD_LOCK, stage / TOOLCHAIN_LOCK)
             evidence = checked_evidence(args.evidence, stage, lock)
             reader = source_licenses(stage, lock, args.kernel_archive, args.crun_archive)
-            write_profiles(stage, lock, evidence, reader)
+            if args.managed_evidence:
+                inputs = args.managed_evidence
+                files = [managed_evidence.EVIDENCE, managed_evidence.SYSTEM_TEMPLATE,
+                         *(managed_evidence.log_name(case) for case in managed_evidence.SCENARIOS)]
+                for name in files:
+                    target = stage / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(inputs / name, target)
+                with (stage / "NOTICE").open("a", encoding="utf-8") as notice:
+                    notice.write("The System template includes a Debian guest disk with installed package copyright files under /usr/share/doc. "
+                                 "The managed acceptance record identifies the tested disk, build and KVM fixture results.\n")
+            write_profiles(stage, lock, evidence, reader, bool(args.managed_evidence))
             checksum = pack_bundle(stage, output)
         require(verify_bundle(output, expected=checksum) == checksum, "candidate digest verification failed")
         print(checksum)

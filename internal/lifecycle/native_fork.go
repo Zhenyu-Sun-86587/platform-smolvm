@@ -105,6 +105,15 @@ func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
 		return j.fail(ctx, rt.FullStateUnavailable(j.Op.Kind, false))
 	}
 	request := rt.ForkSubmission{OperationID: j.Op.ID, Expected: ref, Kind: j.Op.Kind}
+	if j.Op.Kind == rt.ForkBatch && len(j.Op.Request) != 0 {
+		var input struct {
+			Admission string `json:"admission"`
+		}
+		if err := json.Unmarshal(j.Op.Request, &input); err != nil {
+			return j.fail(ctx, registry.ErrInvalid)
+		}
+		request.Parameters.Admission = input.Admission
+	}
 	for _, child := range j.Op.Children {
 		binding, err := j.DB.GetBinding(ctx, child.BindingID)
 		if err != nil {
@@ -182,7 +191,8 @@ func (j *Job) checkForkReceipt(receipt rt.OperationReceipt) error {
 		receipt.RouteID != "deep" || receipt.BundleDigest != j.Binding.RuntimeBundleID || receipt.InstanceID != request.Expected.InstanceID ||
 		receipt.ExpectedExecutionEpoch != request.Expected.ExecutionEpoch || receipt.ExpectedIncarnationID == nil ||
 		*receipt.ExpectedIncarnationID != request.Expected.IncarnationID || progress.CaptureID == "" || progress.Stage == "" ||
-		len(progress.Children) != len(j.Op.Children) || progress.OriginalSourceDisposition != string(intent.SourceDisposition) ||
+		len(progress.Children) != len(j.Op.Children) || rt.ForkAdmission(progress.Admission) != rt.ForkAdmission(request.Parameters.Admission) ||
+		progress.OriginalSourceDisposition != string(intent.SourceDisposition) ||
 		(j.Op.SourceLockReleased && !progress.SourceReleased) {
 		return &Failure{"RECOVERY_REQUIRED", "Worker fork receipt is outside the accepted source or cut"}
 	}
@@ -210,7 +220,14 @@ func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkContro
 			return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker fork changed a child outside a recorded retry"})
 		}
 	}
-	result := map[string]string{"machine_id": j.Op.MachineID, "capture_id": progress.CaptureID}
+	admitted := make([]string, 0, len(progress.Children))
+	for ordinal, child := range progress.Children {
+		if child.AdmissionError == "" {
+			admitted = append(admitted, j.Op.Children[ordinal].MachineID)
+		}
+	}
+	result := map[string]any{"machine_id": j.Op.MachineID, "capture_id": progress.CaptureID,
+		"admission": rt.ForkAdmission(intent.Submission.Parameters.Admission), "admitted_child_ids": admitted}
 	intent.Receipt = &receipt
 	step := registry.TransitionRequest{State: registry.Observing, Stage: progress.Stage, Effect: registry.EffectUnknown, Result: JSON(result), Dispatch: JSON(j.Intent)}
 	if receipt.Phase == "ABORTED" && receipt.Decision == "ABORT" && !j.Op.SourceLockReleased {
@@ -242,8 +259,12 @@ func (j *Job) confirmForkAbort(ctx context.Context, control rt.NativeForkControl
 			if child.Phase != "ABORTED" && child.Phase != "RESERVED" {
 				return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "aborted fork still has a dispatched child"})
 			}
-			cancelled = cancelled && child.Cancelled
-			step.ForkChildren = append(step.ForkChildren, registry.ForkChildTransition{Ordinal: ordinal, State: "quarantined", ErrorCode: code})
+			cancelled = cancelled && (child.Cancelled || child.AdmissionError != "")
+			childCode := code
+			if child.AdmissionError != "" {
+				childCode = "RESOURCE_LIMIT"
+			}
+			step.ForkChildren = append(step.ForkChildren, registry.ForkChildTransition{Ordinal: ordinal, State: "quarantined", ErrorCode: childCode})
 		}
 		inventory, err := control.NativeInventory(ctx, j.Intent.Fork.Submission.Expected)
 		if errors.Is(err, rt.ErrUnavailable) {
@@ -259,7 +280,9 @@ func (j *Job) confirmForkAbort(ctx context.Context, control rt.NativeForkControl
 		if cancelled {
 			state, code = registry.Cancelled, "FORK_CANCELLED"
 			for i := range step.ForkChildren {
-				step.ForkChildren[i].ErrorCode = code
+				if step.ForkChildren[i].ErrorCode != "RESOURCE_LIMIT" {
+					step.ForkChildren[i].ErrorCode = code
+				}
 			}
 		}
 	}
@@ -275,6 +298,10 @@ func verifyForkReceiptChildren(request rt.ForkSubmission, children []rt.ForkChil
 			instances[child.InstanceID] || operations[child.OperationID] || child.ExecutionEpoch < 1 || child.Attempt < 0 {
 			return &Failure{"RECOVERY_REQUIRED", "Worker fork child differs from the accepted ordered child set"}
 		}
+		if child.AdmissionError != "" && (request.Parameters.Admission != rt.ForkBestEffort || child.AdmissionError != "E_RESOURCE_LIMIT" ||
+			child.Phase != "ABORTED" || child.IncarnationID != nil || child.ExecutionEpoch != 1 || child.Attempt != 0 || child.Cancelled) {
+			return &Failure{"RECOVERY_REQUIRED", "Worker fork child reports an inconsistent budget refusal"}
+		}
 		instances[child.InstanceID], operations[child.OperationID] = true, true
 	}
 	return nil
@@ -282,7 +309,7 @@ func verifyForkReceiptChildren(request rt.ForkSubmission, children []rt.ForkChil
 
 func sameForkAttempt(a, b rt.ForkChildReceipt) bool {
 	return a.Name == b.Name && a.InstanceID == b.InstanceID && a.OperationID == b.OperationID &&
-		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt &&
+		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt && a.AdmissionError == b.AdmissionError &&
 		(b.IncarnationID == nil || (a.IncarnationID != nil && *a.IncarnationID == *b.IncarnationID)) && (!b.Cancelled || a.Cancelled)
 }
 
@@ -295,7 +322,7 @@ func (j *Job) recordForkProgress(ctx context.Context, step registry.TransitionRe
 	return j.transition(ctx, step)
 }
 
-func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkControl, receipt rt.OperationReceipt, step registry.TransitionRequest, result map[string]string) error {
+func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkControl, receipt rt.OperationReceipt, step registry.TransitionRequest, result map[string]any) error {
 	proof := append([]rt.ForkDiskEvidence(nil), j.Intent.Fork.SourceDisks...)
 	ready, failed := 0, 0
 	for _, child := range j.Op.Children {
@@ -319,7 +346,9 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 			}
 		case "ABORTED":
 			code := "NATIVE_CHILD_ABORTED"
-			if workerChild.Cancelled {
+			if workerChild.AdmissionError != "" {
+				code = "RESOURCE_LIMIT"
+			} else if workerChild.Cancelled {
 				code = "FORK_CHILD_CANCELLED"
 			}
 			step.ForkChildren = append(step.ForkChildren, registry.ForkChildTransition{Ordinal: ordinal, State: "quarantined", ErrorCode: code})

@@ -4,6 +4,23 @@ export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unk
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN";
 export type CaptureMode = "vm" | "managed_tasks";
 export type VolumeRestorePolicy = "exact" | "clone_conflicts";
+export type BackupScope = "platform_snapshots" | "durable_runtime";
+export interface BackupPolicy {
+    policy_id: string;
+    scope: BackupScope;
+    interval_seconds: number;
+    retain: number;
+}
+export interface BackupRun {
+    backup_id: string;
+    policy_id: string;
+    scope: BackupScope;
+    control_epoch: string;
+    state: "running" | "verified" | "failed" | "retiring" | "retired";
+    started_at: string;
+    finished_at?: string;
+    failure_code?: string;
+}
 export interface RuntimeProfile {
     runtime_instance_id: string;
     runtime_bundle_id: string;
@@ -39,6 +56,7 @@ export interface ForkBatch {
         name: string;
     }[];
     require_independent?: boolean;
+    admission?: "all_or_reject" | "best_effort";
     volume_policy?: {
         default?: "clone";
     };
@@ -375,6 +393,24 @@ export interface WriteOptions {
 export interface MachineWriteOptions extends WriteOptions {
     generation?: number;
 }
+export interface PrivatePacketWakeRule {
+    rule_id: string;
+    source_attachment_id: string;
+    target_attachment_id: string;
+    transport: "tcp" | "udp";
+    guest_port: number;
+    enabled: boolean;
+    revision: number;
+    source_current: boolean;
+    source_incarnation_id?: string | null;
+    source_execution_epoch?: number | null;
+    last_wake?: {
+        operation_id: string;
+        rule_revision: number;
+        execution_epoch: number;
+        authorized: boolean;
+    } | null;
+}
 export interface Page<T> {
     items: T[];
     next_cursor?: string;
@@ -388,7 +424,20 @@ export interface TaskChunk {
 export interface PlatformEvent {
     id: string;
     type: string;
-    data: unknown;
+    data: {
+        id: string;
+        control_epoch: string;
+        seq: number;
+        type: string;
+        created_at: string;
+        payload: unknown;
+        machine_id?: string;
+        operation_id?: string;
+        event_name?: string;
+        resource_kind?: string;
+        resource_id?: string;
+        schema_version?: number;
+    };
 }
 export interface StreamTicket {
     ticket: string;
@@ -468,7 +517,13 @@ export declare class Client {
     }>;
     releaseRunningLease(lease: RunningLease, options?: WriteOptions): Promise<RunningLease>;
     withActivity<T>(id: string, reason: string, run: (signal: AbortSignal) => Promise<T>, ttlSeconds?: number): Promise<T>;
+    getPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, signal?: AbortSignal): Promise<PrivatePacketWakeRule>;
+    setPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, enabled: boolean, ruleRevision: number, options?: MachineWriteOptions): Promise<PrivatePacketWakeRule>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;
+    listBackupPolicies(signal?: AbortSignal): AsyncGenerator<BackupPolicy, any, any>;
+    listBackups(signal?: AbortSignal): AsyncGenerator<BackupRun, any, any>;
+    getBackup(id: string, signal?: AbortSignal): Promise<BackupRun>;
+    runBackup(policy: string, options?: WriteOptions): Promise<BackupRun>;
     retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     listDesktopSessions(id: string, signal?: AbortSignal): AsyncGenerator<DesktopSession, any, any>;

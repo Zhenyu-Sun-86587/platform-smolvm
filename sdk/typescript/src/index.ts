@@ -4,6 +4,13 @@ export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unk
 export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN"
 export type CaptureMode = "vm" | "managed_tasks"
 export type VolumeRestorePolicy = "exact" | "clone_conflicts"
+export type BackupScope = "platform_snapshots" | "durable_runtime"
+export interface BackupPolicy { policy_id: string; scope: BackupScope; interval_seconds: number; retain: number }
+export interface BackupRun {
+  backup_id: string; policy_id: string; scope: BackupScope; control_epoch: string
+  state: "running" | "verified" | "failed" | "retiring" | "retired"
+  started_at: string; finished_at?: string; failure_code?: string
+}
 export interface RuntimeProfile {
   runtime_instance_id: string
   runtime_bundle_id: string
@@ -35,6 +42,7 @@ export interface DesktopSession {
 export interface ForkBatch {
   children: { name: string }[]
   require_independent?: boolean
+  admission?: "all_or_reject" | "best_effort"
   volume_policy?: { default?: "clone" }
 }
 export interface ErrorDetail {
@@ -274,9 +282,25 @@ export interface Token extends TokenSpec {
 export interface Mutation { epoch: string; key: string }
 export interface WriteOptions { method?: string; revision?: number; intent?: Mutation; signal?: AbortSignal }
 export interface MachineWriteOptions extends WriteOptions { generation?: number }
+export interface PrivatePacketWakeRule {
+  rule_id: string
+  source_attachment_id: string
+  target_attachment_id: string
+  transport: "tcp" | "udp"
+  guest_port: number
+  enabled: boolean
+  revision: number
+  source_current: boolean
+  source_incarnation_id?: string | null
+  source_execution_epoch?: number | null
+  last_wake?: { operation_id: string; rule_revision: number; execution_epoch: number; authorized: boolean } | null
+}
 export interface Page<T> { items: T[]; next_cursor?: string }
 export interface TaskChunk { start: number; next: number; gap: boolean; bytes: Uint8Array }
-export interface PlatformEvent { id: string; type: string; data: unknown }
+export interface PlatformEvent { id: string; type: string; data: {
+  id: string; control_epoch: string; seq: number; type: string; created_at: string; payload: unknown
+  machine_id?: string; operation_id?: string; event_name?: string; resource_kind?: string; resource_id?: string; schema_version?: number
+} }
 export interface StreamTicket { ticket: string; protocol?: string }
 export const terminalStates = new Set<OperationState>(["succeeded", "failed", "cancelled", "recovery_required"])
 
@@ -289,6 +313,9 @@ export class PlatformError extends Error {
 
 const segment = encodeURIComponent
 export function machine(id: string) { return "machines/" + segment(id) }
+function packetWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number) {
+  return machine(id) + "/network/wake-rules/" + segment(source) + "/" + transport + "/" + port
+}
 export function task(id: string) { return "tasks/" + segment(id) }
 export function snapshot(id: string) { return "snapshots/" + segment(id) }
 export function volume(id: string) { return "volumes/" + segment(id) }
@@ -575,7 +602,22 @@ export class Client {
       if (finished) progress.signal.throwIfAborted()
     }
   }
+  getPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, signal?: AbortSignal) {
+    return this.get<PrivatePacketWakeRule>(packetWakeRule(id, source, transport, port), signal)
+  }
+  async setPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, enabled: boolean, ruleRevision: number, options: MachineWriteOptions = {}) {
+    const current = options.revision === undefined || options.generation === undefined ? await this.getMachine(id, options.signal) : undefined
+    return this.mutate<PrivatePacketWakeRule>(packetWakeRule(id, source, transport, port), {
+      enabled, expected_revision: ruleRevision, expected_generation: options.generation ?? current?.binding_generation,
+    }, { ...options, revision: options.revision ?? current?.revision, method: "PUT" })
+  }
   getOperation(id: string, signal?: AbortSignal) { return this.get<Operation>(operation(id), signal) }
+  listBackupPolicies(signal?: AbortSignal) { return this.pages<BackupPolicy>("backups/policies", 100, signal) }
+  listBackups(signal?: AbortSignal) { return this.pages<BackupRun>("backups", 100, signal) }
+  getBackup(id: string, signal?: AbortSignal) { return this.get<BackupRun>("backups/" + segment(id), signal) }
+  runBackup(policy: string, options?: WriteOptions) {
+    return this.mutate<BackupRun>("backups/policies/" + segment(policy) + "/runs", {}, options)
+  }
   async retryForkTargets(id: string, options: WriteOptions = {}) {
     const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
     return this.mutate<Operation>(operation(id) + "/retry", {}, { ...options, revision })

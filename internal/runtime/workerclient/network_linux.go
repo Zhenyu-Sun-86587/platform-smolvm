@@ -38,7 +38,7 @@ type NetworkLease struct {
 
 func (c Client) LookupAttachment(ctx context.Context, execution Execution) (NetworkAttachment, error) {
 	var a NetworkAttachment
-	result, _, err := c.call(ctx, request{Method: "QueryExecutionNetworkAttachment", Expected: execution}, nil, nil)
+	result, _, err := c.call(ctx, request{Method: "QueryExecutionNetworkAttachment", Expected: &execution}, nil, nil)
 	if err != nil {
 		return a, err
 	}
@@ -64,7 +64,7 @@ func (c Client) DialAttachment(ctx context.Context, a NetworkAttachment, port ui
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	result, fd, err := c.call(ctx, request{
-		Method: "DialNetworkAttachment", Expected: lease.Execution, OperationID: lease.OperationID, RequestDigest: a.RequestDigest,
+		Method: "DialNetworkAttachment", Expected: &lease.Execution, OperationID: lease.OperationID, RequestDigest: a.RequestDigest,
 		Payload: map[string]any{"attachment_id": lease.Attachment.ID, "lease_id": lease.LeaseID, "expected_revision": lease.Revision,
 			"guest_port": port, "transport": transport},
 	}, nil, &descriptor{ResourceID: lease.Attachment.ID, Role: "network_" + transport})

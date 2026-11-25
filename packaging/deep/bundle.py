@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+import managed_evidence
 from bundle_inputs import (
     BundleError,
     REPOSITORIES,
@@ -106,7 +107,10 @@ def read_profile(root):
     require(profile["schema"] == "RuntimeVerificationProfile/1", "unsupported verification profile schema")
     boot_profiles = names(profile["boot_profiles"], r"[a-z0-9-]+", "boot_profiles", required=True)
     require("oci-v1" in boot_profiles and set(boot_profiles) <= BOOT_TEMPLATES.keys(), "unsupported boot profiles")
-    fields(profile["contracts"], " ".join(PROTOCOLS), "contracts")
+    contracts = profile["contracts"]
+    require(isinstance(contracts, dict), "contracts must be an object")
+    optional = contracts.keys() & managed_evidence.MANAGED
+    fields(contracts, " ".join((*PROTOCOLS, *optional)), "contracts")
     for name, version in profile["contracts"].items():
         require(type(version) is int and version == 1, f"unsupported contract version: {name}")
     match(profile["state_reader_id"], r"[A-Za-z0-9][A-Za-z0-9._:+/-]*", "state_reader_id")
@@ -315,6 +319,7 @@ def build_manifest(root, files, *, allow_legacy_rootfs=False):
         outputs -= ROOTFS_METADATA
     build, artifacts = checked_artifacts(root, files, required, outputs, EXECUTABLES)
     profile = read_profile(root)
+    managed_evidence.verify(root, profile, artifacts)
     for name in profile["boot_profiles"]:
         require(BOOT_TEMPLATES[name] in files, f"missing template for {name}")
 

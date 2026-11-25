@@ -21,7 +21,7 @@ func (c Client) Lifecycle(ctx context.Context, method, key string, expected Exec
 	if !lifecycleMethod(method) {
 		return fmt.Errorf("unsupported Worker lifecycle method %q", method)
 	}
-	q := request{Method: method, Expected: expected, Payload: payload}
+	q := request{Method: method, Expected: &expected, Payload: payload}
 	if key != "" {
 		data, e := json.Marshal([]any{method, key, expected, payload})
 		if e != nil {
