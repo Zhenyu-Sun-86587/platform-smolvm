@@ -44,9 +44,17 @@ function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">)
 
 function OperationDetail({ item, actions }: { item: Operation; actions: Actions }) {
   return <>
-    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect }} />
+    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition }} />
     {item.error && <div className="callout" role="alert"><strong>{item.error.code}</strong><span>{item.error.message}</span><span>Effect {item.error.effect ?? item.effect}</span>{item.error.retry && <span>Retry {label(item.error.retry)}</span>}</div>}
     {item.result != null && <Records value={item.result} />}
+    {Boolean(item.children?.length) && <div className="rows" aria-label="Forked machines">
+      {item.children?.map(child => <div className="row" key={child.ordinal}>
+        {child.state === "ready" ? <a href={"#/machines/" + segment(child.machine_id)}>{child.machine_id}</a> : <code>{child.machine_id}</code>}
+        <State value={child.state} />
+        {child.resource_independence && <span>Resource independence {child.resource_independence}</span>}
+        {child.error_code && <code>{child.error_code}</code>}
+      </div>)}
+    </div>}
     <div className="panel-footer actions">
       <button onClick={() => actions.dialog({
         title: "Reconcile operation", description: "Observe the current state and resume reconciliation for this operation.",

@@ -15,7 +15,7 @@ import {
 } from "lucide-react"
 import type { Machine, Service, Page } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { Callout, segment, str, label, useRemote } from "./common"
+import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str, useRemote } from "./common"
 import { Button } from "./daytona/button"
 import {
   DropdownMenu,
@@ -57,11 +57,12 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
       ),
   })
 }
-export function copyDialog(m: Machine, actions: Actions, live: boolean) {
+export function copyDialog(m: Machine, actions: Actions, live: boolean, independent = false) {
   actions.dialog({
-    title: live ? "Live Fork" : "Independent Clone",
+    title: independent ? "Independent Fork" : live ? "Live Fork" : "Independent Clone",
     submit: live ? "Create fork" : "Create clone",
-    description: live
+    description: independent ? "Capture the running execution and fork a resource-independent child."
+      : live
       ? "Branch the running execution. Parent and child continue from the same point with a native storage dependency."
       : "Capture a clean standalone checkpoint and restore it into a separate workspace.",
     fields: [
@@ -79,9 +80,24 @@ export function copyDialog(m: Machine, actions: Actions, live: boolean) {
           child_name: str(f, "child_name"),
           expected_generation: m.binding_generation,
           ...(live ? {} : { copy_policy: "managed_clean" }),
+          ...(independent ? { require_independent: true } : {}),
         },
         { revision: m.revision },
       ),
+  })
+}
+
+function forkBatchDialog(m: Machine, actions: Actions) {
+  actions.dialog({
+    title: "Fork batch",
+    description: "Create independent children from one source capture.",
+    submit: "Fork batch",
+    fields: [{ name: "children", label: "Child names, one per line", type: "textarea", required: true }],
+    act: (f) => actions.mutate("machines/" + segment(m.machine_id) + "/fork-batches", {
+      expected_generation: m.binding_generation,
+      require_independent: true,
+      children: str(f, "children").split("\n").map(name => name.trim()).filter(Boolean).map(name => ({name})),
+    }, { revision: m.revision }),
   })
 }
 function SSHInfo({ machine }: { machine: Machine }) {
@@ -145,9 +161,18 @@ export function WorkspaceActions({
       actions.dialog({title:"Open terminal",content:<Callout error={error}/>,submit:"View sessions",act:async()=>{location.hash=base+"/terminal"}})
     } finally {setOpening(false)}
   }
-  const running = m.observed_state === "running",
-    paused = m.observed_state === "paused",
-    cold = ["created", "stopped"].includes(m.observed_state)
+  const power = machinePowerState(m)
+  const deep = bundleBound(m)
+  const running = power === "running",
+    paused = !deep && (power === "hibernated" || m.observed_state === "paused" && m.availability !== "unknown"),
+    cold = ["created", "stopped"].includes(power)
+  const canCapture = running || power === "standby"
+  const nativeActions = [
+    { key: "lifecycle.standby", name: "Standby", icon: Moon, available: running, act: () => powerDialog(m, actions, "standby") },
+    { key: "state.hibernate", name: "Hibernate", icon: Moon, available: canCapture, act: () => powerDialog(m, actions, "hibernate") },
+    { key: "state.independent_fork", name: "Independent Fork", icon: GitFork, available: canCapture, act: () => copyDialog(m, actions, true, true) },
+    { key: "state.fork_batch", name: "Fork batch", icon: GitFork, available: canCapture, act: () => forkBatchDialog(m, actions) },
+  ]
   const ssh = () =>
     actions.dialog({
       title: "SSH connection",
@@ -187,22 +212,28 @@ export function WorkspaceActions({
             <Cable />
             Connect via SSH
           </DropdownMenuItem>
-          <DropdownMenuItem
+          {!deep && <DropdownMenuItem
             disabled={!running || m.capabilities?.live_fork?.supported === false}
             onSelect={() => copyDialog(m, actions, true)}
           >
             <GitFork />
             Live Fork
-          </DropdownMenuItem>
+          </DropdownMenuItem>}
           <DropdownMenuItem
-            disabled={m.capabilities?.independent_clone?.supported === false}
+            disabled={deep || m.capabilities?.independent_clone?.supported === false}
             onSelect={() => copyDialog(m, actions, false)}
           >
             <Layers2 />
-            Independent Clone
+            Managed clean clone
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          {running && (
+          {deep && nativeActions.map(({ key, name, icon: Icon, available, act }) => {
+            const reason = fullStateBlock(m, key)
+            return <DropdownMenuItem key={key} disabled={!available || Boolean(reason)} title={reason} onSelect={act}>
+              <Icon />{name}
+            </DropdownMenuItem>
+          })}
+          {!deep && running && (
             <DropdownMenuItem onSelect={() => powerDialog(m, actions, "pause")}>
               <Moon />
               Hibernate

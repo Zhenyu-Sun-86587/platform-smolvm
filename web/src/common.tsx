@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from "react"
 import { PlatformError } from "../../sdk/typescript/src/index"
+import type { Machine } from "../../sdk/typescript/src/index"
 
 import { api } from "./api"
 import { Dialog as Root, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter } from "./daytona/dialog"
@@ -9,6 +10,21 @@ export { api, segment } from "./api"
 export const query = (value: string) => new URLSearchParams({ path: value }).toString()
 export const label = (value: string) => value.replace(/_/g, " ").replace(/^./, char => char.toUpperCase())
 export const isAuthError = (error: unknown) => error instanceof PlatformError && error.status === 401
+
+export const bundleBound = (m: Machine) => Boolean(m.binding?.runtime_bundle_id || m.binding?.runtime_instance_id)
+export function machinePowerState(m: Machine) {
+  if (m.power_state) return m.power_state
+  if (bundleBound(m)) return "unknown"
+  if (m.observed_state === "paused") return "hibernated"
+  if (m.observed_state === "created") return "stopped"
+  return m.observed_state
+}
+
+export function fullStateBlock(m: Machine, key: string) {
+  const capability = m.capabilities?.[key]
+  if (capability?.status === "supported" && capability.supported) return undefined
+  return capability?.message ?? capability?.reason_code ?? "Capability has not been verified for this machine."
+}
 
 export function useRemote<T>(path: string, revision: number) {
   const [data, setData] = useState<T>()

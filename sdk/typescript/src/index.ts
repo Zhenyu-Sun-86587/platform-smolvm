@@ -1,12 +1,31 @@
 export type Effect = "none" | "applied" | "partial" | "unknown"
 export type OperationState = "queued" | "dispatching" | "observing" | "succeeded" | "failed" | "cancelled" | "recovery_required"
+export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown"
+export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN"
+export type CaptureMode = "vm" | "managed_tasks"
+export interface ActivityPolicy { allow_active_tasks?: boolean }
+export interface ForkBatch {
+  children: { name: string }[]
+  require_independent?: boolean
+  volume_policy?: { default?: "clone" }
+}
 export interface ErrorDetail {
   code?: string
   message?: string
   effect?: Effect
   retry?: string
   operation_id?: string
+  capability?: string
+  reason_code?: string
   [key: string]: unknown
+}
+export interface OperationChild {
+  ordinal: number
+  machine_id: string
+  binding_id: string
+  state: string
+  resource_independence?: "unknown" | "verified" | "failed"
+  error_code?: string
 }
 export interface Operation {
   operation_id: string
@@ -15,6 +34,8 @@ export interface Operation {
   kind: string
   stage: string
   effect: Effect
+  source_disposition?: SourceDisposition
+  children?: OperationChild[]
   binding_generation?: number
   error?: ErrorDetail | null
   result?: Record<string, unknown> | null
@@ -43,7 +64,7 @@ export interface Machine extends CreateMachine {
   spec?: { resources?: Resources }
   revision: number
   binding_generation: number
-  power_state?: "running" | "standby" | "hibernated" | "stopped" | "unknown"
+  power_state?: PowerState
   health?: {vm: string; guest_management: string; workload: string; workload_error?: {code: string; message: string}; network_identity: string; services: string}
   observed_state: string
   availability: string
@@ -61,6 +82,8 @@ export interface Machine extends CreateMachine {
     binding_id?: string
     runtime_instance_id?: string
     runtime_bundle_id?: string
+    execution_epoch?: number
+    incarnation_id?: string
     runtime_identity?: Record<string, unknown> | null
     state_reason?: unknown
     guest_management_evidence?: { ssh_ready?: boolean; ssh_host_key?: string }
@@ -106,6 +129,14 @@ export interface Service extends ServiceSpec {
 }
 export interface Snapshot {
   snapshot_id: string
+  capture_mode?: CaptureMode
+  vm_provenance?: {
+    operation_id: string
+    runtime_instance_id: string
+    runtime_bundle_id: string
+    state_reader_id: string
+    runtime_capture_id: string
+  }
   source_machine_id?: string
   revision?: number
   purpose: "clone" | "recovery"
@@ -381,6 +412,12 @@ export class Client {
       { ...body, expected_generation: options.generation ?? current?.binding_generation },
       { ...options, revision: options.revision ?? current?.revision })
   }
+  standby(id: string, activityPolicy?: ActivityPolicy, options?: MachineWriteOptions) {
+    return this.machineMutation(id, "standby", { activity_policy: activityPolicy }, options)
+  }
+  hibernate(id: string, activityPolicy?: ActivityPolicy, options?: MachineWriteOptions) {
+    return this.machineMutation(id, "hibernate", { activity_policy: activityPolicy }, options)
+  }
   startTask(id: string, spec: TaskSpec, options?: MachineWriteOptions) {
     return this.machineMutation(id, "tasks", spec, options)
   }
@@ -393,14 +430,20 @@ export class Client {
     }
     return this.mutate(task(id) + "/cancel", { grace_seconds: graceSeconds }, { ...options, revision })
   }
-  capture(id: string, purpose: "clone" | "recovery", label: string, options?: MachineWriteOptions) {
-    return this.machineMutation(id, "snapshots", { purpose, label }, options)
+  capture(id: string, purpose: "clone" | "recovery", label: string, { captureMode, ...options }: MachineWriteOptions & { captureMode?: CaptureMode } = {}) {
+    return this.machineMutation(id, "snapshots", { purpose, label, capture_mode: captureMode }, options)
+  }
+  checkpoint(id: string, label = "", options?: MachineWriteOptions) {
+    return this.machineMutation(id, "snapshots", { label, capture_mode: "vm" }, options)
   }
   clone(id: string, childName: string, options?: MachineWriteOptions) {
     return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options)
   }
-  fork(id: string, childName: string, options?: MachineWriteOptions) {
-    return this.machineMutation(id, "forks", { child_name: childName }, options)
+  fork(id: string, childName: string, { requireIndependent, ...options }: MachineWriteOptions & { requireIndependent?: boolean } = {}) {
+    return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined }, options)
+  }
+  forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions) {
+    return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options)
   }
   restore(snapshotID: string, name: string, options?: WriteOptions) {
     return this.mutate("restores", { snapshot_id: snapshotID, name }, options)

@@ -238,6 +238,12 @@ export class Client {
             ? await this.getMachine(id, options.signal) : undefined;
         return this.mutate(machine(id) + "/" + suffix, { ...body, expected_generation: options.generation ?? current?.binding_generation }, { ...options, revision: options.revision ?? current?.revision });
     }
+    standby(id, activityPolicy, options) {
+        return this.machineMutation(id, "standby", { activity_policy: activityPolicy }, options);
+    }
+    hibernate(id, activityPolicy, options) {
+        return this.machineMutation(id, "hibernate", { activity_policy: activityPolicy }, options);
+    }
     startTask(id, spec, options) {
         return this.machineMutation(id, "tasks", spec, options);
     }
@@ -250,14 +256,20 @@ export class Client {
         }
         return this.mutate(task(id) + "/cancel", { grace_seconds: graceSeconds }, { ...options, revision });
     }
-    capture(id, purpose, label, options) {
-        return this.machineMutation(id, "snapshots", { purpose, label }, options);
+    capture(id, purpose, label, { captureMode, ...options } = {}) {
+        return this.machineMutation(id, "snapshots", { purpose, label, capture_mode: captureMode }, options);
+    }
+    checkpoint(id, label = "", options) {
+        return this.machineMutation(id, "snapshots", { label, capture_mode: "vm" }, options);
     }
     clone(id, childName, options) {
         return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options);
     }
-    fork(id, childName, options) {
-        return this.machineMutation(id, "forks", { child_name: childName }, options);
+    fork(id, childName, { requireIndependent, ...options } = {}) {
+        return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined }, options);
+    }
+    forkBatch(id, request, options) {
+        return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options);
     }
     restore(snapshotID, name, options) {
         return this.mutate("restores", { snapshot_id: snapshotID, name }, options);

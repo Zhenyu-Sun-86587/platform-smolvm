@@ -1,12 +1,37 @@
 export type Effect = "none" | "applied" | "partial" | "unknown";
 export type OperationState = "queued" | "dispatching" | "observing" | "succeeded" | "failed" | "cancelled" | "recovery_required";
+export type PowerState = "running" | "standby" | "hibernated" | "stopped" | "unknown";
+export type SourceDisposition = "RUNNING" | "STANDBY" | "HELD" | "EXITED" | "UNKNOWN";
+export type CaptureMode = "vm" | "managed_tasks";
+export interface ActivityPolicy {
+    allow_active_tasks?: boolean;
+}
+export interface ForkBatch {
+    children: {
+        name: string;
+    }[];
+    require_independent?: boolean;
+    volume_policy?: {
+        default?: "clone";
+    };
+}
 export interface ErrorDetail {
     code?: string;
     message?: string;
     effect?: Effect;
     retry?: string;
     operation_id?: string;
+    capability?: string;
+    reason_code?: string;
     [key: string]: unknown;
+}
+export interface OperationChild {
+    ordinal: number;
+    machine_id: string;
+    binding_id: string;
+    state: string;
+    resource_independence?: "unknown" | "verified" | "failed";
+    error_code?: string;
 }
 export interface Operation {
     operation_id: string;
@@ -15,6 +40,8 @@ export interface Operation {
     kind: string;
     stage: string;
     effect: Effect;
+    source_disposition?: SourceDisposition;
+    children?: OperationChild[];
     binding_generation?: number;
     error?: ErrorDetail | null;
     result?: Record<string, unknown> | null;
@@ -61,7 +88,7 @@ export interface Machine extends CreateMachine {
     };
     revision: number;
     binding_generation: number;
-    power_state?: "running" | "standby" | "hibernated" | "stopped" | "unknown";
+    power_state?: PowerState;
     health?: {
         vm: string;
         guest_management: string;
@@ -89,6 +116,8 @@ export interface Machine extends CreateMachine {
         binding_id?: string;
         runtime_instance_id?: string;
         runtime_bundle_id?: string;
+        execution_epoch?: number;
+        incarnation_id?: string;
         runtime_identity?: Record<string, unknown> | null;
         state_reason?: unknown;
         guest_management_evidence?: {
@@ -137,6 +166,14 @@ export interface Service extends ServiceSpec {
 }
 export interface Snapshot {
     snapshot_id: string;
+    capture_mode?: CaptureMode;
+    vm_provenance?: {
+        operation_id: string;
+        runtime_instance_id: string;
+        runtime_bundle_id: string;
+        state_reader_id: string;
+        runtime_capture_id: string;
+    };
     source_machine_id?: string;
     revision?: number;
     purpose: "clone" | "recovery";
@@ -245,12 +282,20 @@ export declare class Client {
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;
     machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions): Promise<Operation>;
     private machineMutation;
+    standby(id: string, activityPolicy?: ActivityPolicy, options?: MachineWriteOptions): Promise<Operation>;
+    hibernate(id: string, activityPolicy?: ActivityPolicy, options?: MachineWriteOptions): Promise<Operation>;
     startTask(id: string, spec: TaskSpec, options?: MachineWriteOptions): Promise<Operation>;
     getTask(id: string, signal?: AbortSignal): Promise<Task>;
     cancelTask(id: string, graceSeconds?: number, options?: WriteOptions): Promise<Operation>;
-    capture(id: string, purpose: "clone" | "recovery", label: string, options?: MachineWriteOptions): Promise<Operation>;
+    capture(id: string, purpose: "clone" | "recovery", label: string, { captureMode, ...options }?: MachineWriteOptions & {
+        captureMode?: CaptureMode;
+    }): Promise<Operation>;
+    checkpoint(id: string, label?: string, options?: MachineWriteOptions): Promise<Operation>;
     clone(id: string, childName: string, options?: MachineWriteOptions): Promise<Operation>;
-    fork(id: string, childName: string, options?: MachineWriteOptions): Promise<Operation>;
+    fork(id: string, childName: string, { requireIndependent, ...options }?: MachineWriteOptions & {
+        requireIndependent?: boolean;
+    }): Promise<Operation>;
+    forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions): Promise<Operation>;
     restore(snapshotID: string, name: string, options?: WriteOptions): Promise<Operation>;
     listTokens(signal?: AbortSignal): AsyncGenerator<Token, any, any>;
     issueToken(spec: TokenSpec, options?: WriteOptions): Promise<Token>;

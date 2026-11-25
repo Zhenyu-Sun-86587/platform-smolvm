@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import type { Machine, Page, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
 import { machine as machinePath, service, snapshot, task } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { api, argv, Callout, Details, download, label, num, query, Records, Section, segment, State, str, time, useRemote } from "./common"
+import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, num, query, Records, Section, segment, State, str, time, useRemote } from "./common"
 import { Box, Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis } from "lucide-react"
 import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
@@ -40,7 +40,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
   if (tab==="services") tab="networking"
   return <>
     <PageIntro title={<span className="machine-title"><span className="machine-icon large"><Box/></span>{machine.name}</span>}
-      desc={<span className="machine-id"><code>{machine.machine_id}</code><State value={machine.observed_state}/><State value={machine.availability}/></span>}
+      desc={<span className="machine-id"><code>{machine.machine_id}</code><State value={machinePowerState(machine)}/><State value={machine.availability}/></span>}
       actions={<WorkspaceActions machine={machine} actions={actions}/>}/>
     <nav className="tabs" aria-label="Machine sections">{tabs.map(item => <a className={tab === item ? "active" : ""} href={path + "/" + item} key={item}>{label(item)}</a>)}</nav>
     {machine.blocked_reasons?.length ? <div className="blockers">{machine.blocked_reasons.map(reason => <span key={reason}>{label(reason)}</span>)}</div> : null}
@@ -85,11 +85,13 @@ function Overview({ machine, actions }: Context) {
         }, { method: "PATCH", revision: machine.revision })
       }
     })}>Edit</button>}>
-      <Details value={{template:machine.template_id,power_state:machine.power_state,guest_management:machine.health?.guest_management ?? machine.guest_management_status,workload:machine.health?.workload,workload_error:machine.health?.workload_error?.message,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
+      <Details value={{template:machine.template_id,power_state:machinePowerState(machine),guest_management:machine.health?.guest_management ?? machine.guest_management_status,workload:machine.health?.workload,workload_error:machine.health?.workload_error?.message,network_identity:machine.health?.network_identity,services:machine.health?.services,desired_power:machine.desired_power,last_activity:time(machine.last_user_activity_at)}}/>
       <details className="disclosure"><summary>Runtime binding and identity</summary>      <Details value={{
         template: machine.template_id, desired_power: machine.desired_power,
         binding_generation: machine.binding_generation, revision: machine.revision,
         binding: machine.binding?.binding_id, runtime_name: machine.runtime_name,
+        runtime_instance: machine.binding?.runtime_instance_id, runtime_bundle: machine.binding?.runtime_bundle_id,
+        incarnation: machine.binding?.incarnation_id, execution_epoch: machine.binding?.execution_epoch,
         runtime_identity: machine.binding?.runtime_identity ?? machine.runtime_identity,
         runtime_state_reason: machine.binding?.state_reason ?? machine.state_reason,
         ssh_host_key: machine.binding?.guest_management_evidence?.ssh_host_key,
@@ -373,6 +375,7 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
   const history = useCollection<Snapshot>(base ? base + "/snapshots" : "snapshots", revision)
   const cleanBlock = capabilityReason(machine, "clean_checkpoint")
   const recoveryBlock = capabilityReason(machine, "active_recovery")
+  const vmBlock = machine && fullStateBlock(machine, "state.checkpoint")
   const [error, setError] = useState<unknown>()
   const modal = (mode: string, item: Snapshot) => {
     const resource = snapshot(item.snapshot_id)
@@ -415,19 +418,27 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
           { value: "recovery", label: "Recovery", disabled: Boolean(recoveryBlock) }
         ] }],
         act: form => actions.mutate(base + "/snapshots", { label: str(form, "label"), purpose: str(form, "purpose"), expected_generation: machine.binding_generation }, { revision: machine.revision })
-      })}>Capture</button>}</>}>
+      })}>Capture</button>}
+      {machine && bundleBound(machine) && <button disabled={Boolean(vmBlock)} onClick={() => actions.dialog({
+        title: "Capture VM checkpoint",
+        fields: [{ name: "label", label: "Label" }],
+        act: form => actions.mutate(base + "/snapshots", {
+          label: str(form, "label"), capture_mode: "vm", expected_generation: machine.binding_generation,
+        }, { revision: machine.revision }),
+      })}>Capture VM checkpoint</button>}</>}>
       <FeatureStatus reason={cleanBlock && "Clean checkpoint · " + cleanBlock} />
       <FeatureStatus reason={recoveryBlock && "Active recovery · " + recoveryBlock} />
+      {machine && bundleBound(machine) && <FeatureStatus reason={vmBlock && "VM checkpoint · " + vmBlock} />}
       <Callout error={history.error} /><Callout error={error} />
       {!history.items?.length && !history.error && <p className="empty">{history.items?"No snapshots yet.":"Loading snapshots…"}</p>}
       <div className="rows">{history.items?.map(item => <div key={item.snapshot_id}>
         <div className="row snapshot-row"><span className="machine-icon"><Layers3 size={17}/></span><div><strong>{item.label || item.snapshot_id}</strong><small>{time(item.created_at)}</small></div><State value={item.state}/>
-          <span className="subtle">{item.purpose==="clone"?"Clean checkpoint":"Recovery checkpoint"} · {item.task_content}</span>
+          <span className="subtle">{item.capture_mode === "vm" ? "VM checkpoint" : (item.purpose === "clone" ? "Clean checkpoint" : "Recovery checkpoint") + " · " + item.task_content}</span>
           {!machine && item.source_machine_id && <a href={"#/machines/"+segment(item.source_machine_id)+"/snapshots"}>{machines?.find(m=>m.machine_id===item.source_machine_id)?.name??item.source_machine_id}</a>}
-          <div className="actions"><Button variant="outline" size="sm" disabled={item.state!=="ready"||item.task_content!=="clean"} onClick={()=>modal("Restore",item)}>Restore</Button>
+          <div className="actions"><Button variant="outline" size="sm" disabled={item.capture_mode==="vm"||item.state!=="ready"||item.task_content!=="clean"} onClick={()=>modal("Restore",item)}>Restore</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Snapshot actions for "+(item.label||item.snapshot_id)}><Ellipsis/></Button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">{["Export","Verify",...(machine?["Rollback"]:[]),"Delete"].map(mode=><DropdownMenuItem key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
-        </div><details className="disclosure"><summary>Artifact details</summary><Details value={{snapshot_id:item.snapshot_id,bytes:item.size_bytes,sha256:item.sha256,provenance:item.provenance,closure_verified:item.closure_verified_at,restore_verified:item.restore_verified_at}}/></details>
+          <DropdownMenuContent align="end">{["Export","Verify",...(machine?["Rollback"]:[]),"Delete"].map(mode=><DropdownMenuItem disabled={item.capture_mode==="vm"} key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
+        </div><details className="disclosure"><summary>Artifact details</summary><Details value={{snapshot_id:item.snapshot_id,bytes:item.size_bytes,sha256:item.sha256,provenance:item.provenance,vm_provenance:item.vm_provenance,closure_verified:item.closure_verified_at,restore_verified:item.restore_verified_at}}/></details>
       </div>)}</div>
     </Section>
   </>
