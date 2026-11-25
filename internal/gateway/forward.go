@@ -21,9 +21,10 @@ import (
 const ForwardingHeader = "X-Sandbox-Forwarding"
 
 type Backend struct {
-	Port       uint16
-	Protocol   string
-	ServerName string
+	Port        uint16
+	Protocol    string
+	ServerName  string
+	DialPrivate func(context.Context) (net.Conn, error)
 }
 
 // Dial is called with a backend resolved from the current binding and port table.
@@ -34,6 +35,9 @@ func (b Backend) Dial(ctx context.Context, recheck func(context.Context) error) 
 	}
 	if err := recheck(ctx); err != nil {
 		return nil, err
+	}
+	if b.DialPrivate != nil {
+		return b.DialPrivate(ctx)
 	}
 	d := net.Dialer{Timeout: 8 * time.Second}
 	return d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(b.Port))))
@@ -77,9 +81,29 @@ func (c trackedConn) CloseWrite() error {
 	return nil
 }
 
+func recheckWhileActive(ctx context.Context, check func(context.Context) error, denied func(error)) {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			if err := check(ctx); err != nil {
+				denied(err)
+				return
+			}
+		}
+	}
+}
+
 // HTTP uses a fresh transport for each request. Even if Transport asks for a
 // second connection the single-dial guard rejects it before writing any bytes.
 func (b Backend) HTTP(w http.ResponseWriter, r *http.Request, check func(context.Context) error) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go recheckWhileActive(ctx, check, func(error) { cancel() })
+	r = r.WithContext(ctx)
 	var dialed, started atomic.Bool
 	transport := &http.Transport{Proxy: nil, ForceAttemptHTTP2: false, DisableKeepAlives: true, ResponseHeaderTimeout: 2 * time.Minute, TLSHandshakeTimeout: 8 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: b.ServerName}}
 	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -145,6 +169,12 @@ func (b Backend) Tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 		return err
 	}
 	result := make(chan error, 2)
+	go recheckWhileActive(ctx, check, func(err error) {
+		select {
+		case result <- err:
+		case <-ctx.Done():
+		}
+	})
 	clientHalf, backendHalf := make(chan struct{}), make(chan struct{})
 	go func() {
 		half := false

@@ -13,11 +13,12 @@ import (
 
 // Route pins a particular Serve installation and its installed bundle.
 type Route struct {
-	InstanceID string `yaml:"instance_id"`
-	Bundle     string `yaml:"bundle_digest"`
-	Reader     string `yaml:"state_reader_id"`
-	Socket     string
-	Manifest   string
+	InstanceID   string `yaml:"instance_id"`
+	Bundle       string `yaml:"bundle_digest"`
+	Reader       string `yaml:"state_reader_id"`
+	Socket       string
+	WorkerSocket string `yaml:"worker_socket,omitempty"`
+	Manifest     string
 }
 
 func (r Route) Key() rt.BundleRoute {
@@ -28,6 +29,14 @@ func (r Route) Validate() error {
 	if !identifier.MatchString(r.InstanceID) {
 		return fmt.Errorf("%w: invalid Serve runtime instance ID", rt.ErrInvalid)
 	}
+	if r.WorkerSocket != "" {
+		if r.WorkerSocket == r.Socket {
+			return fmt.Errorf("%w: Worker and Serve require separate sockets", rt.ErrInvalid)
+		}
+		if err := validateEndpoint(r.WorkerSocket, r.Bundle, r.Reader); err != nil {
+			return err
+		}
+	}
 	return validateEndpoint(r.Socket, r.Bundle, r.Reader)
 }
 
@@ -35,6 +44,8 @@ type Adapter struct {
 	unimplemented
 	route Route
 }
+
+func (a *Adapter) WorkerSocket() string { return a.route.WorkerSocket }
 
 var _ rt.Adapter = (*Adapter)(nil)
 

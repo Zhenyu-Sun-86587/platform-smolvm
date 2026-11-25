@@ -150,7 +150,7 @@ func (s *Server) StartTCP(ctx context.Context) {
 					continue
 				}
 				listeners[v.ID] = l
-				go func() {
+				go func(id string, port int) {
 					for {
 						c, err := l.Accept()
 						if err != nil {
@@ -158,12 +158,12 @@ func (s *Server) StartTCP(ctx context.Context) {
 						}
 						select {
 						case slots <- struct{}{}:
-							go func() { defer func() { <-slots }(); s.tcpClient(ctx, c.(*tls.Conn), v) }()
+							go func() { defer func() { <-slots }(); s.tcpClient(ctx, c.(*tls.Conn), id, port) }()
 						default:
 							c.Close()
 						}
 					}
-				}()
+				}(v.ID, v.PublicPort)
 			}
 			rows.Close()
 			for id, l := range listeners {
@@ -184,7 +184,7 @@ func (s *Server) certPrincipal(ctx context.Context, der []byte, v service) (auth
 	digest := sha256.Sum256(der)
 	var p auth.Principal
 	var raw string
-	err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT p.id,c.scope_json FROM credentials c JOIN principals p ON p.id=c.principal_id WHERE p.disabled=0 AND c.kind='client_certificate' AND c.digest=? AND c.revoked_at IS NULL AND c.expires_at>?`, hex.EncodeToString(digest[:]), time.Now().UnixMilli()).Scan(&p.ID, &raw)
+	err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT p.id,c.id,c.scope_json FROM credentials c JOIN principals p ON p.id=c.principal_id WHERE p.disabled=0 AND c.kind='client_certificate' AND c.digest=? AND c.revoked_at IS NULL AND c.expires_at>?`, hex.EncodeToString(digest[:]), time.Now().UnixMilli()).Scan(&p.ID, &p.CredentialID, &raw)
 	if err != nil {
 		return p, auth.ErrUnauthenticated
 	}
@@ -200,7 +200,7 @@ func (s *Server) certPrincipal(ctx context.Context, der []byte, v service) (auth
 	}
 	return p, auth.ErrForbidden
 }
-func (s *Server) tcpClient(ctx context.Context, c *tls.Conn, v service) {
+func (s *Server) tcpClient(ctx context.Context, c *tls.Conn, serviceID string, port int) {
 	defer c.Close()
 	c.SetDeadline(time.Now().Add(10 * time.Second))
 	if c.HandshakeContext(ctx) != nil {
@@ -209,6 +209,10 @@ func (s *Server) tcpClient(ctx context.Context, c *tls.Conn, v service) {
 	c.SetDeadline(time.Time{})
 	cs := c.ConnectionState()
 	if len(cs.VerifiedChains) == 0 || len(cs.PeerCertificates) == 0 {
+		return
+	}
+	v, err := s.getService(ctx, serviceID)
+	if err != nil || !v.Enabled || v.Protocol != "tcp-mtls" || v.PublicPort != port {
 		return
 	}
 	der := cs.PeerCertificates[0].Raw
@@ -233,11 +237,21 @@ func (s *Server) tcpClient(ctx context.Context, c *tls.Conn, v service) {
 	defer backend.Close()
 	done := make(chan struct{})
 	go func() {
-		select {
-		case <-ctx.Done():
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+			case <-done:
+				return
+			case <-tick.C:
+				if check(ctx) == nil {
+					continue
+				}
+			}
 			c.Close()
 			backend.Close()
-		case <-done:
+			return
 		}
 	}()
 	defer close(done)
