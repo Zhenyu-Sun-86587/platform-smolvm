@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+umask 077
+service=/usr/local/share/sandbox-managed/services/sshd
+exec 9>/run/sandbox-taskd/ssh-rotate.lock
+flock -x 9
+tmp=$(mktemp -d /etc/ssh/.sandbox-key.XXXXXX)
+trap 'rm -rf "$tmp"' EXIT
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -f "$tmp/key"
+/usr/bin/sv -w 10 force-stop "$service"
+mv "$tmp/key" /etc/ssh/sandbox_host_ed25519_key
+mv "$tmp/key.pub" /etc/ssh/sandbox_host_ed25519_key.pub
+sync -f /etc/ssh
+/usr/bin/sv -w 10 start "$service"
+cat /etc/ssh/sandbox_host_ed25519_key.pub

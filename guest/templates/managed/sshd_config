@@ -1,0 +1,11 @@
+Port 22
+HostKey /etc/ssh/sandbox_host_ed25519_key
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM yes
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp internal-sftp

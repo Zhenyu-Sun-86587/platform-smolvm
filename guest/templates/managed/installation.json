@@ -1,0 +1,1 @@
+{"format":1,"template":"debian-managed-v1","task_protocol":1,"base_image":"docker.io/library/debian@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f"}
