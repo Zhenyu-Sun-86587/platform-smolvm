@@ -70,3 +70,11 @@ python3 packaging/deep/preflight.py --inventory /path/to/deep-isolation.json
 ```bash
 python3 -m unittest discover -s packaging/deep -p 'test_wp00.py' -v
 ```
+
+### 开发 Worker 权限与源码构建复测
+
+2026-11-25，从同一开发 Worker 匿名查询个人 smolvm 和两个 `smol-machines` 依赖成功。两个个人依赖地址仍提示需要 GitHub 用户名。使用 dev 的临时 `kvm` 附加组成功执行 `KVM_CREATE_VM` 和 `KVM_CREATE_VCPU`，随后关闭两个临时句柄。
+
+从源码构建的 Linux Serve 在独立网络命名空间和临时状态目录中启动。缺少安装 manifest 时能力接口返回 HTTP 503。放入绑定该可执行文件摘要的协议测试 manifest 后，Rust CLI 与 Go `sandboxctl admin runtime-capabilities` 经同一 Unix socket 读取到相同的 16 项 `unknown` 能力，要求其他 state reader 的客户端收到拒绝。这个测试使用协议夹具，候选发布包仍需产物验证和 Guest 实测。
+
+Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐字节验证 init 嵌在库中。原有的 `check-glibc-floor.sh 2.31` 检查报告库引用 GLIBC_2.34。该产物仅供开发验证；发布候选需要在兼容构建环境重新链接并通过同一检查。
