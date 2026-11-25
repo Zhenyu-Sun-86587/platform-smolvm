@@ -1,0 +1,29 @@
+[Unit]
+Description=smolvm runtime for Sandbox Platform
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=root
+Group=sandbox-control
+RuntimeDirectory=smolvm-platform
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=restart
+WorkingDirectory=/var/lib/smolvm-platform-runtime
+UMask=0022
+Environment=SMOLVM_DATA_DIR=/var/lib/smolvm-platform-runtime
+Environment=SMOLVM_PUBLISH_ADDR=127.0.0.1
+Environment=SMOLVM_EGRESS_FLOOR=strict
+ExecStart=/opt/sandbox-platform/runtime/1.37.1/bin/smolvm serve start --listen unix:///run/smolvm-platform/api.sock --local-image-dir /var/lib/smolvm-platform-images
+ExecStartPost=/opt/sandbox-platform/libexec/grant-runtime-socket ${MAINPID}
+KillMode=control-group
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
+[Install]
+WantedBy=multi-user.target

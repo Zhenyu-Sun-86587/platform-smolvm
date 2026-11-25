@@ -1,0 +1,31 @@
+[Unit]
+Description=Sandbox Platform control plane
+After=network-online.target smolvm-serve.service
+Wants=network-online.target
+Requires=smolvm-serve.service
+
+[Service]
+Type=exec
+User=sandbox-platform
+Group=sandbox-platform
+SupplementaryGroups=sandbox-control
+StateDirectory=sandbox-platform
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/sandbox-platform
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+LoadCredential=owner-password:/etc/sandbox-platform/owner-password
+Environment=SANDBOX_OWNER_PASSWORD_FILE=%d/owner-password
+ExecStart=/opt/sandbox-platform/current/platformd -config /etc/sandbox-platform/config.yaml
+KillMode=control-group
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
+[Install]
+WantedBy=multi-user.target

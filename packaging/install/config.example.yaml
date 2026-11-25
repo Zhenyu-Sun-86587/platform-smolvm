@@ -1,0 +1,12 @@
+version: 1
+templates_file: /opt/sandbox-platform/current/templates.json
+api:
+  listen: 127.0.0.1:8443
+  public_origin: http://127.0.0.1:8443
+runtime:
+  version: 1.37.1
+  socket: /run/smolvm-platform/api.sock
+  status_socket: /run/smolvm-platform/status.sock
+  executable: /opt/sandbox-platform/runtime/1.37.1/bin/smolvm
+  data_dir: /var/lib/smolvm-platform-runtime
+  local_image_dir: /var/lib/smolvm-platform-images

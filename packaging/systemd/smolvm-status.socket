@@ -1,0 +1,17 @@
+[Unit]
+Description=Sandbox Platform native machine status query
+After=smolvm-serve.service
+Requires=smolvm-serve.service
+PartOf=smolvm-serve.service
+
+[Socket]
+ListenStream=/run/smolvm-platform/status.sock
+SocketUser=root
+SocketGroup=sandbox-control
+SocketMode=0660
+Accept=yes
+RemoveOnStop=yes
+MaxConnections=16
+
+[Install]
+WantedBy=multi-user.target

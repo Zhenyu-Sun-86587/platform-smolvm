@@ -1,0 +1,54 @@
+#!/usr/bin/python3
+"""Grant the control group access to the socket created by this service."""
+import grp
+import os
+import socket
+import stat
+import struct
+import sys
+import time
+
+
+def main():
+    pid = int(sys.argv[1])
+    group = grp.getgrnam("sandbox-control").gr_gid
+    directory = os.open("/run/smolvm-platform", os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY)
+    parent = os.fstat(directory)
+    if (parent.st_uid, parent.st_gid, stat.S_IMODE(parent.st_mode)) != (0, group, 0o770):
+        raise RuntimeError("runtime directory must be root:sandbox-control mode 0770")
+
+    for _ in range(200):
+        try:
+            inode = os.open("api.sock", os.O_PATH | os.O_NOFOLLOW, dir_fd=directory)
+        except FileNotFoundError:
+            time.sleep(0.1)
+            continue
+        with socket.socket(socket.AF_UNIX) as connection:
+            try:
+                info = os.fstat(inode)
+                if info.st_uid != 0 or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError("runtime socket is not a root-owned Unix socket")
+                path = f"/proc/self/fd/{inode}"
+                connection.settimeout(1)
+                try:
+                    connection.connect(path)
+                except ConnectionRefusedError:
+                    time.sleep(0.1)
+                    continue
+                peer = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+                peer_pid, peer_uid, _ = struct.unpack("3i", peer)
+                if (peer_pid, peer_uid) != (pid, 0):
+                    raise RuntimeError("runtime socket peer does not match the current root service")
+                os.chown(path, 0, group)
+                os.chmod(path, 0o660)
+                published = os.stat("api.sock", dir_fd=directory, follow_symlinks=False)
+                if (published.st_dev, published.st_ino) != (info.st_dev, info.st_ino):
+                    raise RuntimeError("runtime socket changed during permission setup")
+                return
+            finally:
+                os.close(inode)
+    raise RuntimeError("runtime socket did not appear before startup timeout")
+
+
+if __name__ == "__main__":
+    main()

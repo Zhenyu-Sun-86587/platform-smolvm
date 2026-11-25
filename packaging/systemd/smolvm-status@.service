@@ -1,0 +1,17 @@
+[Unit]
+Description=Read official smolvm machine status
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/var/lib/smolvm-platform-runtime
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+ExecStart=/opt/sandbox-platform/libexec/read-runtime-status
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RuntimeMaxSec=10s

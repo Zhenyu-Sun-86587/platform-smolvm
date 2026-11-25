@@ -1,0 +1,32 @@
+#!/usr/bin/python3
+"""Serve the fixed official status query to the installed platform account."""
+import os
+import pwd
+import re
+import socket
+import struct
+import subprocess
+
+
+def main():
+    uid = pwd.getpwnam("sandbox-platform").pw_uid
+    with socket.socket(fileno=os.dup(0)) as connection:
+        peer = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        _, peer_uid, _ = struct.unpack("3i", peer)
+        if peer_uid != uid:
+            return 1
+        connection.settimeout(2)
+        with connection.makefile("rb") as request:
+            name = request.readline(39)
+        if not re.fullmatch(rb"sbox_[0-9a-f]{32}\n", name):
+            return 1
+
+    state = "/var/lib/smolvm-platform-runtime"
+    args = ["/opt/sandbox-platform/runtime/1.37.1/bin/smolvm", "machine", "status", "--json",
+            "--name", name.rstrip(b"\n").decode("ascii")]
+    return subprocess.run(args, cwd=state, timeout=5, stdin=subprocess.DEVNULL,
+                          env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "SMOLVM_DATA_DIR": state}).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
