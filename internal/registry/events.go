@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 const (
@@ -22,10 +24,54 @@ func AppendEvent(ctx context.Context, tx *sql.Tx, kind, machineID, operationID s
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO events
-		(control_epoch, type, machine_id, operation_id, payload_json, created_at, audit)
-		SELECT control_epoch, ?, ?, ?, ?, ?, ? FROM meta WHERE id = 1`,
-		kind, nullable(machineID), nullable(operationID), string(raw), time.Now().UnixMilli(), audit)
+	resource := ResourceEvent{Kind: kind, Name: kind + ".updated", Audience: "read"}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &fields)
+	field := func(key string) (value string) {
+		_ = json.Unmarshal(fields[key], &value)
+		return value
+	}
+	switch kind {
+	case "machine":
+		resource.ID, resource.Name = machineID, "machine.state_changed"
+	case "operation":
+		resource.ID, resource.Name = operationID, "operation.stage_changed"
+	case "auth":
+		resource.ID, resource.Audience = field("credential_id"), "admin"
+		if resource.ID != "" {
+			resource.Kind = "credential"
+		}
+		if action := field("action"); action != "" {
+			resource.Name = "auth." + action
+			if action == "credential_revoked" {
+				resource.Name = "credential.revoked"
+			}
+		}
+	case "maintenance":
+		resource.Audience = "admin"
+	default:
+		resource.ID = field(kind + "_id")
+		if state := field("state"); state != "" {
+			resource.Name = kind + "." + state
+		}
+	}
+	return AppendResourceEvent(ctx, tx, kind, machineID, operationID, resource, raw, audit)
+}
+
+type ResourceEvent struct {
+	Kind, ID, Name, Audience, OwnerID string
+}
+
+func AppendResourceEvent(ctx context.Context, tx *sql.Tx, category, machineID, operationID string, resource ResourceEvent, payload json.RawMessage, audit bool) error {
+	if resource.Kind == "" || resource.Name == "" ||
+		(resource.Audience == "owner") != (resource.OwnerID != "") {
+		return ErrInvalid
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO events
+		(control_epoch,type,machine_id,operation_id,payload_json,created_at,audit,resource_kind,resource_id,event_name,audience,audience_owner)
+		SELECT control_epoch,?,?,?,?,?,?,?,?,?,?,? FROM meta WHERE id=1`,
+		category, nullable(machineID), nullable(operationID), string(payload), time.Now().UnixMilli(), audit,
+		resource.Kind, resource.ID, resource.Name, resource.Audience, nullable(resource.OwnerID))
 	return err
 }
 
@@ -45,7 +91,15 @@ func appendMachineEvent(ctx context.Context, tx *sql.Tx, machineID, operationID 
 func appendOperationEvent(ctx context.Context, tx *sql.Tx, op Operation) error {
 	payload := map[string]any{
 		"operation_id": op.ID, "kind": op.Kind, "state": op.State,
-		"stage": op.Stage, "effect": op.Effect, "binding_generation": op.BindingGeneration,
+		"stage": op.Stage, "effect": op.Effect, "binding_generation": op.BindingGeneration, "revision": op.Version,
+	}
+	if op.Kind == rt.VolumeOperation && op.MachineID == "" && op.PrincipalID != "" {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		return AppendResourceEvent(ctx, tx, "operation", "", op.ID,
+			ResourceEvent{Kind: "operation", ID: op.ID, Name: "operation.stage_changed", Audience: "owner", OwnerID: op.PrincipalID}, raw, false)
 	}
 	return AppendEvent(ctx, tx, "operation", op.MachineID, op.ID, payload, op.Kind == "delete" || op.Kind == "rollback")
 }
@@ -104,7 +158,8 @@ func (s *Store) Events(ctx context.Context, cursor string, limit int) ([]Event, 
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT seq, type, COALESCE(machine_id, ''), COALESCE(operation_id, ''),
-		payload_json, created_at FROM events WHERE control_epoch = ? AND seq > ? AND created_at >= ?
+		payload_json,created_at,resource_kind,resource_id,event_name,schema_version,audience,COALESCE(audience_owner,'')
+		FROM events WHERE control_epoch = ? AND seq > ? AND created_at >= ?
 		ORDER BY seq LIMIT ?`, control.ControlEpoch, seq, threshold, limit)
 	if err != nil {
 		return nil, "", err
@@ -115,8 +170,18 @@ func (s *Store) Events(ctx context.Context, cursor string, limit int) ([]Event, 
 		var event Event
 		var payload string
 		var created int64
-		if err := rows.Scan(&event.Seq, &event.Type, &event.MachineID, &event.OperationID, &payload, &created); err != nil {
+		if err := rows.Scan(&event.Seq, &event.Type, &event.MachineID, &event.OperationID, &payload, &created,
+			&event.ResourceKind, &event.ResourceID, &event.Name, &event.SchemaVersion, &event.Audience, &event.AudienceOwner); err != nil {
 			return nil, "", err
+		}
+		if event.Audience == "legacy" {
+			event.ResourceKind, event.Name = event.Type, event.Type+".updated"
+			switch event.Type {
+			case "machine":
+				event.ResourceID = event.MachineID
+			case "operation":
+				event.ResourceID = event.OperationID
+			}
 		}
 		event.ControlEpoch = control.ControlEpoch
 		event.ID = eventID(event.ControlEpoch, event.Seq)

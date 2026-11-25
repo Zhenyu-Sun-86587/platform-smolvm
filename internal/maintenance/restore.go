@@ -24,6 +24,10 @@ type Restore struct {
 // RestoreBackup requires the active writer to be stopped and the target to
 // belong to the same installation. It restores only platform-owned data.
 func RestoreBackup(ctx context.Context, cfg config.Config, configPath, archive, rollback string) (Restore, error) {
+	return RestorePlannedBackup(ctx, cfg, configPath, archive, rollback, "")
+}
+
+func RestorePlannedBackup(ctx context.Context, cfg config.Config, configPath, archive, rollback, keyFile string) (Restore, error) {
 	var result Restore
 	if rollback == "" {
 		return result, errors.New("a new directory for the pre-restore backup is required")
@@ -40,9 +44,12 @@ func RestoreBackup(ctx context.Context, cfg config.Config, configPath, archive, 
 	if !control.Maintenance {
 		return result, errors.New("enter local maintenance before restoring")
 	}
-	metadata, err := VerifyBackup(ctx, cfg, archive)
+	metadata, err := VerifyPlannedBackup(ctx, cfg, archive, keyFile)
 	if err != nil {
 		return result, err
+	}
+	if len(metadata.Native) > 0 {
+		return result, fmt.Errorf("%w: restore native closures into an independent recovery directory", ErrNativeClosure)
 	}
 	result.ArchiveEpoch = metadata.ControlEpoch
 	if metadata.InstallationID != control.InstallationID {
@@ -100,6 +107,15 @@ func RestoreBackup(ctx context.Context, cfg config.Config, configPath, archive, 
 	}
 	if err := syncTree(stage); err != nil {
 		return result, err
+	}
+	if metadata.Format == 2 {
+		recovery, err := openRecovery(archive, metadata.RunID, recoveryKeyPath(cfg, archive, metadata, keyFile))
+		if err != nil {
+			return result, err
+		}
+		if err := restoreRecovery(cfg, recovery, uid, gid); err != nil {
+			return result, err
+		}
 	}
 	for _, artifact := range artifacts {
 		path := artifact.Path

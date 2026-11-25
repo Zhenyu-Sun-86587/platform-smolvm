@@ -229,6 +229,12 @@ export class Client {
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
     getOperation(id, signal) { return this.get(operation(id), signal); }
+    listBackupPolicies(signal) { return this.pages("backups/policies", 100, signal); }
+    listBackups(signal) { return this.pages("backups", 100, signal); }
+    getBackup(id, signal) { return this.get("backups/" + segment(id), signal); }
+    runBackup(policy, options) {
+        return this.mutate("backups/policies/" + segment(policy) + "/runs", {}, options);
+    }
     async retryForkTargets(id, options = {}) {
         const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision;
         return this.mutate(operation(id) + "/retry", {}, { ...options, revision });

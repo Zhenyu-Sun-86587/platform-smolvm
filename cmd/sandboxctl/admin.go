@@ -45,7 +45,8 @@ func adminCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&path, "config", configFlag(), "Local operator configuration")
 	cfg := func() (config.Config, error) { return config.Load(path) }
 	backup := &cobra.Command{Use: "backup", Short: "Create, verify, or restore local backups"}
-	var output, verifyArchive, restoreArchive, rollback string
+	var output, verifyArchive, restoreArchive, rollback, recoveryKey string
+	backup.PersistentFlags().StringVar(&recoveryKey, "recovery-key-file", "", "Separate recovery key for a scheduled backup")
 	create := &cobra.Command{Use: "create", Short: "Copy a consistent registry and its ready artifacts", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := cfg()
@@ -68,7 +69,7 @@ func adminCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			b, err := maintenance.VerifyBackup(cmd.Context(), c, verifyArchive)
+			b, err := maintenance.VerifyPlannedBackup(cmd.Context(), c, verifyArchive, recoveryKey)
 			if err != nil {
 				return err
 			}
@@ -84,7 +85,7 @@ func adminCommand() *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
 			defer cancel()
-			b, err := maintenance.RestoreBackup(ctx, c, path, restoreArchive, rollback)
+			b, err := maintenance.RestorePlannedBackup(ctx, c, path, restoreArchive, rollback, recoveryKey)
 			if err != nil {
 				return err
 			}
@@ -94,7 +95,26 @@ func adminCommand() *cobra.Command {
 	restore.Flags().StringVar(&rollback, "rollback-output", "", "New directory for the pre-restore backup")
 	_ = restore.MarkFlagRequired("archive")
 	_ = restore.MarkFlagRequired("rollback-output")
-	backup.AddCommand(create, verify, restore)
+	var recoverArchive, recoverOutput string
+	recover := &cobra.Command{Use: "recover-native", Short: "Verify and recover immutable Worker closures into a new directory", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := cfg()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
+			defer cancel()
+			b, err := maintenance.RecoverNativeBackup(ctx, c, recoverArchive, recoveryKey, recoverOutput)
+			if err != nil {
+				return err
+			}
+			return writeLocalResult(cmd, b)
+		}}
+	recover.Flags().StringVar(&recoverArchive, "archive", "", "Authenticated backup directory")
+	recover.Flags().StringVar(&recoverOutput, "output", "", "New directory for immutable Worker closures")
+	_ = recover.MarkFlagRequired("archive")
+	_ = recover.MarkFlagRequired("output")
+	backup.AddCommand(create, verify, restore, recover)
 
 	maintenanceCommand := &cobra.Command{Use: "maintenance", Short: "Set the local maintenance gate with the daemon stopped"}
 	var reason string

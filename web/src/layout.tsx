@@ -80,7 +80,7 @@ export function Shell({
   children: ReactNode
 }) {
   const active =
-    page === "machine" ? "machines" : ["diagnostics", "templates"].includes(page) ? "settings" : page
+    page === "machine" ? "machines" : ["diagnostics", "templates", "backups"].includes(page) ? "settings" : page
   const name = destinations.find((item) => item.page === active)?.name ?? "Machines"
   const [mobile, setMobile] = useState(false)
   const [search, setSearch] = useState(false)

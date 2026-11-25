@@ -266,7 +266,12 @@ func (j *Job) recordStatePoint(ctx context.Context, tx *sql.Tx, p rt.StatePointP
 		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runtime_instance_id,capture_id) DO NOTHING`,
 		j.Binding.RuntimeInstanceID, capture, p.RepresentationID, j.Binding.RuntimeBundleID, j.Binding.ID,
 		j.Op.ID, purpose, p.ManifestDigest, string(JSON(p)))
-	return err
+	if err != nil {
+		return err
+	}
+	return registry.AppendResourceEvent(ctx, tx, "snapshot", j.Binding.MachineID, j.Op.ID, registry.ResourceEvent{
+		Kind: "statepoint", ID: capture, Name: "statepoint.ready", Audience: "read",
+	}, JSON(map[string]string{"capture_id": capture, "purpose": purpose}), false)
 }
 
 func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgress) error {
@@ -294,7 +299,10 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 			_, err := tx.ExecContext(ctx, `INSERT INTO vm_snapshot_provenance
 				SELECT ?,?,?,id,json_extract(manifest_json,'$.contracts.state_reader_id'),? FROM runtime_bundles WHERE id=?`,
 				id, j.Op.ID, j.Binding.RuntimeInstanceID, point.CaptureID, j.Binding.RuntimeBundleID)
-			return err
+			if err != nil {
+				return err
+			}
+			return registry.AppendEvent(ctx, tx, "snapshot", j.Binding.MachineID, j.Op.ID, map[string]string{"snapshot_id": id, "state": "ready"}, false)
 		}})
 }
 

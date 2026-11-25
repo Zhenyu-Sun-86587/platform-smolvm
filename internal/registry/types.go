@@ -285,14 +285,20 @@ type ForkChildTransition struct {
 }
 
 type Event struct {
-	ID           string          `json:"id"`
-	Seq          int64           `json:"seq"`
-	ControlEpoch string          `json:"control_epoch"`
-	Type         string          `json:"type"`
-	MachineID    string          `json:"machine_id,omitempty"`
-	OperationID  string          `json:"operation_id,omitempty"`
-	Payload      json.RawMessage `json:"payload"`
-	CreatedAt    time.Time       `json:"created_at"`
+	ID            string          `json:"id"`
+	Seq           int64           `json:"seq"`
+	ControlEpoch  string          `json:"control_epoch"`
+	Type          string          `json:"type"`
+	Name          string          `json:"event_name"`
+	ResourceKind  string          `json:"resource_kind"`
+	ResourceID    string          `json:"resource_id"`
+	SchemaVersion int             `json:"schema_version"`
+	MachineID     string          `json:"machine_id,omitempty"`
+	OperationID   string          `json:"operation_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
+	CreatedAt     time.Time       `json:"created_at"`
+	Audience      string          `json:"-"`
+	AudienceOwner string          `json:"-"`
 }
 
 // MutationRequest is the common envelope for a synchronous management change.

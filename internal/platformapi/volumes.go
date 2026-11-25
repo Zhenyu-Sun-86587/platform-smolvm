@@ -439,6 +439,12 @@ func (s *Server) volumeJob(ctx context.Context, job *lifecycle.Job) error {
 	job.Written = true
 	return job.Done(ctx, registry.TransitionRequest{Result: lifecycle.JSON(receipt), Effect: registry.EffectApplied,
 		Apply: func(ctx context.Context, tx *sql.Tx) error {
-			return volumes.Apply(ctx, tx, intent.VolumeRoute, intent.Name, consumerBinding.MachineID, consumerBinding.ID, command.AttachmentID, command.Action, receipt.Volume)
+			if err := volumes.Apply(ctx, tx, intent.VolumeRoute, intent.Name, consumerBinding.MachineID, consumerBinding.ID, command.AttachmentID, command.Action, receipt.Volume); err != nil {
+				return err
+			}
+			volume := receipt.Volume
+			return registry.AppendResourceEvent(ctx, tx, "operation", consumerBinding.MachineID, job.Op.ID, registry.ResourceEvent{
+				Kind: "volume", ID: volume.ID, Name: "volume.state_changed", Audience: "owner", OwnerID: volume.OwnerID,
+			}, lifecycle.JSON(map[string]any{"volume_id": volume.ID, "revision": volume.Revision, "state": volume.State, "action": command.Action}), false)
 		}})
 }

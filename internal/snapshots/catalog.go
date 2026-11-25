@@ -142,6 +142,25 @@ func LoadTrust(c config.Config) (map[string]ed25519.PublicKey, error) {
 	return readTrust(c, key.Public().(ed25519.PublicKey))
 }
 
+func LoadRecoveryTrust(c config.Config, signer []byte) (map[string]ed25519.PublicKey, error) {
+	if len(signer) == 0 {
+		return LoadTrust(c)
+	}
+	block, _ := pem.Decode(signer)
+	if block == nil || block.Type != "PRIVATE KEY" {
+		return nil, errors.New("invalid recovered snapshot signer")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	local, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("recovered signer must be an Ed25519 private key")
+	}
+	return readTrust(c, local.Public().(ed25519.PublicKey))
+}
+
 func readTrust(c config.Config, local ed25519.PublicKey) (map[string]ed25519.PublicKey, error) {
 	trust := make(map[string]ed25519.PublicKey)
 	if local != nil {
@@ -277,7 +296,11 @@ func (c *Catalog) Publish(ctx context.Context, id string, a Artifact, local bool
 	if err != nil || n != 1 {
 		return registry.ErrConflict
 	}
-	if err = registry.AppendEvent(ctx, tx, "snapshot", "", "", map[string]string{"snapshot_id": id, "state": state}, true); err != nil {
+	var sourceMachineID string
+	if err = tx.QueryRowContext(ctx, "SELECT COALESCE(source_machine_id,'') FROM snapshots WHERE id=?", id).Scan(&sourceMachineID); err != nil {
+		return err
+	}
+	if err = registry.AppendEvent(ctx, tx, "snapshot", sourceMachineID, "", map[string]string{"snapshot_id": id, "state": state}, true); err != nil {
 		return err
 	}
 	return tx.Commit()
