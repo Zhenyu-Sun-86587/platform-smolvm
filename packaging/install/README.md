@@ -44,6 +44,28 @@ sudo sandboxctl doctor --json
 
 Use `--runtime-archive /path/to/smolvm-1.37.1-linux-x86_64.tar.gz` for an offline install. The same digest check applies. Systemd runs platformd as `sandbox-platform` and smolvm serve as root with native VM scopes and its per-VM UID isolation. The full runtime API stays on `/run/smolvm-platform/api.sock`. The separate local status socket accepts a single platform-generated machine name and runs the fixed public read-only smolvm status query as the runtime owner. The platform service account is the only named peer allowed by that helper.
 
+### Service domains and independent restore verification
+
+For a deployment using HTTPS, configure the management origin and the application domain separately. Point the management DNS record and the wildcard service record at the gateway. The TLS certificate must cover both the management hostname and `*.apps.example.test` in this example. The external listener can use port 443 directly or forward it to the platform listener while preserving the original TLS authority.
+
+```yaml
+api:
+  listen: 127.0.0.1:8443
+  public_origin: https://console.example.test
+  tls_cert_file: /etc/sandbox-platform/tls/server.pem
+  tls_key_file: /etc/sandbox-platform/tls/server.key
+gateway:
+  apps_domain: apps.example.test
+  client_ca_file: /etc/sandbox-platform/tls/client-ca.pem
+  client_ca_key_file: /etc/sandbox-platform/tls/client-ca.key
+  tcp_mtls_port_range: [21000, 21063]
+```
+
+The client CA signs service-scoped CSRs for TCP mTLS. Keep the private files readable by the installed platform service account and restrict other users. HTTP/SSH tunnels use the management and service listener. TCP mTLS binds its allocated port on the address configured for the API listener. DNS, TLS material and external port forwarding belong to the deployment.
+
+Checksum verification uses the local signed catalog. For an online test restore, configure `runtime.verify_socket` with the private socket of a separate smolvm 1.37.1 serve instance. Give the verifier its own data directory, socket and guest-rollout port, and grant the platform service account access to that socket. The verifier imports into a temporary named candidate, checks the recovered guest and disposes of the candidate. A single-runtime installation reports the missing verification prerequisite.
+
+
 ## Backup and recovery
 
 The output directory must be new. Path selection is local to the administrator. A backup contains a consistent SQLite copy, the operator configuration, and the signed standalone artifacts referenced by ready catalog entries. Preserve the owner bootstrap credential, trusted signer configuration and any private recovery keys separately in encrypted operator storage.
