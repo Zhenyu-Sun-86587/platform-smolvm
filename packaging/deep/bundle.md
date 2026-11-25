@@ -60,7 +60,7 @@ Pass a digest obtained from trusted release metadata to `verify --expect`. Signa
 
 `install` verifies the candidate and its destination copy before atomically publishing a read-only directory. An installation at an existing path succeeds only if that directory is read-only and verifies against the requested digest. Put each new release at a new path and keep its Serve socket, registry and writable VM state outside the installed directory.
 
-For an existing RuntimeBundle/1 that predates both rootfs metadata files, add `verify --allow-legacy-rootfs` and supply its original digest through `--expect`. Verification still checks the indexed artifacts and the embedded Agent. The legacy exception applies only to verification and requires both metadata files to be absent.
+For an existing RuntimeBundle/1 that predates both rootfs metadata files, add `--allow-legacy-rootfs` to `verify` or `install` and supply its original digest through `--expect`. Verification still checks the indexed artifacts and the embedded Agent. The exception requires both metadata files to be absent.
 
 ```sh
 python3 -B tests/integration/test_deep_bundle.py -v
@@ -80,3 +80,32 @@ python3 -B packaging/deep/pack-candidate.py \
 ```
 
 The packer checks the build lock and build record against the OCI evidence, copies the source and license material, and verifies the final bundle digest. It records the observed OCI boot profile and the exact source reader revision. Deploy with `SMOLVM_AGENT_ROOTFS` pointing to the extracted, verified `guest/oci-rootfs.tar.gz`. Keep the bundle and the independent writable state directory at paths the dropped VMM UID can traverse.
+
+## Retain a historical reader and roll back selection
+
+Install each release in its own digest-named directory. Keep a separate Serve process, Unix socket and writable state directory for each release. Configure each verified endpoint under `runtime.custom` with the values from `sandboxctl admin runtime-capabilities`. The Worker broker and its resource catalog are shared. Existing bindings keep their Serve identity and Bundle digest. Switch the selected runtime for new instances to the earlier installed route to roll back new-instance placement. A binary rollback of platformd follows the [platform rollback procedure](../install/README.md) and requires a compatible pre-upgrade database backup for schema changes.
+
+Supply the recorded digest and reader of each retained capture to inspect the installed readers. The matrix checks artifact integrity, the exact reader pair, and any recorded security status. Worker restore still validates its actual StatePoint, CPU and devices.
+
+```sh
+python3 packaging/deep/bundle-history.py readers --registry "$registry" \
+  --installed "$old_digest" "$old_installation" --installed "$new_digest" "$new_installation" \
+  --state "$capture_id" "$capture_bundle" "$capture_reader"
+```
+
+Read both catalogs before changing a deployment. A historical binding, retained checkpoint or rescue, unresolved execution, open operation or reachable resource can pin the Bundle. `retire` holds the Platform writer lock and a Worker catalog transaction and moves an unreferenced installation to a separate directory on the same filesystem. It keeps the verified bytes available for a subsequent install. Stop the retiring Serve and platformd before running it.
+
+```sh
+python3 packaging/deep/bundle-history.py references --registry "$registry" \
+  --worker-catalog "$worker_catalog" --bundle "$old_digest"
+python3 packaging/deep/bundle-history.py retire --registry "$registry" \
+  --worker-catalog "$worker_catalog" --bundle "$old_digest" \
+  --installation "$old_installation" --retired-root "$retired_root"
+```
+
+With platformd stopped, an operator can set `active`, `legacy-allowed`, `quarantined` or `revoked` and record a reason. On restart the public Platform excludes quarantined and revoked routes. Their artifacts and references remain available for reviewed recovery in a separate isolated deployment.
+
+```sh
+python3 packaging/deep/bundle-history.py set-security --registry "$registry" \
+  --bundle "$old_digest" --status quarantined --reason "$review_reason"
+```

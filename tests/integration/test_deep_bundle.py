@@ -273,6 +273,12 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(BundleError, "missing required bundle artifacts: metadata/rootfs"):
             bundle.verify_bundle(self.stage)
         self.assertEqual(bundle.verify_bundle(self.stage, allow_legacy_rootfs=True), manifest["bundle_digest"])
+        with self.assertRaises(BundleError):
+            bundle.install_bundle(self.stage, self.output, manifest["bundle_digest"])
+        self.assertEqual(bundle.install_bundle(self.stage, self.output, manifest["bundle_digest"], allow_legacy_rootfs=True),
+                         manifest["bundle_digest"])
+        self.assertEqual(bundle.verify_installed_bundle(self.output, manifest["bundle_digest"], allow_legacy_rootfs=True),
+                         manifest["bundle_digest"])
 
     def test_measured_helper_must_match_the_oci_bytes(self):
         toolchain = json.loads((self.stage / bundle.TOOLCHAIN_LOCK).read_bytes())

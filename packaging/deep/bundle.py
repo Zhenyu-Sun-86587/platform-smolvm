@@ -436,8 +436,8 @@ def sync_path(path):
         os.close(descriptor)
 
 
-def verify_installed_bundle(output, expected):
-    checksum = verify_bundle(output, expected)
+def verify_installed_bundle(output, expected, *, allow_legacy_rootfs=False):
+    checksum = verify_bundle(output, expected, allow_legacy_rootfs=allow_legacy_rootfs)
     for directory, _, filenames in os.walk(output):
         path = Path(directory)
         require(not path.stat().st_mode & 0o222, f"installed directory is writable: {path}")
@@ -447,19 +447,19 @@ def verify_installed_bundle(output, expected):
     return checksum
 
 
-def install_bundle(source, output, expected):
+def install_bundle(source, output, expected, *, allow_legacy_rootfs=False):
     expected = digest(expected, "expected bundle digest")
     source = source.resolve(strict=True)
     output = output.parent.resolve(strict=True) / output.name
     if output.exists() or output.is_symlink():
-        return verify_installed_bundle(output, expected)
+        return verify_installed_bundle(output, expected, allow_legacy_rootfs=allow_legacy_rootfs)
     require(source not in output.parents, "installation must be outside the source bundle")
-    verify_bundle(source, expected)
+    verify_bundle(source, expected, allow_legacy_rootfs=allow_legacy_rootfs)
     files = list_files(source)
     with tempfile.TemporaryDirectory(prefix=".deep-install-", dir=output.parent) as work:
         candidate = Path(work)
         copy_bundle_files(source, candidate, files)
-        verify_bundle(candidate, expected)
+        verify_bundle(candidate, expected, allow_legacy_rootfs=allow_legacy_rootfs)
         for name in files:
             sync_path(candidate / name)
         directories = [Path(path) for path, _, _ in os.walk(candidate, topdown=False)]
@@ -469,7 +469,7 @@ def install_bundle(source, output, expected):
                 sync_path(path)
             subprocess.run(["mv", "-nT", "--", str(candidate), str(output)], check=True)
             if candidate.exists():
-                return verify_installed_bundle(output, expected)
+                return verify_installed_bundle(output, expected, allow_legacy_rootfs=allow_legacy_rootfs)
             sync_path(output.parent)
         finally:
             if candidate.exists():
@@ -502,6 +502,7 @@ def main():
     install.add_argument("bundle", type=Path)
     install.add_argument("--expect", required=True, help="expected sha256: digest from trusted release metadata")
     install.add_argument("--output", type=Path, required=True)
+    install.add_argument("--allow-legacy-rootfs", action="store_true", help="allow older v1 bundles without rootfs provenance")
     args = parser.parse_args()
     try:
         if args.command == "check-inputs":
@@ -518,7 +519,7 @@ def main():
         elif args.command == "pack":
             print(pack_bundle(args.artifacts, args.output))
         elif args.command == "install":
-            print(install_bundle(args.bundle, args.output, args.expect))
+            print(install_bundle(args.bundle, args.output, args.expect, allow_legacy_rootfs=args.allow_legacy_rootfs))
         else:
             print(verify_bundle(args.bundle, args.expect, allow_legacy_rootfs=args.allow_legacy_rootfs))
             if args.allow_legacy_rootfs and not (args.bundle / ROOTFS_PROVENANCE).exists():
