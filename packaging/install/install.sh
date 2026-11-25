@@ -279,3 +279,7 @@ else
 fi
 systemctl is-active --quiet smolvm-serve.service
 wait_platform || fail "Platform service did not bind its management listener"
+if [[ $mode == upgrade ]]; then
+    install -m 0755 "$src/install.sh" "$work/install-release"
+    mv -Tf "$work/install-release" "$base/libexec/install-release"
+fi
