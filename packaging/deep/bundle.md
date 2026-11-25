@@ -11,6 +11,8 @@ python3 packaging/deep/bundle.py check-libraries --artifacts "$LIBRARY_OUTPUTS"
 python3 packaging/deep/bundle.py check-runtime --artifacts "$RUNTIME_OUTPUTS"
 python3 packaging/deep/bundle.py pack --artifacts "$ARTIFACTS" --output "$BUNDLE"
 python3 packaging/deep/bundle.py verify "$BUNDLE" --expect "$EXPECTED_BUNDLE_DIGEST"
+python3 packaging/deep/bundle.py install "$BUNDLE" \
+  --expect "$EXPECTED_BUNDLE_DIGEST" --output "$INSTALLED_BUNDLE"
 ```
 
 `check-inputs` requires the exact three Git commits and trees, matching committed gitlinks, and clean worktrees including ignored paths. It rejects Git LFS pointers in checked-out regular files. It compares the kernel archive, patch registry files, toolchain lock and dependency lockfiles against their pinned SHA-256 digests. Pass the builder image reference resolved by the runner. The command also checks the tool versions visible from the smolvm checkout.
@@ -55,6 +57,8 @@ The packager copies staged files into a temporary directory on the output filesy
 `runtime-bundle.json` uses `RuntimeBundle/1`. Each artifact has a relative `path`, byte `size` and lowercase hex `sha256`. The bundle digest hashes compact UTF-8 JSON with object keys sorted in Unicode code point order, no insignificant whitespace or trailing newline, and no top-level `bundle_digest` or `signature`. The artifact array is sorted by path. Profile and Guest component digests reference the staged file bytes.
 
 Pass a digest obtained from trusted release metadata to `verify --expect`. Signature authentication, isolated KVM acceptance, and promotion are downstream release steps. Build records and verification profiles record producer claims. The platform tool checks their consistency with the locked inputs and artifacts.
+
+`install` verifies the candidate and its destination copy before atomically publishing a read-only directory. An installation at an existing path succeeds only if that directory is read-only and verifies against the requested digest. Put each new release at a new path and keep its Serve socket, registry and writable VM state outside the installed directory.
 
 For an existing RuntimeBundle/1 that predates both rootfs metadata files, add `verify --allow-legacy-rootfs` and supply its original digest through `--expect`. Verification still checks the indexed artifacts and the embedded Agent. The legacy exception applies only to verification and requires both metadata files to be absent.
 

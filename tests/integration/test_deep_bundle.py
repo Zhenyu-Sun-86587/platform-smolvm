@@ -164,6 +164,21 @@ class BundleTests(unittest.TestCase):
         self.rewrite_manifest(lambda manifest: manifest.update(signature="signed-by-release-service"))
         self.assertEqual(bundle.verify_bundle(self.output), expected)
 
+    def test_install_is_read_only_and_preserves_an_existing_release(self):
+        expected = bundle.pack_bundle(self.stage, self.output)
+        installed = self.root / "installed"
+        self.assertEqual(bundle.install_bundle(self.output, installed, expected), expected)
+        self.assertEqual(bundle.verify_installed_bundle(installed, expected), expected)
+        inode = installed.stat().st_ino
+        self.assertEqual(bundle.install_bundle(self.output, installed, expected), expected)
+        with self.assertRaisesRegex(bundle.BundleError, "unexpected bundle digest"):
+            bundle.install_bundle(self.output, installed, sha(b"other bundle"))
+        self.assertEqual(installed.stat().st_ino, inode)
+
+        (installed / bundle.MANIFEST).chmod(0o644)
+        with self.assertRaisesRegex(bundle.BundleError, "installed artifact is writable"):
+            bundle.install_bundle(self.output, installed, expected)
+
     def test_reject_unindexed_files_and_modified_payload(self):
         bundle.pack_bundle(self.stage, self.output)
         stray = self.output / "extra"
