@@ -393,14 +393,19 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 				old.ExecutionEpoch == 0 && ref.ExecutionEpoch == 0 && ref.IncarnationID == ""
 			nextLaunch := native.VerifiedLaunch && native.PowerState == PowerRunning && old.PowerState != PowerHibernated &&
 				ref.ExecutionEpoch == old.ExecutionEpoch+1 && ref.IncarnationID != old.IncarnationID
+			nextRestore := native.VerifiedRestore && native.PowerState == PowerRunning &&
+				ref.ExecutionEpoch > old.ExecutionEpoch && ref.IncarnationID != old.IncarnationID
+			hibernated := native.PowerState == PowerHibernated && native.HibernatedCapture != "" &&
+				old.ExecutionEpoch > 0 && old.ExecutionRef() == ref
 			if o.ExpectedExecutionEpoch == nil || old.RuntimeBundleID == "" || ref.InstanceID == "" ||
 				(old.RuntimeInstanceObjectID != "" && old.RuntimeInstanceObjectID != ref.InstanceID) ||
 				(!initialStopped && (ref.IncarnationID == "" || ref.ExecutionEpoch < 1)) ||
 				(native.VerifiedLaunch && !initialStopped && !nextLaunch) ||
-				(!nextLaunch && old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
+				(native.VerifiedRestore && !nextRestore) ||
+				(!nextLaunch && !nextRestore && old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
 				return false, ErrStaleObservation
 			}
-			if !initialStopped && native.PowerState != PowerRunning && native.PowerState != PowerStandby {
+			if !initialStopped && !hibernated && native.PowerState != PowerRunning && native.PowerState != PowerStandby {
 				return false, fmt.Errorf("%w: invalid native power evidence", ErrInvalid)
 			}
 			var executionEpoch any
@@ -412,6 +417,11 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 				ref.InstanceID, nullable(ref.IncarnationID), executionEpoch, native.PowerState, nullable(native.VerifiedStandbyProfile), old.ID)
 			if err != nil {
 				return false, err
+			}
+			if hibernated {
+				if _, err := tx.ExecContext(ctx, "UPDATE runtime_bindings SET last_capture_id=? WHERE id=?", native.HibernatedCapture, old.ID); err != nil {
+					return false, err
+				}
 			}
 			fields["vm"], _ = json.Marshal(native.PowerState)
 			fields["guest_management"], _ = json.Marshal(o.GuestManagementStatus)

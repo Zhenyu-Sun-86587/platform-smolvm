@@ -47,6 +47,11 @@ func (s *Server) fullStateRoutes() {
 			if v.ExpectedGeneration < 1 {
 				return registry.ErrInvalid
 			}
+			if kind == rt.Hibernate {
+				if err := s.machineStatePointProfile(r.Context(), id, kind); err != nil {
+					return err
+				}
+			}
 			return s.accept(w, r, p, v, registry.AcceptRequest{
 				Kind: kind, MachineID: id, ExpectedGeneration: v.ExpectedGeneration, Heavy: kind == rt.Hibernate,
 			})

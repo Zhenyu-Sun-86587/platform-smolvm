@@ -117,6 +117,8 @@ type NativeObservation struct {
 	VerifiedStandbyProfile string
 	VerifiedLaunch         bool
 	ForkCapabilities       map[string]rt.Capability
+	VerifiedRestore        bool
+	HibernatedCapture      string
 }
 
 // Observation is current public-runtime evidence. Empty optional fields in an
@@ -242,6 +244,7 @@ type AcceptRequest struct {
 	RuntimeInstanceID     string
 	ForkChildren          []string
 	Locks                 []Lock
+	MachineSpec        json.RawMessage
 	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
 	AdmitRuntime func(rt.BundleRoute, string) error
 	// AdmitNative checks the binding's persisted capability and execution evidence.

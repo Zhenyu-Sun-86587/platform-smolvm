@@ -110,8 +110,8 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	if err := validateForkChildren(r); err != nil {
 		return Operation{}, false, err
 	}
-	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore")
-	if r.RuntimeInstanceID != "" && r.Kind != "create" && (r.Kind != rt.VolumeOperation || r.MachineID != "") {
+	creates := oneOf(r.Kind, "create", "fork", "branch", "clone", "restore", rt.VMRestore)
+	if r.RuntimeInstanceID != "" && r.Kind != "create" && r.Kind != rt.VMRestore && (r.Kind != rt.VolumeOperation || r.MachineID != "") {
 		return Operation{}, false, fmt.Errorf("%w: only a new machine can select a runtime instance", ErrInvalid)
 	}
 	fromSource := creates && r.Kind != "create" && r.MachineID != ""
@@ -134,6 +134,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	if err != nil {
 		return Operation{}, false, err
 	}
+	bindingSpec := request
 	idle, err := ensureJSON(r.IdlePolicy, "{}")
 	if err != nil {
 		return Operation{}, false, err
@@ -281,6 +282,13 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			desired = "stopped"
 		}
 		spec := request
+		if r.Kind == rt.VMRestore {
+			spec, err = ensureJSON(r.MachineSpec, "{}")
+			if err != nil {
+				return Operation{}, false, err
+			}
+			bindingSpec = spec
+		}
 		if fromSource {
 			spec = string(prior.Spec)
 			if len(r.IdlePolicy) == 0 {
@@ -330,7 +338,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		if op.MachineID == "" {
 			return Operation{}, false, fmt.Errorf("%w: binding allocation requires a machine", ErrInvalid)
 		}
-		if err := allocateBinding(ctx, tx, &op, request, route); err != nil {
+		if err := allocateBinding(ctx, tx, &op, bindingSpec, route); err != nil {
 			return Operation{}, false, err
 		}
 	} else if prior.CurrentBinding != nil {

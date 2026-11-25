@@ -75,20 +75,21 @@ type NativeProgress struct {
 }
 
 type OperationReceipt struct {
-	OperationID            string          `json:"operation_id"`
-	Kind                   string          `json:"kind"`
-	RequestDigest          string          `json:"request_digest"`
-	RouteID                string          `json:"route_id"`
-	InstanceID             string          `json:"instance_id"`
-	BundleDigest           string          `json:"bundle_digest"`
-	ExpectedExecutionEpoch int64           `json:"expected_execution_epoch"`
-	ExpectedIncarnationID  *string         `json:"expected_incarnation_id"`
-	Execution              *ExecutionRef   `json:"execution,omitempty"`
-	Native                 *NativeProgress `json:"native,omitempty"`
-	Fork                   *ForkProgress   `json:"fork,omitempty"`
-	Phase                  string          `json:"phase"`
-	Decision               string          `json:"decision"`
-	Revision               int64           `json:"revision"`
+	OperationID            string              `json:"operation_id"`
+	Kind                   string              `json:"kind"`
+	RequestDigest          string              `json:"request_digest"`
+	RouteID                string              `json:"route_id"`
+	InstanceID             string              `json:"instance_id"`
+	BundleDigest           string              `json:"bundle_digest"`
+	ExpectedExecutionEpoch int64               `json:"expected_execution_epoch"`
+	ExpectedIncarnationID  *string             `json:"expected_incarnation_id"`
+	Execution              *ExecutionRef       `json:"execution,omitempty"`
+	Native                 *NativeProgress     `json:"native,omitempty"`
+	Fork                   *ForkProgress       `json:"fork,omitempty"`
+	StatePoint             *StatePointProgress `json:"statepoint,omitempty"`
+	Phase                  string              `json:"phase"`
+	Decision               string              `json:"decision"`
+	Revision               int64               `json:"revision"`
 }
 
 type NativeControl interface {
