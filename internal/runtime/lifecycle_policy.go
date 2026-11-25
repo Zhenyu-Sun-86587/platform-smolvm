@@ -57,7 +57,7 @@ func (p LifecyclePolicy) WithPatch(raw json.RawMessage) (LifecyclePolicy, error)
 	}
 	const year = 365 * 24 * 60 * 60
 	if p.SchemaVersion != 1 || p.ReclaimPriority < 0 || p.ReclaimPriority > 100 || (p.PressureReclaim != "idle_only" && p.PressureReclaim != "disabled") ||
-		p.Activity.Unknown != "block_auto_sleep" || p.StandbyAfter < 0 || p.StandbyAfter > year || p.HibernateAfter < 0 || p.HibernateAfter > year ||
+		p.Activity.Unknown != "block_auto_sleep" || !p.Activity.Leases || p.StandbyAfter < 0 || p.StandbyAfter > year || p.HibernateAfter < 0 || p.HibernateAfter > year ||
 		p.MinRunning < 0 || p.MinRunning > year || p.RetryBackoff < 1 || p.RetryBackoff > year || p.AutoStandby && p.StandbyAfter == 0 ||
 		p.AutoHibernate && p.HibernateAfter == 0 || p.AutoStandby && p.AutoHibernate && p.HibernateAfter < p.StandbyAfter {
 		return p, fmt.Errorf("%w: invalid lifecycle policy", ErrInvalid)

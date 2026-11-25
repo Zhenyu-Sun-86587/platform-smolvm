@@ -9,7 +9,7 @@ import (
 
 func lifecycleMethod(name string) bool {
 	switch name {
-	case "QueryLifecycleEvents","QueryHostActivity", "GetLifecycleStatus", "ApplyLifecyclePolicy", "ReportActivity", "AcquireActivityHold", "ReleaseActivityHold",
+	case "QueryLifecycleEvents", "QueryHostActivity", "GetLifecycleStatus", "ApplyLifecyclePolicy", "ReportActivity", "AcquireActivityHold", "ReleaseActivityHold",
 		"AcquireRunningLease", "RenewRunningLease", "ReleaseRunningLease", "RequestWake", "AuthorizeWakeActivation", "CancelWakeDemand", "QueryProtection":
 		return true
 	}

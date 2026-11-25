@@ -15,23 +15,25 @@ import (
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/workerclient"
 	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/templates"
 )
 
 type Engine struct {
-	collectorSession string
-	DB               *registry.Store
-	runtimes         *rt.Resolver
-	Config           config.Config
-	mu               sync.Mutex
-	running          map[string]bool
-	holds            map[string]int
-	waiters          map[string]int
-	activeAccess     int
-	workers          sync.WaitGroup
-	Recover          map[string]func(context.Context, *Job) error
-	Extra            map[string]func(context.Context, *Job) error
+	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.Client)
+	collectorSession      string
+	DB                    *registry.Store
+	runtimes              *rt.Resolver
+	Config                config.Config
+	mu                    sync.Mutex
+	running               map[string]bool
+	holds                 map[string]int
+	waiters               map[string]int
+	activeAccess          int
+	workers               sync.WaitGroup
+	Recover               map[string]func(context.Context, *Job) error
+	Extra                 map[string]func(context.Context, *Job) error
 }
 
 func New(db *registry.Store, r *rt.Resolver, c config.Config) *Engine {

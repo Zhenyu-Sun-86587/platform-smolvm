@@ -124,8 +124,11 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 		}
 	}
 	publish("host", host)
-	platform := map[string]any{"task": nil, "exec": nil, "stream": nil}
-	var taskCount, execCount int
+	platform := map[string]any{"task": nil, "exec": nil, "stream": nil, "legacy_lease": nil}
+	var taskCount, execCount, legacyLeases int
+	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE machine_id=? AND binding_generation=? AND worker_revision IS NULL AND state IN ('active','suspect')", m.ID, b.Generation).Scan(&legacyLeases); err == nil {
+		platform["legacy_lease"] = legacyLeases
+	}
 	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE machine_id=? AND binding_generation=? AND state NOT IN ('exited','completed','cancelled','failed')", m.ID, b.Generation).Scan(&taskCount); err == nil {
 		platform["task"] = taskCount
 	}

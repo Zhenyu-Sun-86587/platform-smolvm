@@ -29,3 +29,10 @@ CREATE TABLE lifecycle_deliveries (
 CREATE TABLE lifecycle_outbox_cursors (
     machine_id TEXT PRIMARY KEY REFERENCES machines(id),seq INTEGER NOT NULL
 );
+CREATE TABLE lifecycle_lease_intents (
+    id TEXT PRIMARY KEY, lease_id TEXT NOT NULL, machine_id TEXT NOT NULL REFERENCES machines(id), binding_id TEXT NOT NULL,
+    method TEXT NOT NULL, principal TEXT NOT NULL, credential TEXT NOT NULL, scope_json TEXT NOT NULL, request_json TEXT NOT NULL,
+    secret BLOB NOT NULL, lease_revision INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending', receipt_json TEXT,
+    created_at INTEGER NOT NULL, token_delivered INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX lifecycle_one_lease_mutation ON lifecycle_lease_intents(lease_id) WHERE state='pending';

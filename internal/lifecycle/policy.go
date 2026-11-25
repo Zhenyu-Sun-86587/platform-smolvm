@@ -128,23 +128,51 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client w
 	if st.Instance != b.RuntimeInstanceObjectID {
 		return st, registry.ErrGeneration
 	}
-    var cursor int64
-    err:=e.DB.ReadDB().QueryRowContext(ctx,"SELECT seq FROM lifecycle_outbox_cursors WHERE machine_id=?",b.MachineID).Scan(&cursor)
-    if err!=nil && !errors.Is(err,sql.ErrNoRows){return st,err}
-    type event struct {Seq int64 `json:"seq"`;ID string `json:"operation_id"`;Kind string `json:"kind"`;Origin string `json:"origin"`;Stage string `json:"stage"`;At int64 `json:"occurred_at_ms"`;Error *string `json:"error"`}
-    var page struct{Events []event `json:"events"`}
-    if err=client.Lifecycle(ctx,"QueryLifecycleEvents","",WorkerExecution(b),map[string]int64{"after":cursor},&page);err!=nil{return st,err}
-    tx,err:=e.DB.DB().BeginTx(ctx,nil);if err!=nil{return st,err};defer tx.Rollback()
-    if _,err=tx.ExecContext(ctx,"UPDATE machine_lifecycle_policies SET worker_status=? WHERE machine_id=? AND applied_revision=?",string(raw),b.MachineID,st.Applied);err!=nil{return st,err}
-    var latest int64
-    if err=tx.QueryRowContext(ctx,"SELECT coalesce((SELECT seq FROM lifecycle_outbox_cursors WHERE machine_id=?),0)",b.MachineID).Scan(&latest);err!=nil{return st,err}
-    for _,event:=range page.Events{
-        if event.Seq<=latest{continue}
-        if err=registry.AppendEvent(ctx,tx,"lifecycle",b.MachineID,"",event,false);err!=nil{return st,err}
-        latest=event.Seq
-    }
-    if latest>cursor{
-        if _,err=tx.ExecContext(ctx,"INSERT INTO lifecycle_outbox_cursors(machine_id,seq)VALUES(?,?) ON CONFLICT(machine_id) DO UPDATE SET seq=max(seq,excluded.seq)",b.MachineID,latest);err!=nil{return st,err}
-    }
-    return st,tx.Commit()
+	var cursor int64
+	err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT seq FROM lifecycle_outbox_cursors WHERE machine_id=?", b.MachineID).Scan(&cursor)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return st, err
+	}
+	type event struct {
+		Seq    int64   `json:"seq"`
+		ID     string  `json:"operation_id"`
+		Kind   string  `json:"kind"`
+		Origin string  `json:"origin"`
+		Stage  string  `json:"stage"`
+		At     int64   `json:"occurred_at_ms"`
+		Error  *string `json:"error"`
+	}
+	var page struct {
+		Events []event `json:"events"`
+	}
+	if err = client.Lifecycle(ctx, "QueryLifecycleEvents", "", WorkerExecution(b), map[string]int64{"after": cursor}, &page); err != nil {
+		return st, err
+	}
+	tx, err := e.DB.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return st, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "UPDATE machine_lifecycle_policies SET worker_status=? WHERE machine_id=? AND applied_revision=?", string(raw), b.MachineID, st.Applied); err != nil {
+		return st, err
+	}
+	var latest int64
+	if err = tx.QueryRowContext(ctx, "SELECT coalesce((SELECT seq FROM lifecycle_outbox_cursors WHERE machine_id=?),0)", b.MachineID).Scan(&latest); err != nil {
+		return st, err
+	}
+	for _, event := range page.Events {
+		if event.Seq <= latest {
+			continue
+		}
+		if err = registry.AppendEvent(ctx, tx, "lifecycle", b.MachineID, "", event, false); err != nil {
+			return st, err
+		}
+		latest = event.Seq
+	}
+	if latest > cursor {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO lifecycle_outbox_cursors(machine_id,seq)VALUES(?,?) ON CONFLICT(machine_id) DO UPDATE SET seq=max(seq,excluded.seq)", b.MachineID, latest); err != nil {
+			return st, err
+		}
+	}
+	return st, tx.Commit()
 }

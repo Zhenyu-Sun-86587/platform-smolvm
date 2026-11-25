@@ -44,6 +44,7 @@ type Server struct {
 
 func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Server {
 	s := &Server{Engine: e, Snapshots: catalog, Auth: auth.New(e.DB), Web: web, mux: http.NewServeMux(), loginSlots: make(chan struct{}, 4), uploadSlots: make(chan struct{}, 8)}
+	s.ReconcileWorkerLeases = s.recoverWorkerLeases
 	s.routes()
 	return s
 }
