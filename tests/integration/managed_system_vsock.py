@@ -165,6 +165,7 @@ class Platform:
         config.write_text(json.dumps(dict(
             version=1, state_dir=str(root / "platform"), templates_file=str(templates),
             api=dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin),
+            storage=dict(minimum_free_bytes=2 << 30, minimum_free_percent=3),
             runtime=dict(socket=str(root / "ipc/official.sock"), status_socket="",
                          data_dir=str(root / "official"), custom=[dict(
                              instance_id=self.serve_id, bundle_digest=self.bundle_id,
@@ -211,8 +212,8 @@ class Platform:
                         finally:
                             os.close(fd)
 
-    def app(self, path, method="GET", body=None, headers=None, status=200):
-        return request(HTTPConnection("127.0.0.1", self.port, timeout=15), method, "/v1/" + path,
+    def app(self, path, method="GET", body=None, headers=None, status=200, *, timeout=15):
+        return request(HTTPConnection("127.0.0.1", self.port, timeout=timeout), method, "/v1/" + path,
                        body, {"Origin": self.origin, "Cookie": self.cookie,
                               "X-CSRF-Token": self.csrf, **(headers or {})}, status)[0]
 
@@ -315,6 +316,7 @@ def fork_case(platform, source, ref, probe, seen_cids):
         assert view["power_state"] == "running" and child_ref["incarnation_id"] != ref["incarnation_id"]
         inherited_agent(platform, child_ref, probe, seen_cids)
     print("System fork closed the old source stream and rebound two independent Agent sockets and CIDs.")
+    return completed["children"]
 
 
 def statepoint_case(platform, source, ref, probe, seen_cids):
@@ -533,6 +535,104 @@ def relay_case(platform, source, machine_id, ref, probe):
     print("The real Guest relay enforced measured peer identity, one exec use, and revocation.")
 
 
+def protected_fork_case(platform, source, ref, probe, seen_cids):
+    status = platform.app(source + "/lifecycle")
+    policy = {"auto_standby": False, "auto_hibernate": False, "keep_running": True}
+    platform.complete(platform.change(source, "protect-fork", {"expected_policy_revision": status["desired_revision"],
+        "lifecycle_policy": policy}, platform.app(source), method="PATCH"))
+    headers = {"If-Control-Epoch": platform.epoch, "If-Match": f'"{platform.app(source)["revision"]}"', "Idempotency-Key": "protect-lease"}
+    lease = platform.app(source + "/leases", "POST", {"reason": "waiting for a response", "semantics_version": 2, "ttl_seconds": 180}, headers)
+    assert lease["state"] == "active"
+    # A blocked user process keeps a nonce exclusively in RAM. Each branch
+    # gets a different message through its own copy of the FIFO after release.
+    wait_script = """nonce=$(cat /proc/sys/kernel/random/uuid)
+printf '%s %s\\n' "$$" "$nonce" > /run/fork-wait-id
+IFS= read -r reply < /run/fork-wait-pipe
+printf '%s %s %s\\n' "$$" "$nonce" "$reply" > /run/fork-wait-result"""
+    platform.guest(ref, ["sh", "-c", 'mkfifo /run/fork-wait-pipe && sh -c "$1" </dev/null >/dev/null 2>&1 &', "launcher", wait_script])
+    identity = wait_for(lambda: platform.guest(ref, ["cat", "/run/fork-wait-id"]).strip(), retry=(RuntimeError, OSError))
+    children = fork_case(platform, source, ref, probe, seen_cids)
+    for child in children:
+        path = "machines/" + child["machine_id"]
+        child_policy = platform.app(path + "/lifecycle")
+        assert child_policy["source"] == "parent" and all(child_policy["desired"][k] == v for k,v in policy.items()), child_policy
+        assert not platform.app(path + "/leases")["items"]
+    for branch, execution in [("source", ref), *((child["machine_id"], platform.context(child["machine_id"])[1]) for child in children)]:
+        platform.guest(execution, ["sh", "-ec", 'printf "%s\\n" "$1" > /run/fork-wait-pipe', "reply", branch])
+        result = wait_for(lambda: platform.guest(execution, ["cat", "/run/fork-wait-result"]).strip(), retry=(RuntimeError, OSError))
+        assert result == identity + b" " + branch.encode(), result
+    print("A protected System guest forked while its user task waited. Both children resumed the same PID and nonce, inherited policy, and had independent leases and replies.", flush=True)
+
+
+def policy_case(platform, source, machine_id, execution):
+    def change(path, method, key, body, revision, status=200, *, timeout=15):
+        return platform.app(path, method, body, {"If-Control-Epoch": platform.epoch,
+                            "If-Match": f'"{revision}"', "Idempotency-Key": key}, status, timeout=timeout)
+
+    status = platform.app(source + "/lifecycle")
+    assert status["supported"] and status["applied_revision"] == status["desired_revision"], status
+    defaults = platform.app("system/settings")
+    values = {"auto_standby": True, "standby_after_seconds": 10, "auto_hibernate": True, "hibernate_after_seconds": 72}
+    new = change("system/settings", "PATCH", "set-defaults", {"default_lifecycle_policy": values}, defaults["revision"])
+    assert platform.app(source + "/lifecycle")["default_revision"] == status["default_revision"]
+    view = platform.app(source)
+    patch = {"expected_policy_revision": status["desired_revision"],
+             "lifecycle_policy": {"keep_running": True, "wake_conditions": {"private_network_packet": False}}}
+    accepted = platform.change(source, "configure", patch, view, method="PATCH")
+    platform.complete(accepted)
+    applied = platform.app(source + "/lifecycle")
+    assert applied["applied_revision"] == status["applied_revision"] + 1
+    assert applied["overrides"] == patch["lifecycle_policy"] and applied["applied"]["keep_running"], applied
+    assert platform.change(source, "configure", patch, view, method="PATCH")["operation_id"] == accepted["operation_id"]
+    current = platform.app(source)
+    body = {"reason": "streaming response", "ttl_seconds": 60, "semantics_version": 2}
+    lease = change(source + "/leases", "POST", "acquire", body, current["revision"])
+    assert lease["execution_epoch"] == execution["execution_epoch"] and lease["state"] == "active"
+    assert "lease_token" not in change(source + "/leases", "POST", "acquire", body, current["revision"])
+    path = "leases/" + lease["lease_id"]
+    renew = {"lease_token": lease["lease_token"], "ttl_seconds": 60}
+    updated = change(path, "PATCH", "renew", renew, lease["revision"])
+    assert updated["revision"] > lease["revision"]
+    change(path, "PATCH", "stale-renew", renew, lease["revision"], 409)
+    release = change(path, "DELETE", "release", {"lease_token": lease["lease_token"]}, updated["revision"])
+    assert release["state"] == "released"
+    selected = {"default_policy_revision": new["default_lifecycle_revision"], "machines": [
+        {"machine_id": machine_id, "expected_revision": platform.app(source)["revision"]},
+        {"machine_id": "m_missing_test", "expected_revision": 1}]}
+    app = platform.change("lifecycle-policy-applications", "apply-list", selected, status=200)
+    assert app["complete"] and [m["state"] for m in app["machines"]] == ["applied", "rejected"], app
+    assert app["machines"][1]["reason"] == "MACHINE_NOT_FOUND"
+    state = platform.app(source + "/lifecycle")
+    assert state["overrides"] == {} and state["applied"]["hibernate_after_seconds"] == 72, state
+    change("system/settings", "PATCH", "later-default", {"default_lifecycle_policy": {"hibernate_after_seconds": 99}}, new["revision"])
+    platform.restart()
+    assert platform.change("lifecycle-policy-applications", "apply-list", selected, status=200) == app
+    assert platform.app("lifecycle-policy-applications/" + app["application_id"]) == app
+    print("Public policy defaults, explicit overrides, per-machine receipts and renewable execution leases survived a platform restart.", flush=True)
+    platform.complete(platform.change(source + "/hibernate", "policy-hibernate", {}, platform.app(source)))
+    sleeping = platform.app(source)
+    assert sleeping["power_state"] == "hibernated", sleeping
+    change(source + "/leases", "POST", "offline-stale", body, sleeping["revision"] + 1, 409)
+    assert platform.app(source)["power_state"] == "hibernated"
+    after = change(source + "/leases", "POST", "offline-acquire", body, sleeping["revision"], timeout=105)
+    assert after["state"] == "active" and after["execution_epoch"] == execution["execution_epoch"] + 1, after
+    assert platform.app(source)["power_state"] == "running"
+    assert "lease_token" not in change(source + "/leases", "POST", "offline-acquire", body, sleeping["revision"])
+    change("leases/" + after["lease_id"], "DELETE", "release-after-wake", {"lease_token": after["lease_token"]}, after["revision"])
+    print("An authorized lease woke the saved System execution once. A stale machine revision left it hibernated.", flush=True)
+    before = platform.app(source + "/lifecycle")
+    disabled = {"expected_policy_revision": before["desired_revision"], "lifecycle_policy": {
+        "wake_conditions": {"api_access": False}, "auto_standby": False, "auto_hibernate": False}}
+    platform.complete(platform.change(source, "disable-wake", disabled, platform.app(source), method="PATCH"))
+    online = change(source + "/leases", "POST", "online-no-wake", body, platform.app(source)["revision"])
+    assert online["execution_epoch"] == after["execution_epoch"], online
+    change("leases/" + online["lease_id"], "DELETE", "close-online", {"lease_token": online["lease_token"]}, online["revision"])
+    platform.complete(platform.change(source + "/hibernate", "manual-no-wake", {}, platform.app(source)))
+    change(source + "/leases", "POST", "deny-offline", body, platform.app(source)["revision"], 403)
+    assert platform.app(source)["power_state"] == "hibernated"
+    print("With implicit API wake disabled, active guests still admitted leases and saved guests remained hibernated.", flush=True)
+
+
 def test(args, root, stack, case):
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case else ()
@@ -568,7 +668,11 @@ def test(args, root, stack, case):
     if case != "relay":
         helper = platform.guest(ref, ["/usr/bin/sha256sum", "/sbin/smolvm-identity-helper"]).split()[0]
         assert helper.decode() == digest(platform.bundle / "guest/identity-helper").split(":")[1]
-    if case == "relay":
+    if case == "protected-fork":
+        protected_fork_case(platform, source, ref, probe, seen)
+    elif case == "policy":
+        policy_case(platform, source, machine_id, ref)
+    elif case == "relay":
         relay_case(platform, source, machine_id, ref, probe)
     elif case == "fork":
         fork_case(platform, source, ref, probe, seen)
@@ -588,7 +692,7 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed"), action="append")
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
