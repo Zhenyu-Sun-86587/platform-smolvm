@@ -318,6 +318,14 @@ func (s *Store) Transition(ctx context.Context, id string, r TransitionRequest) 
 		return Operation{}, err
 	}
 	defer tx.Rollback()
+	op, err := s.TransitionTx(ctx, tx, id, r)
+	if err != nil {
+		return Operation{}, err
+	}
+	return op, tx.Commit()
+}
+
+func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r TransitionRequest) (Operation, error) {
 	op, err := readOperation(ctx, tx, id)
 	if err != nil {
 		return Operation{}, err
@@ -414,6 +422,9 @@ func (s *Store) Transition(ctx context.Context, id string, r TransitionRequest) 
 	if r.WakePending != nil {
 		op.WakePending = *r.WakePending
 	}
+	if r.State == Succeeded && len(r.Error) == 0 {
+		op.Error = nil
+	}
 	op.State = r.State
 	op.Stage = r.Stage
 	op.UpdatedAt = time.Now().UTC()
@@ -459,7 +470,7 @@ func (s *Store) Transition(ctx context.Context, id string, r TransitionRequest) 
 			}
 		}
 	}
-	return op, tx.Commit()
+	return op, nil
 }
 
 func allowedTransition(op Operation, next string) bool {

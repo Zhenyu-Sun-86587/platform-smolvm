@@ -1,0 +1,107 @@
+package lifecycle
+
+import (
+	"context"
+	"encoding/json"
+	"sandbox-platform/internal/registry"
+	"sandbox-platform/internal/tasks"
+	"strings"
+	"time"
+)
+
+// monitor samples public execution state without extending user idle time.
+func (e *Engine) monitor(ctx context.Context) {
+	started := time.Now()
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		e.sample(ctx, started)
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+func (e *Engine) sample(ctx context.Context, started time.Time) {
+	if e.ready(ctx) != nil {
+		return
+	}
+	ms, err := e.DB.ListMachines(ctx)
+	if err != nil {
+		return
+	}
+	_, _ = e.DB.DB().ExecContext(ctx, "UPDATE leases SET state='suspect',revision=revision+1 WHERE state='active' AND expires_at<=?", time.Now().UnixMilli())
+	for _, m := range ms {
+		if m.CurrentBinding == nil || m.ActiveOperationID != "" || ctx.Err() != nil {
+			continue
+		}
+		b := *m.CurrentBinding
+		o, err := e.Runtime.Observe(ctx, b.RuntimeName)
+		if err != nil {
+			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked", GuestManagementStatus: "unknown"})
+			continue
+		}
+		if o.Labels["platform.binding"] != b.ID {
+			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked"})
+			continue
+		}
+		x := Evidence(o)
+		x.ExpectedRuntimeIdentity = b.RuntimeIdentity
+		tpl, err := e.DB.GetTemplate(ctx, m.TemplateID)
+		managed := err == nil && tpl.GuestRelease != ""
+		idleAllowed := false
+		if o.State == "running" && managed {
+			res, err := e.Call(ctx, b, tasks.Request{Method: "hello"})
+			if err != nil || res.Binding == nil || *res.Binding != *GuestBinding(b) || res.Hello == nil {
+				x.GuestManagementStatus = "degraded"
+			} else {
+				x.GuestManagementStatus = "ready"
+				x.GuestManagementEvidence = JSON(res.Hello)
+				idleAllowed = res.Hello.Cgroup && res.Hello.Active == 0 && res.Hello.Unknown == 0 && res.Hello.Barrier == nil
+				if listed, err := e.Call(ctx, b, tasks.Request{Method: "list"}); err == nil {
+					for _, t := range listed.Tasks {
+						if t.MachineID != m.ID || t.Namespace != b.TaskNamespace {
+							idleAllowed = false
+							continue
+						}
+						_, err = e.DB.DB().ExecContext(ctx, `UPDATE tasks SET state=?,exit_code=?,observed_at=?,result_json=? WHERE id=? AND task_namespace=? AND observed_at<=? AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL)`, t.State, t.ExitCode, t.ObservedAt.UnixMilli(), string(JSON(t)), t.ID, t.Namespace, t.ObservedAt.UnixMilli(), m.ID, b.ID)
+						if err != nil || !t.Terminal() {
+							idleAllowed = false
+						}
+					}
+				} else {
+					idleAllowed = false
+				}
+			}
+		}
+		if err = e.DB.ObserveMachine(ctx, b.ID, x); err != nil {
+			continue
+		}
+		if time.Since(started) < time.Duration(e.Config.Lifecycle.StartupGuard)*time.Second || !idleAllowed || m.KeepRunning || m.LastUserActivityAt == nil || strings.Contains(strings.ToLower(o.StateReason), "pressure") {
+			continue
+		}
+		var policy IdlePolicy
+		if json.Unmarshal(m.IdlePolicy, &policy) != nil || !policy.Enabled || time.Since(*m.LastUserActivityAt) < time.Duration(policy.Timeout)*time.Second {
+			continue
+		}
+		var n int
+		if err = e.DB.ReadDB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM leases WHERE machine_id=? AND state!='released' AND binding_generation=?) + (SELECT count(*) FROM dependencies WHERE parent_binding_id=? AND kind='live_branch_resource' AND status!='released') + (SELECT count(*) FROM exec_sessions WHERE machine_id=? AND state NOT IN ('done','exited','lost','failed'))`, m.ID, b.Generation, b.ID, m.ID).Scan(&n); err != nil || n > 0 {
+			continue
+		}
+		var owner string
+		if err = e.DB.ReadDB().QueryRowContext(ctx, "SELECT id FROM principals WHERE disabled=0 LIMIT 1").Scan(&owner); err != nil {
+			continue
+		}
+		ctl, err := e.DB.Control(ctx)
+		if err != nil {
+			continue
+		}
+		e.mu.Lock()
+		if e.holds[m.ID] == 0 {
+			key, _ := registry.NewID("idle_")
+			_, _, _ = e.DB.Accept(ctx, registry.AcceptRequest{PrincipalID: owner, Epoch: ctl.ControlEpoch, Key: key, Scope: "POST /internal/idle/" + m.ID, Kind: "idle_pause", MachineID: m.ID, ExpectedRevision: m.Revision, ExpectedGeneration: b.Generation, Heavy: true, Request: JSON(map[string]any{"reason": "idle", "last_user_activity_at": m.LastUserActivityAt})})
+		}
+		e.mu.Unlock()
+	}
+}
