@@ -39,12 +39,12 @@ def verify(root, profile, artifacts):
             "incomplete managed runtime verification profile")
     require(EVIDENCE in artifacts and SYSTEM_TEMPLATE in artifacts, "missing managed release evidence or System disk")
     evidence = read_json(root / EVIDENCE)
-    fields(evidence, "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes acceptance_revisions runs", "managed evidence")
+    fields(evidence, "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes acceptance_revisions counter_sha256 vsock_probe_sha256 runs", "managed evidence")
     require(evidence["schema"] == "RuntimeManagedAcceptance/1", "unsupported managed acceptance schema")
     for key, name in (("build_lock_sha256", "metadata/build-lock.json"), ("build_record_sha256", "metadata/build-record.json")):
         require(evidence[key] == "sha256:" + artifacts[name]["sha256"], f"managed acceptance belongs to a different {name}")
-    digest(evidence["platformd_sha256"], "acceptance platformd digest")
-    digest(evidence["system_disk_sha256"], "System disk digest")
+    for key in ("platformd_sha256", "system_disk_sha256", "counter_sha256", "vsock_probe_sha256"):
+        digest(evidence[key], key)
     fields(evidence["acceptance_revisions"], "smolvm platform", "acceptance revisions")
     for repo, revision in evidence["acceptance_revisions"].items():
         digest(revision, f"{repo} acceptance revision", prefixed=False, length=40)

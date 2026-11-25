@@ -69,6 +69,13 @@ def archive_system(disk, output):
             archive.addfile(entry, source)
 
 
+def probe_binary(supplied, source, output, cc):
+    if supplied:
+        return supplied.resolve(strict=True)
+    subprocess.run([cc, "-static", "-Os", "-o", output, source], check=True)
+    return output
+
+
 def measure(args):
     require(os.geteuid() == 0, "managed acceptance requires KVM and a privileged Worker")
     runtime, image = args.artifacts.resolve(strict=True), args.system_image.resolve(strict=True)
@@ -97,13 +104,12 @@ def measure(args):
         bundle = temp / "bundle"
         test_bundle(runtime, bundle)
         platformd = args.platformd.resolve(strict=True)
-        vm = [sys.executable, str(harness), "--bundle", str(bundle)]
-        if args.counter:
-            vm.extend(["--guest", str(args.counter.resolve(strict=True))])
+        counter = probe_binary(args.counter, source / "crates/smolvm-resourced/tests/kvm-parked-block-guest.c",
+                               temp / "counter", args.cc)
+        probe = probe_binary(args.probe, platform / "tests/fixtures/vsock-probe.c", temp / "vsock-probe", args.cc)
+        vm = [sys.executable, str(harness), "--bundle", str(bundle), "--guest", str(counter)]
         product = [sys.executable, str(system), "--bundle", str(bundle), "--system-image", str(image),
-                   "--platformd", str(platformd)]
-        if args.probe:
-            product.extend(["--probe", str(args.probe.resolve(strict=True))])
+                   "--platformd", str(platformd), "--probe", str(probe)]
         cases = {"oci-capture": (harness, [*vm, "--fork-faults", "--statepoint"]),
                  "lifecycle": (harness, [*vm, "--lifecycle"]),
                  "system-fork": (system, [*product, "--case", "fork"]),
@@ -120,7 +126,8 @@ def measure(args):
         evidence = {"schema": "RuntimeManagedAcceptance/1", "build_lock_sha256": checksum(runtime / BUILD_LOCK),
                     "build_record_sha256": checksum(runtime / BUILD_RECORD), "platformd_sha256": checksum(platformd),
                     "system_disk_bytes": image.stat().st_size, "system_disk_sha256": checksum(image),
-                    "acceptance_revisions": revisions, "runs": runs}
+                    "acceptance_revisions": revisions, "counter_sha256": checksum(counter),
+                    "vsock_probe_sha256": checksum(probe), "runs": runs}
         (output / managed_evidence.EVIDENCE).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
 
@@ -130,6 +137,7 @@ if __name__ == "__main__":
         parser.add_argument("--" + flag, required=True, type=Path)
     parser.add_argument("--counter", type=Path, help="precompiled static kvm-parked-block-guest fixture")
     parser.add_argument("--probe", type=Path, help="precompiled static vsock-probe fixture")
+    parser.add_argument("--cc", default="cc", help="C compiler for Guest test fixtures")
     try:
         measure(parser.parse_args())
     except (BundleError, OSError, subprocess.SubprocessError, ValueError) as error:

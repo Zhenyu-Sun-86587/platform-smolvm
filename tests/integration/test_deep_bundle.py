@@ -182,6 +182,7 @@ class BundleTests(unittest.TestCase):
             "build_record_sha256": sha((self.stage / bundle.BUILD_RECORD).read_bytes()),
             "platformd_sha256": sha(b"platformd"), "system_disk_sha256": sha(disk),
             "system_disk_bytes": len(disk), "acceptance_revisions": {"smolvm": "1"*40, "platform": "2"*40},
+            "counter_sha256": sha(b"counter"), "vsock_probe_sha256": sha(b"probe"),
             "runs": {},
         }
         for case, markers in managed_evidence.SCENARIOS.items():
