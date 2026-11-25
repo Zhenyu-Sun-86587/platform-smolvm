@@ -11,3 +11,5 @@ The installer enables `smolvm-agent.service` and `sandbox-taskd.service` in the 
 Set `managed_uplink` to the interface assigned to the guest identity service. The installer marks just that interface unmanaged by systemd-networkd. The identity service configures the uplink address and routes.
 
 Use libkrun's block root and PID 1 settings to boot the Debian init from the root disk. The Agent serves health and foreground command requests over the private vsock. The task daemon serves its existing guest-local socket.
+
+On templates with Debian OpenSSH installed, the installer also configures `sandbox-managed-sshd.service` on guest TCP port 2222. This listener uses its own key and authorization files under `/etc/ssh/sandbox-managed`. The guest helper consumes the platform's staged SSH credentials and verifies the key presented by the actual listener. A rotation restarts the managed listener only when it was active. Initial provisioning starts the listener when its unit is enabled.

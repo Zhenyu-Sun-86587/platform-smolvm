@@ -1,0 +1,68 @@
+#!/bin/sh
+set -eu
+umask 077
+
+uploads=/run/sandbox-taskd
+ssh_dir=/etc/ssh/sandbox-managed
+service=sandbox-managed-sshd.service
+
+exec 9>"$ssh_dir/keys.lock"
+flock -x 9
+staging=$(mktemp -d -- "$ssh_dir/.keys.XXXXXXXX")
+cleanup() {
+    rm -rf -- "$staging"
+    rm -f -- "$uploads/host-key.new" "$uploads/host-pub.new" "$uploads/authorized-keys.new"
+}
+trap cleanup EXIT
+
+key_fields() {
+    awk 'NR == 1 && $1 == "ssh-ed25519" && NF >= 2 { print $1, $2 }'
+}
+
+install -m 0600 "$uploads/host-key.new" "$staging/host_ed25519_key"
+install -m 0600 "$uploads/authorized-keys.new" "$staging/authorized_keys"
+public=$(ssh-keygen -y -P '' -f "$staging/host_ed25519_key" | key_fields)
+if [ -z "$public" ] || [ "$public" != "$(key_fields < "$uploads/host-pub.new")" ]; then
+    echo "managed SSH public key does not match the staged private key" >&2
+    exit 1
+fi
+
+active=no
+initial=no
+current=
+if systemctl is-active --quiet "$service"; then
+    active=yes
+fi
+if [ -f "$ssh_dir/host_ed25519_key" ]; then
+    current=$(ssh-keygen -y -P '' -f "$ssh_dir/host_ed25519_key" | key_fields)
+else
+    initial=yes
+fi
+
+mv -T -- "$staging/authorized_keys" "$ssh_dir/authorized_keys"
+if [ "$current" != "$public" ]; then
+    if [ "$active" = yes ]; then
+        systemctl stop "$service"
+    fi
+    mv -T -- "$staging/host_ed25519_key" "$ssh_dir/host_ed25519_key"
+    sync -f "$ssh_dir"
+    if [ "$active" = yes ] || { [ "$initial" = yes ] && systemctl is-enabled --quiet "$service"; }; then
+        systemctl start "$service"
+    fi
+fi
+
+if ! systemctl is-active --quiet "$service"; then
+    echo "managed SSH service is inactive" >&2
+    exit 1
+fi
+for attempt in 1 2 3 4 5; do
+    presented=$(ssh-keyscan -T 1 -p 2222 -t ed25519 127.0.0.1 2>/dev/null |
+        awk 'NR == 1 && $2 == "ssh-ed25519" { print $2, $3 }')
+    if [ "$presented" = "$public" ]; then
+        printf '%s\n' "$public"
+        exit 0
+    fi
+    sleep 0.2
+done
+echo "managed SSH listener did not present the expected key" >&2
+exit 1

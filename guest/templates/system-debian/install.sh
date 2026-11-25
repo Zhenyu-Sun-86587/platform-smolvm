@@ -56,6 +56,9 @@ units=$root/etc/systemd/system
 enabled=$units/multi-user.target.wants
 network=$root/etc/systemd/network
 uplink_config=$network/05-smolvm-uplink.network
+ssh_dir=$root/etc/ssh/sandbox-managed
+ssh_unit=sandbox-managed-sshd.service
+ssh_sync=$root/usr/local/sbin/sandbox-system-ssh-sync
 
 for directory in "$commands" "$units" "$enabled" "$network"; do
     check_guest_path "$directory"
@@ -69,6 +72,15 @@ for unit in smolvm-agent.service sandbox-taskd.service; do
 done
 check_guest_path "$uplink_config"
 
+managed_ssh=no
+if [ -x "$root/usr/sbin/sshd" ]; then
+    for path in "$root/usr/sbin/sshd" "$ssh_dir" "$ssh_dir/sshd_config" \
+        "$units/$ssh_unit" "$enabled/$ssh_unit" "$ssh_sync"; do
+        check_guest_path "$path"
+    done
+    managed_ssh=yes
+fi
+
 install -d -m 0755 "$commands" "$enabled" "$network"
 for command in smolvm-agent taskd taskctl task-runner; do
     install -T -m 0755 "$bin/$command" "$commands/$command"
@@ -77,6 +89,15 @@ for unit in smolvm-agent.service sandbox-taskd.service; do
     install -T -m 0644 "$source_dir/$unit" "$units/$unit"
     ln -sfn "../$unit" "$enabled/$unit"
 done
+
+if [ "$managed_ssh" = yes ]; then
+    install -d -m 0755 "$(dirname -- "$ssh_sync")"
+    install -d -m 0700 "$ssh_dir"
+    install -T -m 0600 "$source_dir/sandbox-sshd_config" "$ssh_dir/sshd_config"
+    install -T -m 0755 "$source_dir/sandbox-system-ssh-sync" "$ssh_sync"
+    install -T -m 0644 "$source_dir/$ssh_unit" "$units/$ssh_unit"
+    ln -sfn "../$ssh_unit" "$enabled/$ssh_unit"
+fi
 
 uplink_tmp=$(mktemp -- "$network/.smolvm-uplink.XXXXXXXX")
 trap 'rm -f -- "$uplink_tmp"' EXIT
