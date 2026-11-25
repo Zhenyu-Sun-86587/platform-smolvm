@@ -106,6 +106,7 @@ export interface Capability {
 }
 export interface Control {
     control_epoch: string;
+    default_boot_mode?: BootMode;
     runtime_version?: string;
     build?: string;
     maintenance?: boolean;
