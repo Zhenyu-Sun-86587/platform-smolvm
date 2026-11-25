@@ -96,6 +96,7 @@ func adminCommand() *cobra.Command {
 	_ = restore.MarkFlagRequired("archive")
 	_ = restore.MarkFlagRequired("rollback-output")
 	var recoverArchive, recoverOutput string
+	var workerCatalog bool
 	recover := &cobra.Command{Use: "recover-native", Short: "Verify and recover immutable Worker closures into a new directory", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := cfg()
@@ -104,7 +105,7 @@ func adminCommand() *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
 			defer cancel()
-			b, err := maintenance.RecoverNativeBackup(ctx, c, recoverArchive, recoveryKey, recoverOutput)
+			b, err := maintenance.RecoverNativeBackup(ctx, c, recoverArchive, recoveryKey, recoverOutput, workerCatalog)
 			if err != nil {
 				return err
 			}
@@ -112,6 +113,7 @@ func adminCommand() *cobra.Command {
 		}}
 	recover.Flags().StringVar(&recoverArchive, "archive", "", "Authenticated backup directory")
 	recover.Flags().StringVar(&recoverOutput, "output", "", "New directory for immutable Worker closures")
+	recover.Flags().BoolVar(&workerCatalog, "worker-catalog", false, "Prepare a fresh Worker catalog for independent restore")
 	_ = recover.MarkFlagRequired("archive")
 	_ = recover.MarkFlagRequired("output")
 	backup.AddCommand(create, verify, restore, recover)

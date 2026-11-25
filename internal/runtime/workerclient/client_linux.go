@@ -63,7 +63,11 @@ func (c Client) call(ctx context.Context, q request, pass *os.File, expect *desc
 			(!lifecycleMethod(q.Method) && (q.Expected.Epoch < 1 || q.Expected.IncarnationID == "" && !privateWake)))) {
 		return nil, nil, errors.New("invalid local Worker execution scope")
 	}
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	timeout := callTimeout
+	if q.Method == "PrepareBackupClosure" {
+		timeout = 120 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	peer, err := (&net.Dialer{}).DialContext(ctx, "unixpacket", c.Socket)
 	if err != nil {
