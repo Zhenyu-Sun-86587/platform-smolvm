@@ -45,7 +45,7 @@ export function State({ value }: { value?: string | null }) {
   if (!value) return <span className="muted">—</span>
   const tone = ["running", "ready", "succeeded", "active", "enabled"].includes(value) ? "good"
     : ["failed", "recovery_required", "unknown", "degraded", "interrupted"].includes(value) ? "bad"
-      : ["paused", "queued", "observing", "dispatching", "starting", "suspect", "not_ready", "cancelling"].includes(value) ? "pending" : "neutral"
+      : ["paused", "queued", "observing", "dispatching", "starting", "suspect", "not_ready", "cancelling", "verification_pending"].includes(value) ? "pending" : "neutral"
   return <span className={`state ${tone}`}><i />{label(value)}</span>
 }
 
@@ -85,7 +85,7 @@ type Field = {
   name: string
   label: string
   type?: "text" | "number" | "password" | "checkbox" | "textarea" | "file"
-  options?: { value: string; label?: string }[]
+  options?: { value: string; label?: string; disabled?: boolean }[]
   value?: string | boolean | number
   required?: boolean
   min?: number
@@ -117,7 +117,7 @@ export function Dialog({ config, close }: { config: DialogConfig; close: () => v
         {config.fields?.map(field => <label key={field.name} className={field.type === "checkbox" ? "checkbox" : "field"}>
           <span>{field.label}</span>
           {field.options ? <select name={field.name} defaultValue={String(field.value ?? "")} required={field.required}>
-            {field.options.map(option => <option key={option.value} value={option.value}>{option.label ?? option.value}</option>)}
+            {field.options.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label ?? option.value}</option>)}
           </select>
             : field.type === "textarea" ? <textarea name={field.name} defaultValue={String(field.value ?? "")} required={field.required} rows={4} />
               : field.type === "checkbox" ? <input type="checkbox" name={field.name} defaultChecked={Boolean(field.value)} />

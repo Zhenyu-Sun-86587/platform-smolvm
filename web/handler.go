@@ -25,7 +25,7 @@ func Handler() http.Handler {
 			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		clean := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if strings.HasPrefix(clean, "assets/") {

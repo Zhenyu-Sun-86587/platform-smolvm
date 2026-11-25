@@ -15,8 +15,9 @@ export function System({ tab, ...props }: Props) {
 
 function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">) {
   const [lookup, setLookup] = useState(id ?? "")
+  const [restores, setRestores] = useState(false)
   const op = useRemote<Operation>(id ? operation(id) : "", revision)
-  const all = useRemote<Page<Operation>>("operations?limit=60", revision)
+  const all = useRemote<Page<Operation>>((restores ? "restores" : "operations") + "?limit=60", revision)
   return <>
     <Section title="Operation lookup"><form className="inline-form" onSubmit={event => {
       event.preventDefault()
@@ -25,12 +26,14 @@ function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">)
       <Callout error={op.error} />
       {op.data && <OperationDetail item={op.data} actions={actions} />}
     </Section>
-    <Section title="Operation history">
-      {all.error && operationIds.length === 0 ? <Callout error={all.error} /> : null}
+    <Section title="Operation history" actions={<select aria-label="Operation history filter" value={restores ? "restores" : "all"} onChange={event => setRestores(event.target.value === "restores")}>
+      <option value="all">All operations</option><option value="restores">Restores</option>
+    </select>}>
+      <Callout error={all.error} />
       <div className="rows">{all.data ? all.data.items.map(item => <div key={item.operation_id} className="row">
         <a href={"#/operations/" + segment(item.operation_id)}>{item.operation_id}</a><strong>{label(item.kind)}</strong><State value={item.state} /><span>{item.stage}</span>
-      </div>) : operationIds.map(item => <div key={item} className="row"><a href={"#/operations/" + segment(item)}>{item}</a></div>)}</div>
-      {!all.data?.items.length && !operationIds.length && <p className="empty">No recent operations returned.</p>}
+      </div>) : !restores && operationIds.map(item => <div key={item} className="row"><a href={"#/operations/" + segment(item)}>{item}</a></div>)}</div>
+      {all.data && !all.data.items.length && <p className="empty">{restores ? "No restores returned." : "No recent operations returned."}</p>}
     </Section>
   </>
 }

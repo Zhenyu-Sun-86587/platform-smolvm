@@ -53,6 +53,13 @@ export interface Machine extends CreateMachine {
   runtime_identity?: Record<string, unknown> | null
   runtime_name?: string
   guest_management_status?: string
+  state_reason?: unknown
+  binding?: {
+    binding_id?: string
+    runtime_identity?: Record<string, unknown> | null
+    state_reason?: unknown
+    guest_management_evidence?: { ssh_ready?: boolean; ssh_host_key?: string }
+  }
   keep_running?: boolean
 }
 export interface TaskSpec {

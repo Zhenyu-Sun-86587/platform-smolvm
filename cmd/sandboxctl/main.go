@@ -122,7 +122,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().Int64Var(&api.generation, "generation", 0, "Original machine generation for a replay")
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.services(),
 		api.files(), api.leases(), api.credentials(), api.templates(), api.settings(), api.events(),
-		api.exec(), api.execs(), api.sshConfig(), api.sshProxy(), api.portForward())
+		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
 	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())
 	return root, api
 }

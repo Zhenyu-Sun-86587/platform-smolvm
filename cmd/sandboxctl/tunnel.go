@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 )
 
 const tunnelProtocol = "sandbox.tunnel.v1"
@@ -48,6 +49,39 @@ func (c *client) sshConfig() *cobra.Command {
 	})
 	cmd.Flags().StringVar(&user, "user", "root", "Guest SSH user")
 	return cmd
+}
+
+func (c *client) sshHostKey() *cobra.Command {
+	return sub("ssh-host-key MACHINE", "Print the verified Guest SSH host key for known_hosts", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if !safeMachineID.MatchString(args[0]) {
+			return errors.New("invalid machine ID")
+		}
+		var details struct {
+			Binding struct {
+				Identity struct {
+					Ready bool   `json:"ssh_ready"`
+					Key   string `json:"ssh_host_key"`
+				} `json:"guest_management_evidence"`
+			} `json:"binding"`
+		}
+		if err := c.get(cmd.Context(), res("machines", args[0]), &details); err != nil {
+			return err
+		}
+		host := details.Binding.Identity
+		if !host.Ready || host.Key == "" {
+			return errors.New("Guest SSH host key is not verified")
+		}
+		key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(host.Key))
+		if err != nil || len(options) != 0 || len(rest) != 0 {
+			return errors.New("platform returned an invalid Guest SSH host key")
+		}
+		line := "sandbox-" + args[0] + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+		if c.jsonOutput {
+			return c.print(cmd, map[string]string{"known_hosts": line, "fingerprint": ssh.FingerprintSHA256(key)})
+		}
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), line)
+		return err
+	})
 }
 
 func (c *client) sshProxy() *cobra.Command {

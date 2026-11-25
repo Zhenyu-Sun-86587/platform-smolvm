@@ -194,7 +194,7 @@ function App() {
       <Callout error={streamError} />
       {notice && <div className={`operation-notice ${notice.error ? "operation-error" : ""}`} role="status">
         <State value={notice.state} /><a href={`#/operations/${segment(notice.operation_id)}`}>{label(notice.kind ?? "Operation")} · {notice.stage ?? notice.operation_id}</a>
-        {notice.error?.message && <span>{notice.error.message}</span>}<button aria-label="Dismiss operation" onClick={() => setNotice(undefined)}>×</button>
+        {notice.error?.message && <span>{notice.error.message}</span>}{notice.result?.status === "requires_restart" && <span>Resource changes require restart</span>}<button aria-label="Dismiss operation" onClick={() => setNotice(undefined)}>×</button>
       </div>}
       {at.page === "machines" && <MachineList initial={machines.data} error={machines.error} actions={actions} revision={revision} />}
       {at.page === "machine" && <><Callout error={match.error} />{match.data && <MachineView key={match.data.machine_id} machine={match.data} tab={at.tab ?? "overview"} actions={actions} revision={revision} />}</>}

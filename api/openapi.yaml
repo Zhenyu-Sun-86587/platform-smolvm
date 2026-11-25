@@ -1077,6 +1077,7 @@ paths:
               properties:
                 seq: {type: integer, minimum: 1}
                 data_base64: {type: string, contentEncoding: base64}
+                eof: {type: boolean}
               required:
               - seq
               additionalProperties: false
@@ -1346,7 +1347,7 @@ paths:
           description: Successful response
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Operation'}
+              schema: {$ref: '#/components/schemas/UploadReceipt'}
         default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/files/list:
     get:
@@ -1518,6 +1519,20 @@ paths:
                 name: {type: string, minLength: 1}
                 protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
                 guest_port: {type: integer, minimum: 1, maximum: 65535}
+                readiness:
+                  type: object
+                  properties:
+                    type: {type: string, enum: [tcp, http]}
+                    path: {type: string}
+                    expected_status: {type: integer, minimum: 100, maximum: 599}
+                  additionalProperties: false
+                auth:
+                  type: object
+                  properties:
+                    private: {type: boolean, const: true}
+                  required:
+                  - private
+                  additionalProperties: false
                 expected_generation: {type: integer, minimum: 1}
               required:
               - name
@@ -1573,6 +1588,21 @@ paths:
                 name: {type: string, minLength: 1}
                 protocol: {type: string, enum: [http, https, ssh, tcp-mtls]}
                 guest_port: {type: integer, minimum: 1, maximum: 65535}
+                readiness:
+                  type: object
+                  properties:
+                    type: {type: string, enum: [tcp, http]}
+                    path: {type: string}
+                    expected_status: {type: integer, minimum: 100, maximum: 599}
+                  additionalProperties: false
+                auth:
+                  type: object
+                  properties:
+                    private: {type: boolean, const: true}
+                  required:
+                  - private
+                  additionalProperties: false
+                enabled: {type: boolean}
               additionalProperties: false
       responses:
         '202':
@@ -2015,6 +2045,15 @@ components:
       - kind
       - stage
       - effect
+    Capability:
+      type: object
+      properties:
+        supported: {type: boolean}
+        reason_code: {type: [string, 'null']}
+        message: {type: string}
+        verified_profile: {type: string}
+      required:
+      - supported
     Resources:
       type: object
       properties:
@@ -2022,6 +2061,7 @@ components:
         memory_mib: {type: integer, minimum: 1}
         storage_gib: {type: integer, minimum: 1}
         overlay_gib: {type: integer, minimum: 1}
+        cpu_limit_millicpus: {type: integer, minimum: 1}
       additionalProperties: false
     IdlePolicy:
       type: object
@@ -2070,7 +2110,14 @@ components:
         blocked_reasons: {type: array, items: {type: string}}
         runtime_identity: {type: object, additionalProperties: true}
         runtime_name: {type: string}
-        capabilities: {type: object, additionalProperties: true}
+        capabilities: {type: object, additionalProperties: {$ref: '#/components/schemas/Capability'}}
+        binding:
+          type: object
+          properties:
+            binding_id: {type: string, minLength: 1}
+            runtime_identity: {type: object, additionalProperties: true}
+            state_reason: {type: object, additionalProperties: true}
+            guest_management_evidence: {type: object, additionalProperties: true}
       required:
       - machine_id
       - name
@@ -2097,7 +2144,7 @@ components:
     TaskOutput:
       type: object
       properties:
-        data_base64: {type: string, contentEncoding: base64}
+        data_base64: {type: [string, 'null'], contentEncoding: base64}
         start: {type: integer, minimum: 0}
         end: {type: integer, minimum: 0}
         next: {type: integer, minimum: 0}
@@ -2141,6 +2188,9 @@ components:
         public_host: {type: string}
         public_port: {type: integer, minimum: 1}
         enabled: {type: boolean}
+        ssh_host_key: {type: string}
+        readiness: {type: object, additionalProperties: true}
+        auth: {type: object, additionalProperties: true}
       required:
       - service_id
       - machine_id
@@ -2207,6 +2257,21 @@ components:
         expires_at: {type: string, format: date-time}
       required:
       - ticket
+      additionalProperties: false
+    UploadReceipt:
+      type: object
+      properties:
+        upload_id: {type: string, minLength: 1}
+        state: {type: string, enum: [uploaded]}
+        path: {type: string}
+        size: {type: integer, minimum: 0}
+        sha256: {type: string}
+      required:
+      - upload_id
+      - state
+      - path
+      - size
+      - sha256
       additionalProperties: false
     MachinePage:
       type: object

@@ -2,6 +2,8 @@
 import codecs
 import os
 import sys
+from pathlib import Path
+from time import monotonic, sleep
 
 from sandbox_platform import Client
 
@@ -59,8 +61,9 @@ def main():
 
 
 def probe_service(client, machine_id, token):
+    program = Path(__file__).with_name("service.pl").read_text()
     running = success(client, client.start_task(machine_id, {
-        "argv": ["/usr/bin/python3", "-m", "http.server", "8080", "-d", "/workspace"],
+        "argv": ["/usr/bin/perl", "-e", program],
     }))
     task_id = running["task_id"]
     try:
@@ -73,9 +76,17 @@ def probe_service(client, machine_id, token):
         import httpx
 
         with httpx.Client(follow_redirects=False) as http:
-            response = http.get(uri, headers={"Authorization": "Bearer " + token})
-            response.raise_for_status()
-            print(f"Service {uri} returned HTTP {response.status_code}")
+            deadline = monotonic() + 30
+            while True:
+                response = http.get(uri, headers={"Authorization": "Bearer " + token})
+                if response.is_success:
+                    if response.text != "Sandbox workspace ready\n":
+                        raise RuntimeError("unexpected service response")
+                    print(f"Service {uri} returned HTTP {response.status_code}")
+                    break
+                if response.status_code not in (409, 502, 503) or monotonic() >= deadline:
+                    response.raise_for_status()
+                sleep(0.4)
     finally:
         success(client, client.cancel_task(task_id, grace_seconds=0))
 

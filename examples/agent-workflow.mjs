@@ -1,4 +1,5 @@
 // Run with SANDBOX_URL, SANDBOX_TOKEN, SANDBOX_TEMPLATE, and SANDBOX_NAME set.
+import { readFile } from "node:fs/promises"
 import { Client } from "../sdk/typescript/dist/index.js"
 
 for (const key of ["SANDBOX_URL", "SANDBOX_TOKEN", "SANDBOX_TEMPLATE", "SANDBOX_NAME"]) {
@@ -46,8 +47,9 @@ const cloned = await success(await client.clone(machine, name + "-clone"))
 console.log(`Clone ${cloned.machine_id}`)
 
 if (process.env.SANDBOX_EXAMPLE_SERVICE === "1") {
+  const program = await readFile(new URL("./service.pl", import.meta.url), "utf8")
   const app = await success(await client.startTask(cloned.machine_id, {
-    argv: ["/usr/bin/python3", "-m", "http.server", "8080", "-d", "/workspace"]
+    argv: ["/usr/bin/perl", "-e", program]
   }))
   try {
     const published = await success(await client.expose(cloned.machine_id, {
@@ -55,10 +57,20 @@ if (process.env.SANDBOX_EXAMPLE_SERVICE === "1") {
     }))
     const endpoint = await client.get("services/" + published.service_id)
     const url = "https://" + endpoint.public_host + "/"
-    const response = await fetch(url, { headers: { Authorization: "Bearer " + token }, redirect: "error" })
-    if (!response.ok) throw new Error(`Service returned HTTP ${response.status}`)
-    console.log(`Service ${url} returned HTTP ${response.status}`)
-    await response.body?.cancel()
+    const deadline = performance.now() + 30000
+    for (;;) {
+      const response = await fetch(url, { headers: { Authorization: "Bearer " + token }, redirect: "error" })
+      if (response.ok) {
+        if (await response.text() !== "Sandbox workspace ready\n") throw new Error("Unexpected service response")
+        console.log(`Service ${url} returned HTTP ${response.status}`)
+        break
+      }
+      await response.body?.cancel()
+      if (![409, 502, 503].includes(response.status) || performance.now() >= deadline) {
+        throw new Error(`Service returned HTTP ${response.status}`)
+      }
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
   } finally {
     await success(await client.cancelTask(app.task_id, 0))
   }
