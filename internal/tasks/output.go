@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,34 +28,6 @@ func diskAvailable(path string) (int64, error) {
 		return 0, err
 	}
 	return int64(stat.Bavail) * stat.Bsize, nil
-}
-
-func (j journal) outputAllocated() (int64, error) {
-	entries, err := os.ReadDir(j.run(""))
-	if err != nil {
-		return 0, err
-	}
-	var allocated int64
-	for _, e := range entries {
-		if !e.IsDir() || !identifier.MatchString(e.Name()) {
-			continue
-		}
-		var request taskRequest
-		if err := readJSON(j.run(e.Name(), "request.json"), &request); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return 0, err
-		}
-		var terminal result
-		if err := readJSON(j.run(e.Name(), "result.json"), &terminal); err == nil {
-			allocated += terminal.Stdout.CommittedTo + terminal.Stderr.CommittedTo
-		} else if errors.Is(err, os.ErrNotExist) {
-			allocated += request.Spec.OutputLimit
-		} else {
-			return 0, err
-		}
-	}
-	return allocated, nil
 }
 
 // collect drains the pipe even after a log error so the workload cannot
@@ -118,7 +89,7 @@ func (j journal) readOutput(t Task, stream string, offset int64, limit int) (Out
 	if stream == "stderr" {
 		index = t.Stderr
 	}
-	start := min(offset, index.CommittedTo)
+	start := min(max(offset, index.RetainedFrom), index.CommittedTo)
 	end := start + min(int64(limit), index.CommittedTo-start)
 	data := make([]byte, end-start)
 	for pos := start; pos < end; {
@@ -137,8 +108,8 @@ func (j journal) readOutput(t Task, stream string, offset int64, limit int) (Out
 	}
 	return Output{
 		Stream: stream, Data: data, Start: start, End: end, Next: end,
-		CommittedTo: index.CommittedTo, Dropped: index.Dropped,
-		Gap:      offset > index.CommittedTo || (end == index.CommittedTo && index.Dropped > 0),
+		CommittedTo: index.CommittedTo, Dropped: index.Dropped, RetainedFrom: index.RetainedFrom,
+		Gap:      offset < index.RetainedFrom || offset > index.CommittedTo || (end == index.CommittedTo && index.Dropped > 0),
 		Complete: t.Terminal() && end == index.CommittedTo,
 	}, nil
 }

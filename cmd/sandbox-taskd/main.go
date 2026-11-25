@@ -16,6 +16,7 @@ func main() {
 	flag.StringVar(&config.Socket, "socket", tasks.SocketPath, "guest control socket")
 	flag.StringVar(&config.Runner, "runner", "/usr/local/bin/task-runner", "runner executable")
 	flag.StringVar(&config.CgroupRoot, "cgroup-root", "/sys/fs/cgroup", "guest cgroup v2 mount")
+	flag.DurationVar(&config.LogRetention, "log-retention", tasks.DefaultLogRetention, "retention of terminal task log bytes")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

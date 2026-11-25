@@ -36,11 +36,11 @@ func (m *manager) inspect(binding Binding, index taskIndex) (Task, error) {
 	if terminal != nil {
 		t.State, t.Reason, t.ExitCode, t.Signal = terminal.State, terminal.Reason, terminal.ExitCode, terminal.Signal
 		t.Stdout, t.Stderr = terminal.Stdout, terminal.Stderr
-		return t, nil
+		return m.j.retainedOutput(t)
 	}
 	if request.BootID != m.boot {
 		t.State, t.Reason = "interrupted", "guest_cold_boot"
-		return t, nil
+		return m.j.retainedOutput(t)
 	}
 
 	var identity Identity
@@ -106,6 +106,7 @@ func (m *manager) inspect(binding Binding, index taskIndex) (Task, error) {
 	if terminal != nil {
 		t.State, t.Reason, t.ExitCode, t.Signal = terminal.State, terminal.Reason, terminal.ExitCode, terminal.Signal
 		t.Stdout, t.Stderr = terminal.Stdout, terminal.Stderr
+		return m.j.retainedOutput(t)
 	}
 	return t, nil
 }
@@ -196,6 +197,8 @@ func (m *manager) driveCancel(t Task, intent cancelIntent) error {
 func (m *manager) reconcile(ctx context.Context) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	prune := time.NewTicker(max(time.Second, min(10*time.Minute, m.retention)))
+	defer prune.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,6 +210,14 @@ func (m *manager) reconcile(ctx context.Context) {
 			if err != nil {
 				slog.Warn("task cancellation reconciliation", "error", err)
 			}
+		case <-prune.C:
+			m.mu.Lock()
+			if m.barrier == nil {
+				if _, err := m.j.reclaimOutput(m.boot, m.retention, 0); err != nil {
+					slog.Warn("task output retention", "error", err)
+				}
+			}
+			m.mu.Unlock()
 		}
 	}
 }

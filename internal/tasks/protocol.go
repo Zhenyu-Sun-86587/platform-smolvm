@@ -95,8 +95,9 @@ type Identity struct {
 }
 
 type LogIndex struct {
-	CommittedTo int64 `json:"committed_to"`
-	Dropped     int64 `json:"dropped"`
+	CommittedTo  int64 `json:"committed_to"`
+	Dropped      int64 `json:"dropped"`
+	RetainedFrom int64 `json:"retained_from,omitempty"`
 }
 
 type Output struct {

@@ -16,21 +16,23 @@ import (
 )
 
 type DaemonConfig struct {
-	StateDir   string
-	Socket     string
-	Runner     string
-	CgroupRoot string
+	StateDir     string
+	Socket       string
+	Runner       string
+	CgroupRoot   string
+	LogRetention time.Duration
 }
 
 type manager struct {
-	mu      sync.Mutex
-	j       journal
-	root    string
-	runner  string
-	boot    string
-	probe   error
-	binding *Binding
-	barrier *Capture
+	mu        sync.Mutex
+	j         journal
+	root      string
+	runner    string
+	boot      string
+	probe     error
+	binding   *Binding
+	barrier   *Capture
+	retention time.Duration
 }
 
 func Serve(ctx context.Context, config DaemonConfig) error {
@@ -45,6 +47,12 @@ func Serve(ctx context.Context, config DaemonConfig) error {
 	}
 	if config.CgroupRoot == "" {
 		config.CgroupRoot = defaultCgroupRoot
+	}
+	if config.LogRetention == 0 {
+		config.LogRetention = DefaultLogRetention
+	}
+	if config.LogRetention < 0 {
+		return errors.New("task log retention must be positive")
 	}
 	if err := mkdir(filepath.Join(config.StateDir, "runs")); err != nil {
 		return err
@@ -61,7 +69,7 @@ func Serve(ctx context.Context, config DaemonConfig) error {
 	if err != nil {
 		return err
 	}
-	m := &manager{j: journal{config.StateDir}, root: filepath.Clean(config.CgroupRoot), runner: config.Runner, boot: boot}
+	m := &manager{j: journal{config.StateDir}, root: filepath.Clean(config.CgroupRoot), runner: config.Runner, boot: boot, retention: config.LogRetention}
 	var binding Binding
 	if err := readJSON(filepath.Join(config.StateDir, "binding.json"), &binding); err == nil {
 		m.binding = &binding
@@ -274,19 +282,19 @@ func (m *manager) start(r Request) (Response, error) {
 		if err := m.startGate(); err != nil {
 			return Response{}, err
 		}
-		free, err := diskAvailable(m.j.root)
+		if _, err := guestUser(spec.User); err != nil {
+			return Response{}, rpcError("INVALID_REQUEST", "requested Guest user is unavailable")
+		}
+		allocated, err := m.j.reclaimOutput(m.boot, m.retention, spec.OutputLimit)
 		if err != nil {
 			return Response{}, err
 		}
-		allocated, err := m.j.outputAllocated()
+		free, err := diskAvailable(m.j.root)
 		if err != nil {
 			return Response{}, err
 		}
 		if free < minimumFreeSpace+spec.OutputLimit || allocated+spec.OutputLimit > guestOutputLimit {
 			return Response{}, rpcError("TASK_STORAGE_LIMIT", "insufficient guest storage for requested task output")
-		}
-		if _, err := guestUser(spec.User); err != nil {
-			return Response{}, rpcError("INVALID_REQUEST", "requested Guest user is unavailable")
 		}
 		record = taskRequest{ID: r.TaskID, RunID: runID, Binding: *m.binding, StartToken: r.StartToken, SpecHash: specHash, Spec: spec, CreatedAt: time.Now().UTC(), BootID: m.boot}
 		for _, path := range []string{m.j.run(runID), m.j.run(runID, "stdout"), m.j.run(runID, "stderr")} {
