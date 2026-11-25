@@ -3,6 +3,7 @@ package customsmolvm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"regexp"
 
 	rt "sandbox-platform/internal/runtime"
@@ -27,14 +28,26 @@ var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 // QueryOperation looks up the original durable intent after a lost response.
 // It never re-dispatches the operation.
 func QueryOperation(ctx context.Context, socket, bundle, reader, id string) (OperationReceipt, error) {
+	if err := validateEndpoint(socket, bundle, reader); err != nil {
+		return OperationReceipt{}, err
+	}
+	if !identifier.MatchString(id) {
+		return OperationReceipt{}, fmt.Errorf("%w: invalid operation ID", rt.ErrInvalid)
+	}
+	endpoint := dialEndpoint(socket)
+	defer endpoint.CloseIdleConnections()
+	if _, err := probe(ctx, endpoint, bundle, reader); err != nil {
+		return OperationReceipt{}, err
+	}
+	return queryOperation(ctx, endpoint, bundle, id)
+}
+
+func queryOperation(ctx context.Context, endpoint *http.Client, bundle, id string) (OperationReceipt, error) {
 	var receipt OperationReceipt
 	if !identifier.MatchString(id) {
 		return receipt, fmt.Errorf("%w: invalid operation ID", rt.ErrInvalid)
 	}
-	if _, err := Probe(ctx, socket, bundle, reader); err != nil {
-		return receipt, err
-	}
-	if err := get(ctx, socket, extensionPath+"/operations/"+id, &receipt); err != nil {
+	if err := get(ctx, endpoint, extensionPath+"/operations/"+id, &receipt); err != nil {
 		return OperationReceipt{}, err
 	}
 	if receipt.OperationID != id || receipt.BundleDigest != bundle || receipt.RouteID != "deep" ||

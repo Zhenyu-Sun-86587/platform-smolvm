@@ -25,19 +25,27 @@ func (e *Engine) monitor(ctx context.Context) {
 	}
 }
 func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
-	if e.ready(ctx) != nil {
+	ctl, err := e.DB.Control(ctx)
+	if err != nil || ctl.Maintenance {
 		return
 	}
+	officialReady := readyRuntime(ctx, e.OfficialRuntime()) == nil
 	ms, err := e.DB.ListMachines(ctx)
 	if err != nil {
 		return
 	}
-	_, _ = e.DB.DB().ExecContext(ctx, "UPDATE leases SET state='suspect',revision=revision+1 WHERE state='active' AND expires_at<=?", time.Now().UnixMilli())
+	if officialReady {
+		_, _ = e.DB.DB().ExecContext(ctx, "UPDATE leases SET state='suspect',revision=revision+1 WHERE state='active' AND expires_at<=?", time.Now().UnixMilli())
+	}
 	for _, m := range ms {
 		if m.CurrentBinding == nil || m.ActiveOperationID != "" || ctx.Err() != nil {
 			continue
 		}
 		b := *m.CurrentBinding
+		custom := !bindingRuntime(b).Legacy()
+		if !custom && !officialReady {
+			continue
+		}
 		adapter, err := e.ForBinding(b)
 		if err != nil {
 			continue
@@ -49,6 +57,14 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		}
 		if o.Labels["platform.binding"] != b.ID {
 			_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ObservedState: "unknown", Availability: "blocked"})
+			continue
+		}
+		if custom {
+			x := Evidence(o)
+			x.ExpectedRuntimeIdentity = b.RuntimeIdentity
+			x.Availability = "blocked"
+			x.GuestManagementStatus = "unknown"
+			_ = e.DB.ObserveMachine(ctx, b.ID, x)
 			continue
 		}
 		var uncertainty string
@@ -100,7 +116,7 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 		if err = e.DB.ObserveMachine(ctx, b.ID, x); err != nil {
 			continue
 		}
-		if !bindingRuntime(b).Legacy() || time.Since(started) < time.Duration(e.Config.Lifecycle.StartupGuard)*time.Second || !idleAllowed || m.KeepRunning || m.LastUserActivityAt == nil || strings.Contains(strings.ToLower(o.StateReason), "pressure") {
+		if time.Since(started) < time.Duration(e.Config.Lifecycle.StartupGuard)*time.Second || !idleAllowed || m.KeepRunning || m.LastUserActivityAt == nil || strings.Contains(strings.ToLower(o.StateReason), "pressure") {
 			continue
 		}
 		var policy IdlePolicy

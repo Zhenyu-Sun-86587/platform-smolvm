@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 var (
@@ -188,7 +190,10 @@ type AcceptRequest struct {
 	KeepRunning        bool
 	Heavy              bool
 	AllocateBinding    bool
+	RuntimeInstanceID  string
 	Locks              []Lock
+	// AdmitRuntime checks local dispatch support without doing I/O in the transaction.
+	AdmitRuntime func(rt.BundleRoute, string) error
 	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
 	// On replay it receives the original machine ID for authorization even if the object is gone.
 	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)

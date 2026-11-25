@@ -77,6 +77,22 @@ python3 -m unittest discover -s packaging/deep -p 'test_wp00.py' -v
 
 从源码构建的 Linux Serve 在独立网络命名空间和临时状态目录中启动。缺少安装 manifest 时能力接口返回 HTTP 503。放入绑定该可执行文件摘要的协议测试 manifest 后，Rust CLI 与 Go `sandboxctl admin runtime-capabilities` 经同一 Unix socket 读取到相同的 16 项 `unknown` 能力，要求其他 state reader 的客户端收到拒绝。这个测试使用协议夹具，候选发布包仍需产物验证和 Guest 实测。
 
+### 平台注册定制 Serve
+
+先按安装流程核对 bundle 摘要与产物。使用 `sandboxctl admin runtime-capabilities` 读取已安装 Serve 的 `runtime_instance_id`、`bundle_digest` 和 `state_reader_id`，然后把它们与定制 Unix socket 和本机 manifest 路径一起写入平台配置。
+
+```yaml
+runtime:
+  custom:
+    - instance_id: "<runtime_instance_id>"
+      bundle_digest: "<bundle_digest>"
+      state_reader_id: "<state_reader_id>"
+      socket: /run/smolvm-custom/engines/engine-a/serve.sock
+      manifest: /opt/smolvm-custom/engine-a/runtime-bundle.json
+```
+
+平台注册保存 endpoint 和 bundle 固定关系，读取前在同一连接校验三项身份。不同实例即使共享同一 bundle，也需要不同的 ID 和 socket。platformd 进程需要定制 socket 的访问权限。定制变更请求在有原生操作处理器与 Worker 准入之前返回 `NOT_SUPPORTED`，已有官方请求可以省略 `runtime_instance_id`。当前卷预留仍没有 writer authority，`storage.block_attach` 与 `storage.multidisk_capture` 继续报告 `unknown`。
+
 Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐字节验证 init 嵌在库中。原有的 `check-glibc-floor.sh 2.31` 检查报告库引用 GLIBC_2.34。该产物仅供开发验证；发布候选需要在兼容构建环境重新链接并通过同一检查。
 
 同日用源码构建的 `libkrun.so.2.0.0`、`libkrunfw.so.5.5.0` 和嵌入式 init 启动了一台 2 vCPU、512 MiB 的实际 KVM Guest。在独立网络命名空间运行，测试程序从专用 virtiofs 根目录执行，回传 `SMOLVM_GUEST_BOOT kernel=6.18.60 vcpus=2 pid=416` 后正常退出。OCI Agent 启动和完整 Bundle 验收另行测试。

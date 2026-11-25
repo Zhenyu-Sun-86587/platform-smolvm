@@ -31,6 +31,7 @@ export interface Control {
 export interface Resources { cpu_count: number; memory_mib: number; storage_gib: number; overlay_gib: number }
 export interface IdlePolicy { enabled: boolean; timeout_seconds: number }
 export interface CreateMachine {
+  runtime_instance_id?: string
   name: string
   template_id: string
   resources?: Resources
@@ -58,6 +59,8 @@ export interface Machine extends CreateMachine {
   state_reason?: unknown
   binding?: {
     binding_id?: string
+    runtime_instance_id?: string
+    runtime_bundle_id?: string
     runtime_identity?: Record<string, unknown> | null
     state_reason?: unknown
     guest_management_evidence?: { ssh_ready?: boolean; ssh_host_key?: string }

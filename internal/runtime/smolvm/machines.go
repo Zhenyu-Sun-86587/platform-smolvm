@@ -156,6 +156,15 @@ func (m machineInfo) expected(name string, mutates bool) (runtime.Observation, e
 	return m.observe(), nil
 }
 
+// DecodeObservation reads the public machine response over a verified connection.
+func DecodeObservation(raw json.RawMessage, name string) (runtime.Observation, error) {
+	var result machineInfo
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return runtime.Observation{}, protocolError("decoding runtime machine observation", false, err)
+	}
+	return result.expected(name, false)
+}
+
 type createBody struct {
 	Name           string            `json:"name"`
 	Image          string            `json:"image"`

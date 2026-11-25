@@ -52,10 +52,15 @@ func (e *Engine) ForBinding(b registry.Binding) (rt.Adapter, error) {
 	return e.runtimes.ForBinding(bindingRuntime(b))
 }
 
+func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
+	return e.runtimes.Admit(route, kind)
+}
+
 type Create struct {
-	Name       string `json:"name"`
-	TemplateID string `json:"template_id"`
-	Resources  struct {
+	Name              string `json:"name"`
+	TemplateID        string `json:"template_id"`
+	RuntimeInstanceID string `json:"runtime_instance_id,omitempty"`
+	Resources         struct {
 		CPUs    uint8  `json:"cpu_count"`
 		Memory  uint32 `json:"memory_mib"`
 		Storage uint64 `json:"storage_gib"`
@@ -129,17 +134,6 @@ func (e *Engine) Call(ctx context.Context, b registry.Binding, req tasks.Request
 		return res.Stdout, nil
 	}, req)
 }
-func (e *Engine) ready(ctx context.Context) error {
-	ctl, err := e.DB.Control(ctx)
-	if err != nil {
-		return err
-	}
-	if ctl.Maintenance {
-		return registry.ErrMaintenance
-	}
-	return readyRuntime(ctx, e.OfficialRuntime())
-}
-
 func readyRuntime(ctx context.Context, adapter rt.Adapter) error {
 	_, err := adapter.Health(ctx)
 	if err != nil {
@@ -301,6 +295,9 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)
+	if err == nil {
+		err = e.AdmitRuntime(bindingRuntime(j.Binding).BundleRoute, op.Kind)
+	}
 	dispatched := op.State != registry.Queued && j.Intent.Stage != "preflight"
 	if err != nil {
 		if op.State == registry.Queued {
