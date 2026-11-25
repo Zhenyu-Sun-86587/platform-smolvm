@@ -9,3 +9,14 @@
 ```sh
 sandboxctl machine fork-batch "$source" first-child second-child --admission best_effort
 ```
+
+## Worker 恢复实测
+
+测试使用两块写盘和实际 Linux KVM。它先验证公有 API 的两种准入策略，再结束祖先、重启 Worker。存活子进程重新提供原封存 RAM 和写锁所用的文件描述。验证保持子执行 PID 和写盘绑定，随后从这个子执行经同一公有 API 派生一代并读取连续的 Guest 计数。
+
+```sh
+sudo python3 tests/integration/batch_recovery_kvm.py --smolvm "$smolvm_checkout" \
+  --platformd "$platformd" --bundle "$runtime_bundle" --guest "$bench_guest_clean"
+```
+
+2026-11-26 运行记录在 `.build/wp23/tracked-provider-kvm.log`。此夹具使用无 TAP 的 OCI Guest。
