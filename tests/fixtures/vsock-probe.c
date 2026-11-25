@@ -7,6 +7,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 
 static int write_all(int fd, const char *buf, size_t length)
@@ -21,11 +22,18 @@ static int write_all(int fd, const char *buf, size_t length)
     return 0;
 }
 
-static int serve(const char *port)
+static unsigned port_number(const char *port)
 {
     char *end;
     unsigned long number = strtoul(port, &end, 10);
-    if (number < 1 || number > 65535 || *end) return 1;
+    return number >= 1 && number <= 65535 && !*end ? (unsigned)number : 0;
+}
+
+static int serve(const char *port)
+{
+    unsigned number = port_number(port);
+    if (!number) return 1;
+    signal(SIGPIPE, SIG_IGN);
     int listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener < 0) return 1;
     struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons(number) };
@@ -42,9 +50,50 @@ static int serve(const char *port)
     }
 }
 
+static int udp_server(const char *port)
+{
+    unsigned number = port_number(port);
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons(number) };
+    if (!number || socket_fd < 0 || bind(socket_fd, (struct sockaddr *)&address, sizeof(address))) {
+        perror("UDP bind");
+        return 1;
+    }
+    for (;;) {
+        char payload[1400];
+        socklen_t length = sizeof(address);
+        ssize_t count = recvfrom(socket_fd, payload, sizeof(payload), 0, (struct sockaddr *)&address, &length);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) return 1;
+        (void)sendto(socket_fd, payload, (size_t)count, 0, (struct sockaddr *)&address, length);
+    }
+}
+
+static int udp_exchange(const char *peer, const char *port, const char *size)
+{
+    unsigned number = port_number(port);
+    unsigned count = port_number(size);
+    char payload[1400], reply[sizeof(payload)];
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons(number) };
+    if (!number || !count || count > sizeof(payload) || inet_pton(AF_INET, peer, &address.sin_addr) != 1) return 1;
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct timeval timeout = {24, 0};
+    if (socket_fd < 0 || setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+        connect(socket_fd, (struct sockaddr *)&address, sizeof(address))) { perror("UDP connection"); return 1; }
+    memset(payload, 'A', count);
+    if (send(socket_fd, payload, count, 0) != (ssize_t)count) { perror("UDP send"); return 1; }
+    ssize_t received = recv(socket_fd, reply, sizeof(reply), 0);
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 2;
+    if (received != (ssize_t)count || memcmp(payload, reply, count)) return 1;
+    puts("one datagram returned");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && strcmp(argv[1], "--serve") == 0) return serve(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "--serve-udp") == 0) return udp_server(argv[2]);
+    if (argc == 5 && strcmp(argv[1], "--exchange-udp") == 0) return udp_exchange(argv[2], argv[3], argv[4]);
     if (argc == 2 && strcmp(argv[1], "--cid") == 0) {
         unsigned cid;
         int device = open("/dev/vsock", O_RDONLY);

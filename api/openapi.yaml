@@ -2728,6 +2728,10 @@ components:
             rule_revision: {type: integer}
             execution_epoch: {type: integer}
             authorized: {type: boolean}
+            datagram:
+              type: [string, 'null']
+              enum: [forwarded, dropped, unknown, null]
+              description: Durable UDP wake can retain a single datagram up to 1200 bytes for at most 15 seconds. This reports its forwarding outcome.
     VolumeRestorePolicy:
       type: string
       enum: [exact, clone_conflicts]

@@ -293,7 +293,13 @@ export interface PrivatePacketWakeRule {
   source_current: boolean
   source_incarnation_id?: string | null
   source_execution_epoch?: number | null
-  last_wake?: { operation_id: string; rule_revision: number; execution_epoch: number; authorized: boolean } | null
+  last_wake?: {
+    operation_id: string
+    rule_revision: number
+    execution_epoch: number
+    authorized: boolean
+    datagram?: "forwarded" | "dropped" | "unknown" | null
+  } | null
 }
 export interface Page<T> { items: T[]; next_cursor?: string }
 export interface TaskChunk { start: number; next: number; gap: boolean; bytes: Uint8Array }
