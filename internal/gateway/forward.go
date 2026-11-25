@@ -46,8 +46,11 @@ func clean(h http.Header) {
 		}
 	}
 }
+
+const LoopbackSessionCookie = "sandbox-loopback-session"
+
 func reservedCookie(name string) bool {
-	return strings.HasPrefix(strings.ToLower(name), "__host-sandbox-")
+	return strings.EqualFold(name, LoopbackSessionCookie) || strings.HasPrefix(strings.ToLower(name), "__host-sandbox-")
 }
 func StripRequest(r *http.Request) {
 	clean(r.Header)

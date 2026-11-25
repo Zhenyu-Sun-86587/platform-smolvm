@@ -22,13 +22,12 @@ import (
 
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/buildinfo"
+	"sandbox-platform/internal/gateway"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/snapshots"
 )
-
-const cookieName = "__Host-sandbox-session"
 
 type Server struct {
 	*lifecycle.Engine
@@ -96,6 +95,16 @@ func csrf(secret string) string {
 	h := sha256.Sum256([]byte("csrf:" + secret))
 	return base64.RawURLEncoding.EncodeToString(h[:])
 }
+func (s *Server) sessionCookie() *http.Cookie {
+	c := &http.Cookie{Name: "__Host-sandbox-session", Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode}
+	origin, err := url.Parse(s.Config.API.PublicOrigin)
+	if err == nil && origin.Scheme == "http" && net.ParseIP(origin.Hostname()).IsLoopback() {
+		c.Name = gateway.LoopbackSessionCookie
+		c.Secure = false
+		c.Path = "/v1"
+	}
+	return c
+}
 func (s *Server) authenticate(r *http.Request) (auth.Principal, string, error) {
 	if v := r.Header.Get("Authorization"); v != "" {
 		v, ok := strings.CutPrefix(v, "Bearer ")
@@ -105,7 +114,7 @@ func (s *Server) authenticate(r *http.Request) (auth.Principal, string, error) {
 		p, err := s.Auth.Authenticate(r.Context(), v)
 		return p, "", err
 	}
-	c, err := r.Cookie(cookieName)
+	c, err := r.Cookie(s.sessionCookie().Name)
 	if err != nil {
 		return auth.Principal{}, "", auth.ErrUnauthenticated
 	}
@@ -329,7 +338,9 @@ func (s *Server) routes() {
 			fail(w, r, err)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: secret, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
+		c := s.sessionCookie()
+		c.Value, c.MaxAge = secret, 43200
+		http.SetCookie(w, c)
 		_ = write(w, 200, map[string]any{"principal": p, "csrf_token": csrf(secret)})
 	})
 	s.route("POST /v1/auth/logout", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -344,7 +355,9 @@ func (s *Server) routes() {
 		if err = tx.Commit(); err != nil {
 			return err
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+		c := s.sessionCookie()
+		c.MaxAge = -1
+		http.SetCookie(w, c)
 		return write(w, 200, map[string]bool{"logged_out": true})
 	})
 	s.route("GET /v1/control", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {

@@ -1978,6 +1978,7 @@ components:
     session:
       type: apiKey
       in: cookie
+      description: HTTPS management session. The loopback HTTP installation uses the host-only sandbox-loopback-session cookie scoped to /v1.
       name: __Host-sandbox-session
   parameters:
     IdempotencyKey:
