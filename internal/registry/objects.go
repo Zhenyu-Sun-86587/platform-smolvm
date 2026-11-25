@@ -215,15 +215,21 @@ func (s *Store) ListMachines(ctx context.Context) ([]Machine, error) {
 const bindingColumns = `id, machine_id, generation, runtime_name, status, task_namespace, spec_hash,
 	observed_state, native_state, availability, COALESCE(runtime_identity_json, ''), observed_at,
 	COALESCE(runtime_pause_id, ''), COALESCE(pause_status, ''), ports_json, guest_management_status,
-	guest_management_evidence_json, COALESCE(state_reason_json, '')`
+	guest_management_evidence_json, COALESCE(state_reason_json, ''),
+	COALESCE(runtime_instance_id,''), COALESCE(runtime_bundle_id,''), COALESCE(runtime_instance_object_id,''),
+	COALESCE(incarnation_id,''), COALESCE(execution_epoch,0), power_state, health_json,
+	COALESCE(capability_profile_id,''), COALESCE(last_capture_id,'')`
 
 func scanBinding(row scanner) (Binding, error) {
 	var b Binding
-	var identity, ports, guestEvidence, reason string
+	var identity, ports, guestEvidence, reason, health string
 	var observed sql.NullInt64
 	err := row.Scan(&b.ID, &b.MachineID, &b.Generation, &b.RuntimeName, &b.Status, &b.TaskNamespace,
 		&b.SpecHash, &b.ObservedState, &b.NativeState, &b.Availability, &identity, &observed, &b.RuntimePauseID,
-		&b.PauseStatus, &ports, &b.GuestManagementStatus, &guestEvidence, &reason)
+		&b.PauseStatus, &ports, &b.GuestManagementStatus, &guestEvidence, &reason,
+		&b.RuntimeInstanceID, &b.RuntimeBundleID, &b.RuntimeInstanceObjectID, &b.IncarnationID,
+		&b.ExecutionEpoch, &b.PowerState, &health, &b.CapabilityProfileID, &b.LastCaptureID)
+	b.Health = json.RawMessage(health)
 	b.RuntimeIdentity = json.RawMessage(identity)
 	b.ObservedAt = timePtr(observed)
 	b.Ports = json.RawMessage(ports)

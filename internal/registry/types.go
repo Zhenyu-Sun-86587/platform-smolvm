@@ -76,13 +76,22 @@ type Machine struct {
 }
 
 type Binding struct {
-	ID            string `json:"binding_id"`
-	MachineID     string `json:"machine_id"`
-	Generation    int64  `json:"binding_generation"`
-	RuntimeName   string `json:"runtime_name"`
-	Status        string `json:"status"`
-	TaskNamespace string `json:"task_namespace"`
-	SpecHash      string `json:"spec_hash"`
+	RuntimeInstanceID       string          `json:"runtime_instance_id,omitempty"`
+	RuntimeBundleID         string          `json:"runtime_bundle_id,omitempty"`
+	RuntimeInstanceObjectID string          `json:"runtime_instance_object_id,omitempty"`
+	IncarnationID           string          `json:"incarnation_id,omitempty"`
+	ExecutionEpoch          int64           `json:"execution_epoch,omitempty"`
+	PowerState              string          `json:"power_state"`
+	Health                  json.RawMessage `json:"health"`
+	CapabilityProfileID     string          `json:"capability_profile_id,omitempty"`
+	LastCaptureID           string          `json:"last_capture_id,omitempty"`
+	ID                      string          `json:"binding_id"`
+	MachineID               string          `json:"machine_id"`
+	Generation              int64           `json:"binding_generation"`
+	RuntimeName             string          `json:"runtime_name"`
+	Status                  string          `json:"status"`
+	TaskNamespace           string          `json:"task_namespace"`
+	SpecHash                string          `json:"spec_hash"`
 	Observation
 }
 

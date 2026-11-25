@@ -59,7 +59,8 @@ members=(bin/platformd bin/sandboxctl runtime-manifest.json systemd/platformd.se
     systemd/grant-runtime-socket systemd/read-runtime-status install.sh config.example.yaml
     managed-template.tar templates.json)
 files=$(sha256sum "${members[@]}" | jq -Rn '[inputs | capture("(?<sha256>[a-f0-9]{64})  (?<path>.+)")]')
-schema=$(find "$repo/migrations" -maxdepth 1 -name '[0-9][0-9][0-9]_*.sql' | wc -l)
+schema=$(find "$repo/migrations" -maxdepth 1 -name '[0-9]*_*.sql' -printf '%f\n' | cut -d_ -f1 | sort -n | tail -1)
+schema=$((10#$schema))
 jq -n --arg version "$version" --arg runtime "$runtime_version"     --argjson schema "$schema" --argjson files "$files"     '{format:1, version:$version, schema_version:$schema, runtime_version:$runtime, architecture:"amd64", files:$files}' > release-manifest.json
 mv -nT "$work" "$output"
 test ! -e "$work"
