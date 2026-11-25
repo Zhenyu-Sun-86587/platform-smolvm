@@ -130,7 +130,7 @@ func (s *Server) serviceRoutes() {
 			return registry.ErrInvalid
 		}
 		switch v.Protocol {
-		case "http", "https", "ssh", "tcp-mtls":
+		case "http", "https", "ssh", "tcp-mtls", "vnc":
 		default:
 			return registry.ErrInvalid
 		}
@@ -194,6 +194,13 @@ func (s *Server) serviceRoutes() {
 		}
 		if err = p.Authorize("tunnel", v.MachineID); err != nil {
 			return err
+		}
+		desktop, err := s.requiresDesktopSession(r.Context(), v)
+		if err != nil {
+			return err
+		}
+		if desktop {
+			return &lifecycle.Failure{Code: "DESKTOP_SESSION_REQUIRED", Message: "VNC tickets require a desktop session"}
 		}
 		return s.issueTicket(w, r, v.ID)
 	})
@@ -283,23 +290,52 @@ func (s *Server) tunnel(w http.ResponseWriter, r *http.Request, v service) error
 	if err != nil {
 		return err
 	}
-	if err = p.Authorize("tunnel", v.MachineID); err != nil {
+	desktop, err := s.requiresDesktopSession(r.Context(), v)
+	if err != nil {
+		return err
+	}
+	if desktop {
+		return &lifecycle.Failure{Code: "DESKTOP_SESSION_REQUIRED", Message: "VNC tunnels require a desktop session"}
+	}
+	return s.tunnelAuthorized(w, r, v, p, nil)
+}
+
+func (s *Server) tunnelAuthorized(w http.ResponseWriter, r *http.Request, v service, p auth.Principal, guard func(context.Context) error) error {
+	if err := p.Authorize("tunnel", v.MachineID); err != nil {
 		return err
 	}
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		return registry.ErrInvalid
+	}
+	if guard != nil {
+		if err := guard(r.Context()); err != nil {
+			return err
+		}
 	}
 	backend, check, release, err := s.resolve(r.Context(), p, v)
 	if err != nil {
 		return err
 	}
 	defer release()
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"sandbox.tunnel.v1"}})
+	if guard != nil {
+		checkBackend := check
+		check = func(ctx context.Context) error {
+			if err := guard(ctx); err != nil {
+				return err
+			}
+			return checkBackend(ctx)
+		}
+	}
+	protocol, tunnel := "sandbox.tunnel.v1", backend.Tunnel
+	if guard != nil {
+		protocol, tunnel = "sandbox.rfb.v1", backend.TunnelRFB
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol}})
 	if err != nil {
 		return nil
 	}
 	defer conn.CloseNow()
-	if err = backend.Tunnel(r.Context(), conn, check); err != nil {
+	if err = tunnel(r.Context(), conn, check); err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "backend closed")
 	}
 	return nil

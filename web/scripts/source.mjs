@@ -9,6 +9,10 @@ const lock = JSON.parse(readFileSync(join(web, "package-lock.json")))
 const parts = [readFileSync(join(web, "licenses/README.md"), "utf8")]
 for (const f of ["DAYTONA-COPYRIGHT", "DAYTONA-NOTICE", "DAYTONA-LICENSE", "SHADCN-LICENSE"])
   parts.push(readFileSync(join(web, "licenses", f), "utf8"))
+const vnc = "web/node_modules/@novnc/novnc"
+const vncDocs = join(root, vnc, "docs")
+for (const name of readdirSync(vncDocs).filter(name => name.startsWith("LICENSE")))
+  parts.push(readFileSync(join(vncDocs, name), "utf8"))
 const bundledStyles = new Set(["node_modules/tailwindcss", "node_modules/tw-animate-css"])
 for (const [dir, meta] of Object.entries(lock.packages)) {
   if (!dir || (meta.dev && !bundledStyles.has(dir)) || !existsSync(join(web, dir))) continue
@@ -29,7 +33,6 @@ execFileSync(
     "--numeric-owner",
     "--owner=0",
     "--group=0",
-    "--exclude=node_modules",
     "--exclude=dist",
     "--exclude=__pycache__",
     "--exclude=*.egg-info",
@@ -41,8 +44,10 @@ execFileSync(
     "web/package.json",
     "web/package-lock.json",
     "web/postcss.config.mjs",
+    "web/vite.config.ts",
     "web/scripts",
     "web/licenses",
+    vnc,
     "web/handler.go",
     "sdk/typescript/src",
     "api",
