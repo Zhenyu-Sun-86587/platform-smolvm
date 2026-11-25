@@ -168,6 +168,11 @@ export interface LifecycleStatus {
         blockers: string[];
         idle_ms?: number;
         controlled_suspended: boolean;
+        next_action?: {
+            kind: string;
+            origin: string;
+            eligible_after_ms: number;
+        } | null;
         last_decision?: {
             operation_id: string;
             kind: string;
@@ -201,18 +206,41 @@ export interface RunningLease {
     lease_token?: string;
 }
 export type BootMode = "oci" | "system";
+export type NetworkMode = "native" | "fixed_internal";
+export interface NetworkSelection {
+    network_id?: string;
+    mode?: NetworkMode;
+}
+export interface PrivateNetwork {
+    network_id: string;
+    runtime_instance_id: string;
+    cidr: string;
+}
+export interface MachineNetwork extends Required<NetworkSelection> {
+    state: "published" | "reserved" | "unavailable";
+    attachment_id?: string;
+    private_ipv4?: string;
+    guest_ipv4?: string;
+    dns_name?: string;
+}
+export interface NetworkDefaults {
+    default_network_mode?: NetworkMode;
+    default_network_id?: string;
+}
 export interface CreateMachine {
     lifecycle_policy?: LifecyclePolicyPatch;
     boot_mode?: BootMode;
     runtime_instance_id?: string;
+    network?: NetworkSelection;
     name: string;
     template_id: string;
     resources?: Resources;
     idle_policy?: IdlePolicy;
     start?: boolean;
 }
-export interface Machine extends Omit<CreateMachine, "lifecycle_policy"> {
+export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "network"> {
     lifecycle_policy?: LifecycleStatus;
+    network?: Required<NetworkSelection>;
     machine_id: string;
     desktop_profile?: "software-vnc-v1";
     spec?: {
@@ -490,6 +518,11 @@ export declare class Client {
     socket<T>(path: string, protocol: string, connect: (url: URL, protocol: string, headers: Headers) => T): T;
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
+    listPrivateNetworks(signal?: AbortSignal): AsyncGenerator<PrivateNetwork, any, any>;
+    getMachineNetwork(id: string, signal?: AbortSignal): Promise<MachineNetwork>;
+    setNetworkDefaults(defaults: NetworkDefaults, options?: WriteOptions): Promise<NetworkDefaults & {
+        revision: number;
+    }>;
     getLifecycleStatus(id: string, signal?: AbortSignal): Promise<LifecycleStatus>;
     setDefaultLifecyclePolicy(policy: LifecyclePolicyPatch, options?: WriteOptions): Promise<{
         revision: number;

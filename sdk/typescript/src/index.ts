@@ -120,18 +120,31 @@ export interface RunningLease {
   revision: number; state: string; reason: string; expires_at: string; release_reason?: string; lease_token?: string
 }
 export type BootMode = "oci" | "system"
+export type NetworkMode = "native" | "fixed_internal"
+export interface NetworkSelection { network_id?: string; mode?: NetworkMode }
+export interface PrivateNetwork { network_id: string; runtime_instance_id: string; cidr: string }
+export interface MachineNetwork extends Required<NetworkSelection> {
+  state: "published" | "reserved" | "unavailable"
+  attachment_id?: string
+  private_ipv4?: string
+  guest_ipv4?: string
+  dns_name?: string
+}
+export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
   runtime_instance_id?: string
+  network?: NetworkSelection
   name: string
   template_id: string
   resources?: Resources
   idle_policy?: IdlePolicy
   start?: boolean
 }
-export interface Machine extends Omit<CreateMachine, "lifecycle_policy"> {
+export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "network"> {
   lifecycle_policy?: LifecycleStatus
+  network?: Required<NetworkSelection>
   machine_id: string
   desktop_profile?: "software-vnc-v1"
   spec?: { resources?: Resources }
@@ -546,6 +559,13 @@ export class Client {
 
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
+  listPrivateNetworks(signal?: AbortSignal) { return this.pages<PrivateNetwork>("networks", 100, signal) }
+  getMachineNetwork(id: string, signal?: AbortSignal) { return this.get<MachineNetwork>(machine(id) + "/network", signal) }
+  async setNetworkDefaults(defaults: NetworkDefaults, options: WriteOptions = {}) {
+    const revision = options.revision ?? (await this.get<{ revision: number }>("system/settings", options.signal)).revision
+    return this.mutate<NetworkDefaults & { revision: number }>(
+      "system/settings", defaults, { ...options, method: "PATCH", revision })
+  }
   getLifecycleStatus(id: string, signal?: AbortSignal) {
     return this.get<LifecycleStatus>(machine(id) + "/lifecycle", signal)
   }

@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react"
-import type { Machine, Page, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
+import type { Machine, MachineNetwork, Page, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
 import { machine as machinePath, service, snapshot, task } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, num, query, Records, Section, segment, State, str, time, useRemote } from "./common"
+import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, query, Records, Section, segment, State, str, time, useRemote } from "./common"
 import { Box, Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis } from "lucide-react"
 import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
@@ -289,6 +289,7 @@ function readiness(service?: Service) {
 export function Services({ machine, actions, revision }: Context) {
   const path = machinePath(machine.machine_id) + "/services"
   const list = useRemote<Page<Service>>(path, revision)
+  const network = useRemote<MachineNetwork>(machine.network ? machinePath(machine.machine_id) + "/network" : "", revision)
   const [error, setError] = useState<unknown>()
   const preview = async (item: Service) => {
     try {
@@ -331,7 +332,15 @@ export function Services({ machine, actions, revision }: Context) {
         : { type: "tcp" }
     }, { method: current ? "PATCH" : "POST", revision: current?.revision ?? machine.revision })
   })
-  return <Section title="Services" actions={<button className="primary" onClick={() => configure()}>Create service</button>}>
+  return <>
+    {machine.network && <Section title="Private network">
+      <Callout error={network.error} />
+      <Details value={{ network: machine.network.network_id,
+        mode: networkModes.find(mode => mode.value === machine.network?.mode)?.label,
+        state: network.data?.state, private_address: network.data?.private_ipv4,
+        guest_address: network.data?.guest_ipv4, dns_name: network.data?.dns_name }} />
+    </Section>}
+    <Section title="Services" actions={<button className="primary" onClick={() => configure()}>Create service</button>}>
     <Callout error={list.error} /><Callout error={error} />
     {!list.data?.items.length && <p className="empty">{list.error ? "" : list.data ? "No services yet." : "Loading services…"}</p>}
     <div className="rows">{list.data?.items.map(item => {
@@ -354,7 +363,8 @@ export function Services({ machine, actions, revision }: Context) {
         <Details value={{ host: item.public_host, public_port: item.public_port, readiness: item.readiness, auth: item.auth, ssh_fingerprint: item.ssh_fingerprint, ssh_host_key: item.ssh_host_key, connection: connect }} />
       </div>
     })}</div>
-  </Section>
+    </Section>
+  </>
 }
 
 async function fileDigest(file: File) {

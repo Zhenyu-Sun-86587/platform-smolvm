@@ -96,8 +96,11 @@ func (c *client) machines() *cobra.Command {
 	group.AddCommand(sub("metrics MACHINE", "Read runtime resource metrics", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.show(cmd, res("machines", args[0])+"/metrics")
 	}))
+	group.AddCommand(sub("network MACHINE", "Read the current private network attachment", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		return c.show(cmd, res("machines", args[0])+"/network")
+	}))
 
-	var template, bootMode, runtimeInstance string
+	var template, bootMode, runtimeInstance, networkID, networkMode string
 	var start, idle bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -111,6 +114,16 @@ func (c *client) machines() *cobra.Command {
 		}
 		if runtimeInstance != "" {
 			body["runtime_instance_id"] = runtimeInstance
+		}
+		if networkID != "" || networkMode != "" {
+			network := map[string]string{}
+			if networkID != "" {
+				network["network_id"] = networkID
+			}
+			if networkMode != "" {
+				network["mode"] = networkMode
+			}
+			body["network"] = network
 		}
 		if bootMode != "system" || cmd.Flags().Changed("storage-gib") {
 			resources["storage_gib"] = storage
@@ -127,6 +140,8 @@ func (c *client) machines() *cobra.Command {
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
 	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
+	create.Flags().StringVar(&networkID, "network", "", "Registered Worker private network for System templates")
+	create.Flags().StringVar(&networkMode, "network-mode", "", "System network mode (native or fixed_internal), using the platform default when omitted")
 	create.Flags().IntVar(&cpu, "cpu", 2, "Number of vCPUs")
 	create.Flags().IntVar(&memory, "memory-mib", 2048, "Memory in MiB")
 	create.Flags().IntVar(&storage, "storage-gib", 20, "Guest disk space in GiB")

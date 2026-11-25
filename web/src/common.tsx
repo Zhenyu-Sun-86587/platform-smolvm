@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react"
 import { PlatformError } from "../../sdk/typescript/src/index"
-import type { Machine } from "../../sdk/typescript/src/index"
+import type { Machine, NetworkMode } from "../../sdk/typescript/src/index"
 
 import { api } from "./api"
 import { Dialog as Root, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter } from "./daytona/dialog"
@@ -10,6 +10,10 @@ export { api, segment } from "./api"
 export const query = (value: string) => new URLSearchParams({ path: value }).toString()
 export const label = (value: string) => value.replace(/_/g, " ").replace(/^./, char => char.toUpperCase())
 export const isAuthError = (error: unknown) => error instanceof PlatformError && error.status === 401
+export const networkModes: { value: NetworkMode; label: string }[] = [
+  { value: "native", label: "Native IP" },
+  { value: "fixed_internal", label: "Fixed internal IP" },
+]
 
 export const bundleBound = (m: Machine) => Boolean(m.binding?.runtime_bundle_id || m.binding?.runtime_instance_id)
 export function machinePowerState(m: Machine) {
