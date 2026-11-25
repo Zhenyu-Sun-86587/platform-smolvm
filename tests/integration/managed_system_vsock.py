@@ -386,7 +386,17 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
         endpoint = platform.app(f"machines/{machine_id}/network")
         return f"machines/{machine_id}", machine, ref, endpoint
 
-    def policy(ref, allowed, expected_revision):
+    def policy(machine, ref, allowed, expected_revision):
+        nonlocal serial
+        manifest = json.loads((platform.bundle / "runtime-bundle.json").read_text())
+        if manifest["contracts"].get("lifecycle_policy") == 1:
+            settings = platform.app(machine + "/lifecycle")
+            if settings["supported"]:
+                serial += 1
+                return platform.complete(platform.change(machine, f"packet-policy-{serial}", dict(
+                    lifecycle_policy=dict(wake_conditions=dict(private_network_packet=allowed)),
+                    expected_policy_revision=settings["desired_revision"],
+                ), platform.app(machine), method="PATCH"))
         return call("ApplyLifecyclePolicy", ref, dict(effective_policy=dict(
             wake_conditions=dict(private_network_packet=allowed),
         ), expected_applied_revision=expected_revision, new_revision=expected_revision + 1))
@@ -427,7 +437,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     machine, view, ref, endpoint = target("standby")
     address = endpoint["private_ipv4"]
     rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
-    policy(ref, False, 0)
+    policy(machine, ref, False, 0)
     assert update_rule(rule_path, "allow-standby-peer", True, 0)["source_current"]
     assert platform.app(rule_path)["revision"] == 1
     source_endpoint = call("QueryPrivatePacketWakeEndpoint", source_ref)
@@ -444,7 +454,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     assert status(ref) == "STANDBY"
     send(address, limit=4)
     assert status(ref) == "STANDBY", "a disabled lifecycle trigger caused wake"
-    policy(ref, True, 1)
+    policy(machine, ref, True, 1)
     send(address, "udp")
     send(address, destination=port + 1, limit=4)
     assert status(ref) == "STANDBY", "a different destination port or transport caused wake"
@@ -458,7 +468,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     machine, view, ref, endpoint = target("hibernate")
     address = endpoint["private_ipv4"]
     rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
-    policy(ref, True, 0)
+    policy(machine, ref, True, 0)
     assert update_rule(rule_path, "allow-hibernated-peer", True, 0)["source_current"]
     platform.complete(platform.change(machine + "/hibernate", "durable-packet-sleep", {}, view))
     asleep = get_binding(view)
@@ -481,6 +491,34 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     assert len({event["operation_id"] for event in events if event["origin"] == "wake"}) == 1, events
     wait_for(lambda: authorized(rule_path, awake["execution_epoch"]), timeout=8)
     print("A private SYN restored a durable VM at its reserved address and a new execution epoch.")
+
+    source_binary = platform.place_probe(source_ref, binary)
+    for label, size, exit_code, expected in (("small", 96, 0, "forwarded"), ("oversized", 1300, 2, "dropped")):
+        machine, view, ref, endpoint = target("udp-" + label)
+        address = endpoint["private_ipv4"]
+        udp_path = f"{machine}/network/wake-rules/{source_id}/udp/{port}"
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=packet-wake-udp",
+                             "/tmp/managed-vsock-probe", "--serve-udp", str(port)])
+        wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["/bin/cat", "/proc/net/udp"]))
+        policy(machine, ref, True, 0)
+        assert update_rule(udp_path, "allow-datagram-peer-" + label, True, 0)["source_current"]
+        original_epoch = ref["execution_epoch"]
+        platform.complete(platform.change(machine + "/hibernate", "durable-udp-" + label, {}, platform.app(machine)))
+        asleep = get_binding(view)
+        assert asleep["incarnation_id"] is None and asleep["execution_epoch"] == original_epoch
+        result = platform.guest(source_ref, [source_binary, "--exchange-udp", address, str(port), str(size)], expected=exit_code)
+        if expected == "forwarded":
+            assert result == b"one datagram returned\n"
+        awake = get_binding(view)
+        assert awake["execution_epoch"] == original_epoch + 1
+
+        def datagram_outcome():
+            observed = platform.app(udp_path)["last_wake"]
+            return observed and observed["authorized"] and observed["datagram"] == expected \
+                and observed["execution_epoch"] == awake["execution_epoch"]
+
+        wait_for(datagram_outcome, timeout=8)
+    print("One authorized UDP datagram crossed durable wake. Oversized data woke the VM and was dropped.")
 
 
 class ResponseBytes:

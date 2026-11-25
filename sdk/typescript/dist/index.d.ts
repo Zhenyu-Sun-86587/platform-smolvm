@@ -409,6 +409,7 @@ export interface PrivatePacketWakeRule {
         rule_revision: number;
         execution_epoch: number;
         authorized: boolean;
+        datagram?: "forwarded" | "dropped" | "unknown" | null;
     } | null;
 }
 export interface Page<T> {
