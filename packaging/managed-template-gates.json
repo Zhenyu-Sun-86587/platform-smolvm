@@ -9,9 +9,9 @@
       "runtime_version": "1.37.1",
       "architecture": "amd64",
       "verified_profile": "smolvm-1.37.1 linux/amd64 virtio-net full internal storage",
-      "verified_at": "2026-11-25T04:22:00Z",
+      "verified_at": "2026-11-25T04:32:00Z",
       "evidence": "docs/phase1/LOCAL_GUEST_EVIDENCE.md",
-      "capabilities": ["persistent_task", "clean_checkpoint", "independent_clone", "native_exec", "files"]
+      "capabilities": ["persistent_task", "clean_checkpoint", "independent_clone", "native_exec", "files", "live_fork", "automatic_idle", "active_recovery"]
     },
     "e77444dc02446153136008fe4383132579381fdcd403ca73b476e4e646ece281": {
       "runtime_version": "1.37.1",

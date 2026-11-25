@@ -59,3 +59,13 @@ The follow-up used a separate v1.37.1 serve with its own socket, cache, state ro
 The release builder's default is the exact r3 archive. Capability declarations are limited to digest and profile pairs in the release registry. An unlisted archive can be packaged with an explicit path and carries no verified capabilities. R4's evidence applies to persistent task supervision and log retention. [Managed archive evidence registry](../../packaging/managed-template-gates.json)
 
 A release produced by the two-argument builder exposed the exact r3 digest, verified profile, and evidence location through `GET /v1/templates`. A machine created from that packaged template retained the same capability declarations and returned to Guest Management ready after a cold Stop/Start. Its workspace canary and task exit code 11 persisted. The installer plan verified all release checksums.
+
+## Default r3 capability gates
+
+The default image SHA-256 `ad5b45167c999b4af5a845de918aff0f6c14d30544c4cadfd32c8aead95f1c64` passed the following gates on a separate official smolvm 1.37.1 serve with virtio-net and full internal storage.
+
+- **Live Fork** used `product.py --through fork`. Branch operation `op_3973e62eeac7d7a9d7c528f9231070db` adopted a running root Task into a new child task ID with source attribution. Child cancellation left the parent Task running. Both workspaces were deleted through the API.
+- **Active recovery** used the public platform API and the Guest freeze gate. Snapshot `snap_214842d0d2fbb099c444108cda441508` was 146,596,582 bytes with SHA-256 `3fb3b603e4b9a018b63ae5e4bf38adeaf092ec860a84a9ab71cc4e350968f34f`. Rollback `op_8ce3809a03f1dc1b3b1e1cf67bf97545` resumed the original runner from a stopped source. Rollback `op_8edf78e0dd9535566377a3bbb71fc5f4` used default cancellation and published `interrupted_by_restore` with no exit code or additional canary writes. Both preserved one launch marker. The independent Guest check observed `frozen 1` on first restored execution before applying the cancellation policy.
+- **Automatic idle** used `workspace.py --interrupt-dispatch`. A suspect lease blocked idle and metrics did not count as user activity. One durable wake followed the idle pause after the pending client disconnected. [Idle fixture record](../../tests/evidence/m3.md)
+
+The verified profile is exposed through the same machine capability response used by the Web console and `sandboxctl machines get`.
