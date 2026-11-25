@@ -9,7 +9,6 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
-	"sandbox-platform/internal/runtime/smolvm"
 )
 
 type rollbackFence struct {
@@ -22,6 +21,10 @@ func (f rollbackFence) evidence() string { return f.binding.RuntimeName + ":" + 
 
 func (s *Server) fenceOld(ctx context.Context, j *lifecycle.Job, old registry.Binding, policy string) (rollbackFence, error) {
 	fence := rollbackFence{binding: old}
+	adapter, err := s.ForBinding(old)
+	if err != nil {
+		return fence, err
+	}
 	observed, err := s.observeOld(ctx, old)
 	if err != nil {
 		j.Written = true
@@ -53,7 +56,7 @@ func (s *Server) fenceOld(ctx context.Context, j *lifecycle.Job, old registry.Bi
 		if err := j.Stage(ctx, "stop_old", ""); err != nil {
 			return fence, err
 		}
-		if _, err := s.Runtime.Stop(ctx, old.RuntimeName); err != nil {
+		if _, err := adapter.Stop(ctx, old.RuntimeName); err != nil {
 			return fence, err
 		}
 		j.Written = true
@@ -83,7 +86,7 @@ func (s *Server) fenceOld(ctx context.Context, j *lifecycle.Job, old registry.Bi
 		if err := j.Stage(ctx, "delete_old", ""); err != nil {
 			return fence, err
 		}
-		if _, err := s.Runtime.Delete(ctx, old.RuntimeName); err != nil {
+		if _, err := adapter.Delete(ctx, old.RuntimeName); err != nil {
 			return fence, err
 		}
 		fence.state = "absent"
@@ -123,7 +126,11 @@ func matchesInactiveFence(observed rt.Observation, expected string) bool {
 }
 
 func (s *Server) observeOld(ctx context.Context, old registry.Binding) (rt.Observation, error) {
-	o, err := s.Runtime.Observe(ctx, old.RuntimeName)
+	adapter, err := s.ForBinding(old)
+	if err != nil {
+		return rt.Observation{}, err
+	}
+	o, err := adapter.Observe(ctx, old.RuntimeName)
 	if err == nil && (o.Labels["platform.binding"] != old.ID || o.Labels["platform.machine"] != old.MachineID || o.Labels["platform.spec"] != old.SpecHash) {
 		err = registry.ErrStaleObservation
 	}
@@ -131,7 +138,11 @@ func (s *Server) observeOld(ctx context.Context, old registry.Binding) (rt.Obser
 }
 
 func (s *Server) checkRestartPolicy(ctx context.Context, binding registry.Binding, state string) error {
-	if err := smolvm.CheckRestartNever(ctx, s.Config.Runtime.StatusSocket, binding.RuntimeName, binding.ID, state); err != nil {
+	adapter, err := s.ForBinding(binding)
+	if err != nil {
+		return err
+	}
+	if err := adapter.CheckRestartNever(ctx, binding.RuntimeName, binding.ID, state); err != nil {
 		return &lifecycle.Failure{Code: "RESTART_POLICY_UNVERIFIED", Message: fmt.Sprintf("restart policy evidence for %s is unavailable: %v", binding.RuntimeName, err)}
 	}
 	return nil

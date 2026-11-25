@@ -15,14 +15,13 @@ import (
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
-	"sandbox-platform/internal/runtime/smolvm"
 	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/templates"
 )
 
 type Engine struct {
 	DB           *registry.Store
-	Runtime      *smolvm.Client
+	runtimes     *rt.Resolver
 	Config       config.Config
 	mu           sync.Mutex
 	running      map[string]bool
@@ -34,8 +33,23 @@ type Engine struct {
 	Extra        map[string]func(context.Context, *Job) error
 }
 
-func New(db *registry.Store, r *smolvm.Client, c config.Config) *Engine {
-	return &Engine{DB: db, Runtime: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, waiters: map[string]int{}, Recover: map[string]func(context.Context, *Job) error{}, Extra: map[string]func(context.Context, *Job) error{}}
+func New(db *registry.Store, r *rt.Resolver, c config.Config) *Engine {
+	return &Engine{DB: db, runtimes: r, Config: c, running: map[string]bool{}, holds: map[string]int{}, waiters: map[string]int{}, Recover: map[string]func(context.Context, *Job) error{}, Extra: map[string]func(context.Context, *Job) error{}}
+}
+
+func (e *Engine) OfficialRuntime() rt.Adapter { return e.runtimes.Official() }
+
+func bindingRuntime(b registry.Binding) rt.BindingRuntime {
+	return rt.BindingRuntime{
+		BundleRoute:   rt.BundleRoute{InstanceID: b.RuntimeInstanceID, BundleID: b.RuntimeBundleID},
+		ObjectID:      b.RuntimeInstanceObjectID,
+		IncarnationID: b.IncarnationID,
+		Epoch:         b.ExecutionEpoch,
+	}
+}
+
+func (e *Engine) ForBinding(b registry.Binding) (rt.Adapter, error) {
+	return e.runtimes.ForBinding(bindingRuntime(b))
 }
 
 type Create struct {
@@ -91,11 +105,15 @@ func GuestBinding(b registry.Binding) *tasks.Binding {
 	return &tasks.Binding{MachineID: b.MachineID, Generation: b.Generation, Namespace: b.TaskNamespace, Nonce: b.ID}
 }
 func (e *Engine) Call(ctx context.Context, b registry.Binding, req tasks.Request) (tasks.Response, error) {
+	adapter, err := e.ForBinding(b)
+	if err != nil {
+		return tasks.Response{}, err
+	}
 	if req.Binding == nil {
 		req.Binding = GuestBinding(b)
 	}
 	return tasks.Call(ctx, func(ctx context.Context, argv []string, in []byte) ([]byte, error) {
-		res, err := e.Runtime.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 30})
+		res, err := adapter.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 30})
 		if err != nil {
 			return nil, err
 		}
@@ -113,11 +131,15 @@ func (e *Engine) ready(ctx context.Context) error {
 	if ctl.Maintenance {
 		return registry.ErrMaintenance
 	}
-	_, err = e.Runtime.Health(ctx)
+	return readyRuntime(ctx, e.OfficialRuntime())
+}
+
+func readyRuntime(ctx context.Context, adapter rt.Adapter) error {
+	_, err := adapter.Health(ctx)
 	if err != nil {
 		return err
 	}
-	return e.Runtime.Ready(ctx)
+	return adapter.Ready(ctx)
 }
 
 // Run keeps work independent of request lifetimes. Freshly dispatched calls are
@@ -170,6 +192,7 @@ func (e *Engine) Run(ctx context.Context) {
 
 type Job struct {
 	*Engine
+	Runtime rt.Adapter
 	Op      registry.Operation
 	Binding registry.Binding
 	Intent  Intent
@@ -245,11 +268,14 @@ func (e *Failure) Error() string { return e.Message }
 func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	ctx, cancel := context.WithTimeout(parent, 15*time.Minute)
 	defer cancel()
-	if err := e.ready(ctx); err != nil {
+	ctl, err := e.DB.Control(ctx)
+	if err != nil {
 		return err
 	}
-	ctl, err := e.DB.Control(ctx)
-	if err != nil || ctl.ControlEpoch != op.ControlEpoch {
+	if ctl.Maintenance {
+		return registry.ErrMaintenance
+	}
+	if ctl.ControlEpoch != op.ControlEpoch {
 		return registry.ErrControlEpoch
 	}
 	j := &Job{Engine: e, Op: op, Intent: Intent{Name: op.RuntimeName, BindingID: op.BindingID}}
@@ -263,9 +289,23 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		if err = json.Unmarshal(op.Dispatch, &j.Intent); err != nil {
 			return err
 		}
-		if j.Intent.Stage != "preflight" {
-			return j.reconcile(ctx)
+	}
+	j.Runtime, err = e.ForBinding(j.Binding)
+	dispatched := op.State != registry.Queued && j.Intent.Stage != "preflight"
+	if err != nil {
+		if op.State == registry.Queued {
+			if stageErr := j.Stage(ctx, "preflight", ""); stageErr != nil {
+				return stageErr
+			}
 		}
+		j.Written = dispatched
+		return j.fail(ctx, err)
+	}
+	if err = readyRuntime(ctx, j.Runtime); err != nil {
+		return err
+	}
+	if dispatched {
+		return j.reconcile(ctx)
 	}
 	if err = j.Stage(ctx, "preflight", ""); err != nil {
 		return err
@@ -292,6 +332,19 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	}
 	return j.fail(parent, err)
 }
+
+// CheckSameRuntime protects operations whose native source and target must live
+// in the same runtime instance and use the same bundle.
+func (j *Job) CheckSameRuntime(source registry.Binding) error {
+	if _, err := j.ForBinding(source); err != nil {
+		return err
+	}
+	if bindingRuntime(source).BundleRoute != bindingRuntime(j.Binding).BundleRoute {
+		return &rt.Error{Code: "NOT_SUPPORTED", Message: "source and target use different runtime instances or bundles"}
+	}
+	return nil
+}
+
 func (j *Job) labels() map[string]string {
 	return map[string]string{"platform.machine": j.Op.MachineID, "platform.binding": j.Binding.ID, "platform.spec": j.Binding.SpecHash}
 }
@@ -366,6 +419,9 @@ func (j *Job) power(ctx context.Context) error {
 		}
 		if src.CurrentBinding == nil {
 			return registry.ErrGeneration
+		}
+		if err := j.CheckSameRuntime(*src.CurrentBinding); err != nil {
+			return err
 		}
 		o, err := j.Runtime.Observe(ctx, src.CurrentBinding.RuntimeName)
 		if err != nil {
@@ -612,7 +668,7 @@ func (j *Job) guestReady(ctx context.Context, x *registry.Observation) (adopted 
 	req := tasks.Request{Method: "bind", Binding: GuestBinding(j.Binding), OperationID: j.Op.ID}
 	if j.Op.Kind == "fork" {
 		src, e := j.DB.GetMachine(ctx, j.Op.SourceMachineID)
-		if e != nil || src.CurrentBinding == nil {
+		if e != nil || src.CurrentBinding == nil || j.CheckSameRuntime(*src.CurrentBinding) != nil {
 			return
 		}
 		req.Method = "adopt_live_fork"

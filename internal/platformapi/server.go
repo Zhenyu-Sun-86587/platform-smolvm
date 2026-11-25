@@ -160,6 +160,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, status = "EVENT_CURSOR_EXPIRED", 410
 	case errors.Is(err, rt.ErrUnavailable):
 		code, status = "RUNTIME_UNAVAILABLE", 503
+	case errors.Is(err, rt.ErrUnsupported):
+		code, status = "NOT_SUPPORTED", 409
 	default:
 		var x *lifecycle.Failure
 		if errors.As(err, &x) {
@@ -365,8 +367,9 @@ func (s *Server) routes() {
 		if err != nil {
 			return err
 		}
-		h, healthErr := s.Runtime.Health(r.Context())
-		ready := healthErr == nil && s.Runtime.Ready(r.Context()) == nil
+		official := s.OfficialRuntime()
+		h, healthErr := official.Health(r.Context())
+		ready := healthErr == nil && official.Ready(r.Context()) == nil
 		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(ready), "principal": p}
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)

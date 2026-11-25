@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -76,6 +77,73 @@ func TestNativeIdentityNeverFilledFromPID(t *testing.T) {
 		if got := machine.observe(); got.State != runtime.StateUnknown || got.Identity != nil {
 			t.Fatalf("ambiguous identity published: %+v", got)
 		}
+	}
+}
+
+type fixtureTransport struct {
+	handler http.HandlerFunc
+}
+
+func (transport fixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	result := httptest.NewRecorder()
+	transport.handler.ServeHTTP(result, r)
+	return result.Result(), nil
+}
+
+func TestOfficialAdapterVersionAndPauseContract(t *testing.T) {
+	const name = "legacy-vm"
+	const pauseID = "legacy-pause"
+	matchingVersion := false
+	readyCalls := 0
+	client, err := New("/fixture/api.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = fixtureTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			version := "1.37.2"
+			if matchingVersion {
+				version = "1.37.1"
+			}
+			fmt.Fprintf(w, "{\"status\":\"healthy\",\"version\":%q}", version)
+		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
+			readyCalls++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Query().Get("operation_id") == pauseID:
+			switch r.URL.Path {
+			case machinesPath + "/" + name + "/pause":
+				fmt.Fprintf(w, "{\"name\":%q,\"state\":\"paused\"}", name)
+			case machinesPath + "/" + name + "/resume":
+				fmt.Fprintf(w, "{\"name\":%q,\"state\":\"running\",\"runtime\":{\"pid\":42,\"startTime\":1}}", name)
+			default:
+				t.Errorf("unexpected lifecycle path %s", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			http.NotFound(w, r)
+		}
+	}}
+	adapter, err := runtime.NewResolver(client, nil).ForBinding(runtime.BindingRuntime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := adapter.Ready(ctx); !errors.Is(err, runtime.ErrUnsupported) || readyCalls != 0 {
+		t.Fatalf("unsupported runtime returned %v after %d readiness calls", err, readyCalls)
+	}
+	matchingVersion = true
+	if err := adapter.Ready(ctx); err != nil || readyCalls != 1 {
+		t.Fatalf("pinned runtime returned %v after %d readiness calls", err, readyCalls)
+	}
+	paused, err := adapter.Pause(ctx, name, pauseID)
+	if err != nil || paused.RuntimePauseID != pauseID || paused.Observation.State != runtime.StatePaused {
+		t.Fatalf("pause = %+v, %v", paused, err)
+	}
+	resumed, err := adapter.Resume(ctx, name, paused.RuntimePauseID)
+	if err != nil || resumed.RuntimePauseID != pauseID || resumed.Observation.State != runtime.StateRunning || !resumed.Observation.Identity.Complete() {
+		t.Fatalf("resume = %+v, %v", resumed, err)
 	}
 }
 

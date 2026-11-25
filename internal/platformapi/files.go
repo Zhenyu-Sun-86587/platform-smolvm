@@ -54,7 +54,11 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request, p auth.Princi
 		return err
 	}
 	defer release()
-	res, err := s.Runtime.Exec(r.Context(), b.RuntimeName, rt.ExecRequest{
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		return err
+	}
+	res, err := adapter.Exec(r.Context(), b.RuntimeName, rt.ExecRequest{
 		Command: []string{tasks.TaskctlPath, "list-files", target}, TimeoutSeconds: 10,
 	})
 	if err != nil {
@@ -89,11 +93,15 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request, p auth.Pri
 		return err
 	}
 	defer release()
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		return err
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", "attachment")
 	w.Header().Set("Content-Security-Policy", "sandbox")
 	dst := &fileResponse{w: w}
-	err = s.Runtime.DownloadFile(r.Context(), b.RuntimeName, target, dst)
+	err = adapter.DownloadFile(r.Context(), b.RuntimeName, target, dst)
 	if err != nil && !dst.started {
 		w.Header().Del("Content-Disposition")
 	}
@@ -200,7 +208,11 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request, p auth.Princ
 	if b.ID != binding {
 		return registry.ErrGeneration
 	}
-	if err := s.Runtime.UploadFileWithOptions(ctx, b.RuntimeName, target, file, rt.FileOptions{Size: n}); err != nil {
+	adapter, err := s.ForBinding(b)
+	if err != nil {
+		return err
+	}
+	if err := adapter.UploadFileWithOptions(ctx, b.RuntimeName, target, file, rt.FileOptions{Size: n}); err != nil {
 		if errors.Is(err, rt.ErrUncertain) {
 			return uploadUnknown()
 		}
