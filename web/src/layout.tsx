@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Code2,
   Globe2,
+  HardDrive,
   Layers3,
   ListChecks,
   LogOut,
@@ -26,6 +27,7 @@ import { segment } from "./api"
 const workspace = [
   { page: "machines", name: "Machines", icon: Server },
   { page: "snapshots", name: "Snapshots", icon: Layers3 },
+  { page: "volumes", name: "Volumes", icon: HardDrive },
   { page: "tasks", name: "Tasks", icon: ListChecks },
   { page: "networking", name: "Networking", icon: Globe2 },
 ]

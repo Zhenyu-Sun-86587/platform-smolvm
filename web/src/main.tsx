@@ -7,6 +7,7 @@ import { System, SystemTab } from "./system"
 import { Brand, Shell, SourceLinks } from "./layout"
 import { MachineList } from "./machines"
 import { Catalog } from "./catalog"
+import { VolumeCatalog } from "./volumes"
 import { useCollection } from "./api"
 import { Skeleton } from "./daytona/skeleton"
 import "./style.css"
@@ -23,13 +24,13 @@ export type Actions = {
   refresh: () => void
 }
 
-type Location = { page: "machines" | "machine" | "snapshots" | "tasks" | "networking" | SystemTab; id?: string; tab?: string }
+type Location = { page: "machines" | "machine" | "snapshots" | "volumes" | "tasks" | "networking" | SystemTab; id?: string; tab?: string }
 function route(): Location {
   const [, head, id, tab] = location.hash.split("/")
   if (head === "machines" && id) {
     try { return { page: "machine", id: decodeURIComponent(id), tab: tab ?? "overview" } } catch { return { page: "machines" } }
   }
-  if (head === "snapshots" || head === "tasks" || head === "networking" || head === "operations" || head === "settings" || head === "diagnostics" || head === "templates") return { page: head, id: id || undefined }
+  if (head === "snapshots" || head === "volumes" || head === "tasks" || head === "networking" || head === "operations" || head === "settings" || head === "diagnostics" || head === "templates") return { page: head, id: id || undefined }
   return { page: "machines" }
 }
 
@@ -188,7 +189,8 @@ function App() {
       {at.page === "machines" && <MachineList rows={machines.items} error={machines.error} actions={actions} revision={revision} />}
       {at.page === "machine" && <><Callout error={match.error} />{!match.data && !match.error && <Skeleton className="h-24"/>}{match.data && <MachineView key={match.data.machine_id} machine={match.data} tab={at.tab ?? "overview"} actions={actions} revision={revision} />}</>}
       {catalog && <><Callout error={machines.error}/><Catalog key={catalog} page={catalog} machines={machines.items} actions={actions} revision={revision}/></>}
-      {at.page !== "machine" && at.page !== "machines" && !catalog && <System key={at.page} tab={at.page as SystemTab} id={at.id} actions={actions} revision={revision} operationIds={ops} />}
+      {at.page === "volumes" && <VolumeCatalog machines={machines.items} actions={actions} revision={revision} />}
+      {at.page !== "machine" && at.page !== "machines" && at.page !== "volumes" && !catalog && <System key={at.page} tab={at.page as SystemTab} id={at.id} actions={actions} revision={revision} operationIds={ops} />}
     {config && <Dialog config={config} close={() => { setDialog(undefined); retry.current = undefined }} />}
   </Shell>
 }

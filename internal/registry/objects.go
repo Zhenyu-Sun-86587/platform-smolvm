@@ -389,18 +389,27 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 		if o.Native != nil {
 			native := o.Native
 			ref := native.Execution
+			initialStopped := native.VerifiedLaunch && native.PowerState == PowerStopped &&
+				old.ExecutionEpoch == 0 && ref.ExecutionEpoch == 0 && ref.IncarnationID == ""
+			nextLaunch := native.VerifiedLaunch && native.PowerState == PowerRunning && old.PowerState != PowerHibernated &&
+				ref.ExecutionEpoch == old.ExecutionEpoch+1 && ref.IncarnationID != old.IncarnationID
 			if o.ExpectedExecutionEpoch == nil || old.RuntimeBundleID == "" || ref.InstanceID == "" ||
-				ref.IncarnationID == "" || ref.ExecutionEpoch < 1 ||
 				(old.RuntimeInstanceObjectID != "" && old.RuntimeInstanceObjectID != ref.InstanceID) ||
-				(old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
+				(!initialStopped && (ref.IncarnationID == "" || ref.ExecutionEpoch < 1)) ||
+				(native.VerifiedLaunch && !initialStopped && !nextLaunch) ||
+				(!nextLaunch && old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
 				return false, ErrStaleObservation
 			}
-			if native.PowerState != PowerRunning && native.PowerState != PowerStandby {
+			if !initialStopped && native.PowerState != PowerRunning && native.PowerState != PowerStandby {
 				return false, fmt.Errorf("%w: invalid native power evidence", ErrInvalid)
+			}
+			var executionEpoch any
+			if ref.ExecutionEpoch > 0 {
+				executionEpoch = ref.ExecutionEpoch
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE runtime_bindings SET runtime_instance_object_id=?,
 				incarnation_id=?, execution_epoch=?, power_state=?, capability_profile_id=? WHERE id=?`,
-				ref.InstanceID, ref.IncarnationID, ref.ExecutionEpoch, native.PowerState, nullable(native.VerifiedStandbyProfile), old.ID)
+				ref.InstanceID, nullable(ref.IncarnationID), executionEpoch, native.PowerState, nullable(native.VerifiedStandbyProfile), old.ID)
 			if err != nil {
 				return false, err
 			}

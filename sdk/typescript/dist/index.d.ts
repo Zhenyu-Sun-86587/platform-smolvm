@@ -210,6 +210,54 @@ export interface TokenSpec {
     };
     expires_at?: string;
 }
+export interface VolumeSpec {
+    name: string;
+    capacity_bytes: number;
+    runtime_instance_id: string;
+    lifecycle?: "persistent" | "ephemeral";
+}
+export interface Volume extends VolumeSpec {
+    volume_id: string;
+    owner_id: string;
+    runtime_bundle_id: string;
+    lifecycle: "persistent" | "ephemeral";
+    revision: number;
+    state: "available" | "changing" | "deleted";
+    head_resource_id?: string;
+    generation_id?: string;
+    snapshots: VolumeSnapshot[];
+    attachments: VolumeAttachment[];
+}
+export interface VolumeSnapshot {
+    snapshot_id: string;
+    generation_id: string;
+    source_revision: number;
+    capacity_bytes: number;
+    volume_id?: string;
+    volume_revision?: number;
+}
+export interface VolumeAttachmentSpec {
+    volume_id: string;
+    device_key: string;
+    mode?: "rw" | "ro";
+    snapshot_id?: string;
+    fork_policy?: "clone" | "share_immutable" | "reject";
+    capture_policy?: "include" | "external";
+    expected_volume_revision?: number;
+}
+export interface VolumeAttachment extends Pick<VolumeAttachmentSpec, "device_key"> {
+    attachment_id: string;
+    instance_id: string;
+    mode: "rw" | "ro";
+    fork_policy: "clone" | "share_immutable" | "reject";
+    capture_policy: "include" | "external";
+    state: "reserved" | "attached" | "unknown";
+    revision: number;
+    generation_id?: string;
+    volume_id?: string;
+    machine_id?: string;
+    binding_id?: string;
+}
 export interface Token extends TokenSpec {
     token_id: string;
     revision: number;
@@ -258,6 +306,8 @@ export declare class PlatformError extends Error {
 export declare function machine(id: string): string;
 export declare function task(id: string): string;
 export declare function snapshot(id: string): string;
+export declare function volume(id: string): string;
+export declare function volumeSnapshot(id: string): string;
 export declare function service(id: string): string;
 export declare function operation(id: string): string;
 export declare class Client {
@@ -297,6 +347,29 @@ export declare class Client {
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     getSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot>;
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;
+    listVolumes(signal?: AbortSignal): AsyncGenerator<Volume, any, any>;
+    createVolume(spec: VolumeSpec, options?: WriteOptions): Promise<Operation>;
+    getVolume(id: string, signal?: AbortSignal): Promise<Volume>;
+    growVolume(id: string, capacityBytes: number, options?: WriteOptions): Promise<Operation>;
+    deleteVolume(id: string, options?: WriteOptions): Promise<Operation>;
+    listVolumeSnapshots(id: string, signal?: AbortSignal): AsyncGenerator<VolumeSnapshot, any, any>;
+    getVolumeSnapshot(id: string, signal?: AbortSignal): Promise<VolumeSnapshot & {
+        volume_id: string;
+        volume_revision: number;
+    }>;
+    createVolumeSnapshot(id: string, options?: WriteOptions): Promise<Operation>;
+    deleteVolumeSnapshot(id: string, options?: WriteOptions): Promise<Operation>;
+    cloneVolumeSnapshot(id: string, name: string, options?: WriteOptions): Promise<Operation>;
+    listVolumeAttachments(id: string, signal?: AbortSignal): AsyncGenerator<VolumeAttachment & {
+        volume_id: string;
+        machine_id: string;
+        binding_id: string;
+    }, any, any>;
+    attachVolume(id: string, spec: VolumeAttachmentSpec, options?: MachineWriteOptions): Promise<Operation>;
+    detachVolume(id: string, volumeRevision: number, options: MachineWriteOptions & {
+        generation: number;
+        revision: number;
+    }): Promise<Operation>;
     listRuntimeProfiles(signal?: AbortSignal): AsyncGenerator<RuntimeProfile, any, any>;
     machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions): Promise<Operation>;
     private machineMutation;

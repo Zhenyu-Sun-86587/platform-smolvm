@@ -237,6 +237,61 @@ class Client:
     def get_machine(self, id):
         return self.get(_item("machines", id))
 
+    def list_volumes(self, *, limit=100):
+        return self.pages("volumes", limit=limit)
+
+    def create_volume(self, spec, **options):
+        return self.mutate("volumes", spec, **options)
+
+    def get_volume(self, volume_id):
+        return self.get(_item("volumes", volume_id))
+
+    def grow_volume(self, volume_id, capacity_bytes, *, intent=None, revision=None):
+        if revision is None:
+            revision = self.get_volume(volume_id)["revision"]
+        return self.mutate(_item("volumes", volume_id), {"capacity_bytes": capacity_bytes},
+                           method="PATCH", revision=revision, intent=intent)
+
+    def delete_volume(self, volume_id, *, intent=None, revision=None):
+        if revision is None:
+            revision = self.get_volume(volume_id)["revision"]
+        return self.mutate(_item("volumes", volume_id), method="DELETE", revision=revision, intent=intent)
+
+    def list_volume_snapshots(self, volume_id, *, limit=100):
+        return self.pages(_item("volumes", volume_id) + "/snapshots", limit=limit)
+
+    def create_volume_snapshot(self, volume_id, *, intent=None, revision=None):
+        if revision is None:
+            revision = self.get_volume(volume_id)["revision"]
+        return self.mutate(_item("volumes", volume_id) + "/snapshots", revision=revision, intent=intent)
+
+    def get_volume_snapshot(self, snapshot_id):
+        return self.get(_item("volume-snapshots", snapshot_id))
+
+    def delete_volume_snapshot(self, snapshot_id, *, intent=None, revision=None):
+        if revision is None:
+            revision = self.get_volume_snapshot(snapshot_id)["volume_revision"]
+        return self.mutate(_item("volume-snapshots", snapshot_id), method="DELETE", revision=revision, intent=intent)
+
+    def clone_volume_snapshot(self, snapshot_id, name, **options):
+        return self.mutate(_item("volume-snapshots", snapshot_id) + "/clones", {"name": name}, **options)
+
+    def list_volume_attachments(self, machine_id, *, limit=100):
+        return self.pages(_item("machines", machine_id) + "/volume-attachments", limit=limit)
+
+    def attach_volume(self, machine_id, spec, **options):
+        body = dict(spec)
+        if "expected_volume_revision" not in body:
+            body["expected_volume_revision"] = self.get_volume(body["volume_id"])["revision"]
+        return self._machine_mutation(machine_id, "volume-attachments", body, **options)
+
+    def detach_volume(self, attachment_id, *, generation, revision, volume_revision, intent=None):
+        return self.mutate(
+            _item("volume-attachments", attachment_id),
+            {"expected_generation": generation, "expected_volume_revision": volume_revision},
+            method="DELETE", revision=revision, intent=intent,
+        )
+
     def list_runtime_profiles(self, *, limit=100):
         return self.pages("runtime-profiles", limit=limit)
 

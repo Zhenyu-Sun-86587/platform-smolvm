@@ -13,6 +13,8 @@ const segment = encodeURIComponent;
 export function machine(id) { return "machines/" + segment(id); }
 export function task(id) { return "tasks/" + segment(id); }
 export function snapshot(id) { return "snapshots/" + segment(id); }
+export function volume(id) { return "volumes/" + segment(id); }
+export function volumeSnapshot(id) { return "volume-snapshots/" + segment(id); }
 export function service(id) { return "services/" + segment(id); }
 export function operation(id) { return "operations/" + segment(id); }
 function pause(ms, signal) {
@@ -230,6 +232,44 @@ export class Client {
     getService(id, signal) { return this.get(service(id), signal); }
     getSnapshot(id, signal) { return this.get(snapshot(id), signal); }
     listMachines(signal) { return this.pages("machines", 100, signal); }
+    listVolumes(signal) { return this.pages("volumes", 100, signal); }
+    createVolume(spec, options) { return this.mutate("volumes", spec, options); }
+    getVolume(id, signal) { return this.get(volume(id), signal); }
+    async growVolume(id, capacityBytes, options = {}) {
+        const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision;
+        return this.mutate(volume(id), { capacity_bytes: capacityBytes }, { ...options, method: "PATCH", revision });
+    }
+    async deleteVolume(id, options = {}) {
+        const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision;
+        return this.mutate(volume(id), {}, { ...options, method: "DELETE", revision });
+    }
+    listVolumeSnapshots(id, signal) {
+        return this.pages(volume(id) + "/snapshots", 100, signal);
+    }
+    getVolumeSnapshot(id, signal) {
+        return this.get(volumeSnapshot(id), signal);
+    }
+    async createVolumeSnapshot(id, options = {}) {
+        const revision = options.revision ?? (await this.getVolume(id, options.signal)).revision;
+        return this.mutate(volume(id) + "/snapshots", {}, { ...options, revision });
+    }
+    async deleteVolumeSnapshot(id, options = {}) {
+        const revision = options.revision ?? (await this.getVolumeSnapshot(id, options.signal)).volume_revision;
+        return this.mutate(volumeSnapshot(id), {}, { ...options, method: "DELETE", revision });
+    }
+    cloneVolumeSnapshot(id, name, options) {
+        return this.mutate(volumeSnapshot(id) + "/clones", { name }, options);
+    }
+    listVolumeAttachments(id, signal) {
+        return this.pages(machine(id) + "/volume-attachments", 100, signal);
+    }
+    async attachVolume(id, spec, options = {}) {
+        const expectedVolumeRevision = spec.expected_volume_revision ?? (await this.getVolume(spec.volume_id, options.signal)).revision;
+        return this.machineMutation(id, "volume-attachments", { ...spec, expected_volume_revision: expectedVolumeRevision }, options);
+    }
+    detachVolume(id, volumeRevision, options) {
+        return this.mutate("volume-attachments/" + segment(id), { expected_volume_revision: volumeRevision, expected_generation: options.generation }, { ...options, method: "DELETE" });
+    }
     listRuntimeProfiles(signal) { return this.pages("runtime-profiles", 100, signal); }
     machineAction(id, action, generation, options) {
         return this.mutate(machine(id) + "/" + action, { expected_generation: generation }, options);

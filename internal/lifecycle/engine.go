@@ -83,6 +83,7 @@ type Action struct {
 type Intent struct {
 	Native          *rt.NativeSubmission  `json:"native,omitempty"`
 	Launch          *rt.LaunchSubmission  `json:"launch,omitempty"`
+	Volume          *rt.VolumeMutation    `json:"volume,omitempty"`
 	Stage           string                `json:"stage"`
 	Name            string                `json:"runtime_name"`
 	Source          string                `json:"source,omitempty"`
@@ -299,6 +300,14 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 			return err
 		}
 	}
+	if op.Kind == rt.VolumeOperation && op.BindingID == "" {
+		var route rt.VolumeRoute
+		if err := json.Unmarshal(op.Request, &route); err != nil {
+			return err
+		}
+		j.Binding.RuntimeInstanceID = route.RuntimeInstanceID
+		j.Binding.RuntimeBundleID = route.RuntimeBundleID
+	}
 	if op.State != registry.Queued {
 		if err = json.Unmarshal(op.Dispatch, &j.Intent); err != nil {
 			return err
@@ -312,6 +321,19 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		var request Create
 		if err := json.Unmarshal(op.Request, &request); err != nil {
 			return err
+		}
+		if request.BootMode == rt.BootSystem {
+			return j.driveSystemLaunch(ctx, request, err)
+		}
+	}
+	if op.Kind == "start" && !bindingRuntime(j.Binding).Legacy() {
+		machine, loadErr := e.DB.GetMachine(ctx, op.MachineID)
+		if loadErr != nil {
+			return loadErr
+		}
+		var request Create
+		if loadErr := json.Unmarshal(machine.Spec, &request); loadErr != nil {
+			return loadErr
 		}
 		if request.BootMode == rt.BootSystem {
 			return j.driveSystemLaunch(ctx, request, err)

@@ -48,7 +48,8 @@ type LaunchDisk struct {
 	AttachmentID string `json:"attachment_id"`
 	DeviceID     string `json:"device_id"`
 	Role         string `json:"role"`
-	GenerationID string `json:"generation_id"`
+	GenerationID string `json:"generation_id,omitempty"`
+	VolumeID     string `json:"volume_id,omitempty"`
 	ReadOnly     bool   `json:"read_only"`
 }
 

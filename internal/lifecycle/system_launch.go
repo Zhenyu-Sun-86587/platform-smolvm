@@ -10,6 +10,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/templates"
+	"sandbox-platform/internal/volumes"
 )
 
 func (e *Engine) SystemBootCapability(ctx context.Context, route rt.BundleRoute) (rt.Capability, error) {
@@ -27,9 +28,6 @@ func (e *Engine) SystemBootCapability(ctx context.Context, route rt.BundleRoute)
 }
 
 func (request Create) ValidateSystemCreate() error {
-	if !request.Start {
-		return fmt.Errorf("%w: System creation requires start=true", registry.ErrInvalid)
-	}
 	if request.Resources.Storage != 0 || request.Resources.Overlay != 0 {
 		return fmt.Errorf("%w: the System root disk capacity is determined by its template", registry.ErrInvalid)
 	}
@@ -80,15 +78,31 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 	if err != nil {
 		return j.fail(ctx, err)
 	}
-	if binding.ExecutionEpoch != 0 || binding.IncarnationID != nil {
-		return j.fail(ctx, &Failure{"STATE_CONFLICT", "new System machine name already has a Worker execution"})
+	if binding.IncarnationID != nil || binding.ExecutionEpoch != j.Binding.ExecutionEpoch ||
+		(j.Binding.RuntimeInstanceObjectID != "" && j.Binding.RuntimeInstanceObjectID != binding.InstanceID) ||
+		j.Binding.PowerState == registry.PowerHibernated {
+		return j.fail(ctx, &Failure{"STATE_CONFLICT", "System cold launch requires the exact stopped Worker binding"})
 	}
+	if j.Op.Kind == "create" && !request.Start {
+		ref := rt.ExecutionRef{InstanceID: binding.InstanceID}
+		observation := nativeObservation(j.Binding, ref, registry.PowerStopped, "")
+		observation.Native.VerifiedLaunch = true
+		return j.Done(ctx, registry.TransitionRequest{Observation: &observation, Effect: registry.EffectApplied,
+			PromoteBinding: true, DesiredPower: "stopped", Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "boot_mode": rt.BootSystem})})
+	}
+	route := rt.VolumeRoute{RuntimeInstanceID: j.Binding.RuntimeInstanceID, RuntimeBundleID: j.Binding.RuntimeBundleID}
+	attachments, err := volumes.LaunchDisks(ctx, j.DB.ReadDB(), j.Op.MachineID, binding.InstanceID, route)
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	disks := []rt.LaunchDisk{{AttachmentID: j.Binding.ID + "-root", DeviceID: "root", Role: "root", GenerationID: spec.RootGenerationID}}
+	disks = append(disks, attachments...)
 	intent := rt.LaunchSubmission{
 		OperationID: j.Op.ID, Expected: binding, Kind: rt.Launch,
 		Parameters: rt.LaunchParameters{
 			Name: j.Binding.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
 			MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
-			Disks: []rt.LaunchDisk{{AttachmentID: j.Binding.ID + "-root", DeviceID: "root", Role: "root", GenerationID: spec.RootGenerationID}},
+			Disks: disks,
 		},
 	}
 	intent.RequestDigest = launchDigest(intent)
@@ -138,7 +152,7 @@ func (j *Job) reconcileSystemLaunch(ctx context.Context, launcher rt.NativeLaunc
 	j.Written = true
 	request := j.Intent.Launch
 	if request.OperationID != j.Op.ID || request.Kind != rt.Launch || request.Parameters.Name != j.Binding.RuntimeName ||
-		request.Expected.ExecutionEpoch != 0 || request.Expected.IncarnationID != nil || request.RequestDigest != launchDigest(*request) {
+		request.Expected.ExecutionEpoch != j.Binding.ExecutionEpoch || request.Expected.IncarnationID != nil || request.RequestDigest != launchDigest(*request) {
 		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "System launch intent does not match the accepted operation"})
 	}
 	receipt, err := launcher.QueryOperation(ctx, j.Op.ID)
@@ -222,9 +236,10 @@ func (j *Job) promoteSystemExecution(ctx context.Context, launcher rt.NativeLaun
 		profile = j.Binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
 	}
 	observation := nativeObservation(j.Binding, ref, registry.PowerRunning, profile)
+	observation.Native.VerifiedLaunch = true
 	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	return j.Done(ctx, registry.TransitionRequest{
-		Observation: &observation, Effect: registry.EffectApplied, PromoteBinding: true, DesiredPower: "running",
+		Observation: &observation, Effect: registry.EffectApplied, PromoteBinding: j.Op.Kind == "create", DesiredPower: "running",
 		Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "boot_mode": rt.BootSystem, "execution_epoch": ref.ExecutionEpoch}),
 	})
 }
