@@ -231,6 +231,77 @@ export class Client {
     }
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
+    getLifecycleStatus(id, signal) {
+        return this.get(machine(id) + "/lifecycle", signal);
+    }
+    async setDefaultLifecyclePolicy(policy, options = {}) {
+        const revision = options.revision ?? (await this.get("system/settings", options.signal)).revision;
+        return this.mutate("system/settings", { default_lifecycle_policy: policy }, { ...options, method: "PATCH", revision });
+    }
+    async updateLifecyclePolicy(id, policy, options = {}) {
+        const current = await this.getMachine(id, options.signal);
+        const policyRevision = options.policyRevision ?? current.lifecycle_policy?.desired_revision;
+        if (policyRevision === undefined)
+            throw new Error("Machine has no lifecycle policy revision");
+        return this.mutate(machine(id), { lifecycle_policy: policy, expected_policy_revision: policyRevision,
+            expected_generation: options.generation ?? current.binding_generation }, { ...options, method: "PATCH", revision: options.revision ?? current.revision });
+    }
+    applyDefaultLifecyclePolicy(revision, machines, options) {
+        return this.mutate("lifecycle-policy-applications", { default_policy_revision: revision, machines }, options);
+    }
+    async acquireRunningLease(id, reason, ttlSeconds, options = {}) {
+        const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision;
+        return this.mutate(machine(id) + "/leases", { semantics_version: 2, reason, ttl_seconds: ttlSeconds }, { ...options, revision });
+    }
+    async renewRunningLease(lease, ttlSeconds, options = {}) {
+        if (!lease.lease_token)
+            throw new Error("A current running lease token is required");
+        const next = await this.mutate("leases/" + segment(lease.lease_id), { lease_token: lease.lease_token, ttl_seconds: ttlSeconds }, { ...options, revision: lease.revision, method: "PATCH" });
+        return { ...next, lease_token: lease.lease_token };
+    }
+    releaseRunningLease(lease, options = {}) {
+        if (!lease.lease_token)
+            throw new Error("A current running lease token is required");
+        return this.mutate("leases/" + segment(lease.lease_id), { lease_token: lease.lease_token }, { ...options, revision: lease.revision, method: "DELETE" });
+    }
+    async withActivity(id, reason, run, ttlSeconds = 120) {
+        let lease = await this.acquireRunningLease(id, reason, ttlSeconds);
+        const progress = new AbortController();
+        let timer;
+        let renewing = Promise.resolve();
+        let closed = false;
+        const schedule = () => {
+            timer = setTimeout(() => {
+                renewing = this.renewRunningLease(lease, ttlSeconds).then(next => {
+                    lease = next;
+                    if (!closed)
+                        schedule();
+                }).catch(error => progress.abort(error));
+            }, ttlSeconds * 1000 / 3);
+        };
+        schedule();
+        let finished = false;
+        try {
+            const result = await run(progress.signal);
+            progress.signal.throwIfAborted();
+            finished = true;
+            return result;
+        }
+        finally {
+            closed = true;
+            clearTimeout(timer);
+            await renewing;
+            try {
+                await this.releaseRunningLease(lease);
+            }
+            catch (error) {
+                if (finished)
+                    throw error;
+            }
+            if (finished)
+                progress.signal.throwIfAborted();
+        }
+    }
     getPrivatePacketWakeRule(id, source, transport, port, signal) {
         return this.get(packetWakeRule(id, source, transport, port), signal);
     }

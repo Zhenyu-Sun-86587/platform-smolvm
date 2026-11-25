@@ -44,6 +44,7 @@ type Server struct {
 
 func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Server {
 	s := &Server{Engine: e, Snapshots: catalog, Auth: auth.New(e.DB), Web: web, mux: http.NewServeMux(), loginSlots: make(chan struct{}, 4), uploadSlots: make(chan struct{}, 8)}
+	s.ReconcileWorkerLeases = s.recoverWorkerLeases
 	s.routes()
 	return s
 }
@@ -532,6 +533,9 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
+		if v.LifecyclePolicy != nil && v.IdlePolicy != nil {
+			return registry.ErrInvalid
+		}
 		if v.BootMode != "" && v.BootMode != boot.BootMode {
 			return fmt.Errorf("%w: boot mode differs from the selected template", registry.ErrInvalid)
 		}
@@ -607,9 +611,10 @@ func (s *Server) machineRoutes() {
 					return auth.ErrForbidden
 				}
 				var v struct {
-					ChildName          string `json:"child_name"`
-					ExpectedGeneration int64  `json:"expected_generation"`
-					RequireIndependent bool   `json:"require_independent,omitempty"`
+					LifecyclePolicy    json.RawMessage `json:"lifecycle_policy,omitempty"`
+					ChildName          string          `json:"child_name"`
+					ExpectedGeneration int64           `json:"expected_generation"`
+					RequireIndependent bool            `json:"require_independent,omitempty"`
 				}
 				if err := decode(r, &v); err != nil {
 					return err

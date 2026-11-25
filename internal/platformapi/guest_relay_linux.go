@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
@@ -102,6 +103,8 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 	var scope registry.Binding
 	var authorized auth.GuestPrincipal
 	var control rt.NativeGuestControl
+	var policyWorker workerclient.Client
+	var managedPolicy bool
 	err := s.Auth.UseGuestGrant(ctx, peer, secret, auth.GuestExec, target, func(tx *sql.Tx, guest auth.GuestPrincipal) error {
 		machine, err := s.DB.GetMachine(ctx, target)
 		if err != nil {
@@ -121,6 +124,7 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 			return rt.ErrUnsupported
 		}
 		authorized = guest
+		policyWorker, managedPolicy = lifecycle.PolicyClient(adapter, scope)
 		return registry.AppendEvent(ctx, tx, "auth", target, "", map[string]string{"action": "guest_exec_admitted", "grant_id": guest.GrantID}, true)
 	})
 	if err != nil {
@@ -144,6 +148,36 @@ func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer aut
 	}
 	if _, err := verify(r); err != nil {
 		return err
+	}
+	if managedPolicy {
+		if _, err := s.Engine.ApplyMachinePolicy(ctx, scope, policyWorker); err != nil {
+			return err
+		}
+		hold, err := registry.NewID("guest-exec-")
+		if err != nil {
+			return err
+		}
+		execution := lifecycle.WorkerExecution(scope)
+		body := map[string]any{"protection_id": hold, "principal": authorized.GrantID, "reason": "guest_exec"}
+		var ack struct {
+			Revision int64 `json:"revision"`
+		}
+		if err := policyWorker.Lifecycle(ctx, "AcquireActivityHold", hold+"-open", execution, body, &ack); err != nil {
+			return err
+		}
+		defer func() {
+			closeCtx, stop := context.WithTimeout(context.Background(), 4*time.Second)
+			defer stop()
+			// Recovery can advance an active hold to suspect during the call.
+			scope := map[string]any{"protection_id": hold, "principal": authorized.GrantID}
+			if err := policyWorker.Lifecycle(closeCtx, "QueryProtection", "", execution, scope, &ack); err == nil {
+				scope["expected_revision"] = ack.Revision
+				_ = policyWorker.Lifecycle(closeCtx, "ReleaseActivityHold", hold+"-close", execution, scope, nil)
+			}
+		}()
+		if err := check(ctx); err != nil {
+			return err
+		}
 	}
 	call, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

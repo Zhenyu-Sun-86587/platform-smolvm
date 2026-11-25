@@ -15,22 +15,25 @@ import (
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/workerclient"
 	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/templates"
 )
 
 type Engine struct {
-	DB           *registry.Store
-	runtimes     *rt.Resolver
-	Config       config.Config
-	mu           sync.Mutex
-	running      map[string]bool
-	holds        map[string]int
-	waiters      map[string]int
-	activeAccess int
-	workers      sync.WaitGroup
-	Recover      map[string]func(context.Context, *Job) error
-	Extra        map[string]func(context.Context, *Job) error
+	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.Client)
+	collectorSession      string
+	DB                    *registry.Store
+	runtimes              *rt.Resolver
+	Config                config.Config
+	mu                    sync.Mutex
+	running               map[string]bool
+	holds                 map[string]int
+	waiters               map[string]int
+	activeAccess          int
+	workers               sync.WaitGroup
+	Recover               map[string]func(context.Context, *Job) error
+	Extra                 map[string]func(context.Context, *Job) error
 }
 
 func New(db *registry.Store, r *rt.Resolver, c config.Config) *Engine {
@@ -60,6 +63,7 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 }
 
 type Create struct {
+	LifecyclePolicy   json.RawMessage   `json:"lifecycle_policy,omitempty"`
 	Name              string            `json:"name"`
 	TemplateID        string            `json:"template_id"`
 	RuntimeInstanceID string            `json:"runtime_instance_id,omitempty"`
@@ -369,14 +373,17 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	}
 	native, hasNative := j.Runtime.(rt.NativeControl)
 	useNative := hasNative && !bindingRuntime(j.Binding).Legacy() && rt.NativePowerCapability(op.Kind) != ""
-	if dispatched {
+	policyReplay := dispatched && op.Kind == "configure" && j.Intent.Stage == "apply_lifecycle_policy"
+	if dispatched && !policyReplay {
 		if useNative {
 			return j.reconcileNative(ctx, native)
 		}
 		return j.reconcile(ctx)
 	}
-	if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
-		return err
+	if !policyReplay {
+		if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
+			return err
+		}
 	}
 	if useNative {
 		err = j.nativePower(ctx, native)

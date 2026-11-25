@@ -13,6 +13,9 @@ import (
 // Access registers demand before observing the VM. The durable worker owns any
 // restore beyond the life of the first connection.
 func (e *Engine) Access(ctx context.Context, p auth.Principal, id string) (registry.Binding, func(), error) {
+	return e.AccessAt(ctx, p, id, AccessEndpoint{Trigger: "api_access", Revision: 1})
+}
+func (e *Engine) AccessAt(ctx context.Context, p auth.Principal, id string, entry AccessEndpoint) (registry.Binding, func(), error) {
 	var zero registry.Binding
 	ctl, err := e.DB.Control(ctx)
 	if err != nil {
@@ -40,7 +43,21 @@ func (e *Engine) Access(ctx context.Context, p auth.Principal, id string) (regis
 		}
 		e.mu.Unlock()
 	}
-	b, err := e.waitForRunning(ctx, p, ctl, id)
+	var b registry.Binding
+	var hostRelease func()
+	m, err := e.DB.GetMachine(ctx, id)
+	if err == nil && m.CurrentBinding != nil {
+		adapter, routeErr := e.ForBinding(*m.CurrentBinding)
+		if routeErr != nil {
+			err = routeErr
+		} else if client, ok := PolicyClient(adapter, *m.CurrentBinding); ok {
+			b, hostRelease, err = e.workerAccess(ctx, p, *m.CurrentBinding, client, entry)
+		} else {
+			b, err = e.waitForRunning(ctx, p, ctl, id)
+		}
+	} else if err == nil {
+		err = registry.ErrNotFound
+	}
 	e.mu.Lock()
 	e.waiters[id]--
 	if e.waiters[id] == 0 {
@@ -53,10 +70,18 @@ func (e *Engine) Access(ctx context.Context, p auth.Principal, id string) (regis
 	}
 	_, err = e.DB.DB().ExecContext(ctx, "UPDATE machines SET last_user_activity_at=? WHERE id=? AND current_binding_id=?", time.Now().UnixMilli(), id, b.ID)
 	if err != nil {
+		if hostRelease != nil {
+			hostRelease()
+		}
 		release()
 		return zero, nil, err
 	}
-	return b, release, nil
+	return b, func() {
+		if hostRelease != nil {
+			hostRelease()
+		}
+		release()
+	}, nil
 }
 func (e *Engine) waitForRunning(parent context.Context, p auth.Principal, ctl registry.Control, id string) (registry.Binding, error) {
 	var zero registry.Binding

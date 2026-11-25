@@ -561,16 +561,24 @@ func (c *client) leases() *cobra.Command {
 	group := &cobra.Command{Use: "leases", Short: "Manage keep-running leases"}
 	group.AddCommand(c.list("list MACHINE", "leases", true))
 	var reason string
-	var ttl int
+	var ttl, semantics int
 	acquire := sub("acquire MACHINE", "Acquire a keep-running lease", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if semantics != 1 && semantics != 2 {
+			return errors.New("lease semantics version must be 1 or 2")
+		}
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
-		return c.mutation(cmd, "POST", res("machines", m.ID)+"/leases", map[string]any{"reason": reason, "ttl_seconds": ttl}, m.Revision)
+		body := map[string]any{"reason": reason, "ttl_seconds": ttl}
+		if semantics == 2 {
+			body["semantics_version"] = semantics
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+"/leases", body, m.Revision)
 	})
 	acquire.Flags().StringVar(&reason, "reason", "", "Reason for the keep-running lease")
 	acquire.Flags().IntVar(&ttl, "ttl-seconds", 300, "Lease duration")
+	acquire.Flags().IntVar(&semantics, "semantics-version", 1, "Expiry behavior: 1 keeps protection pending review, 2 expires at the Worker deadline")
 	group.AddCommand(acquire)
 	for _, action := range []string{"renew", "release"} {
 		action := action
@@ -662,6 +670,45 @@ func (c *client) settings() *cobra.Command {
 	group.AddCommand(sub("get", "Get current settings", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
 		return c.show(cmd, "system/settings")
 	}), c.update("patch", "system/settings", "PATCH", false))
+	return group
+}
+
+func (c *client) lifecyclePolicy() *cobra.Command {
+	group := &cobra.Command{Use: "lifecycle", Short: "Manage Worker lifecycle policies"}
+	group.AddCommand(sub("status MACHINE", "Show effective policy, revisions and activity blockers", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		return c.show(cmd, res("machines", args[0])+"/lifecycle")
+	}), c.update("apply-default", "lifecycle-policy-applications", http.MethodPost, false),
+		sub("application ID", "Show results for each selected machine", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+			return c.show(cmd, res("lifecycle-policy-applications", args[0]))
+		}))
+	var policyJSON string
+	var revision int64
+	set := sub("set MACHINE", "Update selected lifecycle policy fields", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		patch, err := jsonBody(strings.TrimSpace(policyJSON))
+		if err != nil {
+			return err
+		}
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		policyRevision := revision
+		if policyRevision == 0 {
+			var status struct {
+				Desired int64 `json:"desired_revision"`
+			}
+			if err := c.get(cmd.Context(), res("machines", m.ID)+"/lifecycle", &status); err != nil {
+				return err
+			}
+			policyRevision = status.Desired
+		}
+		return c.mutation(cmd, http.MethodPatch, res("machines", m.ID), map[string]any{
+			"expected_policy_revision": policyRevision, "expected_generation": m.Generation, "lifecycle_policy": patch,
+		}, m.Revision)
+	})
+	set.Flags().StringVar(&policyJSON, "policy", "", "JSON object containing the fields to change")
+	set.Flags().Int64Var(&revision, "policy-revision", 0, "Expected desired policy revision (default reads current revision)")
+	group.AddCommand(set)
 	return group
 }
 

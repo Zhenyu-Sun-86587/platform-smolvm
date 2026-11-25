@@ -52,12 +52,23 @@ func (r Route) Validate() error {
 
 type Adapter struct {
 	unimplemented
-	route Route
+	route           Route
+	lifecyclePolicy bool
 }
 
 func (a *Adapter) WorkerSocket() string { return a.route.WorkerSocket }
 
+func (a *Adapter) LifecycleWorkerSocket() string {
+	if a.lifecyclePolicy {
+		return a.WorkerSocket()
+	}
+	return ""
+}
+
 func (a *Adapter) Admit(kind string) error {
+	if kind == "configure" && a.LifecycleWorkerSocket() != "" {
+		return nil
+	}
 	if a.WorkerSocket() != "" {
 		switch kind {
 		case "service_create", "service_update", "service_delete":
@@ -73,7 +84,23 @@ func New(route Route) (*Adapter, error) {
 	if err := route.Validate(); err != nil {
 		return nil, err
 	}
-	return &Adapter{route: route}, nil
+	a := &Adapter{route: route}
+	if route.Manifest != "" && route.WorkerSocket != "" {
+		raw, err := route.LoadManifest()
+		if err != nil {
+			return nil, err
+		}
+		var manifest struct {
+			Contracts struct {
+				Policy int `json:"lifecycle_policy"`
+			}
+		}
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			return nil, err
+		}
+		a.lifecyclePolicy = manifest.Contracts.Policy == 1
+	}
+	return a, nil
 }
 
 func (a *Adapter) connect(ctx context.Context) (*http.Client, Handshake, error) {

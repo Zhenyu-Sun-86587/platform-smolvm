@@ -300,6 +300,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`, op.MachineID, r.Name, r.TemplateID, desired, spec, idle, r.KeepRunning, now.UnixMilli()); err != nil {
 			return Operation{}, false, uniqueConflict(err)
 		}
+		if err = SeedLifecycle(ctx, tx, op.MachineID, op.SourceMachineID, r.Request, op.ID); err != nil {
+			return Operation{}, false, err
+		}
 	}
 
 	locks := make(map[string]Lock)

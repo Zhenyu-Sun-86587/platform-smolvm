@@ -17,23 +17,26 @@ import (
 )
 
 type Lease struct {
-	ID          string    `json:"lease_id"`
-	MachineID   string    `json:"machine_id"`
-	PrincipalID string    `json:"principal_id"`
-	Generation  int64     `json:"binding_generation"`
-	State       string    `json:"state"`
-	Revision    int64     `json:"revision"`
-	Reason      string    `json:"reason"`
-	Expires     time.Time `json:"expires_at"`
-	Token       string    `json:"lease_token,omitempty"`
+	Semantics     int       `json:"semantics_version"`
+	Epoch         *int64    `json:"execution_epoch,omitempty"`
+	ReleaseReason *string   `json:"release_reason,omitempty"`
+	ID            string    `json:"lease_id"`
+	MachineID     string    `json:"machine_id"`
+	PrincipalID   string    `json:"principal_id"`
+	Generation    int64     `json:"binding_generation"`
+	State         string    `json:"state"`
+	Revision      int64     `json:"revision"`
+	Reason        string    `json:"reason"`
+	Expires       time.Time `json:"expires_at"`
+	Token         string    `json:"lease_token,omitempty"`
 }
 
-const leaseCols = "id,machine_id,principal_id,binding_generation,state,revision,reason,expires_at"
+const leaseCols = "id,machine_id,principal_id,binding_generation,state,revision,reason,expires_at,semantics_version,execution_epoch,release_reason"
 
 func scanLease(r row) (Lease, error) {
 	var l Lease
 	var at int64
-	err := r.Scan(&l.ID, &l.MachineID, &l.PrincipalID, &l.Generation, &l.State, &l.Revision, &l.Reason, &at)
+	err := r.Scan(&l.ID, &l.MachineID, &l.PrincipalID, &l.Generation, &l.State, &l.Revision, &l.Reason, &at, &l.Semantics, &l.Epoch, &l.ReleaseReason)
 	l.Expires = time.UnixMilli(at).UTC()
 	return l, err
 }
@@ -63,15 +66,11 @@ func (s *Server) leaseRoutes() {
 	})
 	for _, path := range []string{"POST /v1/machines/{machine}/leases", "PATCH /v1/leases/{lease}", "DELETE /v1/leases/{lease}"} {
 		s.route(path, func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-			var v struct {
-				Reason string `json:"reason,omitempty"`
-				TTL    int64  `json:"ttl_seconds,omitempty"`
-				Token  string `json:"lease_token,omitempty"`
-			}
+			var v leaseRequest
 			if err := decode(r, &v); err != nil {
 				return err
 			}
-			if r.Method != "DELETE" && (v.TTL <= 0 || v.TTL > 365*86400) {
+			if v.Version < 0 || v.Version > 2 || r.Method != "DELETE" && (v.TTL <= 0 || v.TTL > 365*86400) {
 				return registry.ErrInvalid
 			}
 			mid := r.PathValue("machine")
@@ -87,6 +86,22 @@ func (s *Server) leaseRoutes() {
 			rev, err := revision(r)
 			if err != nil {
 				return err
+			}
+			machine, err := s.DB.GetMachine(r.Context(), mid)
+			if err != nil {
+				return err
+			}
+			if b := machine.CurrentBinding; b != nil && b.RuntimeBundleID != "" {
+				adapter, err := s.ForBinding(*b)
+				if err != nil {
+					return err
+				}
+				if client, ok := lifecycle.PolicyClient(adapter, *b); ok {
+					return s.workerLease(w, r, p, *b, client, id, rev, v)
+				}
+			}
+			if v.Version > 1 {
+				return registry.ErrInvalid
 			}
 			return s.mutate(w, r, p, v, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
 				var l Lease
@@ -117,6 +132,7 @@ func (s *Server) leaseRoutes() {
 					token = base64.RawURLEncoding.EncodeToString(random[:])
 					hash := sha256.Sum256([]byte(token))
 					l.MachineID = mid
+					l.Semantics = 1
 					l.PrincipalID = p.ID
 					l.State = "active"
 					l.Revision = 1

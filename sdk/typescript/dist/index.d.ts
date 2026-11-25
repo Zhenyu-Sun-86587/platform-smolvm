@@ -122,8 +122,87 @@ export interface IdlePolicy {
     enabled: boolean;
     timeout_seconds: number;
 }
+export interface WakeConditions {
+    api_access: boolean;
+    service_access: boolean;
+    private_network_packet: boolean;
+    allow_cold_start: boolean;
+}
+export interface LifecyclePolicy {
+    schema_version: number;
+    auto_standby: boolean;
+    standby_after_seconds: number;
+    auto_hibernate: boolean;
+    hibernate_after_seconds: number;
+    keep_running: boolean;
+    reclaim_priority: number;
+    pressure_reclaim: "disabled" | "idle_only";
+    wake_conditions: WakeConditions;
+    activity: {
+        protect_running_tasks: boolean;
+        protect_exec_sessions: boolean;
+        protect_inbound_connections: boolean;
+        protect_outbound_connections: boolean;
+        protect_running_leases: true;
+        unknown: "block_auto_sleep";
+    };
+    min_running_after_wake_seconds: number;
+    retry_backoff_seconds: number;
+}
+export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_conditions" | "activity">> & {
+    wake_conditions?: Partial<WakeConditions>;
+    activity?: Partial<LifecyclePolicy["activity"]>;
+};
+export interface LifecycleStatus {
+    supported: boolean;
+    desired_revision: number;
+    applied_revision: number;
+    default_revision: number;
+    source: string;
+    desired: LifecyclePolicy;
+    applied?: LifecyclePolicy;
+    last_error?: string;
+    overrides?: LifecyclePolicyPatch;
+    worker?: {
+        power: string;
+        blockers: string[];
+        idle_ms?: number;
+        controlled_suspended: boolean;
+        last_decision?: {
+            operation_id: string;
+            kind: string;
+            stage: string;
+        };
+        collectors: Record<string, unknown>;
+    };
+}
+export interface PolicyApplication {
+    application_id: string;
+    default_policy_revision: number;
+    complete: boolean;
+    policy: LifecyclePolicy;
+    machines: {
+        machine_id: string;
+        expected_revision: number;
+        state: "applied" | "pending" | "rejected";
+        reason?: string;
+    }[];
+}
+export interface RunningLease {
+    lease_id: string;
+    machine_id: string;
+    semantics_version: number;
+    execution_epoch?: number;
+    revision: number;
+    state: string;
+    reason: string;
+    expires_at: string;
+    release_reason?: string;
+    lease_token?: string;
+}
 export type BootMode = "oci" | "system";
 export interface CreateMachine {
+    lifecycle_policy?: LifecyclePolicyPatch;
     boot_mode?: BootMode;
     runtime_instance_id?: string;
     name: string;
@@ -132,7 +211,8 @@ export interface CreateMachine {
     idle_policy?: IdlePolicy;
     start?: boolean;
 }
-export interface Machine extends CreateMachine {
+export interface Machine extends Omit<CreateMachine, "lifecycle_policy"> {
+    lifecycle_policy?: LifecycleStatus;
     machine_id: string;
     desktop_profile?: "software-vnc-v1";
     spec?: {
@@ -409,6 +489,34 @@ export declare class Client {
     socket<T>(path: string, protocol: string, connect: (url: URL, protocol: string, headers: Headers) => T): T;
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
+    getLifecycleStatus(id: string, signal?: AbortSignal): Promise<LifecycleStatus>;
+    setDefaultLifecyclePolicy(policy: LifecyclePolicyPatch, options?: WriteOptions): Promise<{
+        revision: number;
+        default_lifecycle_revision: number;
+        default_lifecycle_policy: LifecyclePolicy;
+    }>;
+    updateLifecyclePolicy(id: string, policy: LifecyclePolicyPatch, options?: MachineWriteOptions & {
+        policyRevision?: number;
+    }): Promise<Operation>;
+    applyDefaultLifecyclePolicy(revision: number, machines: {
+        machine_id: string;
+        expected_revision: number;
+    }[], options?: WriteOptions): Promise<PolicyApplication>;
+    acquireRunningLease(id: string, reason: string, ttlSeconds: number, options?: WriteOptions): Promise<RunningLease>;
+    renewRunningLease(lease: RunningLease, ttlSeconds: number, options?: WriteOptions): Promise<{
+        lease_token: string;
+        lease_id: string;
+        machine_id: string;
+        semantics_version: number;
+        execution_epoch?: number;
+        revision: number;
+        state: string;
+        reason: string;
+        expires_at: string;
+        release_reason?: string;
+    }>;
+    releaseRunningLease(lease: RunningLease, options?: WriteOptions): Promise<RunningLease>;
+    withActivity<T>(id: string, reason: string, run: (signal: AbortSignal) => Promise<T>, ttlSeconds?: number): Promise<T>;
     getPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, signal?: AbortSignal): Promise<PrivatePacketWakeRule>;
     setPrivatePacketWakeRule(id: string, source: string, transport: "tcp" | "udp", port: number, enabled: boolean, ruleRevision: number, options?: MachineWriteOptions): Promise<PrivatePacketWakeRule>;
     getOperation(id: string, signal?: AbortSignal): Promise<Operation>;

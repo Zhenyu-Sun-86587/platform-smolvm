@@ -56,9 +56,11 @@ type Fault struct {
 func (f *Fault) Error() string { return f.Code + ": " + f.Message }
 
 func (c Client) call(ctx context.Context, q request, pass *os.File, expect *descriptor) (json.RawMessage, *os.File, error) {
+	backup := q.Method == "PrepareBackupClosure" || q.Method == "ReadBackupMember" || q.Method == "ReleaseBackupClosure"
 	privateWake := q.Method == "QueryPrivatePacketWakeEndpoint" || q.Method == "QueryPrivatePacketWakeRule" || q.Method == "ApplyPrivatePacketWakeRule"
-	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || (privateWake && q.Expected == nil) ||
-		(q.Expected != nil && (q.Expected.InstanceID == "" || q.Expected.Epoch < 1 || q.Expected.IncarnationID == "" && !privateWake)) {
+	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || (!backup && q.Expected == nil) ||
+		(q.Expected != nil && (q.Expected.InstanceID == "" || q.Expected.Epoch < 0 ||
+			(!lifecycleMethod(q.Method) && (q.Expected.Epoch < 1 || q.Expected.IncarnationID == "" && !privateWake)))) {
 		return nil, nil, errors.New("invalid local Worker execution scope")
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)

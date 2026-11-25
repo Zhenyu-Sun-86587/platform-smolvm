@@ -2,7 +2,8 @@ import { PageIntro } from "./daytona/page"
 import { RefreshCw } from "lucide-react"
 import { Button } from "./daytona/button"
 import { useState } from "react"
-import type { BackupPolicy, BackupRun, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Operation, Page, RuntimeProfile } from "../../sdk/typescript/src/index"
+import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, num, Records, Section, segment, State, str, time, useRemote } from "./common"
 import type { Actions } from "./main"
@@ -165,7 +166,7 @@ function Templates({ actions, revision }: Omit<Props, "tab">) {
 
 type Credential = { id?: string; token_id?: string; credential_id?: string; ssh_key_id?: string; revision?: number; label?: string; scope?: unknown; revoked_at?: string; created_at?: string; [key: string]: unknown }
 function Settings({ actions, revision }: Omit<Props, "tab">) {
-  const settings = useRemote<Record<string, unknown>>("system/settings", revision)
+  const settings = useRemote<Record<string, unknown> & { default_lifecycle_policy?: LifecyclePolicy }>("system/settings", revision)
   const tokens = useRemote<Page<Credential>>("tokens", revision)
   const keys = useRemote<Page<Credential>>("ssh-keys", revision)
   const certificates = useRemote<Page<Credential>>("client-certificates", revision)
@@ -191,6 +192,15 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     })}>Update</button>}>
       <Callout error={settings.error} />{settings.data && <Details value={settings.data} />}
     </Section>
+    {settings.data?.default_lifecycle_policy && <Section title="Default lifecycle policy" actions={<button onClick={() => actions.dialog({
+      title: "Edit default lifecycle policy", submit: "Save", sheet: true,
+      fields: policyFields(settings.data!.default_lifecycle_policy!),
+      act: form => actions.mutate("system/settings", { default_lifecycle_policy: policyInput(form) },
+        { method: "PATCH", revision: Number(settings.data!.revision) }),
+    })}>Edit defaults</button>}>
+      <p>New machines inherit default revision {String(settings.data.default_lifecycle_revision)}.</p>
+      <Details value={{ ...settings.data.default_lifecycle_policy }} />
+    </Section>}
     <Section title="API tokens" actions={<button onClick={() => actions.dialog({
       title: "Create API token",
       fields: [
