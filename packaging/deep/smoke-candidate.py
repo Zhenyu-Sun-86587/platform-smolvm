@@ -16,7 +16,7 @@ import tarfile
 import tempfile
 import time
 
-from bundle import BUILD_LOCK, BUILD_RECORD, ROOTFS, check_runtime
+from bundle import BUILD_LOCK, BUILD_RECORD, MANIFEST, ROOTFS, check_runtime, verify_bundle
 from bundle_inputs import BundleError, canonical_json, file_digest, read_json, require
 
 
@@ -78,7 +78,7 @@ def smoke_workspace():
                 time.sleep(0.25)
 
 
-def run_oci(binary, libraries, rootfs, probe):
+def run_oci(artifacts, probe):
     # The VMM UID must traverse the staged bundle even if its build user has
     # an inaccessible home. The private mount holds only the test UID claims.
     with smoke_workspace() as root:
@@ -86,10 +86,11 @@ def run_oci(binary, libraries, rootfs, probe):
         for name in ("guest", "home", "state", "var-lib"):
             (root / name).mkdir()
             (root / name).chmod(0o755)
-        shutil.copy2(binary, root / "smolvm")
-        shutil.copytree(libraries, root / "lib")
+        for name in ("smolvm", "smolvm-bin"):
+            shutil.copy2(artifacts / name, root / name)
+        shutil.copytree(artifacts / "lib", root / "lib")
         (root / "lib").chmod(0o755)
-        subprocess.run(["tar", "-xzf", str(rootfs), "--no-overwrite-dir", "-C", str(root / "guest")], check=True)
+        subprocess.run(["tar", "-xzf", str(artifacts / ROOTFS), "--no-overwrite-dir", "-C", str(root / "guest")], check=True)
         write_image(probe, root / "workload.tar")
         command = """
 set -euo pipefail
@@ -126,11 +127,15 @@ def main():
     try:
         require(os.geteuid() == 0, "run the candidate smoke as root on the isolated KVM worker")
         artifacts = args.artifacts.resolve(strict=True)
-        check_runtime(artifacts)
+        if (artifacts / MANIFEST).exists():
+            checksum = verify_bundle(artifacts)
+            print(f"Verified installed Bundle {checksum}")
+        else:
+            check_runtime(artifacts)
         kvm = json.loads(subprocess.run(
             [str(args.probe.resolve(strict=True)), "host"], capture_output=True, text=True, check=True,
         ).stdout)
-        guest = run_oci(artifacts / "smolvm-bin", artifacts / "lib", artifacts / ROOTFS, args.probe)
+        guest = run_oci(artifacts, args.probe)
         require(guest["kernel_release"] == read_json(artifacts / BUILD_LOCK)["kernel"]["release"],
                 "the running kernel does not match the build lock")
         report = {
