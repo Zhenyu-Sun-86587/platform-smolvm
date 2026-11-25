@@ -79,4 +79,20 @@ python3 -m unittest discover -s packaging/deep -p 'test_wp00.py' -v
 
 Ubuntu 24.04 开发构建产出了 `libkrun` 和静态 musl `krun-init`。已逐字节验证 init 嵌在库中。原有的 `check-glibc-floor.sh 2.31` 检查报告库引用 GLIBC_2.34。该产物仅供开发验证；发布候选需要在兼容构建环境重新链接并通过同一检查。
 
-同日用源码构建的 `libkrun.so.2.0.0`、`libkrunfw.so.5.5.0` 和嵌入式 init 启动了一台 2 vCPU、512 MiB 的实际 KVM Guest。在独立网络命名空间运行，测试程序从专用 virtiofs 根目录执行，回传 `SMOLVM_GUEST_BOOT kernel=6.18.60 vcpus=2 pid=416` 后正常退出。OCI Agent 启动和完整 Bundle 验收另行测试。
+同日用源码构建的 `libkrun.so.2.0.0`、`libkrunfw.so.5.5.0` 和嵌入式 init 启动了一台 2 vCPU、512 MiB 的实际 KVM Guest。在独立网络命名空间运行，测试程序从专用 virtiofs 根目录执行，回传 `SMOLVM_GUEST_BOOT kernel=6.18.60 vcpus=2 pid=416` 后正常退出。
+
+随后用静态 musl Agent、源码构建的 crun 1.31 和 Alpine 3.24.3 运行了实际 OCI 链路。通过 `smolvm machine run --image` 启动本地镜像归档，在新 Guest 中执行 shell，收到 `SMOLVM_OCI_EXEC`、内核版本 `6.18.60` 和 Alpine 版本 `3.24.3`，命令成功退出。归档种子的 SHA-256 为 `5961914bd8eef1c627e21b029a2d569a9d9979b089ba56aa4d4e68ebbdef14db`，smolvm 仓库中的 `scripts/deep/locks/oci-x86_64.json` 同时锁定 apk 数据库、crane 和 crun 构建记录。此运行使用上述 Ubuntu 开发库，发布候选仍须以其自身的 Bundle 重跑启动测试。
+
+### Guest 用户态冻结实验
+
+主线程在 2 vCPU、512 MiB 的 x86_64 KVM Guest 中，启用 `CONFIG_SMOLVM_GUEST_GATE_POC=y`，以静态测试程序为工作负载，连续冷启动三次。Guest 内没有运行 Agent。每次测试都运行了三个用户进程计数器，分别绑定两个 vCPU，其中一个进程运行于子 PID 命名空间。helper 从 Guest 自身的 tmpfs `/run` 读取计数。观察区间使用 Guest 单调时钟。
+
+| 情形 | 三次观测 |
+| --- | --- |
+| 正常释放 | 进入冻结 1.39–1.46 ms，保持 150.71–151.41 ms，窗口内三个计数均未变化 |
+| 取消 | 进入冻结 1.56–1.65 ms，保持 150.58–151.30 ms，窗口内三个计数均未变化 |
+| helper 收到 SIGKILL | 保持 12.89–14.70 ms 后退出冻结 |
+| 800 ms 保持期限 | 实测保持 796.27–798.85 ms，定时器按 Guest jiffies 触发 |
+| D 态阻塞和未应答 FUSE LOOKUP | 两条路径均返回 `-EBUSY`，冻结尝试耗时 159.92–167.89 ms，进入已武装状态的时间为零 |
+
+每种情形结束后三个计数器均继续推进，解除 FUSE 阻塞后再次释放也通过。可重复的程序和运行方法在 libkrunfw 的 `tests/guest-gate/`。使用宿主 UID 映射的 virtiofs 作为 `/run` 时，计数文件显示为 UID 1000，helper 拒绝注册，Guest 仍可运行。受管身份、网络隔离和设备写入闭包另有验收项，严格克隆能力保持 `unknown`。
