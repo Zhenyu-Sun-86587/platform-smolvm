@@ -84,7 +84,7 @@ func (e *Engine) systemAuthorizedSSHKeys(ctx context.Context, mid string, create
 	}
 	// This is a shared AuthorizedKeysFile. With no principals option, OpenSSH
 	// requires the requested Unix username to appear in the user certificate.
-	keys = append(keys, "cert-authority,restrict,pty "...)
+	keys = append(keys, "cert-authority,restrict,pty,port-forwarding "...)
 	return append(keys, ssh.MarshalAuthorizedKey(ca.PublicKey())...), nil
 }
 
@@ -111,7 +111,7 @@ func (e *Engine) SignManagedSSHCertificate(mid string, key ssh.PublicKey) (strin
 		Key: key, Serial: binary.BigEndian.Uint64(serial[:]), CertType: ssh.UserCert,
 		KeyId: mid, ValidPrincipals: []string{"root"},
 		ValidAfter: uint64(now.Unix()), ValidBefore: uint64(expires.Unix()),
-		Permissions: ssh.Permissions{Extensions: map[string]string{"permit-pty": ""}},
+		Permissions: ssh.Permissions{Extensions: map[string]string{"permit-pty": "", "permit-port-forwarding": ""}},
 	}
 	if err := cert.SignCert(rand.Reader, ca); err != nil {
 		return "", time.Time{}, err
