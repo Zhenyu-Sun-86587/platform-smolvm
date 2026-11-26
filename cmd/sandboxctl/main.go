@@ -27,14 +27,16 @@ import (
 )
 
 type client struct {
-	origin, token, caFile string
-	jsonOutput, noWait    bool
-	strictResult          bool
-	waitTimeout           time.Duration
-	epoch, key            string
-	revision, generation  int64
-	http                  *http.Client
-	base                  *url.URL
+	origin, token, caFile                        string
+	profileName, configDir                       string
+	useProfiles, explicitOrigin, explicitProfile bool
+	jsonOutput, noWait                           bool
+	strictResult                                 bool
+	waitTimeout                                  time.Duration
+	epoch, key                                   string
+	revision, generation                         int64
+	http                                         *http.Client
+	base                                         *url.URL
 }
 
 type apiError struct {
@@ -123,7 +125,7 @@ func reportError(w io.Writer, jsonOutput bool, err error) int {
 }
 
 func rootCommand() (*cobra.Command, *client) {
-	api := &client{}
+	api := &client{useProfiles: true, explicitOrigin: os.Getenv("SANDBOX_URL") != "", explicitProfile: os.Getenv("SANDBOX_PROFILE") != ""}
 	origin := os.Getenv("SANDBOX_URL")
 	if origin == "" {
 		origin = "https://127.0.0.1:8443"
@@ -132,6 +134,16 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().StringVar(&api.origin, "url", origin, "Platform URL (SANDBOX_URL)")
 	root.PersistentFlags().StringVar(&api.token, "token", os.Getenv("SANDBOX_TOKEN"), "Platform access token (prefer SANDBOX_TOKEN)")
 	root.PersistentFlags().StringVar(&api.caFile, "ca-file", os.Getenv("SANDBOX_CA_FILE"), "Additional trusted server CA PEM file")
+	profile := os.Getenv("SANDBOX_PROFILE")
+	if profile == "" {
+		profile = "default"
+	}
+	root.PersistentFlags().StringVar(&api.profileName, "profile", profile, "Saved Platform profile (SANDBOX_PROFILE)")
+	root.PersistentFlags().StringVar(&api.configDir, "config-dir", os.Getenv("SANDBOXCTL_CONFIG_DIR"), "Local profile directory")
+	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		api.explicitOrigin = api.explicitOrigin || cmd.Flags().Changed("url")
+		api.explicitProfile = api.explicitProfile || cmd.Flags().Changed("profile")
+	}
 	root.PersistentFlags().BoolVar(&api.jsonOutput, "json", false, "Write compact JSON where applicable")
 	root.PersistentFlags().BoolVar(&api.noWait, "no-wait", false, "Print accepted operations without polling")
 	root.PersistentFlags().BoolVar(&api.strictResult, "strict-result", false, "Return nonzero for partial or unknown operation effects")
@@ -142,7 +154,8 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().Int64Var(&api.generation, "generation", 0, "Original machine generation for a replay")
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
 		api.files(), api.leases(), api.desktops(), api.credentials(), api.templates(), api.settings(), api.lifecyclePolicy(), api.events(),
-		api.exec(), api.execs(), api.ssh(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
+		api.exec(), api.execs(), api.ssh(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward(),
+		api.login(), api.managedSSHPrepare(), api.managedSSHProxy(), api.managedSSHHostKey(), missingSSHAlias())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
 	networks := api.networks()
@@ -159,16 +172,18 @@ func (c *client) setup() error {
 	if c.http != nil {
 		return nil
 	}
-	base, err := url.Parse(c.origin)
-	if err != nil || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || (base.Path != "" && base.Path != "/") {
-		return errors.New("platform URL must be an HTTP or HTTPS origin")
+	if c.useProfiles {
+		if err := c.applyProfile(); err != nil {
+			return err
+		}
 	}
-	ip := net.ParseIP(base.Hostname())
-	if base.Scheme != "https" && !(base.Scheme == "http" && (base.Hostname() == "localhost" || ip.IsLoopback())) {
-		return errors.New("HTTPS is required for a non-loopback platform URL")
+	base, err := platformOrigin(c.origin)
+	if err != nil {
+		return err
 	}
+	c.origin = base.String()
 	if c.token == "" {
-		return errors.New("provide a platform token through SANDBOX_TOKEN or --token")
+		return errors.New("run sandboxctl login or provide a platform token through SANDBOX_TOKEN or --token")
 	}
 	if c.epoch != "" && c.key == "" || c.epoch == "" && c.key != "" {
 		return errors.New("provide --control-epoch and --idempotency-key together")

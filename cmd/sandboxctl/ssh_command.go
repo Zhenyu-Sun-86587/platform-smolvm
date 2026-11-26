@@ -1,22 +1,28 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 func (c *client) ssh() *cobra.Command {
 	var user, identity string
-	var batch bool
+	var batch, legacy bool
 	command := sub("ssh MACHINE [-- COMMAND [ARG...]]", "Open SSH through the platform using the verified Guest host key", cobra.MinimumNArgs(1), func(cmd *cobra.Command, args []string) error {
 		if len(args) > 1 && cmd.ArgsLenAtDash() != 1 {
 			return errors.New("put the remote SSH command after --")
 		}
-		id, err := c.machineID(cmd.Context(), args[0])
+		ref := args[0]
+		if !safeMachineID.MatchString(ref) && !strings.HasPrefix(ref, "name:") {
+			ref = "name:" + ref
+		}
+		id, err := c.machineID(cmd.Context(), ref)
 		if err != nil {
 			return err
 		}
@@ -34,6 +40,26 @@ func (c *client) ssh() *cobra.Command {
 		if c.caFile != "" {
 			base += " --ca-file " + openSSHCommandWord(c.caFile)
 		}
+		proxy := base + " ssh-proxy --machine " + id
+		managed := identity == "" && !legacy
+		var credentials sshCredentialPaths
+		if managed {
+			if user != "root" {
+				return errors.New("managed SSH uses the root principal; select --legacy or --identity for other users")
+			}
+			dir, err := os.MkdirTemp("", "sandboxctl-managed-ssh-")
+			if err != nil {
+				return err
+			}
+			defer os.RemoveAll(dir)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+			credentials, err = c.prepareSSHCredential(ctx, dir, id)
+			cancel()
+			if err != nil {
+				return err
+			}
+			proxy += " --managed"
+		}
 		options := []string{
 			"-F", os.DevNull,
 			"-o", "StrictHostKeyChecking=yes",
@@ -42,16 +68,21 @@ func (c *client) ssh() *cobra.Command {
 			"-o", "GlobalKnownHostsFile=" + os.DevNull,
 			"-o", "UserKnownHostsFile=" + os.DevNull,
 			"-o", "HostKeyAlias=sandbox-" + id,
-			"-o", "ProxyCommand=" + base + " ssh-proxy --machine " + id,
+			"-o", "ProxyCommand=" + proxy,
 			// OpenSSH first queries key ordering and queries the host again
 			// during verification. The proxy may wake the Guest between them.
 			"-o", "KnownHostsCommand=" + base + " ssh-host-key --if-ready " + id,
 			"-l", user,
 		}
+		if managed {
+			options = append(options, "-i", credentials.identity,
+				"-o", "CertificateFile="+credentials.certificate, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+				"-o", "ConnectTimeout=90", "-o", "PreferredAuthentications=publickey")
+		}
 		if identity != "" {
 			options = append(options, "-i", identity, "-o", "IdentitiesOnly=yes")
 		}
-		if batch {
+		if batch || managed {
 			options = append(options, "-o", "BatchMode=yes")
 		}
 		options = append(options, "--", id)
@@ -69,7 +100,8 @@ func (c *client) ssh() *cobra.Command {
 		return nil
 	})
 	command.Flags().StringVar(&user, "user", "root", "Guest SSH user")
-	command.Flags().StringVar(&identity, "identity", "", "OpenSSH private key file")
+	command.Flags().StringVar(&identity, "identity", "", "Use an enrolled OpenSSH private key on the legacy tunnel")
+	command.Flags().BoolVar(&legacy, "legacy", false, "Use enrolled keys or an SSH agent on the published SSH service")
 	command.Flags().BoolVar(&batch, "batch-mode", false, "Disable OpenSSH password and confirmation prompts")
 	return command
 }
