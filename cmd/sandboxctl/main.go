@@ -104,6 +104,12 @@ func main() {
 			if apiErr.Detail.ReasonCode != "" {
 				detail["reason_code"] = apiErr.Detail.ReasonCode
 			}
+			if apiErr.Detail.Stage != "" {
+				detail["stage"] = apiErr.Detail.Stage
+			}
+			if apiErr.Detail.Scope != "" {
+				detail["scope"] = apiErr.Detail.Scope
+			}
 			_ = json.NewEncoder(root.ErrOrStderr()).Encode(map[string]any{"status": apiErr.Status, "error": detail})
 		} else {
 			fmt.Fprintln(root.ErrOrStderr(), err)
@@ -252,6 +258,8 @@ type apiErrorDetail = struct {
 	Retry       string `json:"retry"`
 	Capability  string `json:"capability"`
 	ReasonCode  string `json:"reason_code"`
+	Stage       string `json:"stage"`
+	Scope       string `json:"scope"`
 }
 
 func (c *client) get(ctx context.Context, path string, dest any) error {

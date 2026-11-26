@@ -64,7 +64,7 @@ class LifecyclePolicy(TypedDict, total=False):
     retry_backoff_seconds: int
 
 
-class LifecycleCollector(TypedDict):
+class LifecycleCollector(TypedDict, total=False):
     fresh: bool
     session: str
     seq: int
