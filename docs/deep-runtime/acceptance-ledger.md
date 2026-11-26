@@ -134,7 +134,7 @@
 | A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
-| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | dirty 集合闭包、rebase、预取/共享缓存的独立对照，以及网络存储和更高并发。 |
+| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | 本地 96 次 rebase 与预取、24 次共享页缓存对照和 KVM/设备写并集已通过。网络存储和更高并发的块读通道仍待测量。 |
 
 ### A23 备份发布与保留中断
 
@@ -237,7 +237,7 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 | Running，STOP 后撤销在途服务 | 已提交的 HTTP 返回 401，Guest 无该业务记录。管理 API 单独取得 hold 并完成 | `a31-acknowledged-running-withdraw-v4.log` · `9db32544ddd4ac13fb1485106f39e3f123bdceb14360fd1caa529e07f0a75e2b` |
 | Standby，保存完成后人为延迟本次 Worker 6.5 秒 | 跨越 5 秒 RPC 超时，HTTP 200。一次精确恢复，两个新 hold，两条业务各一次 | `a31-owner-control-timeout-stable-v3.log` · `c61b6b8f18640e163023e570edf0528c982f02fb561e84cd4bbc86fcda33b89d` |
 
-[公开切点夹具](../../tests/integration/lifecycle_access_cut_kvm.py)
+冻结平台 `c095c4f` 的二进制 `c7045e98f56f09805774ea0c785f7773a172831042e88bd13dca6168875659ba` 同样通过 6.5 秒延迟组。日志 `.build/wp23/a31-owned-final-platform-c095c4f.log` 的 SHA-256 为 `2483c770907a0b135b58fbeba8c8beb01a7a11d40dc010bcf18c6c3a68f38a0f`。[公开切点夹具](../../tests/integration/lifecycle_access_cut_kvm.py)
 
 ### A33 实际 balloon 反馈与预算
 
