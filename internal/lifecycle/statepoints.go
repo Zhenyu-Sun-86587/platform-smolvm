@@ -42,6 +42,10 @@ func statePointDigest(request rt.StatePointSubmission) string {
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(JSON(request)))
 }
 
+func knownActivationDecision(decision string) bool {
+	return decision == "" || decision == "none" || decision == "commit"
+}
+
 func (j *Job) driveStatePoint(ctx context.Context, routeError error) error {
 	control, ok := j.Runtime.(rt.StatePointControl)
 	kind := j.Op.Kind
@@ -211,6 +215,9 @@ func (j *Job) confirmStatePoint(ctx context.Context, control rt.StatePointContro
 		point == nil || point.CaptureID != request.Parameters.CaptureID {
 		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker receipt differs from the persisted StatePoint dispatch scope"})
 	}
+	if !knownActivationDecision(point.ActivationDecision) {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker StatePoint activation decision is unrecognized"})
+	}
 	if receipt.Phase == "NEW" || (request.Kind == rt.VMRollback && receipt.Phase == "COMPLETED" && point.TargetOperationID == "") {
 		stage := point.Stage
 		if stage == "" {
@@ -226,8 +233,15 @@ func (j *Job) confirmStatePoint(ctx context.Context, control rt.StatePointContro
 		if code == "" {
 			code = "NATIVE_OPERATION_ABORTED"
 		}
-		return j.finish(ctx, registry.Failed, registry.TransitionRequest{Effect: registry.EffectNone,
-			Error: JSON(map[string]string{"code": strings.TrimPrefix(code, "E_"), "message": point.Error})})
+		step := registry.TransitionRequest{Effect: registry.EffectNone,
+			Error: JSON(map[string]string{"code": strings.TrimPrefix(code, "E_"), "message": point.Error})}
+		if point.ActivationDecision == "commit" {
+			if kind != "restore_target" || receipt.Decision != "ABORT" || point.Stage != "aborted" || receipt.Execution != nil {
+				return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker has no fenced disposition for the committed StatePoint target"})
+			}
+			step.Effect, step.FencedActivationFailure = registry.EffectUnknown, true
+		}
+		return j.Failed(ctx, step)
 	}
 	if receipt.Phase != "COMPLETED" || !statePointDigestValid(point.ManifestDigest) || point.RepresentationID == "" {
 		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker did not prove the committed StatePoint root"})
@@ -250,7 +264,8 @@ func (j *Job) confirmStatePoint(ctx context.Context, control rt.StatePointContro
 		}
 		if target.Kind != "restore_target" || target.InstanceID != receipt.InstanceID || target.BundleDigest != receipt.BundleDigest ||
 			target.ExpectedExecutionEpoch != receipt.ExpectedExecutionEpoch || target.StatePoint == nil ||
-			target.StatePoint.CaptureID != point.CaptureID || target.StatePoint.RescueCaptureID != point.RescueCaptureID {
+			target.StatePoint.CaptureID != point.CaptureID || target.StatePoint.RescueCaptureID != point.RescueCaptureID ||
+			!knownActivationDecision(target.StatePoint.ActivationDecision) {
 			return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "rollback target differs from its saved rescue capture"})
 		}
 		switch target.Phase {

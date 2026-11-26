@@ -17,6 +17,7 @@ type forkRuntime struct {
 	forkReceipt rt.OperationReceipt
 	retries     int
 	cancels     int
+	retryAborts bool
 }
 
 func (n *forkRuntime) DiscoverExecution(_ context.Context, name string) (rt.ExecutionRef, error) {
@@ -74,14 +75,22 @@ func (n *forkRuntime) RetryFork(_ context.Context, id string, control rt.ForkCon
 		return rt.OperationReceipt{}, rt.ErrInvalid
 	}
 	n.forkReceipt.Revision++
-	failed := &n.forkReceipt.Fork.Children[1]
-	failed.Attempt++
-	failed.ExecutionEpoch++
-	failed.OperationID += "-retry"
-	inc := "child-vmm-retry"
-	failed.IncarnationID = &inc
-	failed.Phase = "COMPLETED"
-	n.references[failed.Name] = rt.ExecutionRef{InstanceID: failed.InstanceID, IncarnationID: inc, ExecutionEpoch: failed.ExecutionEpoch}
+	for i := range n.forkReceipt.Fork.Children {
+		failed := &n.forkReceipt.Fork.Children[i]
+		if failed.Phase != "ABORTED" || failed.Cancelled || failed.AdmissionError != "" {
+			continue
+		}
+		failed.Attempt++
+		failed.ExecutionEpoch++
+		failed.OperationID += "-retry"
+		inc := fmt.Sprintf("child-vmm-retry-%d", i)
+		failed.IncarnationID = &inc
+		failed.Phase, failed.ActivationDecision = "COMPLETED", "commit"
+		if n.retryAborts {
+			failed.Phase, failed.ActivationDecision = "ABORTED", "none"
+		}
+		n.references[failed.Name] = rt.ExecutionRef{InstanceID: failed.InstanceID, IncarnationID: inc, ExecutionEpoch: failed.ExecutionEpoch}
+	}
 	return rt.OperationReceipt{}, rt.ErrUnavailable
 }
 
@@ -183,6 +192,7 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 		t.Fatal(machine, err)
 	}
 	worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage, worker.forkReceipt.Fork.Children[1].Phase = "COMPLETED", "complete", "ABORTED"
+	worker.forkReceipt.Fork.Children[1].ActivationDecision = "commit"
 	worker.forkReceipt.Revision++
 	drive(partial)
 	replayed, found, err := db.Accept(ctx, request)
@@ -217,6 +227,135 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 	}
 	if _, replay, err := db.Mutate(ctx, envelope, apply); err != nil || !replay {
 		t.Fatal(replay, err)
+	}
+}
+
+func TestNativeForkFailedEffectsPreserveAbortedActivationAcrossRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, decision, effect string
+	}{
+		{"legacy_receipt", "", registry.EffectNone},
+		{"aborted_before_commit", "none", registry.EffectNone},
+		{"one_committed_attempt", "commit", registry.EffectUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			engine, worker, request := nativeForkFixture(t, ctx)
+			db := engine.DB
+			accepted, _, err := db.Accept(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func() registry.Operation {
+				t.Helper()
+				op, err := db.GetOperation(ctx, accepted.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return op
+			}
+			drive := func() {
+				t.Helper()
+				if err := engine.drive(ctx, read()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			drive()
+			worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage = "COMPLETED", "complete"
+			worker.forkReceipt.Fork.Children[0].Phase = "ABORTED"
+			worker.forkReceipt.Fork.Children[1].Phase = "ABORTED"
+			worker.forkReceipt.Fork.Children[1].ActivationDecision = tc.decision
+			drive()
+			drive()
+			failed, replay, err := db.Accept(ctx, request)
+			if err != nil || !replay || failed.State != registry.Failed || failed.Effect != tc.effect || !failed.SourceLockReleased ||
+				failed.Children[0].State != "quarantined" || failed.Children[1].State != "quarantined" || worker.submissions != 1 {
+				t.Fatal(failed, replay, worker.submissions, err)
+			}
+			if tc.effect != registry.EffectUnknown {
+				return
+			}
+			worker.retryAborts = true
+			envelope := registry.MutationRequest{PrincipalID: request.PrincipalID, Epoch: request.Epoch, Key: "fenced-retry",
+				Scope: "POST /v1/operations/" + failed.ID + "/retry", Request: JSON(struct{}{}), ExpectedRevision: failed.Version}
+			if _, _, err := db.Mutate(ctx, envelope, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+				op, err := engine.RetryNativeFork(ctx, tx, failed, failed.Version)
+				return registry.MutationResult{Response: JSON(op)}, err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := engine.drive(ctx, read()); err != rt.ErrUnavailable || worker.retries != 1 {
+				t.Fatal(err, worker.retries)
+			}
+			engine = New(db, engine.runtimes, engine.Config)
+			drive()
+			drive()
+			retried := read()
+			if retried.ID != failed.ID || retried.State != registry.Failed || retried.Effect != registry.EffectUnknown ||
+				retried.Children[0].Attempt != 1 || retried.Children[1].Attempt != 1 || worker.submissions != 1 || worker.retries != 1 {
+				t.Fatal(retried, worker.submissions, worker.retries)
+			}
+		})
+	}
+}
+
+func TestNativeForkValidatesOptionalActivationDecision(t *testing.T) {
+	submission := rt.ForkSubmission{OperationID: "fork", Expected: rt.ExecutionRef{InstanceID: "parent", IncarnationID: "parent-execution"}}
+	submission.Parameters.Children = []string{"child"}
+	incarnation := "child-execution"
+	for _, tc := range []struct {
+		decision    string
+		incarnation *string
+		valid       bool
+	}{
+		{"", nil, true},
+		{"none", &incarnation, true},
+		{"commit", &incarnation, true},
+		{"commit", nil, false},
+		{"commit", &submission.Expected.IncarnationID, false},
+		{"unrecognized", &incarnation, false},
+	} {
+		child := rt.ForkChildReceipt{Name: "child", InstanceID: "child-slot", OperationID: "attempt-1", Phase: "ABORTED",
+			ExecutionEpoch: 1, IncarnationID: tc.incarnation, ActivationDecision: tc.decision}
+		if err := verifyForkReceiptChildren(submission, []rt.ForkChildReceipt{child}); (err == nil) != tc.valid {
+			t.Fatal(child, err)
+		}
+	}
+}
+
+func TestNativeForkRetainsKnownActivationAfterReceiptRegression(t *testing.T) {
+	ctx := context.Background()
+	engine, worker, request := nativeForkFixture(t, ctx)
+	accepted, _, err := engine.DB.Accept(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() registry.Operation {
+		t.Helper()
+		op, err := engine.DB.GetOperation(ctx, accepted.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return op
+	}
+	if err := engine.drive(ctx, accepted); err != nil {
+		t.Fatal(err)
+	}
+	worker.forkReceipt.Fork.Children[0].Phase = "NEW"
+	worker.forkReceipt.Fork.Children[0].ActivationDecision = "commit"
+	if err := engine.drive(ctx, read()); err != nil {
+		t.Fatal(err)
+	}
+	worker.forkReceipt.Revision++
+	worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage = "COMPLETED", "complete"
+	worker.forkReceipt.Fork.Children[0].Phase = "ABORTED"
+	worker.forkReceipt.Fork.Children[0].ActivationDecision = "none"
+	worker.forkReceipt.Fork.Children[1].Phase = "ABORTED"
+	if err := engine.drive(ctx, read()); err != nil {
+		t.Fatal(err)
+	}
+	if result := read(); result.State != registry.RecoveryRequired || result.Effect != registry.EffectUnknown {
+		t.Fatal(result)
 	}
 }
 
