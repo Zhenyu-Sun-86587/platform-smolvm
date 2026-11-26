@@ -23,6 +23,8 @@ import (
 )
 
 type Route struct {
+	Reader          string
+	LoadManifest    func() (json.RawMessage, error)
 	Adapter         rt.Adapter
 	Worker          workerclient.Client
 	ResolveNetwork  func(*rt.LaunchNetwork) (*rt.LaunchNetwork, error)
@@ -119,6 +121,8 @@ func (s *Server) Handler(controllerPin string) http.Handler {
 		return readGate(ctx, s.journal.db)
 	})
 	rootRPC(s, mux, nodeproto.SetGatePath, s.journal.setGate)
+	s.registerWorkerRPC(mux)
+	s.registerBackups(mux)
 	s.registerRuntimeRPC(mux)
 	s.registerStreams(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

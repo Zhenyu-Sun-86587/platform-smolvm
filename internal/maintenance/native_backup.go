@@ -18,12 +18,17 @@ import (
 	"golang.org/x/sys/unix"
 
 	"sandbox-platform/internal/config"
+	"sandbox-platform/internal/nodeproto"
+	"sandbox-platform/internal/nodes"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/customsmolvm"
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
 type NativeArchive struct {
+	WorkerID        string `json:"worker_id,omitempty"`
+	LocalInstanceID string `json:"local_instance_id,omitempty"`
 	RuntimeInstance string `json:"runtime_instance_id"`
 	Bundle          string `json:"bundle_digest"`
 	Reader          string `json:"state_reader_id"`
@@ -32,17 +37,21 @@ type NativeArchive struct {
 }
 
 type nativeSelection struct {
-	Route       customsmolvm.Route
-	Captures    map[string]string
-	Generations []string
+	Route           customsmolvm.Route
+	Node            *config.Node
+	LocalInstanceID string
+	Captures        map[string]string
+	Generations     []string
 }
 
 type pinnedNative struct {
-	archive  NativeArchive
-	route    customsmolvm.Route
-	id       string
-	raw      []byte
-	manifest closureManifest
+	client      workerclient.BackupControl
+	closeClient func()
+	archive     NativeArchive
+	route       customsmolvm.Route
+	id          string
+	raw         []byte
+	manifest    closureManifest
 }
 
 var ErrNativeBackupRetry = errors.New("native backup is awaiting Worker reconciliation")
@@ -71,14 +80,44 @@ type installedBundle struct {
 }
 
 func routeSuffix(route customsmolvm.Route) string {
-	digest := sha256.Sum256([]byte(route.InstanceID + "\x00" + route.Bundle))
-	return fmt.Sprintf("%x", digest[:12])
+	return nodeproto.BackupSuffix(route.InstanceID, route.Bundle)
+}
+
+func backupRoutes(cfg config.Config) []nativeSelection {
+	routes := make([]nativeSelection, 0, len(cfg.Runtime.Custom))
+	for _, r := range cfg.Runtime.Custom {
+		routes = append(routes, nativeSelection{Route: r})
+	}
+	for i := range cfg.Nodes {
+		n := &cfg.Nodes[i]
+		for _, r := range n.Routes {
+			installed := customsmolvm.Route{InstanceID: r.RuntimeInstanceID, Bundle: r.BundleDigest, Reader: r.Reader, Manifest: r.Manifest}
+			routes = append(routes, nativeSelection{Route: installed, Node: n, LocalInstanceID: r.LocalInstanceID})
+		}
+	}
+	return routes
+}
+
+func (p nativeSelection) backupClient(ctx context.Context, store *registry.Store) (workerclient.BackupControl, func(), error) {
+	if p.Node == nil {
+		return workerclient.Client{Socket: p.Route.WorkerSocket, Bundle: p.Route.Bundle}, func() {}, nil
+	}
+	control, err := store.Control(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, _, err := nodes.NewClient(*p.Node, control, store)
+	if err != nil {
+		return nil, nil, err
+	}
+	a := c.Adapter(nodeproto.Route{RuntimeInstanceID: p.Route.InstanceID, LocalInstanceID: p.LocalInstanceID, BundleDigest: p.Route.Bundle})
+	return a, c.CloseIdleConnections, nil
 }
 
 func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSelection, error) {
-	routes := make(map[string]customsmolvm.Route)
-	for _, route := range cfg.Runtime.Custom {
-		routes[route.InstanceID] = route
+	routes := make(map[string]nativeSelection)
+	for _, r := range backupRoutes(cfg) {
+		routes[r.Route.InstanceID] = r
 	}
 	selected := make(map[string]*nativeSelection)
 	rows, err := db.QueryContext(ctx, `SELECT p.runtime_instance_id,p.runtime_bundle_id,p.runtime_capture_id,s.sha256,'capture'
@@ -98,12 +137,22 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 		if err := rows.Scan(&routeID, &bundle, &id, &digest, &kind); err != nil {
 			return nil, err
 		}
-		route, ok := routes[routeID]
-		if !ok || route.Bundle != bundle || route.WorkerSocket == "" {
+		candidate, ok := routes[routeID]
+		route := candidate.Route
+		if !ok || route.Bundle != bundle || route.WorkerSocket == "" && candidate.Node == nil {
 			return nil, fmt.Errorf("%w: endpoint for the pinned bundle is unavailable", ErrNativeClosure)
 		}
 		if selected[routeID] == nil {
-			selected[routeID] = &nativeSelection{Route: route, Captures: map[string]string{}, Generations: []string{}}
+			candidate.Captures = map[string]string{}
+			candidate.Generations = []string{}
+			if candidate.Node != nil {
+				var owner, local string
+				err := db.QueryRowContext(ctx, "SELECT worker_id,local_instance_id FROM runtime_instances WHERE id=? AND runtime_bundle_id=?", routeID, bundle).Scan(&owner, &local)
+				if err != nil || owner != candidate.Node.ID || local != candidate.LocalInstanceID {
+					return nil, ErrNativeClosure
+				}
+			}
+			selected[routeID] = &candidate
 		}
 		set := selected[routeID]
 		if kind == "capture" {
@@ -130,8 +179,12 @@ func nativeEndpoints(plans []nativeSelection) []registry.NativeBackupRoute {
 	routes := make([]registry.NativeBackupRoute, 0, len(plans))
 	for _, plan := range plans {
 		route := plan.Route
-		routes = append(routes, registry.NativeBackupRoute{Instance: route.InstanceID, Bundle: route.Bundle,
-			Reader: route.Reader, Socket: route.WorkerSocket})
+		endpoint := registry.NativeBackupRoute{Instance: route.InstanceID, Bundle: route.Bundle, Reader: route.Reader, Socket: route.WorkerSocket}
+		if plan.Node != nil {
+			endpoint.WorkerID = plan.Node.ID
+			endpoint.LocalInstanceID = plan.LocalInstanceID
+		}
+		routes = append(routes, endpoint)
 	}
 	return routes
 }
@@ -230,7 +283,7 @@ func selectBackupIDs(ctx context.Context, db *sql.DB, query string) ([]string, e
 func nativeWorkerError(err error) error {
 	var worker *workerclient.Fault
 	var transport *net.OpError
-	if errors.As(err, &transport) || errors.Is(err, io.EOF) || errors.Is(err, unix.ECONNRESET) ||
+	if errors.Is(err, rt.ErrUnavailable) || errors.As(err, &transport) || errors.Is(err, io.EOF) || errors.Is(err, unix.ECONNRESET) ||
 		(errors.As(err, &worker) && worker.Code == "E_RECOVERING") {
 		return errors.Join(ErrNativeBackupRetry, err)
 	}
@@ -251,7 +304,7 @@ func pinNative(ctx context.Context, db *sql.DB, cfg config.Config, backup *Backu
 	}
 	var pinned []pinnedNative
 	for _, plan := range plans {
-		closure, err := pinNativeRoute(ctx, backup.ID, plan)
+		closure, err := pinNativeRoute(ctx, backup.Registry, backup.ID, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +333,7 @@ func exportNative(ctx context.Context, stage string, pinned []pinnedNative) ([]N
 	return archives, files, nil
 }
 
-func pinNativeRoute(ctx context.Context, runID string, plan nativeSelection) (pinnedNative, error) {
+func pinNativeRoute(ctx context.Context, store *registry.Store, runID string, plan nativeSelection) (pinnedNative, error) {
 	suffix := routeSuffix(plan.Route)
 	root := filepath.Join("native", suffix)
 	pinned := pinnedNative{id: runID + "-" + suffix, route: plan.Route,
@@ -290,12 +343,21 @@ func pinNativeRoute(ctx context.Context, runID string, plan nativeSelection) (pi
 		captures = append(captures, id)
 	}
 	slices.Sort(captures)
-	client := workerclient.Client{Socket: plan.Route.WorkerSocket, Bundle: plan.Route.Bundle}
+	client, closeClient, err := plan.backupClient(ctx, store)
+	if err != nil {
+		return pinned, err
+	}
+	defer closeClient()
+	pinned.client, pinned.closeClient = client, closeClient
+	if plan.Node != nil {
+		pinned.archive.WorkerID = plan.Node.ID
+		pinned.archive.LocalInstanceID = plan.LocalInstanceID
+	}
 	registeredBundle, err := plan.Route.LoadManifest()
 	if err != nil {
 		return pinned, errors.Join(ErrNativeClosure, err)
 	}
-	file, expected, err := client.PrepareBackup(ctx, workerclient.BackupSelection{
+	file, expected, err := client.BackupManifest(ctx, workerclient.BackupSelection{
 		ID: pinned.id, Reader: plan.Route.Reader, Captures: captures, Generations: plan.Generations, BundleManifest: registeredBundle,
 	})
 	if err != nil {
@@ -327,14 +389,19 @@ func exportNativeRoute(ctx context.Context, stage string, pinned pinnedNative) (
 		return nil, err
 	}
 	files := []File{{Path: manifestPath, SHA256: strings.TrimPrefix(pinned.archive.Digest, "sha256:"), Bytes: int64(len(pinned.raw))}}
-	client := workerclient.Client{Socket: pinned.route.WorkerSocket, Bundle: pinned.route.Bundle}
+	client := pinned.client
+	defer pinned.closeClient()
 	for relative, bytes := range pinned.manifest.Members {
 		if !validNativeMember(relative) || bytes < 0 {
 			return nil, fmt.Errorf("%w: invalid Worker backup member", ErrNativeClosure)
 		}
-		file, _, err := client.OpenBackupMember(ctx, pinned.id, relative)
+		file, size, err := client.BackupMember(ctx, pinned.id, relative)
 		if err != nil {
 			return nil, nativeWorkerError(err)
+		}
+		if size != bytes {
+			file.Close()
+			return nil, errors.Join(ErrNativeClosure, errors.New("backup member length differs from manifest"))
 		}
 		entry, err := copyNativeMember(ctx, stage, filepath.Join(root, relative), file, bytes)
 		if err != nil {
@@ -371,7 +438,7 @@ func validNativeMember(path string) bool {
 	return filepath.IsLocal(path) && filepath.Clean(path) == path && (strings.HasPrefix(path, "statepoints/") || strings.HasPrefix(path, "blocks/"))
 }
 
-func copyNativeMember(ctx context.Context, stage, relative string, source *os.File, expected int64) (result File, err error) {
+func copyNativeMember(ctx context.Context, stage, relative string, source io.ReadCloser, expected int64) (result File, err error) {
 	defer func() { err = errors.Join(err, source.Close()) }()
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(stage, relative)), 0700); err != nil {
 		return result, err
@@ -448,6 +515,9 @@ func verifyNative(ctx context.Context, db *sql.DB, cfg config.Config, archive st
 	for i, native := range backup.Native {
 		plan := plans[i]
 		suffix := routeSuffix(plan.Route)
+		if native.WorkerID != "" && (plan.Node == nil || plan.Node.ID != native.WorkerID || plan.LocalInstanceID != native.LocalInstanceID) || native.WorkerID == "" && plan.Node != nil {
+			return ErrNativeClosure
+		}
 		if native.RuntimeInstance != plan.Route.InstanceID || native.Bundle != plan.Route.Bundle || native.Reader != plan.Route.Reader ||
 			native.Directory != filepath.Join("native", suffix) {
 			return ErrNativeClosure
@@ -578,9 +648,29 @@ func ReleaseNativeBackup(ctx context.Context, cfg config.Config, store *registry
 		}
 	}
 	for _, route := range routes {
-		client := workerclient.Client{Socket: route.Socket, Bundle: route.Bundle}
+		var client workerclient.BackupControl = workerclient.Client{Socket: route.Socket, Bundle: route.Bundle}
+		closeClient := func() {}
+		if route.WorkerID != "" {
+			found := false
+			for _, r := range backupRoutes(cfg) {
+				if r.Node == nil || r.Node.ID != route.WorkerID || r.LocalInstanceID != route.LocalInstanceID || r.Route.InstanceID != route.Instance || r.Route.Bundle != route.Bundle || r.Route.Reader != route.Reader {
+					continue
+				}
+				client, closeClient, err = r.backupClient(ctx, store)
+				if err != nil {
+					return err
+				}
+				found = true
+				break
+			}
+			if !found {
+				return ErrNativeClosure
+			}
+		}
 		suffix := routeSuffix(customsmolvm.Route{InstanceID: route.Instance, Bundle: route.Bundle})
-		if err := client.ReleaseBackup(ctx, runID+"-"+suffix); err != nil {
+		err := client.ReleaseBackup(ctx, runID+"-"+suffix)
+		closeClient()
+		if err != nil {
 			var fault *workerclient.Fault
 			if !errors.As(err, &fault) {
 				return err
@@ -619,13 +709,19 @@ func RecoverNativeBackup(ctx context.Context, cfg config.Config, archive, keyFil
 	}
 	defer os.RemoveAll(stage)
 	for _, native := range metadata.Native {
-		for _, route := range cfg.Runtime.Custom {
+		found := false
+		for _, r := range backupRoutes(cfg) {
+			route := r.Route
 			if route.InstanceID == native.RuntimeInstance && route.Bundle == native.Bundle && route.Reader == native.Reader {
 				if err := nativeReader(ctx, archive, native, route, filepath.Join(stage, filepath.Base(native.Directory)), workerCatalog); err != nil {
 					return metadata, err
 				}
+				found = true
 				break
 			}
+		}
+		if !found {
+			return metadata, ErrNativeClosure
 		}
 	}
 	if err := syncTree(stage); err != nil {

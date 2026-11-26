@@ -11,7 +11,39 @@ export interface BackupRun {
   state: "running" | "verified" | "failed" | "retiring" | "retired"
   started_at: string; finished_at?: string; failure_code?: string
 }
+export type WorkerPlacement = { mode: "auto" } | { mode: "pinned"; worker_id: string }
+export type WorkerMode = "active" | "cordoned" | "draining" | "drained" | "decommissioned"
+export interface WorkerMaintenance {
+  worker_id: string
+  mode: WorkerMode
+  revision: number
+  phase: string
+  coverage: string
+  reason?: string
+  blockers?: string[]
+}
+export interface Worker {
+  worker_id: string
+  name: string
+  desired_mode: WorkerMode
+  observed_status: string
+  revision: number
+  fresh_budget: boolean
+  sampled_at?: string
+  maintenance: WorkerMaintenance
+}
+export interface PlacementReservation {
+  operation_id: string
+  worker_id: string
+  runtime_instance_id: string
+  bundle_id: string
+  phase: string
+  attempt: number
+  request_digest: string
+}
 export interface RuntimeProfile {
+  worker_id?: string
+  local_instance_id?: string
   runtime_instance_id: string
   runtime_bundle_id: string
   state_reader_id: string
@@ -46,6 +78,7 @@ export interface ForkBatch {
   volume_policy?: { default?: "clone" }
 }
 export interface ErrorDetail {
+  candidates?: { worker_id: string; runtime_instance_id?: string; reason: string }[]
   code?: string
   message?: string
   effect?: Effect
@@ -67,6 +100,7 @@ export interface OperationChild {
   error_code?: string
 }
 export interface Operation {
+  worker_id?: string
   operation_id: string
   control_epoch?: string
   source_machine_id?: string
@@ -216,6 +250,7 @@ export interface MachineNetwork extends Required<NetworkSelection> {
 }
 export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
+  placement?: WorkerPlacement
   live_compute_growth?: boolean
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
@@ -253,6 +288,7 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
   state_reason?: unknown
   binding?: {
     binding_id?: string
+    worker_id?: string
     runtime_instance_id?: string
     runtime_bundle_id?: string
     execution_epoch?: number
@@ -868,6 +904,12 @@ export class Client {
   detachVolume(id: string, volumeRevision: number, options: MachineWriteOptions & { generation: number; revision: number }) {
     return this.mutate("volume-attachments/" + segment(id),
       { expected_volume_revision: volumeRevision, expected_generation: options.generation }, { ...options, method: "DELETE" })
+  }
+  listWorkers(signal?: AbortSignal) { return this.pages<Worker>("workers", 100, signal) }
+  getWorker(id: string, signal?: AbortSignal) { return this.get<Worker>("workers/" + encodeURIComponent(id), signal) }
+  getPlacement(operationId: string, signal?: AbortSignal) { return this.get<PlacementReservation>(operation(operationId) + "/placement", signal) }
+  setWorkerMode(id: string, mode: WorkerMode, reason: string, revision: number, options?: WriteOptions) {
+    return this.mutate<WorkerMaintenance>("workers/" + encodeURIComponent(id) + "/maintenance", { mode, reason }, { ...options, method: "PATCH", revision })
   }
   listRuntimeProfiles(signal?: AbortSignal) { return this.pages<RuntimeProfile>("runtime-profiles", 100, signal) }
   machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions) {

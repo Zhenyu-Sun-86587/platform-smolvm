@@ -31,6 +31,86 @@ paths:
                 required:
                 - control_epoch
         default: {$ref: '#/components/responses/Error'}
+  /workers:
+    get:
+      operationId: list_workers
+      parameters:
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Worker ownership, last observed status and maintenance state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Worker'}}
+                  next_cursor: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /workers/{worker}:
+    parameters:
+    - {name: worker, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: get_worker
+      responses:
+        '200':
+          description: Registered Worker and its most recent budget evidence
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Worker'}
+        default: {$ref: '#/components/responses/Error'}
+  /workers/{worker}/maintenance:
+    parameters:
+    - {name: worker, in: path, required: true, schema: {type: string}}
+    patch:
+      operationId: set_worker_maintenance
+      parameters:
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/Revision'}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode, reason]
+              properties:
+                mode: {$ref: '#/components/schemas/WorkerMode'}
+                reason: {type: string, minLength: 1}
+              additionalProperties: false
+      responses:
+        '200':
+          description: Desired revision and observed maintenance progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorkerMaintenance'}
+        default: {$ref: '#/components/responses/Error'}
+  /operations/{operation}/placement:
+    parameters:
+    - {name: operation, in: path, required: true, schema: {type: string}}
+    get:
+      operationId: get_operation_placement
+      responses:
+        '200':
+          description: Fixed owner, attempt, resource hold and dispatch phase
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [operation_id, worker_id, phase, attempt]
+                properties:
+                  operation_id: {type: string}
+                  worker_id: {type: string}
+                  phase: {type: string}
+                  attempt: {type: integer}
+                  request_digest: {type: string}
+                  native_digest: {type: string}
+                  runtime_instance_id: {type: string}
+                  bundle_id: {type: string}
+        default: {$ref: '#/components/responses/Error'}
   /runtime-profiles:
     get:
       operationId: list_runtime_profiles
@@ -2836,10 +2916,39 @@ components:
       required:
       - error
       additionalProperties: false
+    WorkerMode:
+      type: string
+      enum: [active, cordoned, draining, drained, decommissioned]
+    WorkerMaintenance:
+      type: object
+      required: [worker_id, revision, mode, phase, coverage]
+      properties:
+        worker_id: {type: string}
+        revision: {type: integer}
+        mode: {$ref: '#/components/schemas/WorkerMode'}
+        phase: {type: string}
+        coverage: {type: string}
+        reason: {type: string}
+        blockers: {type: array, items: {type: string}}
+    Worker:
+      type: object
+      required: [worker_id, name, desired_mode, observed_status, revision, fresh_budget, maintenance]
+      properties:
+        worker_id: {type: string}
+        name: {type: string}
+        desired_mode: {$ref: '#/components/schemas/WorkerMode'}
+        observed_status: {type: string}
+        revision: {type: integer}
+        sampled_at: {type: string, format: date-time}
+        fresh_budget: {type: boolean}
+        sample: {type: object, additionalProperties: true}
+        maintenance: {$ref: '#/components/schemas/WorkerMaintenance'}
     RuntimeProfile:
       type: object
       required: [runtime_instance_id, runtime_bundle_id, state_reader_id, status, verification_status, security_status, boot_profiles, running_bindings, standby_bindings, hibernated_bindings, bundle_binding_refs, bundle_snapshot_refs, capabilities]
       properties:
+        worker_id: {type: string}
+        local_instance_id: {type: string}
         runtime_instance_id: {type: string}
         runtime_bundle_id: {type: string}
         state_reader_id: {type: string}
@@ -2905,6 +3014,7 @@ components:
     Operation:
       type: object
       properties:
+        worker_id: {type: string}
         operation_id: {type: string, minLength: 1}
         revision: {type: integer, minimum: 1}
         machine_id: {type: string, minLength: 1}
@@ -3110,6 +3220,10 @@ components:
     CreateMachine:
       type: object
       properties:
+        placement:
+          oneOf:
+          - {type: object, required: [mode], properties: {mode: {const: auto}}, additionalProperties: false}
+          - {type: object, required: [mode, worker_id], properties: {mode: {const: pinned}, worker_id: {type: string, minLength: 1}}, additionalProperties: false}
         lifecycle_policy: {$ref: '#/components/schemas/LifecyclePolicy'}
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}

@@ -151,7 +151,8 @@ func (c *client) machines() *cobra.Command {
 		return c.show(cmd, res("machines", args[0])+"/network")
 	}))
 
-	var template, bootMode, runtimeInstance, networkID, networkMode string
+	var template, bootMode, runtimeInstance, networkID, networkMode, workerID string
+	var autoPlacement bool
 	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -166,6 +167,14 @@ func (c *client) machines() *cobra.Command {
 		if liveGrowth {
 			body["live_compute_growth"] = true
 		}
+		if workerID != "" && autoPlacement {
+			return fmt.Errorf("--worker and --auto-placement are mutually exclusive")
+		}
+		if workerID != "" {
+			body["placement"] = map[string]string{"mode": "pinned", "worker_id": workerID}
+		} else if autoPlacement {
+			body["placement"] = map[string]string{"mode": "auto"}
+		}
 		if runtimeInstance != "" {
 			body["runtime_instance_id"] = runtimeInstance
 		}
@@ -179,10 +188,10 @@ func (c *client) machines() *cobra.Command {
 			}
 			body["network"] = network
 		}
-		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("storage-gib") {
+		if bootMode != "system" && !liveGrowth && !autoPlacement && workerID == "" || cmd.Flags().Changed("storage-gib") {
 			resources["storage_gib"] = storage
 		}
-		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("overlay-gib") {
+		if bootMode != "system" && !liveGrowth && !autoPlacement && workerID == "" || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
 		if cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds") {
@@ -194,6 +203,8 @@ func (c *client) machines() *cobra.Command {
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
 	create.Flags().BoolVar(&liveGrowth, "live-compute-growth", false, "Enable live CPU and RAM growth on a compatible System runtime and disable full VM state capture")
+	create.Flags().StringVar(&workerID, "worker", "", "Pin a System machine to an enrolled Worker")
+	create.Flags().BoolVar(&autoPlacement, "auto-placement", false, "Select an eligible Worker for a System machine")
 	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
 	create.Flags().StringVar(&networkID, "network", "", "Registered Worker private network for System templates")
 	create.Flags().StringVar(&networkMode, "network-mode", "", "System network mode (native or fixed_internal), using the platform default when omitted")

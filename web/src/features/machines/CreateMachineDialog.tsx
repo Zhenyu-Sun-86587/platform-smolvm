@@ -63,8 +63,10 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const system = selected?.system === true
   const networks = useCollection<PrivateNetwork>(system ? "networks" : "", revision)
   const [runtimeID, setRuntimeID] = useState("")
+  const hasWorkers = systemRuntimes.some(item => item.worker_id && item.worker_id !== "local-worker")
+  const automatic = hasWorkers && !runtimeID
   const runtime = systemRuntimes.find(profile => profile.runtime_instance_id === runtimeID) ?? systemRuntimes[0]
-  const availableNetworks = (networks.items ?? []).filter(network => network.runtime_instance_id === runtime?.runtime_instance_id)
+  const availableNetworks = (automatic ? [] : networks.items ?? []).filter(network => network.runtime_instance_id === runtime?.runtime_instance_id)
 
   const [name, setName] = useState(() =>
     fixtureScene === "36" ? "invalid name " + "x".repeat(250) : fixtureScene === "03" ? "amber-cedar" : preview ? "" : suggestName()
@@ -124,7 +126,11 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       start,
     }
     if (system && runtime) {
-      body.runtime_instance_id = runtime.runtime_instance_id
+      if (automatic) body.placement = { mode: "auto" }
+      else {
+        body.runtime_instance_id = runtime.runtime_instance_id
+        if (runtime.worker_id && runtime.worker_id !== "local-worker") body.placement = { mode: "pinned", worker_id: runtime.worker_id }
+      }
       const mode = networkModes.find(item => item.value === networkMode)?.value
       if (network || mode) body.network = { network_id: network || undefined, mode }
       if (growth && supports(runtime, "boot.live_compute_growth")) body.live_compute_growth = true
@@ -228,8 +234,9 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
         <label className={styles.field}><span className={styles.fieldCaption}>Labels <CircleHelp size={12} aria-hidden="true" /></span><textarea value={labels} disabled={busy || uncertain} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
       </> : selected && <div className={styles.advanced}>
         {system && <label className={styles.field}><span>Runtime</span>
-          <select aria-label="Runtime" value={runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>
-            {systemRuntimes.map(item => <option key={item.runtime_instance_id}>{item.runtime_instance_id}</option>)}
+          <select aria-label="Runtime" value={automatic ? "" : runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>
+            {hasWorkers && <option value="">Automatic placement</option>}
+            {systemRuntimes.map(item => <option key={item.runtime_instance_id} value={item.runtime_instance_id}>{hasWorkers ? `${item.worker_id} · ${item.runtime_instance_id}` : item.runtime_instance_id}</option>)}
           </select>
         </label>}
         <details>

@@ -200,6 +200,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1019, "1019_legacy_idle_pressure.sql"},
 		{1020, "1020_multi_worker.sql"},
 		{1021, "1021_worker_placement.sql"},
+		{1022, "1022_worker_artifacts.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0

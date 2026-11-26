@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -61,4 +62,17 @@ func readOnlyFile(file *os.File) bool {
 	flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFL, 0)
 	info, statErr := file.Stat()
 	return err == nil && flags&unix.O_ACCMODE == unix.O_RDONLY && flags&unix.O_PATH == 0 && statErr == nil && info.Mode().IsRegular()
+}
+
+type BackupControl interface {
+	BackupManifest(context.Context, BackupSelection) (io.ReadCloser, string, error)
+	BackupMember(context.Context, string, string) (io.ReadCloser, int64, error)
+	ReleaseBackup(context.Context, string) error
+}
+
+func (c Client) BackupManifest(ctx context.Context, selection BackupSelection) (io.ReadCloser, string, error) {
+	return c.PrepareBackup(ctx, selection)
+}
+func (c Client) BackupMember(ctx context.Context, id, name string) (io.ReadCloser, int64, error) {
+	return c.OpenBackupMember(ctx, id, name)
 }

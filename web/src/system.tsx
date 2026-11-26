@@ -5,7 +5,7 @@ import { ApiKeys } from "./features/settings/ApiKeys"
 import { OrganizationPreview, PreviewPage } from "./features/settings/Previews"
 import styles from "./features/settings/settings.module.css"
 import catalog from "./features/catalog/catalog.module.css"
-import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile, SystemMetrics } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile, SystemMetrics, Worker } from "../../sdk/typescript/src/index"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
@@ -39,6 +39,27 @@ export function System({ tab, ...props }: Props) {
     {tab === "operations" ? <Operations {...props} /> : tab === "templates" ? <Templates {...props} />
       : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : tab === "backups" ? <Backups {...props} /> : <Settings {...props} />}
   </>
+}
+
+function Workers({ actions, revision }: Pick<Props, "actions" | "revision">) {
+  const workers = useCollection<Worker>("workers", revision)
+  return <Section title="Workers">
+    <Callout error={workers.error} />
+    <div className="rows">{workers.items?.map(worker => <div key={worker.worker_id} className="row">
+      <strong>{worker.name}</strong><code>{worker.worker_id}</code>
+      <span>{label(worker.observed_status)}</span><span>{label(worker.maintenance.phase)}</span>
+      <span>{worker.fresh_budget ? "Fresh budget" : "No fresh budget"}</span>
+      <span>{worker.maintenance.coverage === "known_only" ? "Inventory covers known objects" : label(worker.maintenance.coverage)}</span>
+      {!!worker.maintenance.blockers?.length && <span>{worker.maintenance.blockers.map(label).join(", ")}</span>}
+      <Button variant="secondary" onClick={() => actions.dialog({
+        title: "Worker maintenance", submit: "Apply", fields: [
+          {name: "mode", label: "Desired mode", value: worker.desired_mode, options: ["active", "cordoned", "draining"].map(value => ({value, label: label(value)}))},
+          {name: "reason", label: "Reason", required: true},
+        ], act: form => actions.mutate("workers/" + segment(worker.worker_id) + "/maintenance",
+          {mode: str(form, "mode"), reason: str(form, "reason")}, {method:"PATCH", revision:worker.revision}),
+      })}>Change mode</Button>
+    </div>)}</div>
+  </Section>
 }
 
 function Backups({ actions, revision }: Omit<Props,"tab">) {
@@ -285,6 +306,7 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     </div>
   })
   return <>
+    <Workers actions={actions} revision={revision} />
     {secret != null && <Section title="Issued credential" actions={<button onClick={() => setSecret(undefined)}>Dismiss</button>}><Records value={secret} /></Section>}
     <Section title="Platform settings" actions={<button disabled={!settings.data} onClick={() => actions.dialog({
       title: "Update settings", submit: "Save",
