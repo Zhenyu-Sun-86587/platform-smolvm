@@ -312,6 +312,51 @@ def assert_fenced(peer):
         pass
 
 
+def fork_after_lost_reply(platform, source, ref):
+    view = platform.wait_capability(source, "state.fork_batch")
+    key = "original-fork-response-lost"
+    body = dict(children=[dict(name="Only child of unacknowledged batch")], require_independent=True)
+    marker = os.urandom(20).hex()
+    platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" > /run/original-fork-marker', "write", marker])
+    path = source + "/fork-batches"
+    client = HTTPConnection("127.0.0.1", platform.port, timeout=20)
+    try:
+        client.request("POST", "/v1/" + path, json.dumps({**body, "expected_generation": view["binding_generation"]}),
+                       {"Content-Type": "application/json", "Origin": platform.origin, "Cookie": platform.cookie,
+                        "X-CSRF-Token": platform.csrf, "If-Control-Epoch": platform.epoch, "Idempotency-Key": key,
+                        "If-Match": f'"{view["revision"]}"'})
+        # Bytes are waiting in the kernel. Discard the entire response without reading its operation or children.
+        assert select.select([client.sock], [], [], 20)[0]
+        assert client.sock.recv(1, socket.MSG_PEEK) == b"H"
+    finally:
+        client.close()
+    database = platform.root / "platform/platform.db"
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
+        first, = db.execute("SELECT operation_id,request_hash FROM idempotency WHERE key=?", (key,)).fetchall()
+    platform.restart()
+    repeated = platform.change(path, key, body, view)
+    assert repeated["operation_id"] == first[0]
+    result = platform.complete(repeated)
+    child, = result["children"]
+    assert child["state"] == "ready" and child["machine_id"] == repeated["children"][0]["machine_id"]
+    _, child_ref = platform.context(child["machine_id"])
+    assert platform.guest(child_ref, ["cat", "/run/original-fork-marker"]).decode() == marker
+    capture = result["result"]["capture_id"]
+    with sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True) as catalog:
+        assert catalog.execute("""SELECT operation_id,capture_id FROM managed_fork_batches WHERE source_incarnation=?""",
+                               (ref["incarnation_id"],)).fetchall() == [(first[0], capture)]
+        assert catalog.execute("SELECT instance_id,attempt FROM managed_fork_children WHERE batch_id=?",
+                               (first[0],)).fetchall() == [(child_ref["instance_id"], 0)]
+    assert platform.change(path, key, body, view)["operation_id"] == first[0]
+    conflict = platform.change(path, key, {**body, "children": [dict(name="Changed child")]}, view, status=409)
+    assert conflict["error"]["code"] == "IDEMPOTENCY_CONFLICT", conflict
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as db:
+        assert db.execute("SELECT operation_id,request_hash FROM idempotency WHERE key=?", (key,)).fetchall() == [first]
+    print("Original response discarded; platform restarted; retries returned one batch", first[0],
+          "one capture", capture, "one original child", child["machine_id"], "with RAM marker", marker,
+          "bundle", platform.bundle_id, flush=True)
+
+
 def inherited_agent(platform, ref, probe, seen_cids):
     marker = wait_for(lambda: platform.guest(ref, ["/bin/cat", "/var/tmp/platform-cut-marker"]),
                       timeout=25, retry=(RuntimeError, OSError))
@@ -1458,13 +1503,14 @@ def test(args, root, stack, case):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
-    platform = Platform(args, root, stack, networks, state_tmpfs=case == "saved-wake-failure")
+    platform = Platform(args, root, stack, networks, state_tmpfs=case == "saved-wake-failure",
+                        use_installation=case == "fork-lost-reply")
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
     )
-    if case == "task-fork-cancel-retry":
+    if case in ("task-fork-cancel-retry", "fork-lost-reply"):
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
     if case == "live-resources-hot":
         intent.update(live_compute_growth=True, resources=dict(cpu_count=1, memory_mib=512))
@@ -1502,6 +1548,9 @@ def test(args, root, stack, case):
         return
     if case == "fork-cancel":
         cancel_partial_fork(platform, source, ref)
+        return
+    if case == "fork-lost-reply":
+        fork_after_lost_reply(platform, source, ref)
         return
     if case == "saved-wake-failure":
         saved_wake_failure_case(platform, source, ref)
@@ -1557,7 +1606,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "task-fork-cancel-retry", "saved-wake-failure"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
@@ -1582,7 +1631,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
-        if selection[0].startswith("packet-cut-") or selection[0] == "packet-activity":
+        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply"):
             slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
             subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                             "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",

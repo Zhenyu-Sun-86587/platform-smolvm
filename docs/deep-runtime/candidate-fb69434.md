@@ -77,3 +77,9 @@ Worker 修复 `3e517f85fffe7af52c13fa4deb3371de3e0a5a60` 允许在原保存点�
 同一验证器确认 `91e2c72` v1、`d8cc5d5` v2 和 `86dae32` v3 原安装树的摘要。首次复查 `d8cc5d5` 时，旧开发夹具对该安装件创建的硬链接触发了单链接校验，原打包树仍验证通过。开发夹具改用独立缓存后，原安装 inode 和字节保留，安装树再次通过，摘要为 `sha256:c5070578cdf0d4fd01cc120721515c169e9297a3f624803def398996c0e249b5`。工作区日志为 `.build/release-fb69434/historical-reverification.log` 和 `historical-d8-installed-reverified.log`。
 
 [86dae32 安装记录](candidate-86dae32.md) · [d8cc5d5 安装记录](candidate-d8cc5d5.md) · [91e2c72 安装记录](candidate-91e2c72.md) · [逐项验收台账](acceptance-ledger.md)
+
+### 首次 Fork 回执丢失
+
+在原安装和配套 platformd 上，从 Debian 源发起公开 Fork。客户端观察到 TCP 接收缓冲已有 HTTP 回复即关闭连接，未读取操作或子机 ID。重启 platformd 后，按原控制代际、原修订和原幂等键重试，得到唯一操作 `op_311a5dfe6e2e68fd077b96fb46ee74ac`。Worker 目录只有一个批次、一个 capture `ram-9417e942c0ab19272bd3d5831b3dd6ea` 和一次目标执行。子机从原 RAM 读回标记 `bccba8ec0d8b44a688030e5dddd48107d34eb915`。完成后重放仍返回同一操作，修改子机名后同键请求返回 409，原请求摘要不变。
+
+使用 `managed_system_vsock.py --case fork-lost-reply` 并传入同批安装、平台与 System 根盘。日志 `.build/wp23/a18-lost-public-reply-fb69434-v2.log` 的 SHA-256 为 `2dfc5e4022e26997cda965034c46ac2e964146fea41ce1f75810c2c88218c8ef`。[复现夹具](../../tests/integration/managed_system_vsock.py)
