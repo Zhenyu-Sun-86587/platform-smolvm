@@ -1,17 +1,21 @@
 package platformapi
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/servicehealth"
+	"sandbox-platform/internal/snapshots"
 )
 
 func TestPolishFixturesPreserveRetryIdentityAndUploadEffect(t *testing.T) {
@@ -84,5 +88,55 @@ func TestPolishPassiveViewsRejectOldExecution(t *testing.T) {
 	s.projectServiceObservation(&v, registry.Machine{CurrentBinding: b})
 	if v.Observation.Status != "stale" || v.Observation.ExecutionEpoch != b.ExecutionEpoch-1 {
 		t.Fatalf("replaced execution reused obsolete service observation: %+v", v.Observation)
+	}
+}
+
+func TestVMRestoreUsesCaptureOrImmutableLegacyTemplate(t *testing.T) {
+	ctx := context.Background()
+	db, err := registry.Open(ctx, filepath.Join(t.TempDir(), "registry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureTemplate(ctx, registry.Template{ID: "template", Name: "base", Version: 1, ImageDigest: "sha256:image"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RegisterRuntime(ctx, rt.BundleRoute{InstanceID: "runtime", BundleID: "bundle"}, "socket",
+		json.RawMessage(`{"contracts":{"state_reader_id":"reader"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO machines (id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
+		VALUES ('source','source','template',2,1,'running','{"resources":{"cpu_count":32},"keep_running":true}','{}',1)`); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Engine: lifecycle.New(db, rt.NewResolver(nil, nil), config.Defaults())}
+	item := snapshots.Snapshot{
+		MachineID: "source", Hash: "sha256:capture", CaptureMode: snapshots.CaptureVM,
+		VM: &snapshots.VMProvenance{RuntimeInstanceID: "runtime", RuntimeBundleID: "bundle", StateReaderID: "reader", RuntimeCaptureID: "capture"},
+	}
+	template, historical, err := server.vmRestoreConfiguration(ctx, item)
+	if err != nil || template != "template" || string(historical) != `{"template_id":"template","boot_mode":"oci"}` {
+		t.Fatalf("historical metadata = %s/%s, %v", template, historical, err)
+	}
+	captured, err := snapshots.CaptureSpec(json.RawMessage(`{"boot_mode":"oci","resources":{"cpu_count":2,"cpu_limit_millicpus":500},"keep_running":true}`),
+		"template", 1, "capture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured.ManifestDigest = item.Hash
+	item.Manifest = lifecycle.JSON(map[string]any{"captured_configuration": captured})
+	template, restored, err := server.vmRestoreConfiguration(ctx, item)
+	if err != nil || template != "template" || string(restored) != `{"template_id":"template","boot_mode":"oci","resources":{"cpu_count":2}}` {
+		t.Fatalf("captured metadata = %s/%s, %v", template, restored, err)
+	}
+	captured.SpecDigest = "different"
+	item.Manifest = lifecycle.JSON(map[string]any{"captured_configuration": captured})
+	if _, _, err := server.vmRestoreConfiguration(ctx, item); err == nil {
+		t.Fatal("restored a modified captured configuration")
+	}
+	item.VM.StateReaderID = "different"
+	item.Manifest = nil
+	if _, _, err := server.vmRestoreConfiguration(ctx, item); err == nil {
+		t.Fatal("restored a historical snapshot with another reader")
 	}
 }

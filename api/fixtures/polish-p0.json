@@ -28,8 +28,8 @@
   "metrics": {
     "partial": {"availability":"partial","source":"official_runtime","scope":"machine","observed_at":"2026-11-26T00:00:00Z","cpu_millis":0,"memory_mb":null,"issues":{"memory_mb":{"code":"NOT_SAMPLED","message":"No memory measurement was returned."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
     "unavailable": {"availability":"unavailable","source":"worker","scope":"machine","issues":{"runtime":{"code":"METRICS_UNAVAILABLE","message":"No measurement for this execution."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
-    "stale": {"availability":"stale","source":"worker","scope":"machine","observed_at":"2026-11-26T00:00:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":3},"cpu_millis":240,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
-    "counter_reset": {"availability":"partial","source":"worker","scope":"machine","observed_at":"2026-11-26T00:01:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_b","execution_epoch":4},"cpu_millis":12,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "stale": {"availability":"stale","source":"cgroup_v2","scope":"machine","observed_at":"2026-11-26T00:00:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":3},"cpu_millis":240,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "counter_reset": {"availability":"partial","source":"cgroup_v2","scope":"machine","observed_at":"2026-11-26T00:01:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_b","execution_epoch":4},"cpu_millis":12,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
     "system": {"availability":"unavailable","source":"worker","scope":"worker","platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}}
   },
   "capture": {
