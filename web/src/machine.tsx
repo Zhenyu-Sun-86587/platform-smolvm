@@ -2,16 +2,20 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import type { Machine, MachineNetwork, MachineResourceStatus, Page, ResourcePatch, RunningLease, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
 import { machine as machinePath, service, snapshot, task } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, query, Section, segment, State, str, time, useRemote } from "./common"
-import { Archive, Bot, Box, Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis, Workflow } from "lucide-react"
+import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, Section, segment, State, str, time, useRemote } from "./common"
+import { Archive, Bot, Box, Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis, Workflow, Network } from "lucide-react"
 import styles from "./features/machine/detail.module.css"
 import { ResourceUsage } from "./features/machine/ResourceUsage"
+import { Files } from "./features/files/FileBrowser"
+import { fileDigest } from "./features/files/digest"
+export { fileDigest } from "./features/files/digest"
 import { Button } from "./daytona/button"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuContent } from "./daytona/dropdown-menu"
 import { useCollection } from "./api"
+import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
 import { policyFields, policyInput } from "./lifecycle-policy"
-import { WorkspaceActions } from "./workspace-actions"
+import { powerDialog, WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
 const Desktop = lazy(() => import("./Desktop"))
@@ -28,7 +32,7 @@ const commandFields = [
 const command = (form: FormData) => ({ argv: argv(form), cwd: str(form, "cwd"), user: str(form, "user") })
 const taskID = (value: Task) => value.task_id ?? value.id ?? ""
 
-function capabilityReason(machine: Machine | undefined, feature: string) {
+export function capabilityReason(machine: Machine | undefined, feature: string) {
   const capability = machine?.capabilities?.[feature]
   if (capability?.supported !== false) return undefined
   return capability.message ?? capability.reason_code ?? "This machine does not currently support the action."
@@ -40,7 +44,7 @@ function FeatureStatus({ reason }: { reason?: string }) {
 
 export function MachineView({ tab, ...context }: Context & { tab: string }) {
   const { machine, actions } = context
-  const base = "#/" + machinePath(machine.machine_id)
+  const base = machineHref(machine.machine_id)
   const current = aliases[tab] ?? tab
   const selected = [...tabs, "desktop", "terminal"].includes(current) ? current : "overview"
   const guest = machine.health?.guest_management ?? machine.guest_management_status
@@ -75,7 +79,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
         : selected === "checkpoints" ? <Snapshots {...context} />
         : selected === "backups" ? <Backups />
         : selected === "agents" ? <DetailEmpty icon={Bot} title="Agent sessions" description="This platform provides Guest management, terminal sessions and persistent tasks. Agent session history is unavailable." action={<a href={base + "/automations"}>View persistent tasks</a>} />
-        : selected === "settings" ? <><MachineConfiguration {...context} /><Activity {...context} /></>
+        : selected === "settings" ? <><PowerSettings machine={machine} actions={actions} /><MachineConfiguration {...context} /><Activity {...context} /></>
         : <Overview {...context} />}
     </div>
   </article>
@@ -185,6 +189,30 @@ function Overview({ machine, actions, revision }: Context) {
   </>
 }
 
+function PowerSettings({ machine, actions }: Pick<Context, "machine" | "actions">) {
+  const power = machinePowerState(machine)
+  const native = bundleBound(machine)
+  const actionsForPower = power === "running" ? (native ? [
+    { kind: "standby", title: "Standby", description: "Suspend in memory and retain the current host allocation.", reason: fullStateBlock(machine, "lifecycle.standby") },
+    { kind: "hibernate", title: "Hibernate", description: "Save memory and guest state before releasing compute.", reason: fullStateBlock(machine, "state.hibernate") },
+    { kind: "stop", title: "Cold stop", description: "End the current execution and retain the guest disk.", reason: fullStateBlock(machine, "lifecycle.stop") },
+  ] : [
+    { kind: "pause", title: "Hibernate", description: "Save the current execution for a later resume.", reason: capabilityReason(machine, "pause") },
+    { kind: "stop", title: "Cold stop", description: "End the current execution and retain the guest disk.", reason: undefined },
+  ]) : power === "stopped" ? [
+    { kind: "start", title: "Start", description: "Boot the machine from its guest disk.", reason: undefined },
+  ] : power === "hibernated" || power === "standby" ? [
+    { kind: native || power === "standby" ? "wake" : "resume", title: "Wake", description: "Resume the saved execution.",
+      reason: native && power === "standby" ? fullStateBlock(machine, "lifecycle.standby_wake") : undefined },
+  ] : []
+  return <Section title="Power">
+    {actionsForPower.length ? <div className={styles.powerOptions}>{actionsForPower.map(item => <div className={styles.powerOption} key={item.kind}>
+      <div><strong>{item.title}</strong><p>{item.reason ?? item.description}</p></div>
+      <Button size="sm" variant="outline" disabled={Boolean(item.reason)} onClick={() => powerDialog(machine, actions, item.kind)}>{item.title}</Button>
+    </div>)}</div> : <p className={styles.note}>Power actions are unavailable while the machine state is unknown.</p>}
+  </Section>
+}
+
 function MachineConfiguration({ machine, actions }: Context) {
   const resources = machine.resources ?? machine.spec?.resources
   return <>
@@ -257,7 +285,7 @@ function Execs({ machine, actions, revision }: Context) {
       const response = await actions.mutate<Exec>(path, {
         ...command(form), tty: true, interactive: true, cols: 100, rows: 28
       }, { revision: machine.revision })
-      if (response?.exec_id) location.hash = "#/terminal/" + segment(machine.machine_id) + "/" + segment(response.exec_id)
+      if (response?.exec_id) location.hash = terminalHref(machine.machine_id, response.exec_id)
     }
   })
   const run = () => actions.dialog({
@@ -272,7 +300,7 @@ function Execs({ machine, actions, revision }: Context) {
       {(sessions.data?.items ?? []).length === 0 ? <p className="empty">{sessions.error ? "" : sessions.data ? "No sessions yet." : "Loading sessions…"}</p> : <div className="rows">
         {sessions.data?.items.map(exec => <div className="row" key={exec.exec_id}>
           <code>{exec.exec_id}</code><State value={exec.state} /><span>{exec.exit_code == null ? "" : `Exit ${exec.exit_code}`}</span>
-          <a href={"#/terminal/" + segment(machine.machine_id) + "/" + segment(exec.exec_id)}>Attach</a>
+          <a href={terminalHref(machine.machine_id, exec.exec_id)}>Attach</a>
           <button className="quiet-danger" onClick={() => actions.dialog({
             title: "Terminate session", destructive: true,
             act: () => actions.mutate("execs/" + segment(exec.exec_id), {}, { method: "DELETE", revision: exec.revision })
@@ -294,7 +322,7 @@ function Execs({ machine, actions, revision }: Context) {
 export function Tasks({ machine, actions, revision, initialTask }: Context & {initialTask?: string}) {
   const path = machinePath(machine.machine_id) + "/tasks"
   const blocked = capabilityReason(machine, "persistent_task")
-  const history = useRemote<Page<Task>>(path, revision)
+  const history = useCollection<Task>(path, revision)
   const [selected, setSelected] = useState<string>(initialTask ?? "")
   const [stream, setStream] = useState("stdout")
   const detail = useRemote<Task>(selected ? task(selected) : "", revision)
@@ -307,15 +335,15 @@ export function Tasks({ machine, actions, revision, initialTask }: Context & {in
       {machine.task_metadata_status === "unavailable" && <p className="empty">The Guest task index is unavailable.</p>}
       {machine.task_metadata_status === "stale" && <p className="empty">Showing the last recorded task index.</p>}
       <Callout error={history.error} />
-      {history.data?.items.length ? <div className="rows">{history.data.items.map(item => <div className="row" key={taskID(item)}>
+      {history.items?.length ? <div className="rows">{history.items.map(item => <div className="row" key={taskID(item)}>
         <button className="text-button" onClick={() => setSelected(taskID(item))}>{taskID(item)}</button>
         <State value={item.state} /><span>{item.exit_code == null ? "" : `Exit ${item.exit_code}`}</span><span className="muted">{time(item.observed_at)}</span>
         {["accepted", "starting", "running", "cancelling"].includes(item.state) && <button onClick={() => actions.dialog({
           title: "Cancel task", destructive: true, fields: [{ name: "grace_seconds", label: "Grace period (seconds)", type: "number", min: 0, value: 5 }],
           act: form => actions.mutate(task(taskID(item)) + "/cancel", { grace_seconds: num(form, "grace_seconds") }, { revision: machine.revision })
         })}>Cancel</button>}
-      </div>)}</div> : <p className="empty">{history.error ? "" : !history.data ? "Loading tasks…" : ""}</p>}
-      {history.data && !history.data.items.length && (!machine.task_metadata_status || machine.task_metadata_status === "complete") &&
+      </div>)}</div> : <p className="empty">{history.error ? "" : !history.items ? "Loading tasks…" : ""}</p>}
+      {history.items && !history.items.length && (!machine.task_metadata_status || machine.task_metadata_status === "complete") &&
         <DetailEmpty icon={Workflow} title="No persistent tasks yet" description="Start a task to run a command in the guest and follow its output here." />}
     </Section>
     {selected && <Section title="Task output" actions={<select aria-label="Output stream" value={stream} onChange={event => setStream(event.target.value)}>
@@ -360,62 +388,34 @@ function TaskOutput({ id, stream }: { id: string; stream: string }) {
     <Callout error={error} /><pre>{output}</pre></div>
 }
 
-type FileItem = { name: string; path?: string; is_dir?: boolean; directory?: boolean; type?: string; size?: number; size_bytes?: number; mode?: string | number }
-function Files({ machine, actions, revision }: Context) {
-  const [path, setPath] = useState("/workspace")
-  const [input, setInput] = useState(path)
-  const base = machinePath(machine.machine_id) + "/files"
-  const list = useRemote<{ items?: FileItem[]; entries?: FileItem[] }>(base + "/list?" + query(path), revision)
-  const [error, setError] = useState<unknown>()
-  const open = (target: string) => { setInput(target); setPath(target); setError(undefined) }
-  const edit = async (target: string) => {
-    try {
-      const response = await api.response(base + "?" + query(target))
-      const blob = await response.blob()
-      if (blob.size > 1048576) throw new Error("Text editing is limited to 1 MiB.")
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(await blob.arrayBuffer())
-      actions.dialog({
-        title: "Edit Guest file", description: target, submit: "Save",
-        fields: [{ name: "content", label: "File contents", type: "textarea", value: content }],
-        act: form => actions.tracked(intent => api.upload(base + "?" + query(target), new Blob([str(form, "content")]), { intent, revision: machine.revision }))
-      })
-    } catch (error) { setError(error) }
-  }
-  return <Section title="Guest files" actions={<button onClick={() => actions.dialog({
-    title: "Upload Guest file",
-    fields: [
-      { name: "target", label: "Destination Guest path, including file name", value: path.replace(/\/$/, "") + "/", required: true },
-      { name: "file", label: "Local file", type: "file", required: true }
-    ],
-    act: form => actions.tracked(intent => api.upload(base + "?" + query(str(form, "target")), form.get("file") as File, { intent, revision: machine.revision }))
-  })}>Upload</button>}>
-    <Callout error={list.error} /><Callout error={error} />
-    <form className="inline-form" onSubmit={event => { event.preventDefault(); open(input) }}>
-      <label htmlFor="file-path">Guest directory</label><input id="file-path" value={input} onChange={event => setInput(event.target.value)} required />
-      <button>Open</button>{path !== "/" && <button type="button" onClick={() => open(path.replace(/\/?[^/]+\/?$/, "") || "/")}>Parent</button>}
-    </form>
-    <div className="rows">{(list.data?.items ?? list.data?.entries ?? []).map(item => {
-      const full = item.path ?? path.replace(/\/$/, "") + "/" + item.name
-      const directory = item.is_dir || item.directory || item.type === "directory" || item.type === "dir"
-      return <div className="row" key={full}>
-        {directory ? <button className="text-button" onClick={() => open(full)}>{item.name}/</button> : <strong>{item.name}</strong>}
-        <span>{item.size_bytes ?? item.size ?? "—"} bytes</span><span>{item.mode ?? "—"}</span>
-        {!directory && <><button onClick={() => void edit(full)}>Edit text</button>
-          <button onClick={() => api.response(base + "?" + query(full)).then(response => download(response, item.name)).catch(setError)}>Download</button></>}
-      </div>
-    })}</div>
-  </Section>
-}
-
 function readiness(service?: Service) {
   return typeof service?.readiness === "object" && service.readiness
     ? service.readiness as { type?: string; path?: string; expected_status?: number }
     : undefined
 }
 
+export function ServiceStatus({ item, machine }: { item: Service; machine?: Machine }) {
+  const observation = item.observation
+  if (item.enabled === false) return <State value="disabled" />
+  if (!observation) return <State value="unknown" />
+  const scoped = observation.scope !== "configuration"
+  const current = observation.service_revision === item.revision &&
+    (!scoped || Boolean(machine && machine.machine_id === item.machine_id &&
+      observation.binding_generation != null && observation.binding_generation === machine.binding_generation &&
+      observation.execution_epoch != null && observation.execution_epoch === machine.binding?.execution_epoch &&
+      machinePowerState(machine) === "running"))
+  return <div className={styles.observation}>
+    <State value={current ? observation.status : "stale"} />
+    <span>{label(observation.scope)} · {label(observation.stage)}</span>
+    {observation.observed_at && <time dateTime={observation.observed_at}>{time(observation.observed_at)}</time>}
+    {observation.reason_code && <span title={observation.reason_code}>{label(observation.reason_code.toLowerCase())}</span>}
+    {observation.operation_id && <a href={"#/operations/" + segment(observation.operation_id)}>View operation</a>}
+  </div>
+}
+
 export function Services({ machine, actions, revision }: Context) {
   const path = machinePath(machine.machine_id) + "/services"
-  const list = useRemote<Page<Service>>(path, revision)
+  const list = useCollection<Service>(path, revision)
   const network = useRemote<MachineNetwork>(machine.network ? machinePath(machine.machine_id) + "/network" : "", revision)
   const [error, setError] = useState<unknown>()
   const preview = async (item: Service) => {
@@ -469,8 +469,8 @@ export function Services({ machine, actions, revision }: Context) {
     </Section>}
     <Section title="Services" actions={<button className="primary" onClick={() => configure()}>Create service</button>}>
     <Callout error={list.error} /><Callout error={error} />
-    {!list.data?.items.length && <p className="empty">{list.error ? "" : list.data ? "No services yet." : "Loading services…"}</p>}
-    <div className="rows">{list.data?.items.map(item => {
+    {!list.items?.length && !list.error && (list.items ? <DetailEmpty icon={Network} title="No services published" description="Add a service to expose a Guest port using a supported protocol." /> : <p className="empty" role="status">Loading services…</p>)}
+    <div className="rows">{list.items?.map(item => {
       const ssh = item.protocol === "ssh"
       const http = item.protocol === "http" || item.protocol === "https"
       const url = item.public_host && http ? `https://${item.public_host}${item.public_port ? ":" + item.public_port : ""}` : undefined
@@ -479,7 +479,6 @@ export function Services({ machine, actions, revision }: Context) {
         : `sandboxctl port-forward ${item.service_id} --local-port 8080`
       return <div className="service-row" key={item.service_id}>
         <div className="row"><strong>{item.name}</strong><code>{item.protocol} · :{item.guest_port}</code>
-          <State value={typeof item.status === "string" ? item.status : typeof item.readiness === "string" ? item.readiness : undefined} />
           {url && <button disabled={item.enabled === false} onClick={() => void preview(item)}>Open preview ↗</button>}
           <button onClick={() => navigator.clipboard.writeText(connect).catch(setError)}>Copy connection command</button>
           <button onClick={() => configure(item)}>Edit</button><button className="quiet-danger" onClick={() => actions.dialog({
@@ -487,55 +486,45 @@ export function Services({ machine, actions, revision }: Context) {
             act: () => actions.mutate(service(item.service_id), {}, { method: "DELETE", revision: item.revision })
           })}>Delete</button>
         </div>
-        <Details value={{ host: item.public_host, public_port: item.public_port, readiness: item.readiness, auth: item.auth, ssh_fingerprint: item.ssh_fingerprint, ssh_host_key: item.ssh_host_key, connection: connect }} />
+        <ServiceStatus item={item} machine={machine} />
+        <Details value={{ host: item.public_host, public_port: item.public_port, readiness_probe: item.readiness, auth: item.auth, ssh_fingerprint: item.ssh_fingerprint, ssh_host_key: item.ssh_host_key, connection: connect }} />
       </div>
     })}</div>
     </Section>
   </>
 }
 
-async function fileDigest(file: File) {
-  const { sha256 } = await import("@noble/hashes/sha256")
-  const hash = sha256.create()
-  const input = file.stream().getReader()
-  try {
-    for (;;) {
-      const chunk = await input.read()
-      if (chunk.done) break
-      hash.update(chunk.value)
-    }
-  } finally {
-    input.releaseLock()
-  }
-  return Array.from(hash.digest(), byte => byte.toString(16).padStart(2, "0")).join("")
-}
-
-export function Snapshots({ machine, machines, actions, revision }: {machine?:Machine; machines?:Machine[];actions:Actions;revision:number}) {
+export function Snapshots({ machine, machines, actions, revision, directory = false, items }: {
+  machine?: Machine; machines?: Machine[]; actions: Actions; revision: number; directory?: boolean; items?: Snapshot[]
+}) {
   const base = machine ? machinePath(machine.machine_id) : ""
-  const history = useCollection<Snapshot>(base ? base + "/snapshots" : "snapshots", revision)
+  const history = useCollection<Snapshot>(items ? "" : base ? base + "/snapshots" : "snapshots", revision)
+  const captures = items ?? history.items
   const cleanBlock = capabilityReason(machine, "clean_checkpoint")
   const recoveryBlock = capabilityReason(machine, "active_recovery")
   const vmBlock = machine && fullStateBlock(machine, "state.checkpoint")
   const [error, setError] = useState<unknown>()
   const modal = (mode: string, item: Snapshot) => {
     const resource = snapshot(item.snapshot_id)
-    const vm = item.capture_mode === "vm"
+    const vm = (item.capture_mode ?? item.capture_summary?.capture_mode) === "vm"
     if (mode === "Export") {
       api.response(resource + "/export").then(response => download(response, item.snapshot_id + ".tar")).catch(setError)
       return
     }
     if (vm && (mode === "Restore" || (mode === "Rollback" && machine))) {
+      const policies = item.capture_summary?.restore_policies ?? ["exact", "clone_conflicts"]
+      const preferred = policies.includes("clone_conflicts") ? "clone_conflicts" : policies[0]
       actions.dialog({
         title: mode + " VM checkpoint", destructive: mode === "Rollback",
         description: mode === "Rollback" ? "The Worker saves a rescue StatePoint before replacing this execution." : undefined,
         fields: [
           ...(mode === "Restore" ? [{ name: "name", label: "New machine name", required: true }] : []),
-          { name: "volume_policy", label: "Volume restore policy", value: "clone_conflicts", options: [
-            { value: "clone_conflicts", label: "Create independent writable volumes" }, { value: "exact", label: "Require exact volume generations" },
-          ] },
+          ...(policies.length ? [{ name: "volume_policy", label: "Volume restore policy", value: preferred, options: policies.map(value => ({
+            value, label: value === "clone_conflicts" ? "Create independent writable volumes" : "Require exact volume generations",
+          })) }] : []),
         ],
         act: form => {
-          const body = { snapshot_id: item.snapshot_id, volume_restore_policy: str(form, "volume_policy") }
+          const body = { snapshot_id: item.snapshot_id, ...(preferred ? { volume_restore_policy: str(form, "volume_policy") } : {}) }
           if (mode === "Rollback" && machine) return actions.mutate(base + "/rollback",
             { ...body, expected_generation: machine.binding_generation }, { revision: machine.revision })
           return actions.mutate("restores", { ...body, name: str(form, "name") })
@@ -561,8 +550,20 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
       }
     })
   }
+  const rows =
+      <div className="rows">{captures?.map(item => <div key={item.snapshot_id}>
+        <div className="row snapshot-row"><span className="machine-icon"><Layers3 size={17}/></span><div><strong>{item.label || item.snapshot_id}</strong><small>{time(item.created_at)}</small></div><State value={item.state}/>
+          <span className="subtle">{(item.capture_mode ?? item.capture_summary?.capture_mode) === "vm" ? "VM checkpoint" : (item.purpose === "clone" ? "Clean checkpoint" : "Recovery checkpoint") + " · " + item.task_content}</span>
+          {!machine && item.source_machine_id && <a href={"#/machines/"+segment(item.source_machine_id)+"/snapshots"}>{machines?.find(m=>m.machine_id===item.source_machine_id)?.name??item.source_machine_id}</a>}
+          <div className="actions"><Button variant="outline" size="sm" disabled={item.state !== "ready" || ((item.capture_mode ?? item.capture_summary?.capture_mode) !== "vm" && item.task_content !== "clean")} onClick={()=>modal("Restore",item)}>Restore</Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Snapshot actions for "+(item.label||item.snapshot_id)}><Ellipsis/></Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">{((item.capture_mode ?? item.capture_summary?.capture_mode) === "vm" ? (machine ? ["Rollback"] : []) : ["Export","Verify",...(machine?["Rollback"]:[]),"Delete"]).map(mode=><DropdownMenuItem key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
+        </div><details className="disclosure"><summary>Artifact details</summary><Details value={{snapshot_id:item.snapshot_id,bytes:item.size_bytes,sha256:item.sha256,provenance:item.provenance,vm_provenance:item.vm_provenance,closure_verified:item.closure_verified_at,restore_verified:item.restore_verified_at}}/></details>
+        <CaptureDetails item={item} />
+      </div>)}</div>
+  if (directory) return <><Callout error={error} />{rows}</>
   return <>
-    <Section title="Snapshot history" actions={<>
+    <Section title={machine ? "Checkpoints" : "Snapshot history"} actions={<>
       <button onClick={() => actions.dialog({
         title: "Import snapshot", fields: [{ name: "archive", label: "Snapshot archive", type: "file", required: true }],
         act: async form => {
@@ -590,18 +591,29 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
       <FeatureStatus reason={recoveryBlock && "Active recovery · " + recoveryBlock} />
       {machine && bundleBound(machine) && <FeatureStatus reason={vmBlock && "VM checkpoint · " + vmBlock} />}
       <Callout error={history.error} /><Callout error={error} />
-      {!history.items?.length && !history.error && <p className="empty">{history.items?"No snapshots yet.":"Loading snapshots…"}</p>}
-      <div className="rows">{history.items?.map(item => <div key={item.snapshot_id}>
-        <div className="row snapshot-row"><span className="machine-icon"><Layers3 size={17}/></span><div><strong>{item.label || item.snapshot_id}</strong><small>{time(item.created_at)}</small></div><State value={item.state}/>
-          <span className="subtle">{item.capture_mode === "vm" ? "VM checkpoint" : (item.purpose === "clone" ? "Clean checkpoint" : "Recovery checkpoint") + " · " + item.task_content}</span>
-          {!machine && item.source_machine_id && <a href={"#/machines/"+segment(item.source_machine_id)+"/snapshots"}>{machines?.find(m=>m.machine_id===item.source_machine_id)?.name??item.source_machine_id}</a>}
-          <div className="actions"><Button variant="outline" size="sm" disabled={item.state!=="ready"||(item.capture_mode!=="vm"&&item.task_content!=="clean")} onClick={()=>modal("Restore",item)}>Restore</Button>
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Snapshot actions for "+(item.label||item.snapshot_id)}><Ellipsis/></Button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">{(item.capture_mode === "vm" ? (machine ? ["Rollback"] : []) : ["Export","Verify",...(machine?["Rollback"]:[]),"Delete"]).map(mode=><DropdownMenuItem key={mode} onSelect={()=>modal(mode,item)}>{mode}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu></div>
-        </div><details className="disclosure"><summary>Artifact details</summary><Details value={{snapshot_id:item.snapshot_id,bytes:item.size_bytes,sha256:item.sha256,provenance:item.provenance,vm_provenance:item.vm_provenance,closure_verified:item.closure_verified_at,restore_verified:item.restore_verified_at}}/></details>
-      </div>)}</div>
+      {!captures?.length && !history.error && (captures ? <DetailEmpty icon={Layers3} title="No checkpoints yet" description="Capture guest state to keep a recovery point or restore it as a separate workspace." /> : <p className="empty" role="status">Loading checkpoints…</p>)}
+      {rows}
     </Section>
   </>
+}
+
+function CaptureDetails({ item }: { item: Snapshot }) {
+  const summary = item.capture_summary
+  const config = summary?.configuration
+  const spec = config?.status === "verified" ? config.spec : undefined
+  const resources = spec?.resources
+  return <details className="disclosure">
+    <summary>Captured configuration</summary>
+    <Details value={{
+      configuration: config?.status === "verified" ? "Verified" : "Unknown · capture record unavailable",
+      source_revision: config?.source_machine_revision ?? "Unknown",
+      CPU: resources?.cpu_count ?? "Unknown", memory_MiB: resources?.memory_mib ?? "Unknown",
+      guest_storage_GiB: resources?.storage_gib ?? "Unknown", boot_mode: spec?.boot_mode ?? "Unknown",
+      template: config?.template_id ?? "Unknown", RAM: summary?.ram ? label(summary.ram) : "Unknown",
+      disks: summary?.disks ?? "Unknown", restore_policies: summary?.restore_policies?.map(label).join(", ") || "Unknown",
+      evidence: config?.manifest_digest, reason: config?.reason_code ?? summary?.reason_code,
+    }} />
+  </details>
 }
 
 
@@ -656,10 +668,15 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
       <Details value={{ source: policy.source, default_revision: policy.default_revision, desired_revision: policy.desired_revision,
         applied_revision: policy.applied_revision, effective_status: policy.effective_status, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
         hibernate_after_seconds: policy.applied?.hibernate_after_seconds, idle_seconds: policy.worker?.idle_ms == null ? undefined : Math.floor(policy.worker.idle_ms / 1000),
-        overrides: policy.overrides, blockers: blockers?.map(activityBlocker),
+        overrides: policy.overrides, blockers: blockers?.map(activityBlocker), worker_power: policy.worker?.power,
         next_action: policy.worker?.next_action?.kind, next_action_origin: policy.worker?.next_action?.origin,
         eligible_after_seconds: policy.worker?.next_action && Math.ceil(policy.worker.next_action.eligible_after_ms / 1000),
         last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
+      {policy.worker && <details className="disclosure"><summary>Worker activity observations</summary>
+        <Details value={policy.worker.collectors} />
+      </details>}
+    </Section> : bundleBound(machine) ? <Section title="Lifecycle policy">
+      <p className={styles.note}>Lifecycle policy support has not been verified for this machine.</p>
     </Section> : <Section title="Idle policy" actions={<button onClick={() => actions.dialog({
       title: "Configure idle policy", submit: "Save",
       fields: [{ name: "enabled", label: "Automatically pause when idle", type: "checkbox", value: machine.idle_policy?.enabled },
@@ -669,7 +686,7 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
         idle_policy: { enabled: form.has("enabled"), timeout_seconds: num(form, "timeout_seconds") }, keep_running: form.has("keep_running"), expected_generation: machine.binding_generation
       }, { method: "PATCH", revision: machine.revision })
     })}>Configure</button>}>
-      <p className="policy-note">Authenticated access wakes a hibernated machine and resumes its saved execution.</p>
+      <p className="policy-note">Authorized access can wake a hibernated machine when its policy permits.</p>
       <FeatureStatus reason={capabilityReason(machine, "automatic_idle")} />
       <Details value={{ enabled: machine.idle_policy?.enabled, timeout_seconds: machine.idle_policy?.timeout_seconds, keep_running: machine.keep_running,
         effective_status: policy?.effective_status, blockers: blockers?.map(activityBlocker), last_activity: time(machine.last_user_activity_at) }} />
