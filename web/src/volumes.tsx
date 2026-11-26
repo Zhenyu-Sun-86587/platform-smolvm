@@ -64,11 +64,11 @@ export function VolumeCatalog({ machines, actions, revision }: {
 
   return <>
     <PageHeader title="Disks" icon={<HardDrive />} description="Standalone storage you can attach to a machine and move later." className={styles.stackedHeading}
-      actions={<><Button variant="primary" onClick={() => setCreating(true)} disabled={!runtimeProfiles.length && !demo}><Plus size={15} /> New disk</Button><DocumentationLink /></>} />
+      actions={<><Button variant="primary" onClick={() => setCreating(true)} disabled={!runtimeProfiles.length && !demo}><Plus size={15} /> New disk</Button><DocumentationLink icon={false} /></>} />
     <Callout error={profiles.error} />
     <Callout error={catalog.error} />
     {!demo && profiles.items && !runtimeProfiles.length && <p role="status">Creating disks requires a registered worker.</p>}
-    {demo && <div className={styles.toolbar}><div className={styles.actions}><select className={styles.scope} aria-label="Region" value={region} onChange={event => setRegion(event.target.value)}>
+    {demo && <div className={styles.toolbar}><div className={styles.actions}><select className={styles.regionSelect} aria-label="Region" value={region} onChange={event => setRegion(event.target.value)}>
       <option value="fra">Frankfurt</option><option value="nyc">New York</option>
     </select></div></div>}
     {!catalog.items && !catalog.error && <div className={styles.skeleton} role="status" aria-label="Loading disks" />}

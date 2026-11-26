@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
+import * as Dropdown from "@radix-ui/react-dropdown-menu"
 import type { Machine, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
-import { ArrowUpRight, Globe2, Layers3, MapPin, Plus, Search, Upload, Zap } from "lucide-react"
+import { ArrowUpRight, Check, Globe2, Layers3, MapPin, Plus, Search, Upload, Zap } from "lucide-react"
 import { api, collection, fixtureScene, segment, useCollection } from "./api"
 import { bundleBound, Callout, fullStateBlock, label, time } from "./common"
 import { capabilityReason, fileDigest, Services, ServiceStatus, Snapshots, Tasks } from "./machine"
@@ -62,17 +63,24 @@ function SnapshotCatalog({ machines, actions, revision }: CatalogContext) {
   const demo = fixtureScene === "05" || fixtureScene === "16"
   const statuses = Array.from(new Set(["all", "ready", "pending", "failed", "archived", ...(snapshots.items ?? []).map(item => item.state)]))
   return <>
-    <PageHeader title="Snapshots" icon={<Layers3 />} description="Capture machine state and restore workspaces from saved snapshots." className={styles.stackedHeading}
-      actions={<><Button variant="primary" onClick={() => setCreate(true)} disabled={!machines?.length}><Plus size={15} /> New snapshot</Button>
+    <PageHeader title="Snapshots" icon={<Layers3 />} description={demo ? "Versioned, reusable images captured from your machines. Launch new machines from one in seconds." : "Capture machine state and restore workspaces from saved snapshots."} className={styles.stackedHeading}
+      actions={<><Button className={styles.neutralPrimary} variant="primary" onClick={() => setCreate(true)} disabled={!machines?.length}><Plus size={15} /> New snapshot</Button>
         {!demo && <Button onClick={showImport}><Upload size={15} /> Import</Button>}<DocumentationLink /></>} />
     <div className={styles.toolbar}>
       <div className={styles.segments} aria-label="Snapshot status">
         {statuses.map(value => <button type="button" key={value} aria-pressed={value === state} onClick={() => setState(value)}>{label(value)}</button>)}
       </div>
       <div className={styles.actions}>
-        {demo && <label className={styles.region}><MapPin size={14} /><select aria-label="Region" value={region} onChange={event => setRegion(event.target.value)}>
-          <option value="fra">Frankfurt</option><option value="nyc">New York</option>
-        </select></label>}
+        {demo && <Dropdown.Root>
+          <Dropdown.Trigger asChild><Button variant="secondary" size="icon" className={styles.regionTrigger}
+            aria-label="Filter by region"><MapPin size={15} /></Button></Dropdown.Trigger>
+          <Dropdown.Portal><Dropdown.Content className={styles.regionMenu} align="end" sideOffset={5}>
+            <Dropdown.RadioGroup value={region} onValueChange={setRegion}>
+              {[["fra", "Frankfurt"], ["nyc", "New York"]].map(([value, title]) =>
+                <Dropdown.RadioItem key={value} value={value}>{title}<Dropdown.ItemIndicator><Check size={14} /></Dropdown.ItemIndicator></Dropdown.RadioItem>)}
+            </Dropdown.RadioGroup>
+          </Dropdown.Content></Dropdown.Portal>
+        </Dropdown.Root>}
         <Button variant="secondary" size="icon" aria-label="Search snapshots" aria-expanded={search} onClick={() => setSearch(!search)}><Search size={15} /></Button>
       </div>
     </div>
@@ -135,12 +143,12 @@ function NewSnapshot({ machines, actions, close }: { machines: Machine[]; action
     footer={<><Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
       <Button variant="primary" type="submit" form="capture-snapshot" disabled={busy || !capture}>{busy ? "Capturing…" : "Capture"}</Button></>}>
     <form id="capture-snapshot" className={styles.form} onSubmit={submit}>
-      <label>Machine<select value={source} disabled={busy} onChange={event => { setSource(event.target.value); setMode("") }}>
+      <label>Machine<select aria-label="Machine" value={source} disabled={busy} onChange={event => { setSource(event.target.value); setMode("") }}>
         <option value="">Select a machine…</option>
         {machines.map(item => <option key={item.machine_id} value={item.machine_id}>{item.name}</option>)}
       </select></label>
       <label>Snapshot name<input value={name} placeholder="e.g. base-image" disabled={busy} onChange={event => setName(event.target.value)} /></label>
-      {options.length > 1 && <label>Capture type<select value={selected} disabled={busy} onChange={event => setMode(event.target.value)}>
+      {options.length > 1 && <label>Capture type<select aria-label="Capture type" value={selected} disabled={busy} onChange={event => setMode(event.target.value)}>
         {options.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select></label>}
       {selected === "vm" && <p>Capture RAM and supported disks for a System machine.</p>}
@@ -159,6 +167,7 @@ function MachineCatalog({ page, machines, actions, revision }: CatalogContext & 
   const key = keys && JSON.stringify([page, keys])
   const loaded = list?.key === key ? list : undefined
   const taskPage = page === "tasks"
+  const automationPreview = taskPage && fixtureScene === "07"
   const machineNames = new Map(machines?.map(item => [item.machine_id, item]))
 
   useEffect(() => {
@@ -184,8 +193,9 @@ function MachineCatalog({ page, machines, actions, revision }: CatalogContext & 
 
   return <>
     <PageHeader title={taskPage ? "Automations" : "Services"} icon={taskPage ? <Zap /> : <Globe2 />}
-      description={taskPage ? "View persistent guest tasks and their execution status." : "Manage published guest ports and connection details."}
-      actions={<>{machines?.length ? <select className={styles.scope} aria-label="Machine scope" value={machine?.machine_id ?? ""} onChange={event => setSelected(event.target.value)}>
+      description={automationPreview ? "Scripts running on your machines, driven by schedules and events."
+        : taskPage ? "View persistent guest tasks and their execution status." : "Manage published guest ports and connection details."}
+      actions={<>{machines?.length && !automationPreview ? <select className={styles.scope} aria-label="Machine scope" value={machine?.machine_id ?? ""} onChange={event => setSelected(event.target.value)}>
         <option value="">All machines</option>
         {machines.map(item => <option key={item.machine_id} value={item.machine_id}>{item.name}</option>)}
       </select> : null}<DocumentationLink /></>} />
@@ -196,9 +206,13 @@ function MachineCatalog({ page, machines, actions, revision }: CatalogContext & 
           <strong>{machineNames.get(id)?.name ?? id}</strong><Callout error={error} />
         </div>)}
         {!loaded && machines && <div className={styles.skeleton} role="status" aria-label={taskPage ? "Loading tasks" : "Loading services"} />}
-        {loaded && !loaded.rows.length && !loaded.errors.length && <section className={styles.featurePanel}>
-          <div><h2>{taskPage ? "No persistent tasks yet" : "No published services yet"}</h2>
-            <p>{taskPage ? "Choose a machine to start a task and inspect its output." : "Choose a machine to publish a guest port."}</p>
+        {loaded && !loaded.rows.length && !loaded.errors.length && <section className={[styles.featurePanel, automationPreview && styles.automationPanel].filter(Boolean).join(" ")}>
+          <div>
+            {automationPreview && <span className={styles.panelKicker}>Defined in code</span>}
+            <h2>{automationPreview ? "No automations yet" : taskPage ? "No persistent tasks yet" : "No published services yet"}</h2>
+            <p>{automationPreview ? "Scheduled scripts and their execution history appear after you register a schedule or trigger."
+              : taskPage ? "Choose a machine to start a task and inspect its output." : "Choose a machine to publish a guest port."}</p>
+            {automationPreview && <DocumentationLink />}
             {machines?.length === 0 && <a href="#/machines">View machines <ArrowUpRight size={13} /></a>}
           </div>
         </section>}
