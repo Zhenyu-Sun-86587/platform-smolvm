@@ -50,7 +50,8 @@ const emptyMachinePaths = new Set([
   "backups", "dependencies", "desktop-sessions", "execs", "leases", "services", "snapshots", "tasks", "volume-attachments",
 ])
 const stoppedScenes = new Set(["04", "15", "19", "21", "22", "23", "24", "25", "26", "27", "28", "29"])
-const mobileListScenes = new Set(["41", "42", "43", "44", "46"])
+const desktopRegionalScenes = new Set(["02", "03", "04", "15", "19", "36"])
+const mobileRegionalScenes = new Set(["41", "42", "43", "44", "45"])
 const namedPowers: Record<string, PowerState> = { standby: "standby", hibernated: "hibernated", unknown: "unknown" }
 const fixtureFiles: GuestFileEntry[] = [
   { name: "projects", type: "directory", size: 4096 },
@@ -96,8 +97,11 @@ export class FixtureClient extends Client {
   constructor(private readonly scene: string) {
     super(location.origin)
     const state = namedPowers[scene] ?? (stoppedScenes.has(scene) ? "stopped" : "running")
-    const ids = scene === "empty" ? [] : scene === "01" ? [atlas, cedar] : scene === "45" ? [atlas, fork, cedar]
-      : mobileListScenes.has(scene) ? [atlas, fork] : [atlas]
+    const ids = scene === "empty" ? []
+      : mobileRegionalScenes.has(scene) ? [atlas, fork, cedar]
+        : scene === "46" ? [atlas, fork]
+          : scene === "01" || desktopRegionalScenes.has(scene) ? [atlas, cedar]
+            : [atlas]
     this.machines = ids.map(id => fixtureMachine(id, state, undefined, scene === "guest-unavailable" || scene === "files-unavailable"))
   }
 

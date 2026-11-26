@@ -1,10 +1,8 @@
 @import "./daytona/theme.css";
-@font-face {
-  font-family: Geist;
-  src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
-}
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
 :root {
   --shell-sidebar-width: 272px;
   --shell-header-height: 52px;
@@ -40,12 +38,12 @@
 }
 @layer base {
   :root {
-    font-family: Geist, system-ui, sans-serif;
+    font-family: Inter, system-ui, sans-serif;
     font-synthesis: none;
     color: var(--foreground);
     background: var(--background);
     color-scheme: light;
-    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   }
   * {
     box-sizing: border-box;
