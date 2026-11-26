@@ -132,7 +132,7 @@ func (s *Server) lifecycleView(ctx context.Context, m registry.Machine, refresh 
 		return v, nil
 	}
 	client, supported := lifecycle.PolicyClient(a, *b)
-	observed := len(v.Worker) > 0
+	observed := !refresh && len(v.Worker) > 0
 	if refresh && supported && v.AppliedRevision == v.DesiredRevision {
 		probe, cancel := context.WithTimeout(ctx, 2*time.Second)
 		state, err := s.Engine.ObservePolicy(probe, *b, client)
@@ -146,6 +146,9 @@ func (s *Server) lifecycleView(ctx context.Context, m registry.Machine, refresh 
 				return v, err
 			}
 			observed = v.BindingID == b.ID && state.Applied == v.AppliedRevision
+			if observed {
+				v.Worker = state.Observation
+			}
 		}
 	}
 	if refresh && (!supported || !observed) {

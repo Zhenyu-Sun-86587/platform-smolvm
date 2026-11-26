@@ -13,17 +13,18 @@ import (
 )
 
 type WorkerLifecycleStatus struct {
-	FirstLaunchSupported bool     `json:"first_launch_supported"`
-	StatePoint           string   `json:"statepoint"`
-	CollectorGeneration  string   `json:"collector_generation"`
-	Instance             string   `json:"instance_id"`
-	Incarnation          string   `json:"incarnation_id"`
-	Epoch                int64    `json:"execution_epoch"`
-	Revision             int64    `json:"binding_revision"`
-	Applied              int64    `json:"applied_revision"`
-	Power                string   `json:"power"`
-	Suspended            bool     `json:"controlled_suspended"`
-	Blockers             []string `json:"blockers"`
+	Observation          json.RawMessage `json:"-"`
+	FirstLaunchSupported bool            `json:"first_launch_supported"`
+	StatePoint           string          `json:"statepoint"`
+	CollectorGeneration  string          `json:"collector_generation"`
+	Instance             string          `json:"instance_id"`
+	Incarnation          string          `json:"incarnation_id"`
+	Epoch                int64           `json:"execution_epoch"`
+	Revision             int64           `json:"binding_revision"`
+	Applied              int64           `json:"applied_revision"`
+	Power                string          `json:"power"`
+	Suspended            bool            `json:"controlled_suspended"`
+	Blockers             []string        `json:"blockers"`
 	Collectors           map[string]struct {
 		Session string `json:"session"`
 		Seq     int64  `json:"seq"`
@@ -201,6 +202,7 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client p
 	if err := json.Unmarshal(raw, &st); err != nil {
 		return st, err
 	}
+	st.Observation = raw
 	if st.Instance != b.RuntimeInstanceObjectID {
 		return st, registry.ErrGeneration
 	}
