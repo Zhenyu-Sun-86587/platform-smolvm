@@ -47,6 +47,16 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
   const base = machineHref(machine.machine_id)
   const current = aliases[tab] ?? tab
   const selected = [...tabs, "desktop", "terminal"].includes(current) ? current : "overview"
+  const navigation = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const nav = navigation.current
+    const active = nav?.querySelector<HTMLAnchorElement>('a[aria-current="page"]')
+    if (!nav || !active) return
+    const panel = nav.getBoundingClientRect()
+    const link = active.getBoundingClientRect()
+    if (link.left < panel.left) nav.scrollLeft += link.left - panel.left
+    else if (link.right > panel.right) nav.scrollLeft += link.right - panel.right
+  }, [selected])
   const guest = machine.health?.guest_management ?? machine.guest_management_status
   const resources = machine.resources ?? machine.spec?.resources
   return <article className={styles.detail} aria-label={machine.name}>
@@ -63,9 +73,9 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
           </div>
         </div>
       </div>
-      <WorkspaceActions machine={machine} actions={actions} surface="detail" />
+      <WorkspaceActions key={machine.machine_id} machine={machine} actions={actions} surface="detail" />
     </header>
-    <nav className={styles.tabs} aria-label="Machine sections">
+    <nav ref={navigation} className={styles.tabs} aria-label="Machine sections">
       {tabs.map(item => <a aria-current={selected === item ? "page" : undefined} href={base + "/" + item} key={item}>{label(item)}</a>)}
     </nav>
     {machine.blocked_reasons?.length ? <div className="blockers">{machine.blocked_reasons.map(reason => <span key={reason}>{label(reason)}</span>)}</div> : null}

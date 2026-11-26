@@ -216,8 +216,8 @@ function Browser({ machine, actions, current, autoload }: {
       let digest: string | undefined
       let dispatched = false
       try {
-        const latest = await request(machine.machine_id, signal)
         digest = await fileDigest(payload)
+        const latest = await request(machine.machine_id, signal)
         const intent = await api.intent(signal)
         dispatched = true
         const receipt = await actions.tracked(intent => api.uploadFile(machine.machine_id, target, payload, {
@@ -256,8 +256,12 @@ function Browser({ machine, actions, current, autoload }: {
     <header className={styles.header}>
       <div><h2 id="guest-files-title">Guest files</h2><p>{capability?.constraints?.transport ? label(String(capability.constraints.transport)) : "Browse the Guest filesystem"}</p></div>
       <div className={styles.actions}>
-        <Button size="sm" disabled={!result || busy || !mayPreview} onClick={() => selectedFile && open(selectedFile)}><Pencil size={15}/> Text</Button>
-        <Button size="sm" disabled={!result || busy || !mayDownload} onClick={() => selectedFile && getDownload(selectedFile)}><Download size={15}/> Download</Button>
+        <Button size="sm" disabled={!result || busy || !mayPreview}
+          title={selectedFile && previewLimit ? "Text preview limit: " + bytes(previewLimit) : undefined}
+          onClick={() => selectedFile && open(selectedFile)}><Pencil size={15}/> Text</Button>
+        <Button size="sm" disabled={!result || busy || !mayDownload}
+          title={selectedFile && downloadLimit ? "Download limit: " + bytes(downloadLimit) : undefined}
+          onClick={() => selectedFile && getDownload(selectedFile)}><Download size={15}/> Download</Button>
         <Button size="sm" variant="primary" disabled={!result || uploadLimit === undefined || busy || Boolean(uncertain)}
           onClick={() => { setTransferError(undefined); setTransfer({ mode: "upload" }) }}><Upload size={15}/> Upload</Button>
       </div>
