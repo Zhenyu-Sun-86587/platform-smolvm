@@ -60,6 +60,27 @@ const fixtureFiles: GuestFileEntry[] = [
   { name: "sample.bin", type: "file", size: 4 },
 ]
 
+const fixtureRoot: GuestFileEntry[] = [
+  { name: "bin", type: "directory", size: 4096 },
+  { name: "boot", type: "directory", size: 4096 },
+  { name: "dev", type: "directory", size: 4096 },
+  { name: "etc", type: "directory", size: 4096 },
+  { name: "home", type: "directory", size: 4096 },
+  { name: "lib", type: "directory", size: 4096 },
+  { name: "media", type: "directory", size: 4096 },
+  { name: "mnt", type: "directory", size: 4096 },
+  { name: "opt", type: "directory", size: 4096 },
+  { name: "proc", type: "directory", size: 0 },
+  { name: "root", type: "directory", size: 4096 },
+  { name: "run", type: "directory", size: 4096 },
+  { name: "srv", type: "directory", size: 4096 },
+  { name: "sys", type: "directory", size: 0 },
+  { name: "tmp", type: "directory", size: 4096 },
+  { name: "usr", type: "directory", size: 4096 },
+  { name: "var", type: "directory", size: 4096 },
+  { name: "workspace", type: "directory", size: 4096 },
+]
+
 function fixtureMachine(id: string, state: PowerState, name = names[id] ?? "example-machine", guestUnavailable = false): Machine {
   const resources = { cpu_count: id === cedar ? 2 : 1, memory_mib: 4096, storage_gib: 32 }
   const guest = state === "running" && !guestUnavailable ? "ready" : "unavailable"
@@ -215,6 +236,7 @@ export class FixtureClient extends Client {
           throw new PlatformError(409, { code: "GUEST_FILE_TRANSFER_UNSUPPORTED", message: "File access is unavailable for this execution." })
         }
         if (this.scene === "files-empty") return page([])
+        if (this.scene === "38" && (target.searchParams.get("path") ?? "/") === "/") return page(fixtureRoot)
         if (this.scene === "files-paginated") return target.searchParams.get("cursor") ? page(fixtureFiles.slice(2)) : page([
           ...fixtureFiles.slice(0, 2),
           { name: "a-long-filename-for-testing-ellipsis-and-full-keyboard-access.md", type: "file", size: 512 },

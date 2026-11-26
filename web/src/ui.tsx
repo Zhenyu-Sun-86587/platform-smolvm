@@ -70,6 +70,17 @@ function restoreFocus(previous: HTMLElement | null) {
   if (previous?.isConnected && previous !== document.body) previous.focus({ preventScroll: true })
 }
 
+
+export function guardCoveredDialogEscape(event: KeyboardEvent, current: HTMLElement | null) {
+  if (current?.getAttribute("aria-hidden") !== "true") return
+  // Radix applies aria-hidden before updating which layer owns its Escape listener.
+  // If Escape arrives in that window, dismiss the visible dialog through its own control.
+  event.preventDefault()
+  if (!(event.target instanceof Element)) return
+  const dialog = event.target.closest('[role="dialog"][data-state="open"]:not([aria-hidden="true"])')
+  dialog?.querySelector<HTMLButtonElement>('[data-dialog-close], [data-slot="dialog-close"]')?.click()
+}
+
 export function Modal({ open, onOpenChange, title, description, children, busy, footer, size = "sm", className }: DialogProps & {
   footer?: ReactNode
   size?: "sm" | "md" | "lg"
@@ -107,7 +118,7 @@ export function Modal({ open, onOpenChange, title, description, children, busy, 
         {mobile && <div className="console-modal-handle" aria-hidden="true" onTouchStart={startSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { started.current = null }}><span /></div>}
         <div className="console-modal-header">
           <Dialog.Title>{title}</Dialog.Title>
-          <Dialog.Close asChild><IconButton aria-label="Close dialog" disabled={busy}><X size={17} /></IconButton></Dialog.Close>
+          <Dialog.Close asChild><IconButton aria-label="Close dialog" data-dialog-close disabled={busy}><X size={17} /></IconButton></Dialog.Close>
           {description && <Dialog.Description>{description}</Dialog.Description>}
         </div>
         <div className="console-modal-body">{children}</div>
@@ -119,14 +130,21 @@ export function Modal({ open, onOpenChange, title, description, children, busy, 
 
 export function DetailDrawer({ open, onOpenChange, title, children, className }: DialogProps) {
   const previousFocus = useRef<HTMLElement | null>(null)
+  const content = useRef<HTMLDivElement>(null)
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
     <Dialog.Portal>
       <Dialog.Overlay className="console-overlay console-detail-overlay" />
       <Dialog.Content
         className={["console-detail", className].filter(Boolean).join(" ")}
         aria-describedby={undefined}
-        onOpenAutoFocus={() => { previousFocus.current = document.activeElement as HTMLElement | null }}
+        ref={content}
+        onOpenAutoFocus={event => {
+          previousFocus.current = document.activeElement as HTMLElement | null
+          event.preventDefault()
+          content.current?.focus({ preventScroll: true })
+        }}
         onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(previousFocus.current) }}
+        onEscapeKeyDown={event => guardCoveredDialogEscape(event, content.current)}
       >
         <Dialog.Title className="sr-only">{title}</Dialog.Title>
         <div className="console-detail-controls">
