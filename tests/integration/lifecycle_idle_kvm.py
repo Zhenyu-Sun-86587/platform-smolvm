@@ -17,6 +17,79 @@ import time
 from managed_system_vsock import Platform, wait_for, worker
 
 
+def protection_cut(platform, path, original, apply, protection, side):
+    apply("start-automatic-hibernate", {"auto_hibernate": True, "hibernate_after_seconds": 2})
+    with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as catalog:
+        def cut():
+            row = catalog.execute("""SELECT b.operation_id,b.original,b.stage,p.phase,b.capture_id FROM managed_fork_batches b
+                JOIN lifecycle_decisions d ON d.id=b.operation_id LEFT JOIN statepoints p USING(capture_id)
+                WHERE b.source_incarnation=? AND d.kind='hibernate' AND d.origin='idle'""",
+                (original["incarnation_id"],)).fetchone()
+            if row and (side == "before" or row[3] in ("stop_committed", "hibernated")):
+                return row
+
+        operation, source_power, stage, phase, capture = wait_for(cut, timeout=65)
+        assert source_power == "RUNNING" and ((phase in ("stop_committed", "hibernated")) == (side == "after"))
+        print("Automatic Hibernate boundary", json.dumps(dict(operation=operation, stage=stage, point=phase)), flush=True)
+        lease = None
+        if protection == "keep-running":
+            apply("protect-candidate", {"keep_running": True})
+            projected = platform.app(path + "/lifecycle")
+            assert projected["applied"]["keep_running"] and projected["desired_revision"] == projected["applied_revision"]
+        else:
+            view = platform.app(path)
+            lease = platform.app(path + "/leases", "POST", dict(reason="Owner cut lease", semantics_version=2, ttl_seconds=5),
+                                 {"If-Match": f'"{view["revision"]}"', "Idempotency-Key": "acquire-at-cut",
+                                  "If-Control-Epoch": platform.epoch}, timeout=80)
+            assert lease["state"] == "active"
+            renewed = platform.app("leases/" + lease["lease_id"], "PATCH", {
+                "lease_token": lease["lease_token"], "ttl_seconds": 60,
+            }, {"If-Match": f'"{lease["revision"]}"', "Idempotency-Key": "renew-at-cut", "If-Control-Epoch": platform.epoch})
+            assert renewed["revision"] > lease["revision"] and renewed["state"] == "active"
+
+        def terminal():
+            receipt = platform.native("/operations/" + operation)
+            return receipt if receipt["phase"] in ("COMPLETED", "ABORTED") else None
+
+        settled = wait_for(terminal)
+        assert settled["phase"] == ("ABORTED" if side == "before" else "COMPLETED"), settled
+        if protection == "keep-running" and side == "after":
+            saved = wait_for(lambda: view if (view := platform.app(path))["power_state"] == "hibernated" else None)
+            started = platform.complete(platform.change(path + "/start", "owner-start-after-commit", {}, saved))
+            assert started["result"]["statepoint"]["capture_id"] == capture
+        machine = path.split("/")[-1]
+        _, current = platform.context(machine)
+        assert current["instance_id"] == original["instance_id"]
+        assert current["execution_epoch"] == original["execution_epoch"] + int(side == "after")
+        assert (current["incarnation_id"] == original["incarnation_id"]) == (side == "before")
+        if lease:
+            assert lease["execution_epoch"] == renewed["execution_epoch"] == current["execution_epoch"]
+
+        def state():
+            return worker(platform.worker, "GetLifecycleStatus", route_id="deep", bundle_digest=platform.bundle_id, expected=current)
+
+        # Cross the original five-second TTL and the two-second idle deadline.
+        end = time.monotonic() + 8
+        blocker = "keep_running" if protection == "keep-running" else "lease:Owner cut lease"
+        while time.monotonic() < end:
+            observed = state()
+            assert observed["power"] == "RUNNING" and blocker in observed["blockers"], observed
+            time.sleep(.35)
+        assert platform.guest(current, ["/bin/cat", "/run/a28-marker"]) == b"lifecycle-memory"
+        all_sleeps = catalog.execute("""SELECT id FROM lifecycle_decisions WHERE instance_id=? AND kind='hibernate'
+                                      AND origin='idle'""", (current["instance_id"],)).fetchall()
+        assert all_sleeps == [(operation,)], all_sleeps
+        if lease:
+            released = platform.app("leases/" + lease["lease_id"], "DELETE", {"lease_token": lease["lease_token"]},
+                                    {"If-Match": f'"{renewed["revision"]}"', "Idempotency-Key": "release-cut-lease",
+                                     "If-Control-Epoch": platform.epoch})
+            assert released["state"] == "released"
+        print(json.dumps(dict(bundle=platform.bundle_id, protection=protection, side=side, capture=capture,
+                              decision=settled["phase"], original_epoch=original["execution_epoch"],
+                              active_epoch=current["execution_epoch"], blocker=blocker,
+                              owner_renewed=lease is not None, automatic_candidates=len(all_sleeps))), flush=True)
+
+
 def test(args, root, stack):
     network = dict(network_id="idle-net", route_domain_id="idle-route", cidr="10.64.39.0/24")
     platform = Platform(args, root, stack, (network,), state_tmpfs=True, use_installation=True)
@@ -62,6 +135,9 @@ def test(args, root, stack):
         if wait:
             platform.complete(op)
         return op
+
+    if args.protection:
+        return protection_cut(platform, path, ref, apply, args.protection, args.side)
 
     def wake(key, advances):
         nonlocal ref
@@ -205,7 +281,11 @@ def main():
     for option in ("--bundle", "--platformd", "--system-image"):
         parser.add_argument(option, type=lambda path: Path(path).resolve(), required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
+    parser.add_argument("--protection", choices=("keep-running", "lease"))
+    parser.add_argument("--side", choices=("before", "after"))
     args = parser.parse_args()
+    if bool(args.protection) != bool(args.side):
+        parser.error("--protection and --side select a protection race together")
     if os.geteuid() != 0:
         parser.error("requires root, KVM and a live systemd manager")
     if os.environ.get("A28_KVM_NAMESPACE") != "1":
@@ -218,6 +298,13 @@ def main():
         catalog.mkdir()
         subprocess.run(["mount", "-t", "tmpfs", "-o", "size=4G,mode=0700,nosuid,nodev", "tmpfs", catalog], check=True)
         stack.callback(subprocess.run, ["umount", "--lazy", catalog], check=True)
+        if args.protection:
+            unit = f"smolvmcutpolicy{os.getpid()}.slice"
+            subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                            "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
+                            unit, "fail", "1", "MemoryAccounting", "b", "true", "0"], stdout=subprocess.DEVNULL, check=True)
+            stack.callback(subprocess.run, ["systemctl", "stop", unit], check=False)
+            os.environ["SMOLVM_WORKER_SLICE_NAME"] = unit
         try:
             test(args, root, stack)
         except BaseException:
