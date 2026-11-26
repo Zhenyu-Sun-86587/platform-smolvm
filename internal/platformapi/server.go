@@ -54,10 +54,7 @@ func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Ser
 	return s
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := strings.ToLower(r.Host)
-	if n, _, e := net.SplitHostPort(host); e == nil {
-		host = n
-	}
+	host := requestHostname(r.Host)
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
 		w.Header().Set("X-Sandbox-Forwarding", "not_started")
 		http.Error(w, "TLS connection belongs to another host", http.StatusMisdirectedRequest)

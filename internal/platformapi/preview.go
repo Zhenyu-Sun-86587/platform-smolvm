@@ -10,8 +10,8 @@ import (
 )
 
 type previewSession struct {
-	Target, CredentialID, PrincipalID string
-	Expiry                            time.Time
+	Target, CredentialID, PrincipalID, Host string
+	Expiry                                  time.Time
 }
 
 const previewCookie = "__Host-sandbox-preview"
@@ -28,13 +28,31 @@ func (s *Server) previewRoutes() {
 		if !v.Enabled || v.PublicHost == "" || r.Header.Get("Origin") != s.Config.API.PublicOrigin {
 			return auth.ErrForbidden
 		}
+		host := v.PublicHost
+		switch r.URL.Query().Get("address") {
+		case "":
+		case "machine":
+			host = machineWebHost(v.MachineID, s.Config.Gateway.AppsDomain)
+			if host == "" {
+				return registry.ErrNotFound
+			}
+			target, err := s.httpServiceForHost(r.Context(), host)
+			if err != nil {
+				return err
+			}
+			if target.ID != v.ID {
+				return registry.ErrConflict
+			}
+		default:
+			return registry.ErrInvalid
+		}
 		key, err := registry.NewID("preview_")
 		if err != nil {
 			return err
 		}
-		s.tickets.Store(key, previewSession{v.ID, p.CredentialID, p.ID, time.Now().Add(30 * time.Second)})
+		s.tickets.Store(key, previewSession{Target: v.ID, CredentialID: p.CredentialID, PrincipalID: p.ID, Host: host, Expiry: time.Now().Add(30 * time.Second)})
 		time.AfterFunc(30*time.Second, func() { s.tickets.Delete(key) })
-		return write(w, 200, map[string]string{"ticket": key, "action": "https://" + v.PublicHost + "/.sandbox/session"})
+		return write(w, 200, map[string]string{"ticket": key, "action": "https://" + host + "/.sandbox/session"})
 	})
 }
 func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) (auth.Principal, bool, error) {
@@ -52,7 +70,7 @@ func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) 
 			return p, false, auth.ErrUnauthenticated
 		}
 		session, ok := t.(previewSession)
-		if !ok || session.Target != v.ID || !session.Expiry.After(time.Now()) {
+		if !ok || session.Target != v.ID || session.Host != requestHostname(r.Host) || !session.Expiry.After(time.Now()) {
 			return p, false, auth.ErrForbidden
 		}
 		key, err := registry.NewID("service_")
@@ -73,7 +91,7 @@ func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) 
 			return p, false, auth.ErrUnauthenticated
 		}
 		session, ok := stored.(previewSession)
-		if !ok || session.Target != v.ID || !session.Expiry.After(time.Now()) {
+		if !ok || session.Target != v.ID || session.Host != requestHostname(r.Host) || !session.Expiry.After(time.Now()) {
 			return p, false, auth.ErrForbidden
 		}
 		var n int

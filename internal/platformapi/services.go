@@ -558,8 +558,17 @@ func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.B
 }
 
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
-	v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE public_host=? AND kind IN ('http','https') AND enabled=1", host))
+	v, err := s.httpServiceForHost(r.Context(), host)
 	if err != nil {
+		w.Header().Set(gateway.ForwardingHeader, "not_started")
+		// Resolve ambiguity for an authorized caller without disclosing inventory
+		// or starting a Guest for anonymous visitors.
+		if mid := s.webMachine(host); mid != "" {
+			if p, _, authErr := s.authenticate(r); authErr == nil && p.Authorize("tunnel", mid) == nil {
+				fail(w, r, err)
+				return
+			}
+		}
 		fail(w, r, auth.ErrUnauthenticated)
 		return
 	}

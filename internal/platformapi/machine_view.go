@@ -23,6 +23,7 @@ type machineHealth struct {
 }
 
 type machineView struct {
+	WebURL            string                      `json:"web_url,omitempty"`
 	PowerState        registry.PowerState         `json:"power_state"`
 	Health            machineHealth               `json:"health"`
 	BootMode          rt.BootMode                 `json:"boot_mode"`
@@ -42,6 +43,9 @@ type machineView struct {
 
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPolicy bool) (machineView, error) {
 	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
+	if host := machineWebHost(m.ID, s.Config.Gateway.AppsDomain); host != "" && m.DeletedAt == nil {
+		v.WebURL = "https://" + host
+	}
 	var spec struct {
 		Resources         json.RawMessage   `json:"resources"`
 		Network           *rt.LaunchNetwork `json:"network"`
