@@ -33,7 +33,7 @@ done
 }
 ```
 
-Worker 等待两个已登记私网的路由器可用，核对两域 CIDR 和 FixedInternal Guest 的内部路由无歧义，再在两域之间安装独立转发链和对端路由。Native Guest 保留私网源地址，FixedInternal Guest 由原 attachment 映射为自身 VIP。Guest 可直接连接对端的私网地址。域名解析仍使用各私网的 DNS，跨域自动唤醒沿用已授权的 Gateway 入口。每对私网分别授权，流量只在本对已分配地址范围内转发。
+Worker 等待两个已登记私网的路由器可用，核对两域 CIDR 和 FixedInternal Guest 的内部路由无歧义，再在两域之间安装独立转发链和对端路由。Native Guest 保留私网源地址，FixedInternal Guest 由原 attachment 映射为自身 VIP。Guest 可直接连接对端的私网地址。域名解析仍使用各私网的 DNS，跨域自动唤醒沿用已授权的 Gateway 入口。每对私网分别授权。转发链匹配双方可分配的地址范围，实际端点仍须通过各自 attachment 的原有规则和主机路由。
 
 原子替换策略文件可调整授权。使用空 `allowed_pairs` 撤销全部对等路由。Worker 在下一次协调时移除对应转发链和路由。Worker 退出时，Linux 回收对等网络命名空间以及对应的两侧链路。Worker 重启恢复原 attachment 后，按当前文件重新应用策略。
 
@@ -42,4 +42,6 @@ printf '%s\n' '{"protocol":"WorkerResource/1","request_id":"peering","method":"Q
   smolvm-resourced call --socket "$worker_socket"
 ```
 
-`requested` 记录已读策略，`active` 记录已装配的双向路由，`error` 记录策略或装配问题。源或目标遇到网段重叠时，先消除配置歧义，Worker 才能建立该路由。
+`requested` 记录已读策略，`active` 记录已装配的双向路由，`error` 记录策略或装配问题。Worker catalog 恢复期间返回 `E_RECOVERING`。源或目标遇到网段重叠时，先消除配置歧义，Worker 才能建立该路由。
+
+五个独立 Linux 网络命名空间中的内核窄测同时配置 A↔B 和 A↔C。A 的两个路由均以 `169.254.1.1` 为下一跳，各自拥有独立设备和 `PERMANENT` 邻居记录，两对均通过双向 ICMP。关闭 A↔B 的转发命名空间后，A 和 B 上对应路由消失，A↔C 的实际双向通信继续。`.build/a13-peering-netns-v2.log` SHA-256 为 `d081081ed311265a0bb48e2a7d439dc74fd92357319647a95719e157dc97b60d`。
