@@ -292,7 +292,7 @@ function Browser({ machine, actions, current, autoload }: {
       event.dataTransfer.dropEffect = canUpload ? "copy" : "none"
       if (canUpload) setDragging(true)
     }} onDragLeave={event => {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
+      if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false)
     }} onDrop={event => {
       if (!event.dataTransfer.types.includes("Files")) return
       event.preventDefault()
