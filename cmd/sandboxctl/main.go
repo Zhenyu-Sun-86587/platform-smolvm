@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"sandbox-platform/internal/buildinfo"
+	"sandbox-platform/internal/placement"
 )
 
 type client struct {
@@ -51,6 +52,13 @@ func (e *apiError) Error() string {
 	}
 	if e.Detail.OperationID != "" {
 		s += " (operation " + e.Detail.OperationID + ")"
+	}
+	for _, candidate := range e.Detail.Candidates {
+		route := candidate.WorkerID
+		if candidate.RuntimeInstanceID != "" {
+			route += "/" + candidate.RuntimeInstanceID
+		}
+		s += "\n  " + route + ": " + candidate.Reason
 	}
 	return s
 }
@@ -94,9 +102,12 @@ func main() {
 		}
 		var apiErr *apiError
 		if cli.jsonOutput && errors.As(err, &apiErr) {
-			detail := map[string]string{
+			detail := map[string]any{
 				"code": apiErr.Detail.Code, "message": apiErr.Detail.Message, "operation_id": apiErr.Detail.OperationID,
 				"effect": apiErr.Detail.Effect, "retry": apiErr.Detail.Retry,
+			}
+			if len(apiErr.Detail.Candidates) != 0 {
+				detail["candidates"] = apiErr.Detail.Candidates
 			}
 			if apiErr.Detail.Capability != "" {
 				detail["capability"] = apiErr.Detail.Capability
@@ -251,15 +262,16 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 type apiErrorDetail = struct {
-	Code        string `json:"code"`
-	Message     string `json:"message"`
-	OperationID string `json:"operation_id"`
-	Effect      string `json:"effect"`
-	Retry       string `json:"retry"`
-	Capability  string `json:"capability"`
-	ReasonCode  string `json:"reason_code"`
-	Stage       string `json:"stage"`
-	Scope       string `json:"scope"`
+	Candidates  []placement.Rejection `json:"candidates,omitempty"`
+	Code        string                `json:"code"`
+	Message     string                `json:"message"`
+	OperationID string                `json:"operation_id"`
+	Effect      string                `json:"effect"`
+	Retry       string                `json:"retry"`
+	Capability  string                `json:"capability"`
+	ReasonCode  string                `json:"reason_code"`
+	Stage       string                `json:"stage"`
+	Scope       string                `json:"scope"`
 }
 
 func (c *client) get(ctx context.Context, path string, dest any) error {

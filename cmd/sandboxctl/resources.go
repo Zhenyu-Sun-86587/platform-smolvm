@@ -426,6 +426,9 @@ func (c *client) taskLogs() *cobra.Command {
 func (c *client) operations() *cobra.Command {
 	group := &cobra.Command{Use: "operations", Short: "Observe and reconcile operations"}
 	group.AddCommand(c.list("list", "operations", false), c.showItem("operations"),
+		sub("placement OPERATION", "Read the fixed owner and resource reservation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+			return c.show(cmd, res("operations", args[0])+"/placement")
+		}),
 		sub("wait OPERATION", "Observe until the operation reaches a terminal state", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			return c.wait(cmd, args[0])
 		}))

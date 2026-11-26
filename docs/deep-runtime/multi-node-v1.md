@@ -10,7 +10,7 @@
 - **已有对象。** 启停、恢复、Fork 子项及原生 retry 都使用原 Worker。不可变模板须在各 Worker 预先导入，将内容 digest 和 Node 允许的本地 root generation 配对；只有 resourced 证实不可变对象、来源和容量后才会进入候选。独立卷和 StatePoint 保留原 Runtime、Bundle 和 reader。在不同 Worker 上使用相同的 Serve 名、私网名或 Guest IP 不会改变对象的 owner。
 - **容量。** 调度使用 `QueryWorkerBudget`、可用内存和 PSI、Runtime capability、私网、已验证的存储和未覆盖的预留。预算查询限时 5 秒，样本有效期 15 秒。可能已发送的动作保留 Unknown 及资源预留，仅向原 Worker 查询同一操作。折叠额外预留需要原生 admission 的证据及同一 host/broker/Node 会话中更晚的预算采样。原生端保留最终准入权。
 - **访问。** 管理、服务、桌面和 Guest 请求继续从平台入口进入。Node 端仅接收预定义请求，按 Runtime 与 execution 校验。双向流支持 half-close、背压和撤权。Guest relay 还要求 Worker 验证本地来宾连接，平台复核 grant。服务 HTTP 在请求体发出后断链时返回不确定结果。
-- **可观测性。** `GET /v1/workers` 和 `sandboxctl workers get WORKER` 显示 enrollment、fresh budget、期望维护模式、已观察阶段和阻塞项。机器视图分别报告 `worker_id`、`owner_status`、`power_state` 和 `last_confirmed_power_state`。调度拒绝返回逐候选原因；已接受操作可查 `GET /v1/operations/{operation}/placement`。
+- **可观测性。** `GET /v1/workers` 和 `sandboxctl workers get WORKER` 显示 enrollment、fresh budget、期望维护模式、已观察阶段和阻塞项。机器视图分别报告 `worker_id`、`owner_status`、`power_state` 和 `last_confirmed_power_state`。调度拒绝返回逐候选原因；已接受操作可查 `sandboxctl operations placement OPERATION` 或 `GET /v1/operations/{operation}/placement`。
 
 [控制面配置示例](../../packaging/install/config.example.yaml) · [Node 配置示例](../../packaging/systemd/sandbox-node.example.yaml) · [管理 API](../../api/openapi.yaml)
 

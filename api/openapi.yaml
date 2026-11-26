@@ -2931,6 +2931,15 @@ components:
         stage: {type: string}
         scope: {type: string}
         message: {type: string}
+        candidates:
+          type: array
+          items:
+            type: object
+            required: [worker_id, reason]
+            properties:
+              worker_id: {type: string}
+              runtime_instance_id: {type: string}
+              reason: {type: string}
         effect: {type: string, enum: [none, applied, partial, unknown]}
         retry: {type: string, enum: [never, same_key, poll_operation, after_precondition, client_decision, verify_original_intent]}
       required:
