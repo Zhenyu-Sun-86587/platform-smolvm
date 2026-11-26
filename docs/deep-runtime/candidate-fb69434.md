@@ -66,6 +66,12 @@
 
 在同一安装件用只读 SQL 探针定向复跑后，确认目标在获得 writer grant 且身份仍为 `authority_prepared/none` 时退出。原盘仍指向同一个 next head，失败 operation 为 `ABORTED`，writer grant 已 `released`，执行为 `exited`。此版仍以这条 grant 历史触发代际冲突。原查询、回执与失败边界见 `installed-saved-wake-writer-observed.log`，SHA-256 为 `d411181c1bfa3129cdedfa480dd12ddbb5911949bb5efea76d4d1ae6307da6a7`。
 
+### 保存唤醒修复的开发复测
+
+Worker 修复 `3e517f85fffe7af52c13fa4deb3371de3e0a5a60` 允许在原保存点上重试已经确认退出、释放 writer 且尚未开始 Guest 身份应用的 exact 尝试。身份 BEGIN 在 helper 获准写盘前持久记录，BEGIN 之后、授权未知或仍有 writer 的尝试继续触发冲突。Rust 定向回归验证这些边界，库测试记录为 12 通过、3 个网络特权用例按配置忽略。日志为 `restore-retry-worker-tests.log`，SHA-256 为 `a0b8a0945477cfd1224a12ab5effdba30417eb466e4b84ef48485c357471fb37`。
+
+平台夹具 `1b44feca90c056245bc5297053792a5ce64eb9a0` 等待真实 writer grant 发放，在 Guest 身份 BEGIN 前终止目标，核对 `released/exited` 后再显式重试。同一夹具在 fb69434 安装件仍复现原错误，见 `installed-saved-wake-tracked-regression.log`，SHA-256 为 `322b44ad9b3e1f3b0480cca459f73a161a9fc4896434808ef669216267813666`。修复后的开发组合 `sha256:b7127898b736a835f7fe513fff14c0e65bc88da7b759d63ff56837cd50af5abd` 通过全部步骤，并在下一 epoch 恢复原 RAM 标记。开发日志为 `development-saved-wake-writer-fixed.log`，SHA-256 为 `312707c82e11583810062648001d3c58f2e925eafb1b2c07f5c13f2563aefd20`。
+
 ## 历史版本复核
 
 同一验证器确认 `91e2c72` v1、`d8cc5d5` v2 和 `86dae32` v3 原安装树的摘要。首次复查 `d8cc5d5` 时，旧开发夹具对该安装件创建的硬链接触发了单链接校验，原打包树仍验证通过。开发夹具改用独立缓存后，原安装 inode 和字节保留，安装树再次通过，摘要为 `sha256:c5070578cdf0d4fd01cc120721515c169e9297a3f624803def398996c0e249b5`。工作区日志为 `.build/release-fb69434/historical-reverification.log` 和 `historical-d8-installed-reverified.log`。
