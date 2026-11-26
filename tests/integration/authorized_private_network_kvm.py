@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise normal TCP, DNS hairpin and IPv4 MTU on owned KVM networks."""
+"""Exercise TCP, DNS hairpin, IPv4 MTU and peering on owned KVM networks."""
 
 import argparse
 from contextlib import ExitStack
@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 from authorized_services_kvm import Platform, identity, witness, worker_get
-from managed_system_vsock import digest, wait_for
+from managed_system_vsock import digest, wait_for, worker
 
 
 PROGRAM = "/run/a13-network.pl"
@@ -168,11 +168,95 @@ def exercise(platform, networks, case):
             route_domains=[first["route_domain"], second["route_domain"]])
 
 
+class PeeringPlatform(Platform):
+    def spawn(self, command, log):
+        if log == "worker.log":
+            self.worker_command = command
+            command = [*command, "--private-network-peering-config", self.policy]
+        return super().spawn(command, log)
+
+    @property
+    def policy(self):
+        return self.root / "private-peering.json"
+
+    def set_peers(self, pairs):
+        temporary = self.policy.with_suffix(".next")
+        with open(temporary, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as file:
+            json.dump({"version": 1, "allowed_pairs": pairs}, file)
+        temporary.replace(self.policy)
+
+    def peer_status(self, expected):
+        status = worker(self.worker, "QueryPrivateNetworkPeering")
+        assert status["configured"] and status["error"] is None, status
+        return status if status["requested"] == status["active"] == expected else None
+
+
+def peering_routes(platform, networks):
+    routes = {}
+    for pin in (platform.root / "catalog/network-namespaces").glob("router-*"):
+        table = json.loads(subprocess.check_output(["nsenter", f"--net={pin}", "--", "ip", "-4", "-j", "route"]))
+        local, = [route["dst"] for route in table if route.get("type") == "blackhole"]
+        routes[local] = table
+    assert set(routes) == {network["cidr"] for network in networks}, routes
+    left, right = (network["cidr"] for network in networks)
+    return [[route for route in routes[own] if route.get("dst") == peer] for own, peer in ((left, right), (right, left))]
+
+
+def exercise_peering(platform, networks):
+    first = launch(platform, "alpha", networks[0], "fixed_internal")
+    second = launch(platform, "beta", networks[1], "native")
+    default = wait_for(lambda: platform.peer_status([]))
+    assert peering_routes(platform, networks) == [[], []]
+    peers = [{"left": networks[0]["network_id"], "right": networks[1]["network_id"]}]
+    platform.set_peers(peers)
+    allowed = wait_for(lambda: platform.peer_status(peers))
+
+    def connection_routes():
+        routes = peering_routes(platform, networks)
+        assert all(len(entries) == 1 and entries[0].get("dev", "").startswith("sp") for entries in routes), routes
+        return routes
+
+    def connections():
+        return [flow(platform, source, target, target["endpoint"]["private_ipv4"])
+                for source, target in ((first, second), (second, first))]
+
+    active_routes = connection_routes()
+    connected_before = connections()
+    initial = worker(platform.worker, "Health")
+    platform.broker.kill()
+    platform.broker.wait(timeout=10)
+    wait_for(lambda: peering_routes(platform, networks) == [[], []], timeout=10)
+    platform.broker = platform.spawn(platform.worker_command, "worker.log")
+
+    def recovered_worker():
+        health = worker(platform.worker, "Health")
+        return health if health["state"] == "ready" and health["broker_session_id"] != initial["broker_session_id"] else None
+
+    recovered = wait_for(recovered_worker, timeout=65, retry=(OSError, RuntimeError))
+    assert recovered["executable_sha256"] == initial["executable_sha256"] == digest(platform.bundle / "smolvm-resourced")
+    wait_for(lambda: platform.peer_status(peers))
+    recovered_routes = connection_routes()
+    connected_after = connections()
+
+    platform.set_peers([])
+    revoked = wait_for(lambda: platform.peer_status([]))
+    wait_for(lambda: peering_routes(platform, networks) == [[], []], timeout=10)
+    for local in (first, second):
+        ref = platform.context(local["machine"])[1]
+        assert identity(ref) == identity(local["execution"])
+        assert platform.guest(ref, ["cat", "/proc/1/comm"]) == b"systemd\n"
+    witness(platform, "a13-authorized-peering", networks=networks, default=default, allowed=allowed, revoked=revoked,
+            active_routes=active_routes, recovered_routes=recovered_routes, connected_before=connected_before,
+            connected_after=connected_after, worker=initial["executable_sha256"],
+            worker_sessions=[initial["broker_session_id"], recovered["broker_session_id"]],
+            executions=[identity(local["execution"]) for local in (first, second)])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda value: Path(value).resolve(strict=True), required=True)
-    parser.add_argument("--case", choices=("same-domain", "mixed", "overlap"), required=True)
+    parser.add_argument("--case", choices=("same-domain", "mixed", "overlap", "peering"), required=True)
     args = parser.parse_args()
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
         parser.error("requires root and KVM")
@@ -194,11 +278,19 @@ def main():
         networks = [dict(network_id="a13-alpha", route_domain_id="a13-alpha", cidr=CIDR)]
         if args.case == "overlap":
             networks.append(dict(network_id="a13-beta", route_domain_id="a13-beta", cidr=CIDR))
-        platform = Platform(args, root, stack, networks, state_tmpfs=True, use_installation=True)
+        if args.case == "peering":
+            networks.append(dict(network_id="a13-beta", route_domain_id="a13-beta", cidr="10.44.63.0/24"))
+        platform_type = PeeringPlatform if args.case == "peering" else Platform
+        platform = platform_type(args, root, stack, networks, state_tmpfs=True, use_installation=True)
         try:
+            if args.case == "peering":
+                platform.set_peers([])
             platform.start()
             print(f"Platform {digest(args.platformd)}; System image {digest(args.system_image)}.", flush=True)
-            exercise(platform, networks, args.case)
+            if args.case == "peering":
+                exercise_peering(platform, networks)
+            else:
+                exercise(platform, networks, args.case)
         except BaseException:
             for log in root.glob("*.log"):
                 print(log.name, log.read_text(errors="replace")[-2000:], file=sys.stderr)
