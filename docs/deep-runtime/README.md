@@ -41,7 +41,7 @@
 
 ## 3. 文档导航与阅读顺序
 
-11 月 26 日的冻结候选已在独立 Worker 上完成安装、OCI 和 Debian System 的实机验收。[候选 91e2c72 的安装与 KVM 验收](candidate-91e2c72.md)
+11 月 26 日的冻结候选已在隔离 Worker 上完成安装、OCI 和 Debian System 的实机验收。fdd620e 的安装复测覆盖两种私网的唤醒、受保护 Guest 主动分叉，以及 platformd 崩溃之后的连接回收。[候选 fdd620e](candidate-fdd620e.md) · [先前候选 91e2c72](candidate-91e2c72.md) · [A01–A36 逐项验收台账](acceptance-ledger.md)
 
 | 文件 | 用途 | 首次执行必须阅读的部分 |
 | --- | --- | --- |
