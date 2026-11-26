@@ -230,7 +230,7 @@ func selectBackupIDs(ctx context.Context, db *sql.DB, query string) ([]string, e
 func nativeWorkerError(err error) error {
 	var worker *workerclient.Fault
 	var transport *net.OpError
-	if errors.As(err, &transport) || errors.Is(err, io.EOF) ||
+	if errors.As(err, &transport) || errors.Is(err, io.EOF) || errors.Is(err, unix.ECONNRESET) ||
 		(errors.As(err, &worker) && worker.Code == "E_RECOVERING") {
 		return errors.Join(ErrNativeBackupRetry, err)
 	}
