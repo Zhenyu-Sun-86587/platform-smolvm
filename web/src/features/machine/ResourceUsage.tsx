@@ -11,8 +11,8 @@ const maxGap = observationInterval * 4
 const maxSamples = 24
 const definitions = [
   { name: "CPU", field: "cpu_millis", unit: "ms", description: "Cumulative CPU time" },
-  { name: "Memory", field: "memory_mb", unit: "MB", description: "Runtime memory measurement" },
-  { name: "Disk", field: "disk_used_mb", unit: "MB", description: "Runtime disk measurement" },
+  { name: "Memory", field: "memory_mb", unit: "MB", description: "Runtime memory" },
+  { name: "Disk", field: "disk_used_mb", unit: "MB", description: "Runtime disk" },
 ] as const
 type MetricField = typeof definitions[number]["field"]
 type Sample = { at: number; values: Partial<Record<MetricField, number>> }
@@ -92,7 +92,7 @@ export function ResourceUsage({ machine, revision }: { machine: Machine; revisio
   const scope = data?.scope ? label(data.scope) : undefined
   return <section aria-labelledby="machine-usage-title">
     <div className={styles.metricsHead}>
-      <h2 className={styles.sectionTitle} id="machine-usage-title">Resource usage</h2>
+      <h2 className={styles.sectionTitle} id="machine-usage-title">Resource usage{samples.length > 1 ? " · recent samples" : ""}</h2>
       <span>{data ? [label(status), source, scope].filter(Boolean).join(" · ") : error ? "Unavailable" : "Loading…"}</span>
     </div>
     <Callout error={error} />
@@ -101,6 +101,7 @@ export function ResourceUsage({ machine, revision }: { machine: Machine; revisio
       <strong>{measure(sample?.values[field], unit) ?? (status === "stale" ? "Stale" : "Unavailable")}</strong>
       <span>{description}</span>
       <SamplePlot samples={samples} field={field} name={name} unit={unit} />
+      <div className={styles.axis}><span>{samples.length > 1 ? Math.round((samples.at(-1)!.at - samples[0].at) / 1000) + "s ago" : ""}</span><span>{samples.length ? "latest" : ""}</span></div>
     </div>)}</div>
     {(timestamp || samples.length > 1) && <p className={styles.note}>
       {timestamp && <>Observed <time dateTime={timestamp}>{time(timestamp)}</time></>}

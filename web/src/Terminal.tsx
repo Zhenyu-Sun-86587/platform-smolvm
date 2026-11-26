@@ -10,7 +10,7 @@ import { machineHref } from "./routes"
 import { Button, mobileQuery, useMobile } from "./ui"
 import styles from "./features/console/console.module.css"
 
-const fixtureText = "$ whoami\r\nroot\r\n$ pwd\r\n/workspace\r\n$ "
+const fixtureIntro = "\x1b[90mConnecting… (a hibernated machine may take a few seconds to resume)\x1b[0m\r\n"
 
 export default function Terminal({ execId, machine, embedded = false }: { execId?: string; machine?: Machine; embedded?: boolean }) {
   const page = useRef<HTMLDivElement>(null)
@@ -37,7 +37,7 @@ export default function Terminal({ execId, machine, embedded = false }: { execId
     const term = new Xterm({
       fontSize: 13, fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       cursorBlink: true, convertEol: false, scrollback: 3000,
-      theme: { background: "#0d1422", foreground: "#e6edf9", cursor: "#96c0ff", selectionBackground: "#30466a" },
+      theme: { background: "#0d0f15", foreground: "#e4e4e7", cursor: "#e05a6d", selectionBackground: "#493842" },
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -52,7 +52,8 @@ export default function Terminal({ execId, machine, embedded = false }: { execId
       const fixtureState = fixtureScene === "terminal-connecting" ? "Connecting"
         : fixtureScene === "terminal-exited" ? "Session exited (0)"
         : fixtureScene === "terminal-reconnect" ? "Disconnected" : "Connected"
-      if (fixtureState !== "Connecting") term.write(fixtureText)
+      term.write(fixtureIntro)
+      if (fixtureState !== "Connecting") term.write("\x1b[1;32mroot@" + (machine?.name ?? "sandbox") + "\x1b[0m:~$ \x1b[38;2;224;90;109m▌\x1b[0m")
       if (fixtureScene === "terminal-gap") term.writeln("\r\n[Earlier terminal output is unavailable]")
       setMessage(fixtureState)
       retry.current = () => setMessage("Connected")
@@ -145,7 +146,7 @@ export default function Terminal({ execId, machine, embedded = false }: { execId
   }, [execId, machineID])
 
   return <div className={embedded ? styles.terminalEmbed : styles.console} ref={page}>
-    <div className={styles.toolbar}>
+    <div className={styles.toolbar} data-visible={Boolean(error) || message === "Disconnected" || message.startsWith("Session exited") || !execId}>
       <div className={styles.toolbarName}>
         {!embedded && <a href={machineID ? machineHref(machineID, "terminal") : "#/machines"} aria-label="Back to terminal sessions"><ArrowLeft size={16}/></a>}
         <SquareTerminal size={16}/><strong>{machine?.name ?? "Terminal"}</strong>

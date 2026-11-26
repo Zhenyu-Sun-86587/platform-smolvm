@@ -3,15 +3,16 @@ import type { Machine, MachineNetwork, MachineResourceStatus, Page, ResourcePatc
 import { machine as machinePath, service, snapshot, task } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
 import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, Section, segment, State, str, time, useRemote } from "./common"
-import { Archive, Bot, Box, Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis, Workflow, Network } from "lucide-react"
+import { Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis, Globe2, Pencil } from "lucide-react"
 import styles from "./features/machine/detail.module.css"
 import { ResourceUsage } from "./features/machine/ResourceUsage"
+import { WorkspaceGuide } from "./features/machine/WorkspaceGuide"
 import { Files } from "./features/files/FileBrowser"
 import { fileDigest } from "./features/files/digest"
 export { fileDigest } from "./features/files/digest"
 import { Button } from "./daytona/button"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuContent } from "./daytona/dropdown-menu"
-import { currentServiceObservation, useCollection } from "./api"
+import { currentServiceObservation, fixtureScene, useCollection } from "./api"
 import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
 import { policyFields, policyOverrides } from "./lifecycle-policy"
@@ -62,18 +63,23 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
   return <article className={styles.detail} aria-label={machine.name}>
     <header className={styles.header}>
       <div className={styles.identity}>
-        <div className={styles.machineMark}><Box size={21} /></div>
-        <div>
-          <div className={styles.headline}><h1>{machine.name}</h1><State value={machinePowerState(machine)} /></div>
-          <div className={styles.machineMeta}>
-            <code title={machine.machine_id}>{machine.machine_id}</code>
-            {resources?.cpu_count != null && <span>{resources.cpu_count} vCPU</span>}
-            {resources?.memory_mib != null && <span>{resources.memory_mib} MiB RAM</span>}
-            <span className={styles.guest}>Guest <State value={guest ?? "unknown"} /></span>
-          </div>
+        <div className={styles.headline}>
+          <h1>{machine.name}</h1>
+          <button type="button" className={styles.rename} aria-label="Rename machine" title="Rename machine" onClick={() => renameMachine(machine, actions)}><Pencil size={13} /></button>
+          <State value={machinePowerState(machine)} />
+        </div>
+        <div className={styles.machineMeta}>
+          {resources?.cpu_count != null && <span>{resources.cpu_count} vCPU</span>}
+          {resources?.memory_mib != null && <span>{resources.memory_mib / 1024} GiB</span>}
+          {resources?.storage_gib != null && <span>{resources.storage_gib} GiB</span>}
+          <code title={machine.machine_id}>{machine.machine_id}</code>
+          <span className={styles.guest}>Guest <State value={guest ?? "unknown"} /></span>
         </div>
       </div>
-      <WorkspaceActions key={machine.machine_id} machine={machine} actions={actions} surface="detail" />
+      <WorkspaceActions key={machine.machine_id} machine={machine} actions={actions} surface="detail"
+        capture={() => captureMachine(machine, actions, bundleBound(machine))}
+        captureBlock={bundleBound(machine) ? fullStateBlock(machine, "state.checkpoint") :
+          capabilityReason(machine, "clean_checkpoint") && capabilityReason(machine, "active_recovery")} />
     </header>
     <nav ref={navigation} className={styles.tabs} aria-label="Machine sections">
       {tabs.map(item => <a aria-current={selected === item ? "page" : undefined} href={base + "/" + item} key={item}>{label(item)}</a>)}
@@ -82,35 +88,45 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
     <div className={styles.content} key={machine.machine_id}>
       {selected === "desktop" && machine.desktop_profile === "software-vnc-v1" ? <Suspense fallback={<p role="status">Loading desktop…</p>}><Desktop machine={machine} revision={context.revision} embedded /></Suspense>
         : selected === "terminal" ? <Execs {...context} />
-        : selected === "automations" ? <><Tasks {...context} initialTask={location.hash.split("/")[4]} /><Activity {...context} policyOnly /></>
+        : selected === "automations" ? <><Tasks {...context} initialTask={location.hash.split("/")[4]} /><details className={styles.more}><summary>Automatic machine lifecycle</summary><Activity {...context} policyOnly /></details></>
         : selected === "files" ? <Files {...context} />
         : selected === "networking" ? <Services {...context} />
         : selected === "forks" ? <Branches {...context} />
         : selected === "checkpoints" ? <Snapshots {...context} />
         : selected === "backups" ? <Backups />
-        : selected === "agents" ? <DetailEmpty icon={Bot} title="Agent sessions" description="This platform provides Guest management, terminal sessions and persistent tasks. Agent session history is unavailable." action={<a href={base + "/automations"}>View persistent tasks</a>} />
-        : selected === "settings" ? <><PowerSettings machine={machine} actions={actions} /><MachineConfiguration {...context} /><Activity {...context} /></>
+        : selected === "agents" ? <WorkspaceGuide label="Coding agents" title="Agent sessions"
+          description="Agent session history is unavailable. Run a command in the guest and follow its output with persistent tasks."
+          actions={<a className={styles.documentButton} href={base + "/automations"}>View persistent tasks</a>}
+          commands={["# List persistent tasks", "sandboxctl tasks list " + machine.machine_id,
+            "", "# Open an interactive shell", "sandboxctl exec " + machine.machine_id + " --tty -- /bin/sh"]} />
+        : selected === "settings" ? <div className={styles.settings}><PowerSettings machine={machine} actions={actions} /><MachineConfiguration {...context} /><Activity {...context} /></div>
         : <Overview {...context} />}
     </div>
   </article>
 }
 
-function DetailEmpty({ icon: Icon, title, description, action }: {
-  icon: typeof Box; title: string; description: string; action?: React.ReactNode
-}) {
-  return <div className={styles.empty}>
-    <span className={styles.emptyIcon}><Icon size={21} /></span>
-    <h2>{title}</h2>
-    <p>{description}</p>
-    {action && <div className={styles.emptyActions}>{action}</div>}
-  </div>
-}
-
 function Backups() {
-  return <DetailEmpty icon={Archive} title="Platform backups" description="Backup policies and their runs are managed by the platform administrator."
-    action={<a href="#/backups">View backup policies and runs</a>} />
+  return <>
+    <div className={styles.backupBanner}><div><strong>Platform backups</strong><p>Backup policies and runs are managed by the platform administrator.</p></div>
+      <a className={styles.primaryLink} href="#/backups">View policies</a>
+    </div>
+    <WorkspaceGuide label="Backup policies" title="Disaster recovery for your machines"
+      description="The administrator can run configured backup policies and review verified recovery artifacts."
+      actions={<a className={styles.documentButton} href="#/backups">View backup runs</a>}
+      commands={["# Show local backup commands", "sandboxctl admin backup --help"]} />
+  </>
 }
 
+function renameMachine(machine: Machine, actions: Actions) {
+  actions.dialog({
+    title: "Rename machine", submit: "Rename",
+    description: "Changes the display name for this machine.",
+    fields: [{ name: "name", label: "Machine name", value: machine.name, required: true }],
+    act: form => actions.mutate(machinePath(machine.machine_id), {
+      name: str(form, "name"), expected_generation: machine.binding_generation,
+    }, { method: "PATCH", revision: machine.revision }),
+  })
+}
 function ManagedResources({ machine, actions, revision }: Context) {
   const path = machinePath(machine.machine_id)
   const result = useRemote<MachineResourceStatus>(path + "/resources", revision)
@@ -177,9 +193,14 @@ function Overview({ machine, actions, revision }: Context) {
     : machine.idle_policy?.enabled ? machine.idle_policy.timeout_seconds / 60 : undefined
   const keepRunning = policy?.keep_running ?? machine.keep_running
   return <>
+    {fixtureScene && ["21", "37", "44"].includes(fixtureScene) && <section className={styles.fixtureUsage} aria-label="Fixture usage history">
+      <div className={styles.metricsHead}><h2 className={styles.sectionTitle}>Usage · last 28 days</h2><span>Development fixture</span></div>
+      <div className={styles.historyBar} data-pending={fixtureScene === "44"}><span /></div>
+      <div className={styles.historyDates}><span>11/26 15:00</span><span>11/26 15:45</span></div>
+    </section>}
     <ResourceUsage machine={machine} revision={revision} />
     <section aria-labelledby="machine-configured-resources">
-      <h2 className={styles.sectionTitle} id="machine-configured-resources">Configured resources</h2>
+      <h2 className={styles.sectionTitle} id="machine-configured-resources">Size</h2>
       <div className={styles.specs}>{[
         { Icon: Cpu, label: "vCPUs", value: resources?.cpu_count, unit: "" },
         { Icon: MemoryStick, label: "Memory", value: resources?.memory_mib, unit: "MiB" },
@@ -219,17 +240,22 @@ function PowerSettings({ machine, actions }: Pick<Context, "machine" | "actions"
     { kind: native || power === "standby" ? "wake" : "resume", title: "Wake", description: "Resume the saved execution.",
       reason: native && power === "standby" ? fullStateBlock(machine, "lifecycle.standby_wake") : undefined },
   ] : []
-  return <Section title="Power">
+  return <section><h2 className={styles.sectionTitle}>Power</h2>
     {actionsForPower.length ? <div className={styles.powerOptions}>{actionsForPower.map(item => <div className={styles.powerOption} key={item.kind}>
       <div><strong>{item.title}</strong><p>{item.reason ?? item.description}</p></div>
       <Button size="sm" variant="outline" disabled={Boolean(item.reason)} onClick={() => powerDialog(machine, actions, item.kind)}>{item.title}</Button>
     </div>)}</div> : <p className={styles.note}>Power actions are unavailable while the machine state is unknown.</p>}
-  </Section>
+  </section>
 }
 
 function MachineConfiguration({ machine, actions }: Context) {
   const resources = machine.resources ?? machine.spec?.resources
   return <>
+    <section><h2 className={styles.sectionTitle}>Name</h2><div className={styles.powerOption}>
+      <div><strong>Machine name</strong><p>Change the display name used in the workspace. The machine ID stays the same.</p></div>
+      <Button size="sm" variant="outline" onClick={() => renameMachine(machine, actions)}>Rename</Button>
+    </div></section>
+    <details className={styles.more}><summary>Machine configuration and capabilities</summary>
     <Section title="Machine configuration" actions={<button onClick={() => actions.dialog({
       title: "Edit machine", submit: "Save",
       fields: bundleBound(machine) ? [{ name: "name", label: "Name", value: machine.name, required: true }] : [
@@ -279,6 +305,7 @@ function MachineConfiguration({ machine, actions }: Context) {
         </div>
       })}</div>
     </Section>
+    </details>
   </>
 }
 
@@ -340,11 +367,15 @@ export function Tasks({ machine, actions, revision, initialTask }: Context & {in
   const [selected, setSelected] = useState<string>(initialTask ?? "")
   const [stream, setStream] = useState("stdout")
   const detail = useRemote<Task>(selected ? task(selected) : "", revision)
-  return <>
-    <Section title="Persistent tasks" actions={<button className="primary" disabled={Boolean(blocked)} title={blocked} onClick={() => actions.dialog({
+  const start = <button className="primary" disabled={Boolean(blocked)} title={blocked} onClick={() => actions.dialog({
       title: "Start task", fields: [...commandFields, { name: "task_key", label: "Task key (optional)" }],
       act: form => actions.mutate(path, { ...command(form), expected_generation: machine.binding_generation, ...(str(form, "task_key") ? { task_key: str(form, "task_key") } : {}) }, { revision: machine.revision })
-    })}>Start task</button>}>
+    })}>Start task</button>
+  const empty = history.items && !history.items.length && (!machine.task_metadata_status || machine.task_metadata_status === "complete")
+  return <>
+    {empty && <WorkspaceGuide label="Persistent tasks" title="Automate work on this machine"
+      description="Run a command inside this machine and follow its state and output here." actions={start} />}
+    {!empty && <Section title="Persistent tasks" actions={start}>
       <FeatureStatus reason={blocked} />
       {machine.task_metadata_status === "unavailable" && <p className="empty">The Guest task index is unavailable.</p>}
       {machine.task_metadata_status === "stale" && <p className="empty">Showing the last recorded task index.</p>}
@@ -357,9 +388,7 @@ export function Tasks({ machine, actions, revision, initialTask }: Context & {in
           act: form => actions.mutate(task(taskID(item)) + "/cancel", { grace_seconds: num(form, "grace_seconds") }, { revision: machine.revision })
         })}>Cancel</button>}
       </div>)}</div> : <p className="empty">{history.error ? "" : !history.items ? "Loading tasks…" : ""}</p>}
-      {history.items && !history.items.length && (!machine.task_metadata_status || machine.task_metadata_status === "complete") &&
-        <DetailEmpty icon={Workflow} title="No persistent tasks yet" description="Start a task to run a command in the guest and follow its output here." />}
-    </Section>
+    </Section>}
     {selected && <Section title="Task output" actions={<select aria-label="Output stream" value={stream} onChange={event => setStream(event.target.value)}>
       <option value="stdout">stdout</option><option value="stderr">stderr</option>
     </select>}><Callout error={detail.error} />
@@ -468,16 +497,16 @@ export function Services({ machine, actions, revision }: Context) {
     }, { method: current ? "PATCH" : "POST", revision: current?.revision ?? machine.revision })
   })
   return <>
-    {machine.network && <Section title="Private network">
+    {machine.network && <section className={styles.networkGroup}><h2 className={styles.sectionTitle}>Networks</h2>
       <Callout error={network.error} />
       <Details value={{ network: machine.network.network_id,
         mode: networkModes.find(mode => mode.value === machine.network?.mode)?.label,
         state: network.data?.state, private_address: network.data?.private_ipv4,
         guest_address: network.data?.guest_ipv4, dns_name: network.data?.dns_name }} />
-    </Section>}
-    <Section title="Services" actions={<button className="primary" onClick={() => configure()}>Create service</button>}>
+    </section>}
+    <section className={styles.networkGroup}><h2 className={styles.sectionTitle}>Ports</h2>
     <Callout error={list.error} /><Callout error={error} />
-    {!list.items?.length && !list.error && (list.items ? <DetailEmpty icon={Network} title="No services published" description="Add a service to expose a Guest port using a supported protocol." /> : <p className="empty" role="status">Loading services…</p>)}
+    {!list.items?.length && !list.error && <p className={styles.note} role="status">{list.items ? "No services published." : "Loading services…"}</p>}
     <div className="rows">{list.items?.map(item => {
       const ssh = item.protocol === "ssh"
       const http = item.protocol === "http" || item.protocol === "https"
@@ -485,21 +514,51 @@ export function Services({ machine, actions, revision }: Context) {
       const connect = ssh ? `sandboxctl ssh-config ${machine.machine_id}` : url
         ? `curl -H "Authorization: Bearer \$SANDBOX_TOKEN" "${url}"`
         : `sandboxctl port-forward ${item.service_id} --local-port 8080`
-      return <div className="service-row" key={item.service_id}>
-        <div className="row"><strong>{item.name}</strong><code>{item.protocol} · :{item.guest_port}</code>
-          {url && <button disabled={item.enabled === false} onClick={() => void preview(item)}>Open preview ↗</button>}
-          <button onClick={() => navigator.clipboard.writeText(connect).catch(setError)}>Copy connection command</button>
-          <button onClick={() => configure(item)}>Edit</button><button className="quiet-danger" onClick={() => actions.dialog({
-            title: "Delete service", destructive: true,
-            act: () => actions.mutate(service(item.service_id), {}, { method: "DELETE", revision: item.revision })
-          })}>Delete</button>
+      return <div className={styles.port} key={item.service_id}>
+        <span className={styles.portIcon}><Globe2 size={16} /></span>
+        <div className={styles.portInfo}><div><strong>{item.public_host ?? item.name}</strong><code>{item.protocol}</code></div>
+          <p>{item.name} · Forwards to guest port {item.guest_port}</p>
+          <ServiceStatus item={item} machine={machine} />
         </div>
-        <ServiceStatus item={item} machine={machine} />
-        <Details value={{ host: item.public_host, public_port: item.public_port, readiness_probe: item.readiness, auth: item.auth, ssh_fingerprint: item.ssh_fingerprint, ssh_host_key: item.ssh_host_key, connection: connect }} />
+        <div className={styles.portActions}>
+          {url && <Button size="sm" variant="outline" disabled={item.enabled === false} onClick={() => void preview(item)}>Open preview ↗</Button>}
+          <Button size="sm" variant="outline" onClick={() => configure(item)}>Edit</Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Actions for " + item.name}><Ellipsis /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => navigator.clipboard.writeText(connect).catch(setError)}>Copy connection command</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => actions.dialog({ title: "Delete service", destructive: true,
+                act: () => actions.mutate(service(item.service_id), {}, { method: "DELETE", revision: item.revision }),
+              })}>Delete</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <details className={styles.portDetails}><summary>Configuration</summary>
+          <Details value={{ host: item.public_host, public_port: item.public_port, readiness_probe: item.readiness,
+            auth: item.auth, ssh_fingerprint: item.ssh_fingerprint, ssh_host_key: item.ssh_host_key, connection: connect }} />
+        </details>
       </div>
     })}</div>
-    </Section>
+    <button type="button" className={styles.addPort} onClick={() => configure()}>+ Add port</button>
+    </section>
   </>
+}
+
+function captureMachine(machine: Machine, actions: Actions, vm: boolean) {
+  const clean = capabilityReason(machine, "clean_checkpoint")
+  const recovery = capabilityReason(machine, "active_recovery")
+  actions.dialog({
+    title: vm ? "Capture VM checkpoint" : "Capture snapshot", submit: "Capture",
+    fields: [{ name: "label", label: "Label" }, ...(!vm ? [{
+      name: "purpose", label: "Purpose", value: clean ? "recovery" : "clone", options: [
+        { value: "clone", label: "Clean clone", disabled: Boolean(clean) },
+        { value: "recovery", label: "Recovery", disabled: Boolean(recovery) },
+      ],
+    }] : [])],
+    act: form => actions.mutate(machinePath(machine.machine_id) + "/snapshots", {
+      label: str(form, "label"), expected_generation: machine.binding_generation,
+      ...(vm ? { capture_mode: "vm" } : { purpose: str(form, "purpose") }),
+    }, { revision: machine.revision }),
+  })
 }
 
 export function Snapshots({ machine, machines, actions, revision, directory = false, items }: {
@@ -570,6 +629,15 @@ export function Snapshots({ machine, machines, actions, revision, directory = fa
         <CaptureDetails item={item} />
       </div>)}</div>
   if (directory) return <><Callout error={error} />{rows}</>
+  if (machine && captures && !captures.length && !history.error) {
+    const vm = bundleBound(machine)
+    const blocked = vm ? vmBlock : cleanBlock && recoveryBlock
+    return <WorkspaceGuide label="No checkpoints" title="Save this machine’s state"
+      description="Capture the supported Guest state and restore it at a later point."
+      actions={<Button disabled={Boolean(blocked)} title={blocked} onClick={() => captureMachine(machine, actions, vm)}>Checkpoint</Button>}
+      commands={["# Save this machine's state", "sandboxctl snapshots capture " + machine.machine_id + (vm ? " --capture-mode vm" : ""),
+        "", "# List its checkpoints", "sandboxctl snapshots list " + machine.machine_id]} />
+  }
   return <>
     <Section title={machine ? "Checkpoints" : "Snapshot history"} actions={<>
       <button onClick={() => actions.dialog({
@@ -580,26 +648,13 @@ export function Snapshots({ machine, machines, actions, revision, directory = fa
           return actions.tracked(intent => api.upload("snapshots/import", file, { method: "POST", sha256: digest, intent }))
         }
       })}>Import</button>
-      {machine && <button className="primary" disabled={Boolean(cleanBlock && recoveryBlock)} onClick={() => actions.dialog({
-        title: "Capture snapshot",
-        fields: [{ name: "label", label: "Label" }, { name: "purpose", label: "Purpose", value: cleanBlock ? "recovery" : "clone", options: [
-          { value: "clone", label: "Clean clone", disabled: Boolean(cleanBlock) },
-          { value: "recovery", label: "Recovery", disabled: Boolean(recoveryBlock) }
-        ] }],
-        act: form => actions.mutate(base + "/snapshots", { label: str(form, "label"), purpose: str(form, "purpose"), expected_generation: machine.binding_generation }, { revision: machine.revision })
-      })}>Capture</button>}
-      {machine && bundleBound(machine) && <button disabled={Boolean(vmBlock)} onClick={() => actions.dialog({
-        title: "Capture VM checkpoint",
-        fields: [{ name: "label", label: "Label" }],
-        act: form => actions.mutate(base + "/snapshots", {
-          label: str(form, "label"), capture_mode: "vm", expected_generation: machine.binding_generation,
-        }, { revision: machine.revision }),
-      })}>Capture VM checkpoint</button>}</>}>
+      {machine && <button className="primary" disabled={Boolean(cleanBlock && recoveryBlock)} onClick={() => captureMachine(machine, actions, false)}>Capture</button>}
+      {machine && bundleBound(machine) && <button disabled={Boolean(vmBlock)} onClick={() => captureMachine(machine, actions, true)}>Capture VM checkpoint</button>}</>}>
       <FeatureStatus reason={cleanBlock && "Clean checkpoint · " + cleanBlock} />
       <FeatureStatus reason={recoveryBlock && "Active recovery · " + recoveryBlock} />
       {machine && bundleBound(machine) && <FeatureStatus reason={vmBlock && "VM checkpoint · " + vmBlock} />}
       <Callout error={history.error} /><Callout error={error} />
-      {!captures?.length && !history.error && (captures ? <DetailEmpty icon={Layers3} title="No checkpoints yet" description="Capture guest state to keep a recovery point or restore it as a separate workspace." /> : <p className="empty" role="status">Loading checkpoints…</p>)}
+      {!captures?.length && !history.error && <p className="empty" role="status">{captures ? "No snapshots yet." : "Loading checkpoints…"}</p>}
       {rows}
     </Section>
   </>
@@ -692,7 +747,7 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
           worker_power: policy.worker.power, execution_epoch: policy.worker.execution_epoch,
           collector_generation: policy.worker.collector_generation,
           activity: Object.fromEntries(Object.entries(policy.worker.collectors ?? {}).map(([key, value]) =>
-            [key, value.fresh ? "Current" : "Stale"])),
+            [key, value.fresh === undefined ? "Unknown" : value.fresh ? "Current" : "Stale"])),
           pressure_admission: policy.worker.pressure?.admission_throttled ? "Throttled" : undefined,
         }} />
       </details>}
