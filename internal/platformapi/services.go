@@ -18,21 +18,23 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/servicehealth"
 )
 
 type service struct {
-	Readiness  readiness    `json:"readiness"`
-	Auth       accessPolicy `json:"auth"`
-	SSHKey     string       `json:"ssh_host_key,omitempty"`
-	ID         string       `json:"service_id"`
-	MachineID  string       `json:"machine_id"`
-	Name       string       `json:"name"`
-	Revision   int64        `json:"revision"`
-	Protocol   string       `json:"protocol"`
-	GuestPort  uint16       `json:"guest_port"`
-	PublicHost string       `json:"public_host,omitempty"`
-	PublicPort int          `json:"public_port,omitempty"`
-	Enabled    bool         `json:"enabled"`
+	Observation *servicehealth.Observation `json:"observation,omitempty"`
+	Readiness   readiness                  `json:"readiness"`
+	Auth        accessPolicy               `json:"auth"`
+	SSHKey      string                     `json:"ssh_host_key,omitempty"`
+	ID          string                     `json:"service_id"`
+	MachineID   string                     `json:"machine_id"`
+	Name        string                     `json:"name"`
+	Revision    int64                      `json:"revision"`
+	Protocol    string                     `json:"protocol"`
+	GuestPort   uint16                     `json:"guest_port"`
+	PublicHost  string                     `json:"public_host,omitempty"`
+	PublicPort  int                        `json:"public_port,omitempty"`
+	Enabled     bool                       `json:"enabled"`
 }
 
 const serviceCols = "id,machine_id,name,revision,kind,guest_port,coalesce(public_host,''),coalesce(public_port,0),enabled,readiness_json,access_json"
@@ -175,6 +177,15 @@ func (s *Server) serviceRoutes() {
 		if err = rows.Err(); err != nil {
 			return err
 		}
+		if len(out) > 0 {
+			m, err := s.DB.GetMachine(r.Context(), mid)
+			if err != nil {
+				return err
+			}
+			for i := range out {
+				s.projectServiceObservation(&out[i], m)
+			}
+		}
 		return list(w, r, out, func(v service) string { return v.ID })
 	})
 	s.route("GET /v1/services/{svc}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -185,6 +196,11 @@ func (s *Server) serviceRoutes() {
 		if err = p.Authorize("read", v.MachineID); err != nil {
 			return err
 		}
+		m, err := s.DB.GetMachine(r.Context(), v.MachineID)
+		if err != nil {
+			return err
+		}
+		s.projectServiceObservation(&v, m)
 		return write(w, 200, v)
 	})
 	s.route("POST /v1/services/{svc}/tunnel-tickets", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -361,22 +377,45 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		admission, cancel = context.WithTimeout(ctx, time.Duration(s.Config.Gateway.WaitSeconds)*time.Second)
 		defer cancel()
 	}
+	initial, err := s.DB.GetMachine(admission, v.MachineID)
+	if err != nil {
+		return empty, nil, nil, err
+	}
+	before := serviceObservationIdentity(v, initial.CurrentBinding)
+	stage := servicehealth.StageGuestManagement
+	switch servicePower(initial.CurrentBinding) {
+	case registry.PowerStandby, registry.PowerHibernated, registry.PowerStopped:
+		stage = servicehealth.StageWake
+	}
 	b, end, err := s.AccessAt(admission, p, v.MachineID, lifecycle.AccessEndpoint{
 		Trigger: "service_access", Revision: v.Revision, ServiceID: v.ID, Reauthorize: reauthorize,
 	})
 	if err != nil {
-		return empty, nil, nil, err
+		obs := servicehealth.Diagnose(stage, err)
+		s.serviceHealth.Record(v.ID, before, obs)
+		return empty, nil, nil, servicehealth.Annotate(err, obs)
+	}
+	key := serviceObservationIdentity(v, &b)
+	observe := func(obs servicehealth.Observation) {
+		s.serviceHealth.Record(v.ID, key, obs)
+	}
+	fail := func(err error, obs servicehealth.Observation) (gateway.Backend, func(context.Context) error, func(), error) {
+		observe(obs)
+		end()
+		return empty, nil, nil, servicehealth.Annotate(err, obs)
+	}
+	if stage == servicehealth.StageWake {
+		observe(servicehealth.Diagnose(stage, nil))
 	}
 	adapter, err := s.ForBinding(b)
 	if err != nil {
-		end()
-		return empty, nil, nil, err
+		return fail(err, servicehealth.Diagnose(servicehealth.StageGuestManagement, err))
 	}
 	if v.Protocol == "ssh" {
 		if v.SSHKey, err = s.awaitSSHKey(admission, p, b, v, reauthorize); err != nil {
-			end()
-			return empty, nil, nil, err
+			return fail(err, servicehealth.Diagnose(servicehealth.StageGuestManagement, err))
 		}
+		observe(servicehealth.Diagnose(servicehealth.StageGuestManagement, nil))
 	}
 	checkBinding := func(ctx context.Context) error {
 		if p.CredentialID != "" {
@@ -396,8 +435,8 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		if err != nil {
 			return err
 		}
-		if m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID ||
-			m.CurrentBinding.IncarnationID != b.IncarnationID || m.CurrentBinding.ExecutionEpoch != b.ExecutionEpoch {
+		if m.DeletedAt != nil || m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID || m.CurrentBinding.Generation != b.Generation ||
+			m.CurrentBinding.ExecutionRef() != b.ExecutionRef() {
 			return registry.ErrGeneration
 		}
 		now, err := s.getService(ctx, v.ID)
@@ -417,20 +456,17 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	if worker := privateServiceWorker(adapter); worker != "" {
 		backend, err = workerServiceBackend(ctx, worker, b, v)
 		if err != nil {
-			end()
-			return empty, nil, nil, err
+			return fail(err, servicehealth.Unavailable(servicehealth.StageWorkerUpstream, "ATTACHMENT_UNAVAILABLE"))
 		}
 	} else {
 		o, err := adapter.Observe(ctx, b.RuntimeName)
 		if err != nil {
-			end()
-			return empty, nil, nil, err
+			return fail(err, servicehealth.Diagnose(servicehealth.StageGuestManagement, err))
 		}
 		var port uint16
 		err = s.DB.ReadDB().QueryRowContext(ctx, "SELECT host_port FROM port_allocations WHERE service_id=? AND binding_id=? AND state='bound'", v.ID, b.ID).Scan(&port)
 		if err != nil {
-			end()
-			return empty, nil, nil, err
+			return fail(err, servicehealth.Unavailable(servicehealth.StageConfiguration, "PORT_PUBLICATION_UNAVAILABLE"))
 		}
 		backend = gateway.Backend{Port: port, Protocol: v.Protocol, ServerName: v.PublicHost}
 		check = func(ctx context.Context) error {
@@ -454,13 +490,19 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	}
 	if v.Readiness.Type == "http" {
 		if err := check(ctx); err != nil {
-			end()
-			return empty, nil, nil, err
+			return fail(err, servicehealth.Diagnose(servicehealth.StageConfiguration, err))
 		}
-		if err := probeHTTP(ctx, backend, v.Readiness); err != nil {
-			end()
-			return empty, nil, nil, err
+		err := probeHTTP(ctx, backend, v.Readiness)
+		probe := servicehealth.Probe(err)
+		if err != nil {
+			return fail(err, probe)
 		}
+		observe(probe)
+	}
+	backend.Observe = func(err error) string {
+		obs := servicehealth.Diagnose(servicehealth.StageWorkerUpstream, err)
+		observe(obs)
+		return obs.ReasonCode
 	}
 	return backend, check, end, nil
 }
