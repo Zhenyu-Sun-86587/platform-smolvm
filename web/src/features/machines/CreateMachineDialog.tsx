@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import { RefreshCw } from "lucide-react"
 import { operation, PlatformError } from "../../../../sdk/typescript/src/index"
-import type { BootMode, CreateMachine, Machine, Mutation, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
+import type { BootMode, Control, CreateMachine, Machine, Mutation, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
 import { api, fixtureScene, useCollection } from "../../api"
 import { Callout, label, machinePowerState, networkModes, segment, useRemote } from "../../common"
 import type { Actions } from "../../main"
@@ -43,6 +43,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const reference = ["03", "36", "43"].includes(fixtureScene ?? "")
   const preview = reference || fixtureScene === "create-suggesting"
   const presets = presetCPUs.map(cpu => ({ cpu, memory: cpu * (preview ? 4096 : 1024) }))
+  const control = useRemote<Control>("control", revision)
   const templates = useCollection<Template>("templates", revision)
   const choices = (templates.items ?? []).flatMap(template => {
     const id = template.template_id ?? template.id
@@ -52,7 +53,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const profiles = useCollection<RuntimeProfile>(anySystem ? "runtime-profiles" : "", revision)
   const systemRuntimes = (profiles.items ?? []).filter(profile => supports(profile, "boot.system"))
   const usable = choices.filter(item => !item.system || systemRuntimes.length > 0)
-  const matching = usable.filter(item => item.system === (defaultBoot === "system"))
+  const preferredBoot = control.data?.default_boot_mode ?? defaultBoot
+  const matching = usable.filter(item => item.system === (preferredBoot === "system"))
   const preferred = (matching.length ? matching : usable).reduce<typeof usable[number] | undefined>(
     (latest, item) => !latest || item.version > latest.version ? item : latest, undefined,
   )
