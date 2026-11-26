@@ -94,7 +94,7 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack, networks=(), credential_proxies=()):
+    def __init__(self, args, root, stack, networks=(), credential_proxies=(), state_tmpfs=False):
         self.args = args
         self.root = root
         self.stack = stack
@@ -106,11 +106,17 @@ class Platform:
         self.epoch = ""
         self.networks = networks
         self.credential_proxies = credential_proxies
+        self.state_tmpfs = state_tmpfs
 
     def start(self):
         root = self.root
         for name in ("var-lib", "ipc", "runtime"):
             (root / name).mkdir(mode=0o755)
+        if self.state_tmpfs:
+            state = root / "platform"
+            state.mkdir(mode=0o700)
+            subprocess.run(["mount", "-t", "tmpfs", "-o", "size=4G,mode=0700,nosuid,nodev", "tmpfs", state], check=True)
+            self.stack.callback(subprocess.run, ["umount", state], check=True)
         subprocess.run(["mount", "--bind", root / "var-lib", "/var/lib"], check=True)
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
         runtime = Path("/run/smolvm-custom")
@@ -168,7 +174,7 @@ class Platform:
         config.write_text(json.dumps(dict(
             version=1, state_dir=str(root / "platform"), templates_file=str(templates),
             api=dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin),
-            storage=dict(minimum_free_bytes=2 << 30, minimum_free_percent=3),
+            **({} if self.state_tmpfs else {"storage": dict(minimum_free_bytes=2 << 30, minimum_free_percent=3)}),
             **({"credential_proxies": self.credential_proxies} if self.credential_proxies else {}),
             runtime=dict(socket=str(root / "ipc/official.sock"), status_socket="",
                          data_dir=str(root / "official"), custom=[dict(
@@ -663,6 +669,100 @@ def verify_volume_after_retirement(platform, volume, child_ref):
     removed = platform.complete(platform.change(unused_path, "retire-unused", {}, empty, method="DELETE"))
     assert removed["result"]["execution_epoch"] == 0 and platform.app(unused_path)["desired_power"] == "deleted"
     print("An unstarted System slot also retired at epoch zero without allocating an execution.", flush=True)
+
+
+def saved_wake_failure_case(platform, source, ref):
+    platform.guest(ref, ["/bin/sh", "-ec", "printf original-saved-memory >/run/saved-wake-failure"])
+    hibernated = platform.complete(platform.change(source + "/hibernate", "save-for-failed-wake", {}, platform.app(source)))
+    point = hibernated["result"]["statepoint"]
+    original = platform.app(source)
+    assert original["power_state"] == "hibernated" and original["binding"]["last_capture_id"] == point["capture_id"], original
+    catalog_file = platform.root / "catalog/catalog.sqlite"
+    scope = dict(route_id="deep", bundle_digest=platform.bundle_id)
+    manifest = platform.root / "catalog/statepoints" / point["representation_id"] / "CaptureManifest.json"
+    withheld = manifest.with_name("CaptureManifest.fixture-withheld")
+
+    def request_lease(key):
+        return platform.app(source + "/leases", "POST", dict(reason="Exact saved wake", ttl_seconds=60, semantics_version=2),
+            {"If-Control-Epoch": platform.epoch, "If-Match": f'"{original["revision"]}"', "Idempotency-Key": key}, 409, timeout=55)
+
+    def check_held(epoch):
+        empty = {**ref, "incarnation_id": None, "execution_epoch": epoch}
+        status = worker(platform.worker, "GetLifecycleStatus", expected=empty, **scope)
+        assert (status["power"], status["statepoint"], status["execution_epoch"], status["incarnation_id"]) == (
+            "HIBERNATED", point["capture_id"], epoch, None), status
+        assert status["effective_policy"]["wake_conditions"]["allow_cold_start"], status
+        assert status["last_decision"]["kind"] == "vm_restore" and status["last_decision"]["stage"] == "aborted", status
+        view = platform.app(source)
+        assert view["power_state"] == "hibernated" and view["binding"]["last_capture_id"] == point["capture_id"], view
+        assert not platform.app(source + "/leases")["items"]
+        with sqlite3.connect(catalog_file) as db:
+            assert db.execute("SELECT count(*) FROM operations WHERE instance_id=? AND kind='launch'", (ref["instance_id"],)).fetchone() == (1,)
+        return empty, status["last_decision"]["operation_id"]
+
+    manifest.rename(withheld)
+    try:
+        rejected = request_lease("unreadable-saved-wake")
+        assert rejected["error"]["code"] == "STATEPOINT_RESTORE_FAILED", rejected
+        _, failed = check_held(ref["execution_epoch"])
+        result = platform.native("/operations/" + failed)
+        assert result["phase"] == "ABORTED" and result["statepoint"]["error_code"] == "E_STATEPOINT_CORRUPT", result
+        assert request_lease("unreadable-saved-wake")["error"]["code"] == "STATEPOINT_RESTORE_FAILED"
+    finally:
+        withheld.rename(manifest)
+    print("An unreadable saved StatePoint rejected the public lease with a stable failure. Worker and Platform retained the original Hibernated cut even with cold wake authorized.", flush=True)
+
+    def kill_unpublished_restore():
+        deadline = time.monotonic() + 35
+        with sqlite3.connect(catalog_file) as db:
+            while time.monotonic() < deadline:
+                entered = db.execute("""SELECT e.incarnation_id,e.pid,e.pid_start_time FROM executions e
+                    JOIN operations o ON o.operation_id=e.last_operation_id WHERE e.instance_id=? AND e.execution_epoch=?
+                    AND e.phase='registered' AND o.kind='restore_target' AND o.phase='NEW'""",
+                    (ref["instance_id"], ref["execution_epoch"] + 1)).fetchone()
+                if entered:
+                    incarnation, pid, start = entered
+                    with os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as process:
+                        actual = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+                        assert actual == start
+                        signal.pidfd_send_signal(process.fileno(), signal.SIGSTOP)
+                        try:
+                            commit = db.execute("SELECT 1 FROM target_activations WHERE incarnation_id=? AND decision='commit'", (incarnation,)).fetchone()
+                            assert not commit, "fixture needs to intercept an uncommitted restore"
+                        finally:
+                            signal.pidfd_send_signal(process.fileno(), signal.SIGKILL)
+                        assert select.select([process], [], [], 10)[0]
+                        return
+                time.sleep(0.005)
+        raise TimeoutError("no registered uncommitted restoration process")
+
+    with ThreadPoolExecutor(max_workers=1) as clients:
+        request = clients.submit(request_lease, "failed-restore-activation")
+        kill_unpublished_restore()
+        rejected = request.result(timeout=48)
+    assert rejected["error"]["code"] == "STATEPOINT_RESTORE_FAILED", rejected
+    advanced, failed = check_held(ref["execution_epoch"] + 1)
+    result = platform.native("/operations/" + failed)
+    assert result["phase"] == "ABORTED" and result["statepoint"]["capture_id"] == point["capture_id"], result
+    try:
+        platform.native("/operations", dict(kind="launch", operation_id="forbidden-saved-cold-launch",
+            request_digest="sha256:" + "3" * 64, expected=advanced, parameters=dict(name=original["runtime_name"],
+                boot_profile="system-debian-v1", cpus=1, memory_mib=512, init="/sbin/init", args=[],
+                disks=[dict(attachment_id="root", device_id="root", role="root", generation_id="fixture-system-root", read_only=False)])))
+    except RuntimeError as error:
+        _, status, body = error.args[0]
+        assert status == 409 and json.loads(body)["code"] == "E_STATE_CONFLICT", error
+    else:
+        raise AssertionError("Worker accepted a cold launch over a saved execution")
+    print("An unpublished restore VMM exited after consuming an epoch. The Worker retained the saved cut and rejected a cold launch on the advanced slot.", flush=True)
+
+    restored = platform.complete(platform.change(source + "/start", "repair-preserved-wake", {}, platform.app(source)))
+    _, live = platform.context(original["machine_id"])
+    assert live["execution_epoch"] == ref["execution_epoch"] + 2 and restored["result"]["statepoint"]["capture_id"] == point["capture_id"], restored
+    assert wait_for(lambda: platform.guest(live, ["/bin/cat", "/run/saved-wake-failure"]), retry=(OSError, RuntimeError)) == b"original-saved-memory"
+    after = worker(platform.worker, "GetLifecycleStatus", expected=live, **scope)
+    assert after["power"] == "RUNNING" and after["statepoint"] is None, after
+    print("An explicit exact retry used the same StatePoint and recovered the original RAM at the next unoccupied epoch.", flush=True)
 
 
 def statepoint_case(platform, source, ref, probe, seen_cids):
@@ -1339,7 +1439,7 @@ def test(args, root, stack, case):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
-    platform = Platform(args, root, stack, networks)
+    platform = Platform(args, root, stack, networks, state_tmpfs=case == "saved-wake-failure")
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
@@ -1355,6 +1455,9 @@ def test(args, root, stack, case):
     if retirement:
         intent.update(start=False, network=dict(network_id="packet-net", mode="native"),
                       lifecycle_policy=dict(keep_running=True, wake_conditions=dict(allow_cold_start=True)))
+    if case == "saved-wake-failure":
+        intent.update(resources=dict(cpu_count=1, memory_mib=512), lifecycle_policy=dict(keep_running=True,
+            retry_backoff_seconds=2, wake_conditions=dict(allow_cold_start=True, api_access=True)))
     created = platform.change("machines", "create", intent)
     platform.complete(created)
     machine_id = created["machine_id"]
@@ -1380,6 +1483,9 @@ def test(args, root, stack, case):
         return
     if case == "fork-cancel":
         cancel_partial_fork(platform, source, ref)
+        return
+    if case == "saved-wake-failure":
+        saved_wake_failure_case(platform, source, ref)
         return
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
@@ -1432,7 +1538,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "task-fork-cancel-retry"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "task-fork-cancel-retry", "saved-wake-failure"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
