@@ -515,6 +515,30 @@ def cancel_partial_fork(platform, source, ref, retry_after_parent_delete=False):
           f"The pending VMM exited, both keys replayed after platform restart, and source and child returned the captured marker.", flush=True)
 
 
+def vsock_probe_binary(args, root):
+    binary = args.probe
+    if binary is None:
+        binary = root / "vsock-probe"
+        source_file = Path(__file__).resolve().parents[1] / "fixtures/vsock-probe.c"
+        subprocess.run([args.cc, "-static", "-Os", "-s", "-o", binary, source_file], check=True)
+    return binary
+
+
+def stop_agent_until_fork(platform, ref):
+    probe = platform.place_probe(ref, vsock_probe_binary(platform.args, platform.root))
+    source_cid = int(platform.guest(ref, [probe, "--cid"]))
+    assert source_cid >= 3
+    # A fork resumes the same guest process on a distinct vsock CID. The
+    # parent remains offline through retirement, independent of host speed.
+    resume = ('while :; do child=$("$1" --cid) && [ "$child" -ge 3 ] && [ "$child" != "$2" ] '
+              '&& exec systemctl start smolvm-agent.service; sleep 1; done')
+    platform.guest(ref, ["systemd-run", "--unit=fixture-agent-child-resume", "/bin/sh", "-c",
+                         resume, "resume-after-fork", probe, str(source_cid)])
+    platform.guest(ref, ["systemd-run", "--unit=fixture-agent-stop", "--on-active=1s",
+                         "--timer-property=AccuracySec=100ms", "systemctl", "stop", "smolvm-agent.service"])
+    wait_for(lambda: agent_unavailable(platform, ref), timeout=15)
+
+
 def stop_agent_for_capture(platform, ref):
     for action, seconds in (("start", 60), ("stop", 1)):
         platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
@@ -620,7 +644,7 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
         target_id = target["machine_id"]
     elif case == "task-fork-cancel-retry":
         platform.wait_capability(source, "state.fork_batch")
-        stop_agent_for_capture(platform, ref)
+        stop_agent_until_fork(platform, ref)
         target_id = cancel_partial_fork(platform, source, ref, retry_after_parent_delete=True)
     else:
         wait_for(lambda: platform.app(source)["capabilities"]["state.fork_batch"]["status"] == "supported")
@@ -1671,11 +1695,7 @@ def test(args, root, stack, case):
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
                for device in inventory["inventory"]["devices"])
-    binary = args.probe
-    if binary is None:
-        binary = root / "vsock-probe"
-        source_file = Path(__file__).resolve().parents[1] / "fixtures/vsock-probe.c"
-        subprocess.run([args.cc, "-static", "-Os", "-s", "-o", binary, source_file], check=True)
+    binary = vsock_probe_binary(args, root)
     if packet_case:
         packet_wake_case(platform, machine_id, ref, binary, "native" if case.endswith("-native") else "fixed_internal",
                          boundaries=case.startswith("packet-cut-"), activity=case == "packet-activity")
