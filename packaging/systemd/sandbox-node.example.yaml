@@ -2,7 +2,7 @@
 # Stage the next YAML and certificate/key separately and retain the prior YAML.
 # Issue the Node certificate with the next generation in its URI SAN.
 # Stop sandbox-node, then run this as the service account:
-#   /opt/sandbox-platform/current/sandbox-node -config /etc/sandbox-node/config.next.yaml -rebind-from /etc/sandbox-node/config.previous.yaml
+#   /usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.next.yaml -rebind-from /etc/sandbox-node/config.previous.yaml
 # Activate the next YAML, align the platformd enrollment generation and Node
 # SPKI pin, then start sandbox-node. Retain the same state directory.
 # An unchanged controller/epoch advances one generation and preserves the gate.
@@ -10,7 +10,7 @@
 # Keep journal.db and its durable identity across daemon restarts and rotation.
 # During the first journal-fencing upgrade for an existing Worker, read its
 # identity from the original stopped journal as the Node service account:
-#   /opt/sandbox-platform/current/sandbox-node -config /etc/sandbox-node/config.yaml -print-journal-id
+#   /usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.yaml -print-journal-id
 # Set that value as journal_id on the matching platformd Worker entry.
 # A lost journal requires restoring the original journal or provisioning a new Worker ID.
 authority:

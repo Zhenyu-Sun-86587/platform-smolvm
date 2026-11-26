@@ -19,13 +19,13 @@
 1. 为每台 Worker 分配不同的 `worker_id`、Node 密钥和全局 `runtime_instance_id`。Node 的 `instance_id` 写本地 Serve 名。平台配置的 `local_instance_id` 与它对应。为两端配置同一 Bundle manifest 和 reader。用已认证的 `GET /v1/control` 取得 `installation_id` 和 `control_epoch`。
 2. 登记可使用管理员签发的五分钟一次性凭证。Worker 在本地生成密钥和 CSR，经管理 HTTPS 端点领取新的公钥证书。平台只为配置中的 Worker、代际、公钥 pin 与主机名签发，精确重试同一 CSR 可取回原证书。也可使用带外预签发证书。 [登记与换证命令](WORKER-ENROLLMENT.md)
 
-   配置双向 TLS。Node 证书的 SAN 包含端点 DNS/IP 以及 `spiffe://sandbox-platform/node/<worker_id>/<generation>`。控制端证书包含 `spiffe://sandbox-platform/controller/<installation_id>`。两端分别配置对方 CA 和公钥 SPKI 的 SHA-256 pin。Node 的私有状态目录、Serve socket、Worker socket 和可选 Guest relay 目录位于 Worker 上。发布包内附服务单元和样例；在 Worker 上使用与其实际 deep Serve 配套的系统服务账户和 socket 权限。
+   配置双向 TLS。Node 证书的 SAN 包含端点 DNS/IP 以及 `spiffe://sandbox-platform/node/<worker_id>/<generation>`。控制端证书包含 `spiffe://sandbox-platform/controller/<installation_id>`。两端分别配置对方 CA 和公钥 SPKI 的 SHA-256 pin。Node 的私有状态目录、Serve socket、Worker socket 和可选 Guest relay 目录位于 Worker 上。发布包内附独立 Node 服务单元和样例。在 Worker 上将已校验的 `bin/sandbox-node` 安装到 `/usr/local/libexec/sandbox-node`，将 `systemd/sandbox-node.service` 安装到系统单元目录，然后填写 `/etc/sandbox-node/config.yaml`。该单元只启动 Node。其进程 UID 必须匹配 resourced 的 `admin_uid`，还须具有私有 socket 和 KVM 的访问权限；Worker 客户端会校验 resourced 对端 UID 为 0。
 3. 启动配置好的 Node 后，平台校验握手、路由、会话和已知对象，取得新鲜预算才开放调度。首次登记会固定 journal 的持久 ID。已有受管对象或历史预算的 Worker 升级时，先停止原 Node，执行 `sandbox-node -config /etc/sandbox-node/config.yaml -print-journal-id`，将确认值写入平台的 `nodes[].journal_id`。新 Node 进程完成只读对账后才接收新写。相同证书连接到不同 journal 会隔离该 Worker。恢复旧 DB 会更换 control epoch 并进入 maintenance。普通重启保留 epoch。
 4. `sandboxctl workers set-mode WORKER cordoned --revision N --reason REASON` 关闭新 Create/Fork。转入 `draining` 后，控制端和 Node 执行入口门禁、有效策略 overlay、逐项停用已登记 packet-wake 规则，并收敛 WakeDemand。collector 保留运行。恢复 `active` 时重新读取当前用户 desired revision。
 5. 同一控制端换证时，停 Node，用旧配置和下一代证书执行下面的离线命令。相同安装 ID 和 epoch 的 generation 须恰好加一，保留原 gate。跨控制端或恢复后的 epoch 要求更高 generation。先关闭旧控制端，再离线重绑原 journal；Node 随后进入 Drain，并从本地拒绝旧 authority。随后同步控制面 pin、generation 及 Node 配置，启动 Node，并核对已知对象、恢复阻塞和预算。撤销某一代可使用 `sandboxctl workers revoke-enrollment`。
 
 ```sh
-sandbox-node -config /etc/sandbox-node/config.next.yaml \
+/usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.next.yaml \
   -rebind-from /etc/sandbox-node/config.previous.yaml
 ```
 
