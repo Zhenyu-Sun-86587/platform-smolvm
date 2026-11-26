@@ -29,6 +29,7 @@ NETWORK = dict(network_id="owned-services", route_domain_id="owned-services", ci
 PROGRAM = "/run/authorized-service.pl"
 RECEIPTS = "/run/authorized-service-receipts"
 SERVICE_PORT = 18081
+HTTP_WAKE_WAITERS = 2
 
 
 def identity(ref):
@@ -339,10 +340,13 @@ def service_client(platform, mid, case, sid, keys, ssh_key, sandboxctl):
     if case == "http":
         credential = token(platform, mid)
 
-        def http(request):
+        def http(request, *, ready=None):
             with ExitStack() as clients:
                 connection = platform.api_connection(timeout=65)
                 clients.callback(connection.close)
+                if ready is not None:
+                    connection.connect()
+                    ready.wait()
                 connection.request("POST", "/receipt/" + request, body=b"", headers={
                     "Host": service["public_host"], "Authorization": f"Bearer {credential}",
                     "Content-Length": "0",
@@ -392,6 +396,24 @@ def service_client(platform, mid, case, sid, keys, ssh_key, sandboxctl):
     return ssh
 
 
+def http_wake_admissions(requests, replies):
+    accepted = []
+    rejected = []
+    for request, reply in zip(requests, replies, strict=True):
+        status, stage, body = reply
+        if status == 200:
+            assert reply == (200, None, request.encode() + b"\n"), reply
+            accepted.append(request)
+        else:
+            assert (status, stage) == (409, "not_started"), reply
+            error = json.loads(body)["error"]
+            assert (error["code"], error["message"], error["effect"]) == (
+                "RESOURCE_EXHAUSTED", "too many concurrent access requests", "none"), error
+            rejected.append(dict(request=request, status=status, stage=stage, code=error["code"], effect=error["effect"]))
+    assert len(accepted) == HTTP_WAKE_WAITERS and len(rejected) == 1, (accepted, rejected)
+    return accepted, rejected[0]
+
+
 def service_access(platform, case, keys, ssh_key, sandboxctl, mode):
     mid, _, ref = machine(platform, "destination", mode)
     path = f"machines/{mid}"
@@ -423,16 +445,25 @@ def service_access(platform, case, keys, ssh_key, sandboxctl, mode):
     saved = platform.complete(platform.change(path + "/hibernate", "owned-service-hibernate", {}, platform.app(path)))
     capture = saved["result"]["statepoint"]["capture_id"]
     assert platform.app(path)["power_state"] == "hibernated"
-    requests = [f"owned-{os.urandom(10).hex()}" for _ in range(1 if protocol == "udp" else 2)]
+    check_forwarding = platform.args.check_forwarding
+    check_queue = check_forwarding and case == "http"
+    request_count = HTTP_WAKE_WAITERS + 1 if check_queue else (1 if protocol == "udp" else 2)
+    requests = [f"owned-{os.urandom(10).hex()}" for _ in range(request_count)]
     barrier = Barrier(len(requests), timeout=12)
 
     def first_request(request):
+        if check_queue:
+            return invoke(request, ready=barrier)
         barrier.wait()
         return invoke(request)
 
     with ThreadPoolExecutor(max_workers=len(requests)) as clients:
         replies = list(clients.map(first_request, requests))
-    if case == "http":
+    checks = {}
+    if check_queue:
+        requests, rejected = http_wake_admissions(requests, replies)
+        checks["wake_queue"] = dict(limit=HTTP_WAKE_WAITERS, admitted=requests.copy(), rejected=rejected)
+    elif case == "http":
         assert replies == [(200, None, request.encode() + b"\n") for request in requests], replies
     else:
         if replies != [request.encode() + b"\n" for request in requests]:
@@ -446,10 +477,10 @@ def service_access(platform, case, keys, ssh_key, sandboxctl, mode):
 
     def completed_wake():
         events = worker_get(platform, "QueryLifecycleEvents", live, {"after": cursor})["events"]
-        wake = {event["operation_id"] for event in events if event["origin"] == "wake"}
+        restores = [event for event in events if event["origin"] == "wake" and event["kind"] == "vm_restore"]
+        wake = {event["operation_id"] for event in restores}
         assert len(wake) <= 1, events
-        if wake and any(event["origin"] == "wake" and event["stage"] == "completed" for event in events):
-            return wake.pop()
+        return next((event["operation_id"] for event in restores if event["stage"] == "completed"), None)
 
     operation = wait_for(completed_wake, timeout=20)
     restore = platform.native("/operations/" + operation)
@@ -466,15 +497,30 @@ def service_access(platform, case, keys, ssh_key, sandboxctl, mode):
         physical = {"private_ipv4": address, "attachment_id": endpoint["attachment_id"], "source_mode": source_mode}
     lost_response = None
     if case == "http":
+        if check_queue:
+            next_request = f"owned-{os.urandom(10).hex()}"
+            assert invoke(next_request) == (200, None, next_request.encode() + b"\n")
+            checks["wake_queue"]["next_request"] = next_request
+            requests.append(next_request)
         lost_response = f"close-{os.urandom(10).hex()}"
         status, stage, _ = invoke(lost_response)
         assert (status, stage) == (502, "may_have_started"), (status, stage)
         requests.append(lost_response)
+    elif check_forwarding:
+        lost_response = f"close-{os.urandom(10).hex()}"
+        assert invoke(lost_response) == b""
+        next_request = f"owned-{os.urandom(10).hex()}"
+        assert invoke(next_request) == next_request.encode() + b"\n"
+        checks["tcp_close"] = dict(request=lost_response, response="eof", next_request=next_request)
+        requests.extend((lost_response, next_request))
+    if check_forwarding:
+        assert identity(platform.context(mid)[1]) == identity(live)
+        assert completed_wake() == operation
     observed = Counter(platform.guest(live, ["cat", RECEIPTS]).decode().splitlines())
     assert observed == Counter(requests), observed
     witness(platform, case, original=identity(ref), restored=identity(live), capture_id=capture,
             operation_id=operation, business_receipts=dict(observed), mode=mode,
-            lost_response=lost_response, **physical)
+            lost_response=lost_response, **physical, **checks)
 
 
 def main():
@@ -486,11 +532,15 @@ def main():
     parser.add_argument("--sandboxctl", type=lambda path: Path(path).resolve())
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     parser.add_argument("--use-installation", action="store_true", help="read-only bind the supplied installed Bundle")
+    parser.add_argument("--check-forwarding", action="store_true",
+                        help="check HTTP wake queue admission or TCP EOF after delivery")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("Linux KVM and an isolated root fixture are required")
     if args.case == "ssh" and args.sandboxctl is None:
         parser.error("SSH requires the authorized platform client")
+    if args.check_forwarding and args.case not in {"http", "tcp-mtls", "private-tcp"}:
+        parser.error("--check-forwarding requires http, tcp-mtls, or private-tcp")
     if os.environ.get("OWNED_KVM_SERVICES_NAMESPACE") != "1":
         os.execvpe("unshare", ["unshare", "--mount", "--propagation", "private", "--net", "--",
                               sys.executable, "-B", __file__, *sys.argv[1:]],
@@ -508,6 +558,8 @@ def main():
         os.environ["SMOLVM_WORKER_SLICE_NAME"] = slice_name
         system = args.case in SYSTEM
         keys, tls, gateway = (None, None, None) if system or args.case in DIRECT else tls_setup(root)
+        if args.check_forwarding and args.case == "http":
+            gateway["max_waiters_per_machine"] = HTTP_WAKE_WAITERS
         platform = Platform(args, root, stack, () if system else (NETWORK,),
                             use_installation=args.use_installation, tls=tls, gateway=gateway, managed_ssh=args.case == "ssh")
         try:
