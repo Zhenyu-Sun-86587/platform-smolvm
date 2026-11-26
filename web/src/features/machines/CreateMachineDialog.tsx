@@ -188,7 +188,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       {preview ? <label className={styles.field}><span>Region</span>
         <select value={region} onChange={event => setRegion(event.target.value)}><option value="fra">Frankfurt</option><option value="nyc">New York</option></select>
       </label> : <label className={styles.field}><span>Template</span>
-        <select value={selected?.id ?? ""} disabled={busy || uncertain} onChange={event => setTemplateID(event.target.value)}>
+        <select aria-label="Template" value={selected?.id ?? ""} disabled={busy || uncertain} onChange={event => setTemplateID(event.target.value)}>
           <option value="" disabled>{templates.items ? "Select a template" : "Loading templates…"}</option>
           {choices.map(item => <option key={item.id} value={item.id} disabled={item.system && !systemRuntimes.length}>{item.name} · v{item.version}{item.system ? " · System" : ""}</option>)}
         </select>
@@ -217,7 +217,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
         <label className={styles.field}><span>Labels</span><textarea value={labels} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
       </> : selected && <div className={styles.advanced}>
         {system && <label className={styles.field}><span>Runtime</span>
-          <select value={runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>
+          <select aria-label="Runtime" value={runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>
             {systemRuntimes.map(item => <option key={item.runtime_instance_id}>{item.runtime_instance_id}</option>)}
           </select>
         </label>}
@@ -226,11 +226,11 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
           <fieldset disabled={busy || uncertain} className={styles.advancedFields}>
             {system ? <>
               {Boolean(availableNetworks.length) && <>
-                <label className={styles.field}><span>Private network</span><select value={network} onChange={event => setNetwork(event.target.value)}>
+                <label className={styles.field}><span>Private network</span><select aria-label="Private network" value={network} onChange={event => setNetwork(event.target.value)}>
                   <option value="">Use configured default</option>
                   {availableNetworks.map(item => <option key={item.network_id} value={item.network_id}>{item.network_id} · {item.cidr}</option>)}
                 </select></label>
-                <label className={styles.field}><span>Network mode</span><select value={networkMode} onChange={event => setNetworkMode(event.target.value)}>
+                <label className={styles.field}><span>Network mode</span><select aria-label="Network mode" value={networkMode} onChange={event => setNetworkMode(event.target.value)}>
                   <option value="">Use platform default</option>
                   {networkModes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select></label>
