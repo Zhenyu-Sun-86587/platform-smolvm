@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -92,7 +91,7 @@ func (e *Engine) activitySession() string {
 	}
 	return e.collectorSession
 }
-func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b registry.Binding, adapter rt.Adapter, client workerclient.Client, st WorkerLifecycleStatus) {
+func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b registry.Binding, adapter rt.Adapter, client workerclient.Client, st WorkerLifecycleStatus, manager *tasks.Hello) {
 	scope := WorkerExecution(b)
 	if st.Execution() != scope || scope.IncarnationID == "" {
 		return
@@ -129,7 +128,7 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE machine_id=? AND binding_generation=? AND worker_revision IS NULL AND semantics_version=1 AND state IN ('active','suspect')", m.ID, b.Generation).Scan(&legacyLeases); err == nil {
 		platform["legacy_lease"] = legacyLeases
 	}
-	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE machine_id=? AND binding_generation=? AND state NOT IN ('exited','completed','cancelled','failed')", m.ID, b.Generation).Scan(&taskCount); err == nil {
+	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE machine_id=? AND binding_generation=? AND state NOT IN ('exited','completed','succeeded','failed','cancelled','interrupted')", m.ID, b.Generation).Scan(&taskCount); err == nil {
 		platform["task"] = taskCount
 	}
 	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_sessions WHERE machine_id=? AND binding_id=? AND state NOT IN ('exited','completed','closed','failed')", m.ID, b.ID).Scan(&execCount); err == nil {
@@ -153,36 +152,11 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 				guest["outbound"] = out
 			}
 		}
-		invoke := func(c context.Context, argv []string, in []byte) ([]byte, error) {
-			res, err := control.GuestExec(c, b.ExecutionRef(), rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 2})
-			if err != nil {
-				return nil, err
-			}
-			if res.ExitCode != 0 {
-				return nil, fmt.Errorf("guest task collector exited %d", res.ExitCode)
-			}
-			return res.Stdout, nil
-		}
-		expected := GuestBinding(b)
-		request := tasks.Request{Method: "hello", Binding: expected}
-		hello, err := tasks.Call(sample, invoke, request)
-		if err == nil && hello.Hello != nil && hello.Hello.Cgroup && hello.Binding == nil {
-			// Systemd starts taskd independently of native launch. Establish its
-			// first binding over the verified Guest channel before counting tasks.
-			profile, profileErr := e.systemGuestProfile(sample, b)
-			if profileErr == nil && profile.BootMode == rt.BootSystem {
-				bound, bindErr := tasks.Call(sample, invoke, tasks.Request{Method: "bind", Binding: expected})
-				if bindErr == nil && bound.Binding != nil && *bound.Binding == *expected {
-					hello, err = tasks.Call(sample, invoke, request)
-				}
-			}
-		}
-		if err == nil && hello.Hello != nil && hello.Binding != nil && *hello.Binding == *expected && hello.Hello.Cgroup && hello.Hello.Unknown == 0 && hello.Hello.Barrier == nil {
-			guest["task"] = hello.Hello.Active
-			// Exact VM exec access is protected independently by a host registration.
-			if platform["exec"] != nil {
-				guest["exec"] = execCount
-			}
+	}
+	if manager != nil && manager.Unknown == 0 && manager.Barrier == nil {
+		guest["task"] = manager.Active
+		if platform["exec"] != nil {
+			guest["exec"] = execCount
 		}
 	}
 	publish("guest", guest)

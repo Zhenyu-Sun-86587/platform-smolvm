@@ -238,6 +238,8 @@ export function Tasks({ machine, actions, revision, initialTask }: Context & {in
       act: form => actions.mutate(path, { ...command(form), expected_generation: machine.binding_generation, ...(str(form, "task_key") ? { task_key: str(form, "task_key") } : {}) }, { revision: machine.revision })
     })}>Start task</button>}>
       <FeatureStatus reason={blocked} />
+      {machine.task_metadata_status === "unavailable" && <p className="empty">The Guest task index is unavailable.</p>}
+      {machine.task_metadata_status === "stale" && <p className="empty">Showing the last recorded task index.</p>}
       <Callout error={history.error} />
       {history.data?.items.length ? <div className="rows">{history.data.items.map(item => <div className="row" key={taskID(item)}>
         <button className="text-button" onClick={() => setSelected(taskID(item))}>{taskID(item)}</button>
@@ -246,7 +248,8 @@ export function Tasks({ machine, actions, revision, initialTask }: Context & {in
           title: "Cancel task", destructive: true, fields: [{ name: "grace_seconds", label: "Grace period (seconds)", type: "number", min: 0, value: 5 }],
           act: form => actions.mutate(task(taskID(item)) + "/cancel", { grace_seconds: num(form, "grace_seconds") }, { revision: machine.revision })
         })}>Cancel</button>}
-      </div>)}</div> : <p className="empty">{history.error ? "" : history.data ? "No tasks yet." : "Loading tasks…"}</p>}
+      </div>)}</div> : <p className="empty">{history.error ? "" : !history.data ? "Loading tasks…" :
+        machine.task_metadata_status && machine.task_metadata_status !== "complete" ? "" : "No tasks yet."}</p>}
     </Section>
     {selected && <Section title="Task output" actions={<select aria-label="Output stream" value={stream} onChange={event => setStream(event.target.value)}>
       <option value="stdout">stdout</option><option value="stderr">stderr</option>

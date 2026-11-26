@@ -13,6 +13,7 @@ import (
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/volumes"
 )
 
@@ -131,6 +132,9 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 		return rt.StatePointSubmission{}, err
 	}
 	request := rt.StatePointSubmission{OperationID: j.Op.ID, Kind: kind}
+	if kind == rt.VMSnapshot {
+		j.Intent.SourceTaskBinding = GuestBinding(j.Binding)
+	}
 	ref := j.Binding.ExecutionRef()
 	request.Expected = rt.LaunchBinding{InstanceID: ref.InstanceID, IncarnationID: &ref.IncarnationID, ExecutionEpoch: ref.ExecutionEpoch}
 	if kind == rt.VMRestore {
@@ -157,14 +161,27 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 	case kind == rt.VMRestore || kind == rt.VMRollback:
 		request.Parameters.Mode = v.VolumeRestorePolicy
 		var instance, bundle, machine string
-		err := j.DB.ReadDB().QueryRowContext(ctx, `SELECT v.runtime_capture_id,v.runtime_instance_id,v.runtime_bundle_id,s.source_machine_id
-			FROM vm_snapshot_provenance v JOIN snapshots s ON s.id=v.snapshot_id WHERE v.snapshot_id=? AND s.state='ready'`, v.SnapshotID).
-			Scan(&request.Parameters.CaptureID, &instance, &bundle, &machine)
+		var bindingID, raw sql.NullString
+		err := j.DB.ReadDB().QueryRowContext(ctx, `SELECT v.runtime_capture_id,v.runtime_instance_id,v.runtime_bundle_id,s.source_machine_id,
+			o.binding_id,json_extract(o.dispatch_json,'$.source_task_binding') FROM vm_snapshot_provenance v
+			JOIN snapshots s ON s.id=v.snapshot_id LEFT JOIN operations o ON o.id=v.operation_id
+			WHERE v.snapshot_id=? AND s.state='ready'`, v.SnapshotID).
+			Scan(&request.Parameters.CaptureID, &instance, &bundle, &machine, &bindingID, &raw)
 		if err != nil {
 			return request, err
 		}
 		if instance != j.Binding.RuntimeInstanceID || bundle != j.Binding.RuntimeBundleID || (kind == rt.VMRollback && machine != j.Op.MachineID) {
 			return request, &Failure{"BUNDLE_UNAVAILABLE", "StatePoint requires its original Worker slot and Bundle"}
+		}
+		if j.Op.Kind == rt.VMRestore && bindingID.Valid {
+			if raw.Valid {
+				var captured tasks.Binding
+				if json.Unmarshal([]byte(raw.String), &captured) == nil && captured.Nonce == bindingID.String && captured.MachineID == machine {
+					j.Intent.SourceTaskBinding = &captured
+				}
+			} else if binding, err := j.DB.GetBinding(ctx, bindingID.String); err == nil && binding.MachineID == machine {
+				j.Intent.SourceTaskBinding = GuestBinding(binding)
+			}
 		}
 	default:
 		request.Parameters.CaptureID = "point-" + strings.TrimPrefix(j.Op.ID, "op_")
@@ -284,8 +301,16 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 	if v.Purpose == "" {
 		v.Purpose = "recovery"
 	}
+	taskStatus := "unavailable"
+	if TaskMetadataStatus(j.Binding) != "unavailable" {
+		taskStatus = "stale"
+	}
+	manifest := struct {
+		rt.StatePointProgress
+		TaskMetadataStatus string `json:"task_metadata_status"`
+	}{point, taskStatus}
 	return j.Done(ctx, registry.TransitionRequest{Effect: registry.EffectApplied, SourceDisposition: registry.SourceDisposition(point.OriginalSourceDisposition),
-		Result: JSON(map[string]any{"snapshot_id": id, "capture_id": point.CaptureID, "statepoint": point}),
+		Result: JSON(map[string]any{"snapshot_id": id, "capture_id": point.CaptureID, "statepoint": point, "task_metadata_status": taskStatus}),
 		Apply: func(ctx context.Context, tx *sql.Tx) error {
 			if err := j.recordStatePoint(ctx, tx, point, point.CaptureID, "checkpoint"); err != nil {
 				return err
@@ -294,7 +319,7 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 			if _, err := tx.ExecContext(ctx, `INSERT INTO snapshots(id,source_machine_id,source_generation,purpose,label,task_content,
 				state,relative_path,sha256,manifest_json,provenance,closure_verified_at,created_at)
 				VALUES(?,?,?,?,?,'unknown','ready',?,?,?,'worker',?,?)`,
-				id, j.Binding.MachineID, j.Binding.Generation, v.Purpose, v.Label, id, point.ManifestDigest, string(JSON(point)), now, now); err != nil {
+				id, j.Binding.MachineID, j.Binding.Generation, v.Purpose, v.Label, id, point.ManifestDigest, string(JSON(manifest)), now, now); err != nil {
 				return err
 			}
 			_, err := tx.ExecContext(ctx, `INSERT INTO vm_snapshot_provenance

@@ -12,6 +12,7 @@ import (
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/tasks"
 )
 
@@ -25,6 +26,7 @@ func (s *Server) taskRoutes() {
 	s.Extra["task_start"] = s.startTask
 	s.Extra["task_cancel"] = s.cancelTask
 	s.Recover["task_start"] = s.recoverTask
+	s.Recover["task_cancel"] = s.recoverTaskCancel
 	s.route("POST /v1/machines/{machine}/tasks", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("machine")
 		if err := p.Authorize("manage", id); err != nil {
@@ -143,8 +145,9 @@ func (s *Server) taskRoutes() {
 				return err
 			}
 			if suffix == "" {
-				if res.Task == nil {
-					return errors.New("missing guest task record")
+				if res.Task == nil || res.Task.ID != id || res.Task.MachineID != mid ||
+					res.Task.Namespace != m.CurrentBinding.TaskNamespace || res.Task.Generation != gen {
+					return errors.New("guest task receipt differs from the requested binding")
 				}
 				if err = s.observeTask(r.Context(), m.CurrentBinding.ID, *res.Task); err != nil {
 					return err
@@ -164,7 +167,28 @@ func (s *Server) startTask(ctx context.Context, j *lifecycle.Job) error {
 	if err != nil {
 		return err
 	}
-	if err = j.TaskRunning(ctx, j.Intent.Stage == "task_wake"); err != nil {
+	release, err := j.NativeTaskAccess(ctx)
+	if err != nil {
+		return err
+	}
+	if release != nil {
+		defer release()
+		if req.Spec.Cwd == "" {
+			// Previously installed System templates can predate /workspace.
+			control, ok := j.Runtime.(rt.NativeGuestControl)
+			if !ok {
+				return rt.ErrUnsupported
+			}
+			result, err := control.GuestExec(ctx, j.Binding.ExecutionRef(), rt.ExecRequest{
+				Command: []string{"/bin/mkdir", "-p", "--", tasks.DefaultWorkDir}, TimeoutSeconds: 5})
+			if err != nil {
+				return err
+			}
+			if result.ExitCode != 0 {
+				return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "default task working directory is unavailable"}
+			}
+		}
+	} else if err = j.TaskRunning(ctx, j.Intent.Stage == "task_wake"); err != nil {
 		return err
 	}
 	id := "task_" + j.Op.ID[3:]
@@ -219,6 +243,9 @@ func (s *Server) recoverTask(ctx context.Context, j *lifecycle.Job) error {
 	if j.Intent.Stage != "guest_start" {
 		return errors.New("task dispatch identity unavailable")
 	}
+	if j.Intent.TaskExecution != nil && j.Binding.ExecutionRef() != *j.Intent.TaskExecution {
+		return registry.ErrStaleObservation
+	}
 	req, err := s.loadTask(j.Op.Request)
 	if err != nil {
 		return err
@@ -258,12 +285,43 @@ func (s *Server) cancelTask(ctx context.Context, j *lifecycle.Job) error {
 	if err := json.Unmarshal(j.Op.Request, &req); err != nil {
 		return err
 	}
+	release, err := j.NativeTaskAccess(ctx)
+	if err != nil {
+		return err
+	}
+	if release != nil {
+		defer release()
+	}
 	t, err := j.CancelGuestTask(ctx, req)
 	if err != nil {
 		return err
 	}
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(t)})
 }
+
+func (s *Server) recoverTaskCancel(ctx context.Context, j *lifecycle.Job) error {
+	if j.Intent.Stage != "guest_cancel" || j.Intent.Target == "" ||
+		(j.Intent.TaskExecution != nil && j.Binding.ExecutionRef() != *j.Intent.TaskExecution) {
+		return errors.New("task cancellation has no confirmed original execution")
+	}
+	response, err := s.Call(ctx, j.Binding, tasks.Request{Method: "status", TaskID: j.Intent.Target})
+	if err != nil {
+		return err
+	}
+	t := response.Task
+	if t == nil || t.MachineID != j.Binding.MachineID || t.Generation != j.Binding.Generation ||
+		t.Namespace != j.Binding.TaskNamespace || t.ID != j.Intent.Target {
+		return registry.ErrGeneration
+	}
+	if !t.Terminal() {
+		return s.cancelTask(ctx, j)
+	}
+	if err := s.observeTask(ctx, j.Binding.ID, *t); err != nil {
+		return err
+	}
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(t)})
+}
+
 func (s *Server) observeTask(ctx context.Context, bid string, t tasks.Task) error {
 	_, err := s.DB.DB().ExecContext(ctx, `UPDATE tasks SET result_json=?, observed_at=?,exit_code=?,state=? WHERE id=? AND task_namespace=? AND observed_at<=? AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=?)`, string(lifecycle.JSON(t)), t.ObservedAt.UnixMilli(), t.ExitCode, t.State, t.ID, t.Namespace, t.ObservedAt.UnixMilli(), t.MachineID, bid)
 	return err
