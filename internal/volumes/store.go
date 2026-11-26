@@ -49,7 +49,17 @@ func Get(ctx context.Context, db *sql.DB, owner, id string) (Volume, error) {
 }
 
 func List(ctx context.Context, db *sql.DB, owner string) ([]Volume, error) {
-	rows, err := db.QueryContext(ctx, selectVolume+` WHERE owner_id=? AND state!='deleted' ORDER BY id`, owner)
+	return readVolumes(db.QueryContext(ctx, selectVolume+` WHERE owner_id=? AND state!='deleted' ORDER BY id`, owner))
+}
+
+func OwnedByMachineInstance(ctx context.Context, db *sql.DB, route rt.VolumeRoute, instance string) ([]Volume, error) {
+	return readVolumes(db.QueryContext(ctx, selectVolume+`
+		WHERE runtime_instance_id=? AND runtime_bundle_id=? AND state!='deleted'
+		AND json_extract(worker_receipt_json,'$.machine_instance_id')=? ORDER BY id`,
+		route.RuntimeInstanceID, route.RuntimeBundleID, instance))
+}
+
+func readVolumes(rows *sql.Rows, err error) ([]Volume, error) {
 	if err != nil {
 		return nil, err
 	}

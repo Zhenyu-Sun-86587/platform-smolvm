@@ -10,8 +10,8 @@ import (
 // The Worker creates product attachments when it finishes an independent
 // restore. Check those references against the actual registered target before
 // publishing the volume graph and its machine binding in one transaction.
-func (j *Job) observeRestoredVolumes(ctx context.Context, inventory rt.NativeInventory, point rt.StatePointProgress) ([]volumes.Volume, error) {
-	if len(point.ProductAttachments) == 0 {
+func (j *Job) observeRestoredVolumes(ctx context.Context, inventory rt.NativeInventory, volumeMap, attachments map[string]string) ([]volumes.Volume, error) {
+	if len(attachments) == 0 {
 		return nil, nil
 	}
 	invalid := &Failure{"RECOVERY_REQUIRED", "restored product volume does not match the confirmed execution"}
@@ -27,11 +27,11 @@ func (j *Job) observeRestoredVolumes(ctx context.Context, inventory rt.NativeInv
 		}
 	}
 	sources := make(map[string]string)
-	for source, target := range point.VolumeMap {
+	for source, target := range volumeMap {
 		sources[target] = source
 	}
-	result := make([]volumes.Volume, 0, len(point.ProductAttachments))
-	for volume, attachment := range point.ProductAttachments {
+	result := make([]volumes.Volume, 0, len(attachments))
+	for volume, attachment := range attachments {
 		disk := disks[volume]
 		if disk == nil || sources[volume] == "" {
 			return nil, invalid
@@ -44,7 +44,9 @@ func (j *Job) observeRestoredVolumes(ctx context.Context, inventory rt.NativeInv
 		if err != nil {
 			return nil, err
 		}
-		if source.VolumeRoute != route || view.State != "available" || (!disk.ReadOnly && view.HeadResourceID != disk.ManagedAttachment.WritableHeadID) {
+		retainedSnapshot := view.State == "deleted" && view.Lifecycle == "machine" && disk.ReadOnly
+		if source.VolumeRoute != route || (view.State != "available" && !retainedSnapshot) ||
+			(!disk.ReadOnly && view.HeadResourceID != disk.ManagedAttachment.WritableHeadID) {
 			return nil, invalid
 		}
 		matched := false

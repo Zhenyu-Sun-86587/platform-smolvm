@@ -297,7 +297,11 @@ func (j *Job) fail(ctx context.Context, err error) error {
 	}
 	unknown := errors.Is(err, rt.ErrUncertain) || j.Written
 	effect := registry.EffectNone
-	detail := JSON(map[string]string{"code": code, "message": err.Error()})
+	fault := map[string]string{"code": code, "message": err.Error()}
+	if errors.Is(err, rt.ErrVolumeRequiresStopped) {
+		fault["reason_code"] = "REQUIRES_STOPPED"
+	}
+	detail := JSON(fault)
 	if unknown {
 		return j.transition(ctx, registry.TransitionRequest{State: registry.RecoveryRequired, Stage: "verify", Effect: registry.EffectUnknown, Error: detail})
 	}

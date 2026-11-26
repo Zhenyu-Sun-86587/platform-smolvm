@@ -85,7 +85,7 @@ func (s *Server) volumeRoutes() {
 		if input.Lifecycle == "" {
 			input.Lifecycle = "persistent"
 		}
-		if input.Lifecycle != "persistent" && input.Lifecycle != "ephemeral" {
+		if input.Lifecycle != "persistent" && input.Lifecycle != "ephemeral" && input.Lifecycle != "machine" {
 			return registry.ErrInvalid
 		}
 		var route rt.VolumeRoute
@@ -404,8 +404,13 @@ func (s *Server) volumeJob(ctx context.Context, job *lifecycle.Job) error {
 	case "attach", "detach":
 		if job.Intent.Volume == nil {
 			consumer, ok := job.Runtime.(rt.VolumeConsumerResolver)
-			if !ok || consumerBinding.PowerState == registry.PowerHibernated {
+			if !ok {
 				return &lifecycle.Failure{Code: "VOLUME_TOPOLOGY_UNAVAILABLE", Message: "volume topology requires a stopped Worker-bound machine"}
+			}
+			if consumerBinding.PowerState == registry.PowerHibernated {
+				return fmt.Errorf("%w: %w", &lifecycle.Failure{
+					Code: "VOLUME_TOPOLOGY_UNAVAILABLE", Message: "volume topology requires a cold stop after waking the saved execution",
+				}, rt.ErrVolumeRequiresStopped)
 			}
 			ref, err := consumer.DiscoverVolumeConsumer(ctx, consumerBinding.RuntimeName)
 			if err != nil {
@@ -449,6 +454,10 @@ func (s *Server) volumeJob(ctx context.Context, job *lifecycle.Job) error {
 			switch runtimeFault.NativeCode {
 			case "E_VOLUME_STORAGE_NOT_APPLIED":
 				return &lifecycle.Failure{Code: "VOLUME_STORAGE_NOT_APPLIED", Message: runtimeFault.Message}
+			case "E_VOLUME_REQUIRES_STOPPED":
+				return fmt.Errorf("%w: %w", &lifecycle.Failure{
+					Code: "CONFLICT", Message: runtimeFault.Message,
+				}, rt.ErrVolumeRequiresStopped)
 			case "E_HOST_IO":
 				err = fmt.Errorf("%w: %w", rt.ErrUncertain, err)
 			}

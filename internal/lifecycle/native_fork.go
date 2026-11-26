@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/volumes"
 )
 
 type nativeForkIntent struct {
@@ -358,6 +360,7 @@ func (j *Job) recordForkProgress(ctx context.Context, step registry.TransitionRe
 
 func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkControl, receipt rt.OperationReceipt, step registry.TransitionRequest, result map[string]any) error {
 	proof := append([]rt.ForkDiskEvidence(nil), j.Intent.Fork.SourceDisks...)
+	var projections []forkVolumeProjection
 	ready, failed := 0, 0
 	for _, child := range j.Op.Children {
 		if child.State == "ready" {
@@ -388,7 +391,7 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 			step.ForkChildren = append(step.ForkChildren, registry.ForkChildTransition{Ordinal: ordinal, State: "quarantined", ErrorCode: code})
 			failed++
 		case "COMPLETED":
-			change, err := j.confirmForkChild(ctx, control, child, workerChild, proof)
+			change, projection, err := j.confirmForkChild(ctx, control, child, workerChild, proof)
 			if errors.Is(err, rt.ErrUnavailable) {
 				continue
 			}
@@ -397,10 +400,27 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 				continue
 			}
 			step.ForkChildren = append(step.ForkChildren, change)
+			if projection != nil {
+				projections = append(projections, *projection)
+			}
 			proof = append(proof, change.ResourceProof...)
 			ready++
 		default:
 			conflict = &Failure{"RECOVERY_REQUIRED", "Worker returned an unrecognized child phase"}
+		}
+	}
+	if len(projections) != 0 {
+		step.Apply = func(ctx context.Context, tx *sql.Tx) error {
+			for _, projection := range projections {
+				for _, product := range projection.volumes {
+					child := projection.child
+					if err := volumes.Apply(ctx, tx, product.VolumeRoute, product.Name, child.MachineID,
+						child.BindingID, projection.attachments[product.ID], "attach", product.VolumeObservation); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		}
 	}
 	if ready > 0 {
@@ -434,33 +454,39 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 	return j.Done(ctx, step)
 }
 
-func (j *Job) confirmForkChild(ctx context.Context, control rt.NativeForkControl, child registry.OperationChild, receipt rt.ForkChildReceipt, priorDisks []rt.ForkDiskEvidence) (registry.ForkChildTransition, error) {
+type forkVolumeProjection struct {
+	child       registry.OperationChild
+	attachments map[string]string
+	volumes     []volumes.Volume
+}
+
+func (j *Job) confirmForkChild(ctx context.Context, control rt.NativeForkControl, child registry.OperationChild, receipt rt.ForkChildReceipt, priorDisks []rt.ForkDiskEvidence) (registry.ForkChildTransition, *forkVolumeProjection, error) {
 	var result registry.ForkChildTransition
 	if receipt.IncarnationID == nil || *receipt.IncarnationID == "" || *receipt.IncarnationID == j.Intent.Fork.Submission.Expected.IncarnationID {
-		return result, &Failure{"RECOVERY_REQUIRED", "Worker child has no independent incarnation"}
+		return result, nil, &Failure{"RECOVERY_REQUIRED", "Worker child has no independent incarnation"}
 	}
 	binding, err := j.DB.GetBinding(ctx, child.BindingID)
 	if err != nil {
-		return result, err
+		return result, nil, err
 	}
 	ref, err := control.DiscoverExecution(ctx, binding.RuntimeName)
 	if err != nil {
-		return result, err
+		return result, nil, err
 	}
 	want := rt.ExecutionRef{InstanceID: receipt.InstanceID, IncarnationID: *receipt.IncarnationID, ExecutionEpoch: receipt.ExecutionEpoch}
 	if ref != want || binding.RuntimeName != receipt.Name {
-		return result, &Failure{"RECOVERY_REQUIRED", "registered child differs from its Worker receipt"}
+		return result, nil, &Failure{"RECOVERY_REQUIRED", "registered child differs from its Worker receipt"}
 	}
 	inventory, err := control.NativeInventory(ctx, ref)
 	if err != nil {
-		return result, err
+		return result, nil, err
 	}
 	vm := inventory.Execution
 	disks := inventory.ForkDisks()
 	if vm.ExecutionRef != ref || vm.BundleDigest != binding.RuntimeBundleID || vm.Phase != "registered" ||
 		vm.PID < 1 || vm.PIDStartTime < 1 || vm.HostBootID == "" || inventory.Inventory.SourceDisposition != "RUNNING" ||
 		!independentForkDisks(j.Intent.Fork.SourceDisks, priorDisks, disks) {
-		return result, &Failure{"RECOVERY_REQUIRED", "child has no verified live inventory with independent block writers"}
+		return result, nil, &Failure{"RECOVERY_REQUIRED", "child has no verified live inventory with independent block writers"}
 	}
 	profile := ""
 	if inventory.ManagedStandby() {
@@ -469,7 +495,26 @@ func (j *Job) confirmForkChild(ctx context.Context, control rt.NativeForkControl
 	x := nativeObservation(binding, ref, registry.PowerRunning, profile)
 	x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	x.Native.ForkCapabilities = observedForkCapabilities(inventory)
-	return registry.ForkChildTransition{Ordinal: child.Ordinal, State: "ready", Observation: &x, ResourceProof: disks}, nil
+	result = registry.ForkChildTransition{Ordinal: child.Ordinal, State: "ready", Observation: &x, ResourceProof: disks}
+	if !receipt.HasProductVolumes {
+		return result, nil, nil
+	}
+	operation, err := control.QueryOperation(ctx, receipt.OperationID)
+	if err != nil {
+		return result, nil, err
+	}
+	volumesReceipt := operation.Fork
+	if operation.OperationID != receipt.OperationID || operation.Kind != "restore_target" || operation.Phase != "COMPLETED" ||
+		operation.RouteID != "deep" || operation.BundleDigest != binding.RuntimeBundleID ||
+		operation.InstanceID != ref.InstanceID || operation.Execution == nil || *operation.Execution != ref ||
+		volumesReceipt == nil || len(volumesReceipt.ProductAttachments) == 0 {
+		return result, nil, &Failure{"RECOVERY_REQUIRED", "child product volumes have no matching Worker receipt"}
+	}
+	products, err := j.observeRestoredVolumes(ctx, inventory, volumesReceipt.VolumeMap, volumesReceipt.ProductAttachments)
+	if err != nil {
+		return result, nil, err
+	}
+	return result, &forkVolumeProjection{child: child, attachments: volumesReceipt.ProductAttachments, volumes: products}, nil
 }
 
 func independentForkDisks(source, previous, child []rt.ForkDiskEvidence) bool {

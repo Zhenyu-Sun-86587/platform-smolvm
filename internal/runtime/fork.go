@@ -38,18 +38,21 @@ type ForkProgress struct {
 	Children                  []ForkChildReceipt `json:"children"`
 	Outcome                   string             `json:"outcome"`
 	Error                     *string            `json:"error"`
+	VolumeMap                 map[string]string  `json:"volume_map,omitempty"`
+	ProductAttachments        map[string]string  `json:"product_attachments,omitempty"`
 }
 
 type ForkChildReceipt struct {
-	Name           string  `json:"name"`
-	InstanceID     string  `json:"instance_id"`
-	OperationID    string  `json:"operation_id"`
-	Phase          string  `json:"phase"`
-	IncarnationID  *string `json:"incarnation_id"`
-	ExecutionEpoch int64   `json:"execution_epoch"`
-	Attempt        int64   `json:"attempt"`
-	Cancelled      bool    `json:"cancelled"`
-	AdmissionError string  `json:"admission_error,omitempty"`
+	Name              string  `json:"name"`
+	InstanceID        string  `json:"instance_id"`
+	OperationID       string  `json:"operation_id"`
+	Phase             string  `json:"phase"`
+	IncarnationID     *string `json:"incarnation_id"`
+	ExecutionEpoch    int64   `json:"execution_epoch"`
+	Attempt           int64   `json:"attempt"`
+	Cancelled         bool    `json:"cancelled"`
+	AdmissionError    string  `json:"admission_error,omitempty"`
+	HasProductVolumes bool    `json:"has_product_volumes,omitempty"`
 }
 
 type ForkControl struct {

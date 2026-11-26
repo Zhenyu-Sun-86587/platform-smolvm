@@ -764,7 +764,11 @@ paths:
                 name: {type: string, minLength: 1, maxLength: 128}
                 capacity_bytes: {type: integer, format: int64, minimum: 512, multipleOf: 512}
                 runtime_instance_id: {type: string}
-                lifecycle: {type: string, enum: [persistent, ephemeral], default: persistent}
+                lifecycle:
+                  type: string
+                  enum: [persistent, ephemeral, machine]
+                  default: persistent
+                  description: A machine volume belongs to its first writable consumer and retires when that machine is deleted. Existing ephemeral volumes retain their original lifetime.
       responses:
         '202': {$ref: '#/components/responses/VolumeOperationAccepted'}
         default: {$ref: '#/components/responses/Error'}
@@ -2768,7 +2772,8 @@ components:
         runtime_instance_id: {type: string}
         runtime_bundle_id: {type: string}
         revision: {type: integer, format: int64}
-        lifecycle: {type: string, enum: [persistent, ephemeral]}
+        lifecycle: {type: string, enum: [persistent, ephemeral, machine]}
+        machine_instance_id: {type: string, description: Stable Worker instance that owns the machine volume after its first writable attachment.}
         state: {type: string, enum: [available, changing, deleted]}
         capacity_bytes: {type: integer, format: int64}
         head_resource_id: {type: string}

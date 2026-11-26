@@ -3,9 +3,12 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 const VolumeOperation = "volume"
+
+var ErrVolumeRequiresStopped = errors.New("volume topology requires a fenced stopped execution")
 
 type VolumeRoute struct {
 	RuntimeInstanceID string `json:"runtime_instance_id"`
@@ -32,19 +35,20 @@ type VolumeAttachment struct {
 }
 
 type VolumeObservation struct {
-	Schema         string             `json:"schema"`
-	ID             string             `json:"volume_id"`
-	OwnerID        string             `json:"owner_id"`
-	RouteID        string             `json:"route_id"`
-	BundleDigest   string             `json:"bundle_digest"`
-	Lifecycle      string             `json:"lifecycle"`
-	Revision       int64              `json:"revision"`
-	State          string             `json:"state"`
-	HeadResourceID string             `json:"head_resource_id,omitempty"`
-	GenerationID   string             `json:"generation_id,omitempty"`
-	CapacityBytes  int64              `json:"capacity_bytes,omitempty"`
-	Snapshots      []VolumeSnapshot   `json:"snapshots"`
-	Attachments    []VolumeAttachment `json:"attachments"`
+	Schema            string             `json:"schema"`
+	ID                string             `json:"volume_id"`
+	OwnerID           string             `json:"owner_id"`
+	RouteID           string             `json:"route_id"`
+	BundleDigest      string             `json:"bundle_digest"`
+	Lifecycle         string             `json:"lifecycle"`
+	MachineInstanceID string             `json:"machine_instance_id,omitempty"`
+	Revision          int64              `json:"revision"`
+	State             string             `json:"state"`
+	HeadResourceID    string             `json:"head_resource_id,omitempty"`
+	GenerationID      string             `json:"generation_id,omitempty"`
+	CapacityBytes     int64              `json:"capacity_bytes,omitempty"`
+	Snapshots         []VolumeSnapshot   `json:"snapshots"`
+	Attachments       []VolumeAttachment `json:"attachments"`
 }
 
 type VolumeMutation struct {

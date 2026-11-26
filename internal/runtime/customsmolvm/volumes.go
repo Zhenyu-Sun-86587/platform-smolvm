@@ -31,7 +31,7 @@ func (a *Adapter) DiscoverVolumeConsumer(ctx context.Context, name string) (rt.E
 		return ref, rt.ErrUnsupported
 	}
 	if ref.IncarnationID != "" {
-		return ref, fmt.Errorf("%w: volume topology requires a fenced stopped execution", rt.ErrConflict)
+		return ref, fmt.Errorf("%w: %w", rt.ErrConflict, rt.ErrVolumeRequiresStopped)
 	}
 	return ref, nil
 }

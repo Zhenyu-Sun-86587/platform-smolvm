@@ -399,7 +399,7 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 		"statepoint": point, "volume_map": point.VolumeMap}
 	transition := registry.TransitionRequest{Observation: &observation, Effect: registry.EffectApplied, DesiredPower: "running",
 		PromoteBinding: j.Op.Kind == rt.VMRestore}
-	products, err := j.observeRestoredVolumes(ctx, inventory, *point)
+	products, err := j.observeRestoredVolumes(ctx, inventory, point.VolumeMap, point.ProductAttachments)
 	if err != nil {
 		return err
 	}

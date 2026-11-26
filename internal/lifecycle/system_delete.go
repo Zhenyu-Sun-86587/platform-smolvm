@@ -9,6 +9,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
+	"sandbox-platform/internal/volumes"
 )
 
 const retireInstanceMethod = "RetireStoppedInstance"
@@ -159,9 +160,15 @@ func (j *Job) preflightSystemDelete(ctx context.Context, launcher rt.NativeLaunc
 
 func (j *Job) finishDelete(ctx context.Context, receipt *rt.OperationReceipt) error {
 	finish := registry.TransitionRequest{MarkDeleted: true, Effect: registry.EffectApplied, DesiredPower: "deleted"}
+	var retired []volumes.Volume
 	if receipt != nil {
 		finish.SourceDisposition = registry.SourceExited
 		finish.Result = JSON(map[string]any{"machine_id": j.Op.MachineID, "execution_epoch": receipt.ExpectedExecutionEpoch})
+		var err error
+		retired, err = j.observeRetiredMachineVolumes(ctx, receipt.InstanceID)
+		if err != nil {
+			return err
+		}
 	}
 	finish.Apply = func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE dependencies SET status='released' WHERE child_binding_id=? AND kind='live_branch_resource'", j.Binding.ID); err != nil {
@@ -176,6 +183,11 @@ func (j *Job) finishDelete(ctx context.Context, receipt *rt.OperationReceipt) er
 		}
 		if receipt == nil {
 			return nil
+		}
+		for _, volume := range retired {
+			if err := volumes.Apply(ctx, tx, volume.VolumeRoute, volume.Name, j.Op.MachineID, j.Binding.ID, "", "delete", volume.VolumeObservation); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE volume_attachments SET state='detached',revision=revision+1
 			WHERE binding_id=? AND state='reserved'`, j.Binding.ID); err != nil {
@@ -193,4 +205,33 @@ func (j *Job) finishDelete(ctx context.Context, receipt *rt.OperationReceipt) er
 		return err
 	}
 	return j.Done(ctx, finish)
+}
+
+func (j *Job) observeRetiredMachineVolumes(ctx context.Context, instance string) ([]volumes.Volume, error) {
+	route := rt.VolumeRoute{RuntimeInstanceID: j.Binding.RuntimeInstanceID, RuntimeBundleID: j.Binding.RuntimeBundleID}
+	owned, err := volumes.OwnedByMachineInstance(ctx, j.DB.ReadDB(), route, instance)
+	if err != nil || len(owned) == 0 {
+		return owned, err
+	}
+	control, ok := j.Runtime.(rt.VolumeControl)
+	if !ok {
+		return nil, rt.ErrUnsupported
+	}
+	for index, volume := range owned {
+		actual, err := control.ObserveVolume(ctx, volume.ID, volume.OwnerID)
+		if err != nil {
+			return nil, err
+		}
+		if actual.State != "deleted" || actual.Lifecycle != "machine" || actual.MachineInstanceID != instance ||
+			actual.Revision <= volume.Revision || actual.HeadResourceID != "" {
+			return nil, &Failure{"RECOVERY_REQUIRED", "machine volume retirement has no matching Worker receipt"}
+		}
+		for _, lease := range actual.Attachments {
+			if lease.InstanceID == instance || lease.Mode != "ro" || lease.GenerationID == "" {
+				return nil, &Failure{"RECOVERY_REQUIRED", "retired machine volume has an unexpected active attachment"}
+			}
+		}
+		owned[index].VolumeObservation = actual
+	}
+	return owned, nil
 }

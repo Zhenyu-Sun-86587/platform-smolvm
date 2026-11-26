@@ -419,13 +419,14 @@ export interface VolumeSpec {
     name: string;
     capacity_bytes: number;
     runtime_instance_id: string;
-    lifecycle?: "persistent" | "ephemeral";
+    lifecycle?: "persistent" | "ephemeral" | "machine";
 }
 export interface Volume extends VolumeSpec {
     volume_id: string;
     owner_id: string;
     runtime_bundle_id: string;
-    lifecycle: "persistent" | "ephemeral";
+    lifecycle: "persistent" | "ephemeral" | "machine";
+    machine_instance_id?: string;
     revision: number;
     state: "available" | "changing" | "deleted";
     head_resource_id?: string;
