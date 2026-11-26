@@ -496,14 +496,34 @@ def cancel_partial_fork(platform, source, ref, retry_after_parent_delete=False):
         assert agent_unavailable(platform, ref)
         retire_task_parent(platform, source, ref)
         headers = {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "retry-failed-fork", "If-Match": f'"{final["revision"]}"'}
-        retry = platform.app(operation + "/retry", "POST", {}, headers, 202)
+        if getattr(platform.args, "sandboxctl", None):
+            credential = platform.change("tokens", "cli-retry-credential", {
+                "label": "Fork retry CLI", "scope": {"access": "manage"},
+            }, status=200)["token"]
+            env = {**os.environ, "SANDBOX_URL": platform.origin, "SANDBOX_TOKEN": credential}
+            def submit_retry():
+                result = subprocess.run([platform.args.sandboxctl, "--json", "--no-wait",
+                                         "--control-epoch", platform.epoch, "--idempotency-key", "retry-failed-fork",
+                                         "--revision", str(final["revision"]), "operations", "retry", op_id],
+                                        capture_output=True, env=env, check=True, timeout=30)
+                return json.loads(result.stdout)
+        else:
+            def submit_retry():
+                return platform.app(operation + "/retry", "POST", {}, headers, 202)
+        retry = submit_retry()
+        assert retry["operation_id"] == op_id
         assert platform.change(operation + "/cancel", "cancel-pending-fork", {}, status=200) == requested
         recovered = platform.complete(retry)
         assert recovered["result"]["capture_id"] == capture and recovered["effect"] == "partial", recovered
         assert recovered["children"][:2] == final["children"][:2], recovered
         third = recovered["children"][2]
         assert third["state"] == "ready" and third["attempt"] == 1 and third["machine_id"] == final["children"][2]["machine_id"], third
-        assert platform.app(operation + "/retry", "POST", {}, headers, 202) == retry
+        assert submit_retry() == retry
+        if getattr(platform.args, "sandboxctl", None):
+            print(json.dumps(dict(case="cli-retry", operation_id=op_id, capture_id=capture,
+                                  successful_child=first["machine_id"], retried_child=third["machine_id"],
+                                  retried_attempt=third["attempt"], effect=recovered["effect"],
+                                  replay_same_receipt=True)), flush=True)
         print(f"In cut {capture}, public cancellation preserved one ready and one already failed target. "
               f"After public parent deletion, the sole failed target {third['machine_id']} became ready on attempt 1; "
               "the original cancelled target stayed fenced.", flush=True)
@@ -1735,6 +1755,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=lambda p: Path(p).resolve(), required=True)
     parser.add_argument("--platformd", type=lambda p: Path(p).resolve(), required=True)
+    parser.add_argument("--sandboxctl", type=lambda p: Path(p).resolve(strict=True),
+                        help="Exercise the CLI as the retry client in task-fork-cancel-retry")
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     parser.add_argument("--previous-platformd", type=lambda p: Path(p).resolve(strict=True),
