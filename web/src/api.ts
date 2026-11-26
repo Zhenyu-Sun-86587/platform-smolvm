@@ -1,7 +1,14 @@
 import { Client } from "../../sdk/typescript/src/index"
 import { useEffect, useState } from "react"
 
-export const api = new Client(location.origin)
+const fixture = import.meta.env.DEV ? new URLSearchParams(location.search).get("fixture") : null
+const local = import.meta.env.DEV && fixture ? await import("./fixtures/scenes") : undefined
+
+export const fixtureScene = fixture && local?.fixtureRoutes.has(fixture) ? fixture : undefined
+export const fixtureHash = fixtureScene ? local?.fixtureRoutes.get(fixtureScene) : undefined
+export const api: Client = import.meta.env.DEV && fixtureScene
+  ? new (await import("./fixtures/client")).FixtureClient(fixtureScene)
+  : new Client(location.origin)
 export const segment = encodeURIComponent
 export async function collection<T>(path: string, signal: AbortSignal): Promise<T[]> {
   const result: T[] = []
