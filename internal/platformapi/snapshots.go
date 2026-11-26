@@ -48,7 +48,7 @@ func (s *Server) vmRestoreConfiguration(ctx context.Context, item snapshots.Snap
 		return "", nil, &lifecycle.Failure{Code: "STATE_READER_UNAVAILABLE", Message: "snapshot requires its original StatePoint reader"}
 	}
 	if captured := snapshots.CapturedConfiguration(item); captured != nil {
-		return captured.TemplateID, captured.Spec, nil
+		return captured.TemplateID, captured.RestoreMachineSpec(), nil
 	}
 	var metadata struct {
 		Configuration json.RawMessage `json:"captured_configuration"`
