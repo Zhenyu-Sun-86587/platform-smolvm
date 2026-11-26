@@ -45,3 +45,17 @@ printf '%s\n' '{"protocol":"WorkerResource/1","request_id":"peering","method":"Q
 `requested` 记录已读策略，`active` 记录已装配的双向路由，`error` 记录策略或装配问题。Worker catalog 恢复期间返回 `E_RECOVERING`。源或目标遇到网段重叠时，先消除配置歧义，Worker 才能建立该路由。
 
 五个独立 Linux 网络命名空间中的内核窄测同时配置 A↔B 和 A↔C。A 的两个路由均以 `169.254.1.1` 为下一跳，各自拥有独立设备和 `PERMANENT` 邻居记录，两对均通过双向 ICMP。关闭 A↔B 的转发命名空间后，A 和 B 上对应路由消失，A↔C 的实际双向通信继续。`.build/a13-peering-netns-v2.log` SHA-256 为 `d081081ed311265a0bb48e2a7d439dc74fd92357319647a95719e157dc97b60d`。
+
+## 两个已授权私网的 KVM 实测
+
+开发 Bundle `sha256:0b9e399f082e7b021a4cd078711b5bcd46843bdbb8c08b1f6f4bae923e4232b5` 使用上述 Serve、平台和 System 镜像，以及从 `1eb5104` 单独构建的 Worker `sha256:024d00af15399915a5ae399a495fae9448c99af73f846f625a59451ee9f52e0a`。Rust 窄测通过双边登记、撤销配置和两个重叠情形。`.build/a13-peering-worker-build-v1.log` SHA-256 为 `09db1ff022a9dab7d01e1bebe740f463b94198d2df74fa33e811698d4a2eed7c`。
+
+两个真实 Debian System 分别位于 `10.44.62.0/24` 和 `10.44.63.0/24`。空策略时两边均无对端路由。写入授权后，FixedInternal 目标应用读到 Native 源 `10.44.63.2`，Native 目标应用读到 FixedInternal VIP `10.44.62.2`，两次正常 TCP 请求各收到对端业务标记。
+
+停止测试自己的 Worker 后，两侧对端路由消失。复起同一 Worker 二进制进入新的 broker session，重新安装两个对端路由，两台 Guest 保留各自原 incarnation 和 epoch 1。新一轮获准 TCP 双向请求再次成功。操作员撤销授权后，查询回执与两边的 Linux 路由表均显示已撤除，两台原执行仍可通过各自的 Guest Agent 读取 PID 1 为 `systemd`。`.build/a13-authorized-peering-kvm-v1.log` SHA-256 为 `f3cdae8f09f50563d632a45ac94fdec0c34d8b7d5cfaa3a417d86d4240925112`。
+
+```sh
+sudo python3 -B tests/integration/authorized_private_network_kvm.py \
+  --bundle "$peering_bundle" --platformd "$platformd" \
+  --system-image "$system_disk" --case peering
+```
