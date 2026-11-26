@@ -46,7 +46,7 @@ func RetryDelivery(err error) bool {
 	var fault *Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
-		case "E_CATALOG", "E_RECOVERING", "E_HOST_IO", "E_BUSY":
+		case "E_CATALOG", "E_RECOVERING", "E_HOST_IO", "E_BUSY", "E_CPU_QUOTA_UNCERTAIN", "E_CPU_QUOTA_UNAVAILABLE":
 			return true
 		}
 		return false

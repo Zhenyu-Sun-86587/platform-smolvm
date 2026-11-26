@@ -375,14 +375,14 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	}
 	native, hasNative := j.Runtime.(rt.NativeControl)
 	useNative := hasNative && !bindingRuntime(j.Binding).Legacy() && rt.NativePowerCapability(op.Kind) != ""
-	policyReplay := dispatched && op.Kind == "configure" && j.Intent.Stage == "apply_lifecycle_policy"
-	if dispatched && !policyReplay {
+	configReplay := dispatched && op.Kind == "configure" && (j.Intent.Stage == "apply_lifecycle_policy" || j.Intent.Stage == "managed_resource_cpu_limit")
+	if dispatched && !configReplay {
 		if useNative {
 			return j.reconcileNative(ctx, native)
 		}
 		return j.reconcile(ctx)
 	}
-	if !policyReplay {
+	if !configReplay {
 		if err = j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
 			return err
 		}

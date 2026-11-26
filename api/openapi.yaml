@@ -2919,7 +2919,7 @@ components:
         memory_mib: {type: integer, minimum: 1}
         storage_gib: {type: integer, minimum: 1}
         overlay_gib: {type: integer, minimum: 1}
-        cpu_limit_millicpus: {type: integer, minimum: 1}
+        cpu_limit_millicpus: {type: [integer, "null"], minimum: 1, description: "CPU bandwidth in millicpus. Set null to restore the allocated vCPU ceiling."}
       additionalProperties: false
     LifecyclePolicy:
       type: object

@@ -776,6 +776,48 @@ def connection_recovery_case(platform, source, machine_id, ref, probe):
     print("After SIGKILL, the replacement platform released only its old Guest connection. An independent lease survived and a late Worker admission stayed closed.", flush=True)
 
 
+def cpu_limit_case(platform, source, machine_id, ref, historical):
+    def quota(execution):
+        pid = platform.native(f"/instances/{execution['instance_id']}/inventory")["execution"]["pid"]
+        groups = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+        group, = [line.removeprefix("0::/") for line in groups if line.startswith("0::/")]
+        maximum, period = (Path("/sys/fs/cgroup") / group / "cpu.max").read_text().split()
+        return (None if maximum == "max" else int(maximum)), int(period)
+
+    original = quota(ref)
+    prior = platform.app(source)
+    request = {"resources": {"cpu_limit_millicpus": 250}}
+    accepted = platform.change(source, "quarter-cpu", request, prior, method="PATCH")
+    if historical:
+        def rejected():
+            op = platform.app("operations/" + accepted["operation_id"])
+            return op if op["state"] in ("succeeded", "failed", "recovery_required") else None
+
+        operation = wait_for(rejected)
+        assert operation["state"] == "failed" and operation["error"]["code"] == "CAPABILITY_UNSUPPORTED", operation
+        assert quota(ref) == original
+        print("The historical Worker refused the public CPU limit request and kept the kernel quota.", flush=True)
+        return
+
+    receipt = platform.complete(accepted)["result"]["cpu_limit"]
+    amount, period = quota(ref)
+    assert amount * 1000 == 250 * period and (amount, period) == (receipt["quota_usec"], receipt["period_usec"])
+    assert all(receipt[key] == value for key, value in ref.items())
+    assert platform.change(source, "quarter-cpu", request, prior, method="PATCH")["operation_id"] == accepted["operation_id"]
+    platform.complete(platform.change(source + "/hibernate", "quota-save", {}, platform.app(source)))
+    platform.restart()
+    platform.complete(platform.change(source + "/start", "quota-wake", {}, platform.app(source)))
+    _, new = platform.context(machine_id)
+    assert new["execution_epoch"] == ref["execution_epoch"] + 1 and new["incarnation_id"] != ref["incarnation_id"]
+    amount, period = quota(new)
+    assert amount * 1000 == 250 * period
+    restored = platform.complete(platform.change(source, "clear-quota", {"resources": {"cpu_limit_millicpus": None}},
+                                                  platform.app(source), method="PATCH"))["result"]["cpu_limit"]
+    amount, period = quota(new)
+    assert (amount, period) == original and restored["requested_millicpus"] is None, (original, restored)
+    print("Public CPU limit and replay matched the kernel quota. Exact restore kept 250 millicpus. Clearing restored the original allocated quota.", flush=True)
+
+
 def policy_case(platform, source, machine_id, execution):
     def change(path, method, key, body, revision, status=200, *, timeout=15):
         return platform.app(path, method, body, {"If-Control-Epoch": platform.epoch,
@@ -889,7 +931,9 @@ def test(args, root, stack, case):
     if case != "relay":
         helper = platform.guest(ref, ["/usr/bin/sha256sum", "/sbin/smolvm-identity-helper"]).split()[0]
         assert helper.decode() == digest(platform.bundle / "guest/identity-helper").split(":")[1]
-    if case == "protected-fork":
+    if case in ("cpu-limit", "cpu-limit-historical"):
+        cpu_limit_case(platform, source, machine_id, ref, case == "cpu-limit-historical")
+    elif case == "protected-fork":
         protected_fork_case(platform, source, ref, probe, seen)
     elif case == "connection-recovery":
         connection_recovery_case(platform, source, machine_id, ref, probe)
@@ -916,7 +960,7 @@ def main():
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
-                        "policy", "protected-fork", "connection-recovery"), action="append")
+                        "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

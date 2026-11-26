@@ -204,6 +204,11 @@ func (s *Server) settingsRoutes() {
 		if v.Name != nil && strings.TrimSpace(*v.Name) == "" {
 			return registry.ErrInvalid
 		}
+		if v.Resources != nil {
+			if _, err := v.Resources.cpuLimit(); err != nil {
+				return err
+			}
+		}
 		return s.accept(w, r, p, v, registry.AcceptRequest{Kind: "configure", MachineID: id, ExpectedGeneration: v.Generation, Heavy: v.Resources != nil})
 	})
 	s.Extra["configure"] = s.configure
@@ -217,13 +222,29 @@ type patchMachine struct {
 	Idle                   *lifecycle.IdlePolicy `json:"idle_policy,omitempty"`
 	Keep                   *bool                 `json:"keep_running,omitempty"`
 	Generation             int64                 `json:"expected_generation,omitempty"`
-	Resources              *struct {
-		CPU     uint8   `json:"cpu_count,omitempty"`
-		Memory  uint32  `json:"memory_mib,omitempty"`
-		Storage uint64  `json:"storage_gib,omitempty"`
-		Overlay uint64  `json:"overlay_gib,omitempty"`
-		Limit   *uint32 `json:"cpu_limit_millicpus,omitempty"`
-	} `json:"resources,omitempty"`
+	Resources              *machineResourcePatch `json:"resources,omitempty"`
+}
+
+type machineResourcePatch struct {
+	CPU     uint8           `json:"cpu_count,omitempty"`
+	Memory  uint32          `json:"memory_mib,omitempty"`
+	Storage uint64          `json:"storage_gib,omitempty"`
+	Overlay uint64          `json:"overlay_gib,omitempty"`
+	Limit   json.RawMessage `json:"cpu_limit_millicpus,omitempty"`
+}
+
+func (r machineResourcePatch) cpuLimit() (*uint32, error) {
+	var limit *uint32
+	if len(r.Limit) != 0 {
+		if err := json.Unmarshal(r.Limit, &limit); err != nil || limit != nil && *limit == 0 {
+			return nil, registry.ErrInvalid
+		}
+	}
+	return limit, nil
+}
+
+func (r machineResourcePatch) resizesMachine() bool {
+	return r.CPU > 0 || r.Memory > 0 || r.Storage > 0 || r.Overlay > 0
 }
 
 // Dispatching remains durable while the Worker is unavailable. The same
@@ -240,7 +261,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
 		return err
 	}
-	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) {
+	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) && j.Intent.Stage != "managed_resource_cpu_limit" {
 		if j.Intent.Stage != "apply_lifecycle_policy" {
 			if err := j.Stage(ctx, "apply_lifecycle_policy", ""); err != nil {
 				return err
@@ -264,12 +285,28 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 		if _, err = s.Engine.ApplyMachinePolicy(ctx, j.Binding, client); err != nil {
 			return policyDeliveryError(err)
 		}
-	} else if v.Policy != nil {
+	} else if v.Policy != nil && j.Intent.Stage != "managed_resource_cpu_limit" {
 		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "this binding has no Worker lifecycle controller"}
 	}
 	var obs *registry.Observation
 	status := "applied"
-	if r := v.Resources; r != nil {
+	result := map[string]any{"machine_id": j.Op.MachineID}
+	r := v.Resources
+	var limit *uint32
+	var err error
+	if r != nil {
+		if limit, err = r.cpuLimit(); err != nil {
+			return err
+		}
+	}
+	if r != nil && !r.resizesMachine() && len(r.Limit) != 0 && privateServiceWorker(j.Runtime) != "" {
+		receipt, err := managedCPULimit(ctx, j, limit)
+		if err != nil {
+			return policyDeliveryError(err)
+		}
+		result["cpu_limit"] = receipt
+		j.Written = true
+	} else if r != nil {
 		o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)
 		if err != nil {
 			return err
@@ -280,7 +317,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 		if (r.Storage > 0 && r.Storage < o.StorageGB) || (r.Overlay > 0 && r.Overlay < o.OverlayGB) {
 			return &lifecycle.Failure{Code: "INVALID_ARGUMENT", Message: "disk shrink is unsupported"}
 		}
-		if r.CPU > 0 || r.Memory > 0 || r.Storage > 0 || r.Overlay > 0 {
+		if r.resizesMachine() {
 			if o.State != "running" || !o.Identity.Complete() {
 				status = "requires_restart"
 			} else {
@@ -294,11 +331,11 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 				j.Written = true
 			}
 		}
-		if r.Limit != nil {
+		if len(r.Limit) != 0 {
 			if err = j.Stage(ctx, "cpu_limit", ""); err != nil {
 				return err
 			}
-			o, err = j.Runtime.SetCPULimit(ctx, j.Binding.RuntimeName, r.Limit)
+			o, err = j.Runtime.SetCPULimit(ctx, j.Binding.RuntimeName, limit)
 			if err != nil {
 				return err
 			}
@@ -307,7 +344,8 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 		x := lifecycle.Evidence(o)
 		obs = &x
 	}
-	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: obs, Result: lifecycle.JSON(map[string]string{"machine_id": j.Op.MachineID, "status": status}), Apply: func(ctx context.Context, tx *sql.Tx) error {
+	result["status"] = status
+	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Observation: obs, Result: lifecycle.JSON(result), Apply: func(ctx context.Context, tx *sql.Tx) error {
 		var idle, res any
 		if v.Idle != nil {
 			idle = string(lifecycle.JSON(v.Idle))
