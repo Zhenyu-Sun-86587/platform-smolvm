@@ -17,13 +17,8 @@ struct Page<Item: Decodable>: Decodable {
 
 struct Machine: Decodable {
     struct Capability: Decodable {
-        struct Constraints: Decodable {
-            let manageAllowed: Bool?
-        }
-
         let supported: Bool
         let status: String?
-        let constraints: Constraints?
     }
 
     let machineId: String
@@ -43,10 +38,8 @@ struct Machine: Decodable {
         operationInProgress ? "\(powerState.capitalized), operation in progress" : powerState.capitalized
     }
 
-    var canUseManagedSSH: Bool {
-        let capability = capabilities?["access.managed_ssh"]
-        return capability?.status == "supported" && capability?.supported == true &&
-            capability?.constraints?.manageAllowed == true
+    var terminalArguments: [String] {
+        ["ssh", "--", machineId]
     }
 
     var website: URL? {

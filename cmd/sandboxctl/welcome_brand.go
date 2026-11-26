@@ -106,8 +106,8 @@ func (c *client) showWelcome(ctx context.Context, input, output *os.File, skip b
 		if frame > 0 {
 			fmt.Fprintf(output, "\x1b[%dA", len(rows)+1)
 		}
-		for y, row := range rows {
-			fmt.Fprint(output, "\r", welcomeFrame(row, y, frame), "\x1b[K\r\n")
+		for _, row := range rows {
+			fmt.Fprint(output, "\r", welcomeFrame(row, frame), "\x1b[K\r\n")
 		}
 		fmt.Fprint(output, "\r", hint, "\x1b[K\r\n")
 
@@ -134,22 +134,21 @@ func (c *client) showWelcome(ctx context.Context, input, output *os.File, skip b
 	return err
 }
 
-func welcomeFrame(row string, y, frame int) string {
+func welcomeFrame(row string, frame int) string {
 	var rendered strings.Builder
-	shade := []rune(" ░▒▓")
 	cells := []rune(row)
+	width := len(cells) - 1
 	for x, cell := range cells {
-		if cell == ' ' {
+		// Resolve the center first, then move outward toward both edges.
+		distance := max(width-2*x, 2*x-width)
+		start := 10 * distance / max(1, width)
+		switch {
+		case cell == ' ' || frame >= start+3:
 			rendered.WriteRune(cell)
-			continue
-		}
-		// A left-to-right reveal with a small deterministic offset per cell.
-		start := x*7/max(1, len(cells)-1) + (x*17+y*31)%5
-		level := frame - start
-		if level >= len(shade) {
-			rendered.WriteRune(cell)
-		} else {
-			rendered.WriteRune(shade[max(0, level)])
+		case frame >= start:
+			rendered.WriteRune('·')
+		default:
+			rendered.WriteByte(' ')
 		}
 	}
 	return rendered.String()

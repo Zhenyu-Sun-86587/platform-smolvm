@@ -120,9 +120,7 @@ final class SandboxMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         if ["running", "standby", "hibernated"].contains(machine.powerState) {
-            let command = machine.canUseManagedSSH ? ["ssh"] : ["ssh", "--legacy"]
-            let title = machine.canUseManagedSSH ? "Open Terminal" : "Open Terminal with Enrolled Key"
-            submenu.addItem(actionItem(title, #selector(connect(_:)), value: command + ["--", machine.machineId]))
+            submenu.addItem(actionItem("Open Terminal", #selector(connect(_:)), value: machine.terminalArguments))
         }
         let website = actionItem("Open Website", #selector(openWebsite(_:)), value: machine.website,
                                  enabled: machine.website != nil)

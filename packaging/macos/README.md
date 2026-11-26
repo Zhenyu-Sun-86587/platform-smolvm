@@ -21,7 +21,7 @@ open ".build/macos/Sandbox Menu.app"
 
 Once Launch Services recognizes the app, `sandboxctl menubar` opens it. Quit the app before relaunching with another `--profile` or `--config-dir`. The bundle contains the matching `sandboxctl` helper. It reuses the selected CLI profile, including its origin and configured CA. **Sign In in Terminal** opens the same login flow.
 
-The menu lists reported workspace states and opens a template picker to create a workspace. Select a workspace for Terminal, its website, Console, and applicable power actions. Managed Terminal uses the scoped capability reported for the selected machine. The enrolled-key action uses the legacy published SSH service. **Open Website** opens the Platform's HTTPS machine URL in the default browser. The Platform uses the browser's Console session for private website access, so the browser may ask the user to sign in. The Terminal launcher passes the selected profile and machine ID. The helper loads the token from the profile.
+The menu lists reported workspace states and opens a template picker to create a workspace. Select a workspace for Terminal, its website, Console, and applicable power actions. **Open Terminal** runs `sandboxctl ssh` with the saved profile and machine ID. The CLI checks the current machine and lets the proxy submit the local Ed25519 public key for one managed connection. The private key and token stay in local CLI storage. **Open Website** opens the Platform's HTTPS machine URL in the default browser. The Platform uses the browser's Console session for private website access, so the browser may ask the user to sign in.
 
 The build produces an ad hoc signed development bundle on the current architecture. Set `SANDBOX_MENU_SIGN_IDENTITY` to a local Developer ID Application signing identity for distribution signing. The script verifies the nested CLI and app signatures with `codesign`. A distribution still needs its own notarization. Apple documents the [bundle layout](https://developer.apple.com/documentation/bundleresources/placing-content-in-a-bundle) and [distribution signing](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac).
 
@@ -36,7 +36,7 @@ The terminal welcome and menu icon both support an optional brand directory. Set
 | `terminal.txt` | A terminal wordmark mask with spaces and `#`, rendered as full blocks. A maximum of eight rows and 80 columns fits the banner. |
 | `menu-icon.png` | A transparent glyph for the macOS status item, rendered as a template image at 16 points. |
 
-The default text uses the existing Sandbox Platform name and the menu uses Apple's shipping-box symbol. The short left-to-right reveal uses 15 frames at 40 ms each with a per-cell offset. Its timing and shade progression were observed in Boxd's public installer. The Go animation is implemented here. [Official installer](https://boxd.sh/downloads/install.sh)
+The terminal displays the Sandbox Platform name with a center-out reveal. It runs for about 0.6 seconds, close to the welcome cadence observed in Boxd's public installer. The menu uses Apple's shipping-box symbol. [Official installer](https://boxd.sh/downloads/install.sh)
 
 | Reference | What it provided |
 | --- | --- |
@@ -46,4 +46,4 @@ The default text uses the existing Sandbox Platform name and the menu uses Apple
 | [Boxd public repositories](https://github.com/boxd-sh), [MIT SDK](https://github.com/boxd-sh/sdk/blob/main/LICENSE), and [self-host installer license](https://github.com/boxd-sh/self-host/blob/main/LICENSE) | The MIT SDK and Apache-2.0 installer target other Boxd interfaces. The CLI, menu app and brand assets were outside the public source trees reviewed. Boxd lists [separate binary terms](https://github.com/boxd-sh/self-host/blob/main/LICENSE-BINARIES.md). |
 | Local `docs/SMOLVM_PHASE2_POLISH_PACKAGE_2026-11-26.zip` | The backend CLI product report, captured command documentation, self-host licensing notes, and frontend reference materials. The archive contained console captures and CLI observations. The installer and menu recordings were sourced from the official references above. |
 
-The branch packages the brand inputs and independently implemented animation only. The official downloads, the extracted terminal mask, and their provenance are available for internal review in the workspace build evidence directory.
+The workspace build evidence directory holds the official downloads, extracted terminal mask, and provenance as research references. The local prototype uses the Sandbox Platform branding and supports replacement assets through the brand directory.

@@ -1,5 +1,10 @@
 # Sandbox Platform CLI
 
+Run bare `sandboxctl` in a terminal to open the interactive shell and its
+first-login prompt. Use `--no-animation` for a static welcome. The shell
+shares the commands and saved profiles described below. See the
+[terminal and macOS guide](../../packaging/macos/README.md) for details.
+
 Run `sandboxctl login --url https://PLATFORM --token-stdin` and send a
 Platform API token on stdin. The CLI can also read `SANDBOX_TOKEN`. Use
 `--ca-file` for a Platform CA missing from your system trust store. Use generated resource IDs in scripts
@@ -78,8 +83,9 @@ the saved profile key, or generates a temporary managed key when
 there is no matching profile. The direct command uses the published SSH
 service for non-root users or when the same machine's authenticated view
 confirms managed SSH is unsupported or comes from an older Platform.
-Pass `--legacy` to select the published service with an SSH agent, or `--identity FILE` to use a registered private key. An
-explicit token uses the explicit URL or the usual localhost default.
+Pass `--legacy` to select the published service with an SSH agent, or
+`--identity FILE` to use a registered private key. An explicit token uses
+the explicit URL or the usual localhost default.
 
 The SSH shortcut uses OpenSSH with `KnownHostsCommand` support. The host-key
 callback requires read access. Opening the managed tunnel requires manage

@@ -64,7 +64,7 @@ func TestBrandOverrideAcceptsOnlyStaticCellMasks(t *testing.T) {
 	if art := wordmark(dir, 40); !reflect.DeepEqual(art, []string{defaultWordmark}) {
 		t.Fatalf("invalid mask wordmark %q", art)
 	}
-	if welcomeFrame("████", 0, welcomeFrames-1) != "████" || welcomeFrame("████", 0, 0) == "████" {
+	if welcomeFrame("████", welcomeFrames-1) != "████" || welcomeFrame("█████", 3) != "  █  " {
 		t.Fatal("animation must resolve to the mask")
 	}
 }
