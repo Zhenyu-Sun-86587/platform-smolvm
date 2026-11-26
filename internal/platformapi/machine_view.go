@@ -190,7 +190,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 			v.Capabilities[rt.FullStateOperationCapability(kind)] = rt.LiveGrowthCaptureStatus()
 		}
 	}
-	v.managedSSH = s.managedSSHView(&v, boot.BootMode == rt.BootSystem && boot.ManagedSSH, spec.Network, verifiedSSHKey)
+	v.managedSSH = s.managedSSHView(&v, boot.BootMode == rt.BootSystem && boot.ManagedSSH, verifiedSSHKey)
 	return v, nil
 }
 

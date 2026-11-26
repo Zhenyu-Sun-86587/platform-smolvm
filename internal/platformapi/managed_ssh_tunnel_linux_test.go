@@ -79,7 +79,7 @@ func managedSSHTunnelToken(t *testing.T, s *Server, owner auth.Principal, label,
 	return token
 }
 
-func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing.T) {
+func TestManagedSSHTunnelRejectsInvalidAdmissionsBeforeAccess(t *testing.T) {
 	s, owner := managedSSHTunnelFixture(t)
 	manage := managedSSHTunnelToken(t, s, owner, "manage", auth.AccessManage)
 	tunnel := managedSSHTunnelToken(t, s, owner, "tunnel", auth.AccessTunnel)
@@ -89,6 +89,9 @@ func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing
 		r := httptest.NewRequest(http.MethodGet, path+query, nil)
 		if bearer != "" {
 			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if reason == "MANAGED_SSH_PROFILE_REQUIRED" {
+			r.Header.Set(managedSSHKeyHeader, testManagedPublicKey)
 		}
 		if upgrade {
 			r.Header.Set("Upgrade", "websocket")
@@ -103,7 +106,7 @@ func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing
 	call("?managed=1", "", true, http.StatusUnauthorized, "UNAUTHENTICATED")
 	call("?managed=1", tunnel, true, http.StatusForbidden, "PERMISSION_DENIED")
 	call("?managed=1&managed=0", manage, true, http.StatusBadRequest, "INVALID_ARGUMENT")
-	call("?managed=1", manage, true, http.StatusConflict, "MANAGED_SSH_PRIVATE_NETWORK_REQUIRED")
+	call("?managed=1", manage, true, http.StatusBadRequest, "INVALID_ARGUMENT")
 	call("", tunnel, false, http.StatusNotFound, "NOT_FOUND")
 
 	ctx := context.Background()
@@ -113,12 +116,12 @@ func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing
 	}
 	call("", tunnel, false, http.StatusBadRequest, "INVALID_ARGUMENT")
 	call("?managed=1", tunnel, true, http.StatusForbidden, "PERMISSION_DENIED")
-	call("?managed=1", manage, true, http.StatusConflict, "MANAGED_SSH_PRIVATE_NETWORK_REQUIRED")
+	call("?managed=1", manage, true, http.StatusBadRequest, "INVALID_ARGUMENT")
 	if _, err := s.DB.DB().ExecContext(ctx, "UPDATE services SET enabled=0,revision=2 WHERE id='published'"); err != nil {
 		t.Fatal(err)
 	}
 	call("", tunnel, false, http.StatusNotFound, "NOT_FOUND")
-	call("?managed=1", manage, true, http.StatusConflict, "MANAGED_SSH_PRIVATE_NETWORK_REQUIRED")
+	call("?managed=1", manage, true, http.StatusBadRequest, "INVALID_ARGUMENT")
 
 	// A non-managed profile fails even if an SSH service happens to be present.
 	if _, err := s.DB.DB().ExecContext(ctx, `UPDATE templates SET spec_json=json_remove(spec_json,'$.managed_ssh') WHERE id='system'`); err != nil {
@@ -164,5 +167,25 @@ func TestManagedSSHStreamRejectsChangedExecutionAndRevokedCredential(t *testing.
 	}
 	if err = s.checkManagedSSHExecution(ctx, p, newBinding, "key"); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("revoked credential survived tunnel reauthorization: %v", err)
+	}
+}
+
+const testManagedPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func TestManagedSSHAcceptsExactlyOnePlainCanonicalPublicKey(t *testing.T) {
+	for _, candidates := range [][]string{
+		nil,
+		{testManagedPublicKey, testManagedPublicKey},
+		{testManagedPublicKey + " comment"},
+		{"restrict " + testManagedPublicKey},
+		{testManagedPublicKey + "\n"},
+		{strings.Replace(testManagedPublicKey, "AAAA", "AA%!", 1)},
+		{testManagedPublicKey},
+	} {
+		_, err := managedSSHUserKey(http.Header{http.CanonicalHeaderKey(managedSSHKeyHeader): candidates})
+		want := len(candidates) == 1 && candidates[0] == testManagedPublicKey
+		if (err == nil) != want {
+			t.Fatalf("%q: %v", candidates, err)
+		}
 	}
 }
