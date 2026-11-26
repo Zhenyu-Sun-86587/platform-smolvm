@@ -3,7 +3,7 @@ import { Box, GitBranch, GitFork, Layers2 } from "lucide-react"
 import type { Machine } from "../../sdk/typescript/src/index"
 import { api, segment, useCollection } from "./api"
 import { bundleBound, Callout, fullStateBlock, label, machinePowerState, Section, State } from "./common"
-import { EmptyState } from "./ui"
+import { WorkspaceGuide } from "./features/machine/WorkspaceGuide"
 import { machineHref } from "./routes"
 import { Button } from "./daytona/button"
 import { copyDialog, forkBatchDialog } from "./workspace-actions"
@@ -117,6 +117,14 @@ export function Branches({
       </li>
     )
   }
+  if (graph && graph.edges.length === 0 && graph.errors.length === 0) {
+    return <WorkspaceGuide label="No forks" title="Branch this machine"
+      description="Create a machine from this execution. Parent and child can continue independently when the runtime supports that mode."
+      actions={<Button disabled={native ? !canCapture || Boolean(independent) : !canLive}
+        title={independent} onClick={() => copyDialog(machine, actions, true, native)}>Fork</Button>}
+      commands={["# Fork this machine into a new one", "sandboxctl machines fork " + machine.machine_id + " child-name" + (native ? " --require-independent" : ""),
+        "", "# Show parent and children", "sandboxctl machines dependencies " + machine.machine_id]} />
+  }
   return (
     <Section
       title="Forks"
@@ -141,9 +149,7 @@ export function Branches({
         <div className="tree-canvas">
           <ul className="branch-tree">{roots.map((id) => node(id, [], new Set()))}</ul>
         </div>
-      ) : graph && !graph.errors.length ? <EmptyState icon={<GitFork size={22} />} title="No branches yet"
-        description="Fork a running execution or create an independent branch when the runtime supports it." />
-        : !graph && <p className="empty" role="status">Loading branch tree…</p>}
+      ) : !graph && <p className="empty" role="status">Loading branch tree…</p>}
       {Boolean(graph?.edges.length) && <div className="tree-note">
         <GitBranch size={15} />
         Logical origin records ancestry. An active native storage dependency keeps the parent’s backing

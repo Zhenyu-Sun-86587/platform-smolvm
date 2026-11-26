@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { FolderClosed, Globe2, SquareTerminal } from "lucide-react"
-import { Modal, Skeleton } from "../../ui"
+import * as Dialog from "@radix-ui/react-dialog"
+import { Skeleton } from "../../ui"
 import styles from "./console.module.css"
 
 const apps = [
@@ -15,6 +16,7 @@ export function DesktopLauncher({ open, onOpenChange, scene }: {
   const [search, setSearch] = useState(scene === "40" ? "no-match" : "")
   const [highlight, setHighlight] = useState(0)
   const [starting, setStarting] = useState("")
+  const lastFocus = useRef<HTMLElement | null>(null)
   const loading = scene === "34"
   const matches = loading ? [] : apps.filter(app => app.name.toLowerCase().includes(search.toLowerCase().trim()))
 
@@ -27,8 +29,11 @@ export function DesktopLauncher({ open, onOpenChange, scene }: {
     return () => clearTimeout(timer)
   }, [starting, scene, onOpenChange])
 
-  return <Modal open={open} onOpenChange={onOpenChange} title="Launch an app" size="sm">
-    <div className={styles.launcher} onKeyDown={event => {
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Portal><Dialog.Overlay className={styles.launcherOverlay} />
+    <Dialog.Content className={styles.launcherModal} aria-describedby={undefined}
+      onOpenAutoFocus={() => { lastFocus.current = document.activeElement as HTMLElement | null }}
+      onCloseAutoFocus={event => { event.preventDefault(); lastFocus.current?.focus() }} onKeyDown={event => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
         event.preventDefault()
         event.stopPropagation()
@@ -41,16 +46,17 @@ export function DesktopLauncher({ open, onOpenChange, scene }: {
       else return
       event.preventDefault()
     }}>
-      <input aria-label="Find an app" placeholder="Find an app…" value={search}
+      <Dialog.Title className="sr-only">Launch an app</Dialog.Title>
+      <input aria-label="Find an app" placeholder="Launch an app…" value={search}
         onChange={event => { setSearch(event.target.value); setHighlight(0) }} />
       {loading ? <div className={styles.appGrid} role="status" aria-label="Loading apps">
-        {apps.map(app => <Skeleton key={app.name} className={styles.appSkeleton}/>)}
+        {[0, 1, 2, 3].map(index => <div className={styles.appPlaceholder} key={index}><Skeleton /><Skeleton /></div>)}
       </div> : matches.length ? <div className={styles.appGrid}>{matches.map(({ name, icon: Icon }, index) =>
         <button type="button" key={name} className={styles.appTile} data-highlighted={index === highlight} disabled={Boolean(starting)}
           onMouseEnter={() => setHighlight(index)} onFocus={() => setHighlight(index)} onClick={() => setStarting(name)}>
-          <Icon size={20}/><span>{starting === name ? "Starting…" : name}</span>
+          <span className={styles.appIcon}><Icon size={20}/></span><span>{starting === name ? "Starting…" : name}</span>
         </button>)}</div> : <p role="status">No matching apps.</p>}
       {scene === "launcher-failed" && !starting && <p role="alert">The guest did not start the requested app.</p>}
-    </div>
-  </Modal>
+    </Dialog.Content></Dialog.Portal>
+  </Dialog.Root>
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ArrowLeft, Grid2X2, LoaderCircle, Monitor } from "lucide-react"
+import { ArrowLeft, Grid2X2, Monitor } from "lucide-react"
 import type { DesktopSession, Machine, Mutation, Service } from "../../sdk/typescript/src/index"
 import type RFB from "@novnc/novnc"
 import { Callout, machinePowerState, str, time } from "./common"
@@ -17,7 +17,7 @@ function RemoteDesktop({ machine, revision, embedded = false }: { machine: Machi
   const base = "machines/" + segment(machine.machine_id)
   const services = useCollection<Service>(base + "/services", revision)
   const sessions = useCollection<DesktopSession>(base + "/desktop-sessions", revision)
-  const targets = services.items?.filter(item => item.protocol === "vnc" && item.enabled !== false) ?? []
+  const targets = services.items?.filter(item => item.protocol === "vnc" && item.enabled !== false && !item.public_host && !item.public_port) ?? []
   const [selection, setSelection] = useState("")
   const target = targets.find(item => item.service_id === selection) ?? targets[0]
   const [session, setSession] = useState<DesktopSession>()
@@ -131,7 +131,13 @@ function RemoteDesktop({ machine, revision, embedded = false }: { machine: Machi
         viewer.current = rfb
         rfb.scaleViewport = true
         rfb.addEventListener("connect", () => { if (!cancel.signal.aborted) setState("Connected") })
-        rfb.addEventListener("disconnect", () => { if (!cancel.signal.aborted) setState("Disconnected") })
+        rfb.addEventListener("disconnect", event => {
+          if (cancel.signal.aborted) return
+          setState("Disconnected")
+          if (!(event as CustomEvent<{ clean?: boolean }>).detail?.clean) {
+            setError((previous: unknown) => previous ?? new Error("The desktop connection closed before it could continue."))
+          }
+        })
         rfb.addEventListener("securityfailure", () => {
           if (!cancel.signal.aborted) setError(new Error("The VNC server rejected authentication."))
         })
@@ -155,7 +161,7 @@ function RemoteDesktop({ machine, revision, embedded = false }: { machine: Machi
   const connecting = state === "Connecting"
   const connected = state === "Connected"
   return <div className={embedded ? styles.desktopEmbed : styles.console}>
-    <div className={styles.toolbar}>
+    <div className={styles.toolbar} data-visible={!connected && !connecting}>
       <DesktopHeading machine={machine} embedded={embedded}/>
       <div className={styles.toolbarActions}>
         <span role="status">{state}</span>
@@ -164,9 +170,11 @@ function RemoteDesktop({ machine, revision, embedded = false }: { machine: Machi
     </div>
     <div className={styles.surface}>
       <div ref={surface} className={styles.desktopView} aria-label="Remote desktop" />
-      {(!connected || fields.length > 0 || error != null) && <div className={styles.overlay}><div className={styles.statusCard}>
+      {connecting && fields.length === 0 && error == null && <div className={styles.overlay}>
+        <p className={styles.desktopStatus}>Starting desktop… (a sleeping machine may take a few seconds to wake)</p>
+      </div>}
+      {(!connecting && !connected || fields.length > 0 || error != null) && <div className={styles.overlay}><div className={styles.statusCard}>
         <Callout error={error || services.error || sessions.error} />
-        {connecting && fields.length === 0 && <LoaderCircle size={24} className={styles.spinner}/>}
         <h2>{connecting ? "Connecting to desktop" : connected ? "Desktop connection" : "Connect to desktop"}</h2>
         <p>{services.items ? target ? `Machine ${machinePowerState(machine)}` : "No private VNC service is configured."
           : services.error ? "Could not load the machine services." : "Checking published services…"}</p>
@@ -219,18 +227,17 @@ function DesktopFixture({ machine, scene }: { machine: Machine; scene: string })
   }, [open, disconnected])
 
   return <div className={styles.console}>
-    <div className={styles.toolbar}>
+    <div className={styles.toolbar} data-visible={disconnected}>
       <DesktopHeading machine={machine} />
-      <div className={styles.toolbarActions}><span role="status">{loading ? "Connecting" : disconnected ? "Disconnected" : "Connected"}</span>
-        <Button size="sm" onClick={() => setOpen(true)} disabled={disconnected}><Grid2X2 size={15} /> Launch</Button>
-      </div>
+      <div className={styles.toolbarActions}><span role="status">{loading ? "Connecting" : disconnected ? "Disconnected" : "Connected"}</span></div>
     </div>
-    <div className={`${styles.surface} ${styles.officeFixture}`}>
-      {(loading || disconnected) && <div className={styles.overlay}><div className={styles.statusCard}>
-        {loading && <LoaderCircle size={24} className={styles.spinner}/>}
-        <h2>{loading ? "Connecting to desktop" : "Desktop disconnected"}</h2>
-        <p>{loading ? "Waiting for the guest display." : "The guest display connection has ended."}</p>
-      </div></div>}
+    <div className={styles.launchStrip}>
+      <button type="button" onClick={() => setOpen(true)} disabled={disconnected}><Grid2X2 size={14} /> Launch <kbd>⌘B</kbd></button>
+    </div>
+    <div className={`${styles.surface} ${styles.officeFixture}`} data-loading={loading}>
+      {(loading || disconnected) && <div className={styles.overlay}><p className={styles.desktopStatus}>
+        {loading ? "Starting desktop… (a sleeping machine may take a few seconds to wake)" : "The guest display connection has ended."}
+      </p></div>}
     </div>
     <DesktopLauncher open={open} onOpenChange={setOpen} scene={scene} />
   </div>
