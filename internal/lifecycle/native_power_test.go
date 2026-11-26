@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
@@ -188,6 +189,12 @@ func TestNativePowerReconcilesOriginalWorkerOperationAfterRestart(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO tasks
+		(id,machine_id,binding_generation,task_namespace,guest_task_id,start_token,spec_hash,spec_json,state,observed_at,result_json)
+		VALUES ('task_active','m_native',1,'ns_native','guest_active','key-active','digest','{}','running',1,'{"state":"running","guest_task_id":"guest_active"}'),
+		       ('task_done','m_native',1,'ns_native','guest_done','key-done','digest','{}','succeeded',1,'{"state":"succeeded","reason":"natural_exit"}')`); err != nil {
+		t.Fatal(err)
+	}
 	stop.ExpectedRevision = machine.Revision
 	exit, _, err := db.Accept(ctx, stop)
 	if err != nil {
@@ -215,5 +222,20 @@ func TestNativePowerReconcilesOriginalWorkerOperationAfterRestart(t *testing.T) 
 		WorkerExecution(*machine.CurrentBinding).IncarnationID != "" ||
 		machine.CurrentBinding.ExecutionEpoch != execution.ExecutionEpoch {
 		t.Fatal(machine, err)
+	}
+	var observed int64
+	var state, reason, observedJSON, guestTask string
+	if err := db.ReadDB().QueryRowContext(ctx, `SELECT observed_at,json_extract(result_json,'$.state'),json_extract(result_json,'$.reason'),
+		json_extract(result_json,'$.observed_at'),json_extract(result_json,'$.guest_task_id') FROM tasks WHERE id='task_active'`).
+		Scan(&observed, &state, &reason, &observedJSON, &guestTask); err != nil {
+		t.Fatal(err)
+	}
+	when, err := time.Parse(time.RFC3339Nano, observedJSON)
+	if err != nil || state != "interrupted" || reason != "execution_stopped_after_worker_fence" || when.UnixMilli() != observed || guestTask != "guest_active" {
+		t.Fatal(state, reason, observedJSON, observed, guestTask, err)
+	}
+	if err := db.ReadDB().QueryRowContext(ctx, `SELECT observed_at,json_extract(result_json,'$.state'),json_extract(result_json,'$.reason')
+		FROM tasks WHERE id='task_done'`).Scan(&observed, &state, &reason); err != nil || observed != 1 || state != "succeeded" || reason != "natural_exit" {
+		t.Fatal(observed, state, reason, err)
 	}
 }

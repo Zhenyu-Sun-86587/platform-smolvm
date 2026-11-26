@@ -33,13 +33,16 @@ func (j *Job) confirmNativeStop(ctx context.Context, receipt rt.OperationReceipt
 		Observation: &observation, Effect: registry.EffectApplied, SourceDisposition: registry.SourceExited, DesiredPower: "stopped",
 		Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "execution_epoch": source.ExecutionEpoch}),
 		Apply: func(ctx context.Context, tx *sql.Tx) error {
-			now := time.Now().UnixMilli()
-			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state='interrupted',observed_at=?
-				WHERE task_namespace=? AND state NOT IN ('succeeded','failed','cancelled','interrupted')`, now, j.Binding.TaskNamespace); err != nil {
+			now := time.Now().UTC()
+			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state='interrupted',observed_at=?,result_json=
+				json_set(result_json,'$.state','interrupted','$.reason','execution_stopped_after_worker_fence','$.observed_at',?)
+				WHERE machine_id=? AND binding_generation=? AND task_namespace=?
+				AND state NOT IN ('succeeded','failed','cancelled','interrupted')`,
+				now.UnixMilli(), now.Format(time.RFC3339Nano), j.Op.MachineID, j.Binding.Generation, j.Binding.TaskNamespace); err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE exec_sessions SET state='lost',last_observed_at=? WHERE binding_id=?
-				AND state NOT IN ('failed','exited','done','lost')`, now, j.Binding.ID); err != nil {
+				AND state NOT IN ('failed','exited','done','lost')`, now.UnixMilli(), j.Binding.ID); err != nil {
 				return err
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE leases SET state='released',revision=revision+1,release_reason='execution stopped'
