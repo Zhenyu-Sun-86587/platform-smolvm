@@ -362,7 +362,7 @@ def hibernate_case(platform, source, ref, probe, seen_cids):
     print("System hibernate fenced the old VMM and restored the Agent on a new CID.")
 
 
-def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
+def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, boundaries=False):
     serial = 0
     port = 45713
 
@@ -439,6 +439,91 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
                 with suppress(RuntimeError, OSError):
                     diagnostics.append(platform.guest(guest, ["/bin/sh", "-c", "ip -4 addr; ip -4 route; cat /proc/net/tcp"]))
             raise AssertionError((answer, diagnostics))
+
+    def hibernate_boundary_case():
+        machine, view, ref, endpoint = target("hibernate-cut")
+        address = endpoint["private_ipv4"]
+        rule_path = f"{machine}/network/wake-rules/{source_id}/tcp/{port}"
+        policy(machine, ref, True, 0)
+        assert update_rule(rule_path, "allow-hibernate-cut-peer", True, 0)["source_current"]
+        db_path = f"file:{platform.root}/catalog/catalog.sqlite?mode=ro"
+
+        def observe(sql, *params):
+            with sqlite3.connect(db_path, uri=True) as db:
+                return db.execute(sql, params).fetchone()
+
+        def active(instance):
+            return observe("""SELECT o.operation_id,b.original,b.stage,p.phase
+                FROM instance_bindings i JOIN operations o ON o.operation_id=i.active_operation_id
+                JOIN managed_fork_batches b USING(operation_id) LEFT JOIN statepoints p USING(capture_id)
+                WHERE i.route_id='deep' AND i.instance_id=? AND o.kind='hibernate' AND o.phase='NEW'""", instance)
+
+        def current_wake():
+            return (platform.app(rule_path)["last_wake"] or {}).get("operation_id")
+
+        def allowed_again(instance):
+            row = observe("SELECT next_request_at FROM private_packet_wake_limits WHERE instance_id=?", instance)
+            return row is None or row[0] <= time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+
+        def arrange(original, label):
+            previous = get_binding(view)
+            if current_wake():
+                # Retire late SYNs from the preceding connection before starting a new cut.
+                time.sleep(3.2)
+            wait_for(lambda: allowed_again(previous["instance_id"]), timeout=9)
+            if original == "STANDBY":
+                platform.complete(platform.change(machine + "/standby", "park-" + label, {}, platform.app(machine)))
+                assert status(previous) == "STANDBY"
+            accepted = platform.change(machine + "/hibernate", "hibernate-" + label, {}, platform.app(machine))
+            operation_id, initial, stage, point = wait_for(lambda: active(previous["instance_id"]), timeout=30)
+            assert initial == original and point not in ("stop_committed", "hibernated"), (initial, stage, point)
+            return previous, accepted, operation_id
+
+        for original in ("RUNNING", "STANDBY"):
+            old_wake = current_wake()
+            previous, accepted, native_op = arrange(original, "before-" + original.lower())
+            expect_tcp(address, previous, limit=33)
+
+            def aborted():
+                receipt = platform.native(f"/operations/{native_op}")
+                assert receipt["phase"] != "COMPLETED", receipt
+                if receipt["phase"] == "ABORTED":
+                    return receipt
+
+            wait_for(aborted, timeout=45)
+            wait_for(lambda: (op := current_wake()) and op != old_wake and authorized(rule_path, previous["execution_epoch"]), timeout=12)
+            assert get_binding(view)["incarnation_id"] == previous["incarnation_id"]
+            assert status(previous) == "RUNNING"
+            wait_for(lambda: platform.app("operations/" + accepted["operation_id"])["state"] in ("failed", "cancelled"), timeout=30)
+            print(f"An authorized private SYN before STOP_COMMIT aborted Hibernate from {original} and preserved its epoch.", flush=True)
+
+        for original in ("RUNNING", "STANDBY"):
+            old_wake = current_wake()
+            previous, accepted, native_op = arrange(original, "after-" + original.lower())
+            cursor = max((event["seq"] for event in call("QueryLifecycleEvents", previous, {"after": 0})["events"]), default=0)
+
+            def committed():
+                phase = observe("""SELECT p.phase FROM managed_fork_batches b
+                    JOIN statepoints p USING(capture_id) WHERE b.operation_id=?""", native_op)
+                return phase and phase[0] in ("stop_committed", "hibernated")
+
+            wait_for(committed, timeout=90)
+            with ThreadPoolExecutor(max_workers=2) as clients:
+                answers = list(clients.map(lambda _: send(address, limit=38), range(2)))
+            assert answers == [b"private wake\n", b"private wake\n"], answers
+            platform.complete(accepted)
+            successor = get_binding(view)
+            assert successor["execution_epoch"] == previous["execution_epoch"] + 1
+            wait_for(lambda: (op := current_wake()) and op != old_wake and authorized(rule_path, successor["execution_epoch"]), timeout=12)
+            receipt = platform.native(f"/operations/{current_wake()}")
+            assert receipt["statepoint"]["stage"] == "released", receipt
+            events = call("QueryLifecycleEvents", successor, {"after": cursor})["events"]
+            assert {event["operation_id"] for event in events if event["origin"] == "wake"} == {current_wake()}, events
+            print(f"Two private SYNs after {original} STOP_COMMIT shared one exact restore at the next epoch.", flush=True)
+
+    if boundaries:
+        hibernate_boundary_case()
+        return
 
     machine, view, ref, endpoint = target("standby")
     address = endpoint["private_ipv4"]
@@ -745,7 +830,7 @@ def test(args, root, stack, case):
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
     )
     if packet_case:
-        intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case == "packet-native" else "native")
+        intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case.endswith("-native") else "native")
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
     created = platform.change("machines", "create", intent)
     platform.complete(created)
@@ -763,7 +848,8 @@ def test(args, root, stack, case):
         source_file = Path(__file__).resolve().parents[1] / "fixtures/vsock-probe.c"
         subprocess.run([args.cc, "-static", "-Os", "-s", "-o", binary, source_file], check=True)
     if packet_case:
-        packet_wake_case(platform, machine_id, ref, binary, "native" if case == "packet-native" else "fixed_internal")
+        packet_wake_case(platform, machine_id, ref, binary, "native" if case.endswith("-native") else "fixed_internal",
+                         boundaries=case.startswith("packet-cut-"))
         return
     probe = platform.place_probe(ref, binary)
     seen = {int(platform.guest(ref, [probe, "--cid"]))}
@@ -797,7 +883,8 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork", "connection-recovery"), action="append")
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed",
+                        "policy", "protected-fork", "connection-recovery"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
@@ -822,6 +909,14 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
+        if selection[0].startswith("packet-cut-"):
+            slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
+            subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                            "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
+                            slice_name, "fail", "1", "MemoryAccounting", "b", "true", "0"],
+                           check=True, stdout=subprocess.DEVNULL)
+            stack.callback(subprocess.run, ["systemctl", "stop", slice_name], check=False)
+            os.environ["SMOLVM_WORKER_SLICE_NAME"] = slice_name
         try:
             test(args, root, stack, selection[0])
         except BaseException:
