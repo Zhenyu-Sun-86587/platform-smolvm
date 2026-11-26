@@ -259,6 +259,7 @@ func (c *client) machines() *cobra.Command {
 		}
 		group.AddCommand(power)
 	}
+	group.AddCommand(c.guardedPower()...)
 	for _, act := range []string{"standby", "hibernate"} {
 		var allow bool
 		power := sub(act+" MACHINE", "Apply a verified full-state machine action", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -275,29 +276,10 @@ func (c *client) machines() *cobra.Command {
 		power.Flags().BoolVar(&allow, "allow-active-tasks", false, "Permit the action with active tasks")
 		group.AddCommand(power)
 	}
-	for _, mode := range []string{"fork", "clone"} {
-		mode := mode
-		var independent bool
-		child := sub(mode+" MACHINE CHILD_NAME", "Create a child machine", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-			m, err := c.machine(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			body := map[string]any{"child_name": args[1], "expected_generation": m.Generation}
-			if mode == "clone" {
-				body["copy_policy"] = "managed_clean"
-			}
-			if independent {
-				body["require_independent"] = true
-			}
-			return c.mutation(cmd, "POST", res("machines", m.ID)+"/"+mode+"s", body, m.Revision)
-		})
-		if mode == "fork" {
-			child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
-		}
-		group.AddCommand(child)
+	for _, name := range []string{"fork", "clone", "live-fork"} {
+		group.AddCommand(c.machineFork(name))
 	}
-	var admission string
+	var admission, volumePolicy string
 	batch := sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
@@ -311,13 +293,53 @@ func (c *client) machines() *cobra.Command {
 			"children": children, "expected_generation": m.Generation, "require_independent": true,
 		}
 		if admission != "" {
+			if admission != "all_or_reject" && admission != "best_effort" {
+				return errors.New("--admission must be all_or_reject or best_effort")
+			}
 			body["admission"] = admission
+		}
+		if volumePolicy != "" {
+			if volumePolicy != "clone" {
+				return errors.New("--volume-policy must be clone")
+			}
+			body["volume_policy"] = map[string]string{"default": volumePolicy}
 		}
 		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", body, m.Revision)
 	})
-	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject or best_effort)")
+	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject by default, or best_effort)")
+	batch.Flags().StringVar(&volumePolicy, "volume-policy", "", "Explicit default volume policy (clone)")
 	group.AddCommand(batch)
 	return group
+}
+
+func (c *client) machineFork(name string) *cobra.Command {
+	independent := name == "live-fork"
+	suffix := "/forks"
+	if name == "clone" {
+		suffix = "/clones"
+	}
+	short := "Create a child machine through the compatibility path"
+	if independent {
+		short = "Create a native full-state child with verified resource independence"
+	}
+	child := sub(name+" MACHINE CHILD_NAME", short, cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"child_name": args[1], "expected_generation": m.Generation}
+		if name == "clone" {
+			body["copy_policy"] = "managed_clean"
+		}
+		if independent {
+			body["require_independent"] = true
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+suffix, body, m.Revision)
+	})
+	if name == "fork" {
+		child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
+	}
+	return child
 }
 
 func commandArgs(args []string, cwd, user string) map[string]any {
@@ -522,6 +544,7 @@ func (c *client) snapshots() *cobra.Command {
 	rollback.Flags().StringVar(&oldState, "old-state-policy", "export_then_delete_on_paused", "Old state policy")
 	rollback.Flags().StringVar(&rollbackVolumes, "volume-restore-policy", "", "VM volume policy: exact or clone_conflicts")
 	group.AddCommand(capture, verify, restore, rollback, c.list("restores", "restores", false))
+	group.AddCommand(c.vmSnapshotCommands()...)
 	group.AddCommand(sub("export SNAPSHOT OUTPUT", "Download a snapshot archive", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 		return c.download(cmd, res("snapshots", args[0])+"/export", args[1])
 	}))
