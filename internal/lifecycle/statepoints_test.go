@@ -159,6 +159,10 @@ func TestCheckpointPersistsConfigurationFromDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	source, err := db.GetMachine(ctx, op.MachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	job := &Job{Engine: engine, Op: op, Binding: binding}
 	dispatch, err := job.prepareStatePoint(ctx, nil, rt.VMSnapshot)
 	if err != nil {
@@ -187,7 +191,7 @@ func TestCheckpointPersistsConfigurationFromDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := snapshots.CapturedConfiguration(item)
-	if config == nil || config.SourceMachineRevision != 5 || string(config.Spec) != `{"template_id":"t1","boot_mode":"system","resources":{"cpu_count":1,"memory_mib":512}}` {
+	if config == nil || config.SourceMachineRevision != source.Revision || string(config.Spec) != `{"template_id":"t1","boot_mode":"system","resources":{"cpu_count":1,"memory_mib":512}}` {
 		t.Fatalf("wrong capture config: %+v", config)
 	}
 }
