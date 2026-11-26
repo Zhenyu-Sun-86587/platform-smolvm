@@ -621,6 +621,7 @@ export declare class Client {
     getBackup(id: string, signal?: AbortSignal): Promise<BackupRun>;
     runBackup(policy: string, options?: WriteOptions): Promise<BackupRun>;
     retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
+    cancelOperation(id: string, options?: WriteOptions): Promise<Operation>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     listDesktopSessions(id: string, signal?: AbortSignal): AsyncGenerator<DesktopSession, any, any>;
     createDesktopSession(id: string, serviceId: string, ttlSeconds?: number, options?: MachineWriteOptions): Promise<DesktopSession>;
