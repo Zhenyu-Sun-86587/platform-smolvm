@@ -3,6 +3,7 @@ package nodeclient
 import (
 	"context"
 	"io"
+	"slices"
 
 	"sandbox-platform/internal/nodeproto"
 	rt "sandbox-platform/internal/runtime"
@@ -41,6 +42,15 @@ func (a *Adapter) routeInfo() nodeproto.RouteInfo {
 func (a *Adapter) NativeStopContract() bool { return a.routeInfo().NativeStop }
 
 func (a *Adapter) NativeStandbyContract() bool { return a.routeInfo().NativeStandby }
+
+func (a *Adapter) LifecyclePolicyContract() bool { return a.routeInfo().NativeStop }
+
+func (a *Adapter) Admit(action string) error {
+	if slices.Contains(a.routeInfo().AdmittedActions, action) {
+		return nil
+	}
+	return rt.ErrUnsupported
+}
 
 func (a *Adapter) Health(ctx context.Context) (rt.Health, error) {
 	return call[nodeproto.Empty, rt.Health](ctx, a, nodeproto.HealthPath, nodeproto.Empty{})

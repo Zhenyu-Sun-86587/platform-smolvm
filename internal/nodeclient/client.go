@@ -75,7 +75,7 @@ func New(config Config) (*Client, error) {
 		}
 	}
 	u.Path = ""
-	return &Client{endpoint: u.String(), authority: config.Authority, control: newHTTPClient(nodeproto.ControlSlots + nodeproto.GuestSlots),
+	return &Client{endpoint: u.String(), authority: config.Authority, control: newHTTPClient(nodeproto.ControlSlots + nodeproto.GuestSlots + nodeproto.StorageSlots),
 		stream: newHTTPClient(nodeproto.StreamSlots), authorize: config.Authorize, routeInfo: make(map[nodeproto.Route]nodeproto.RouteInfo)}, nil
 }
 
@@ -128,7 +128,7 @@ func call[In, Out any](ctx context.Context, a *Adapter, path string, in In) (Out
 func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route, path string, in In) (out Out, err error) {
 	timeout := 20 * time.Second
 	switch path {
-	case nodeproto.GuestPingPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath:
+	case nodeproto.GuestPingPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
 		timeout = 135 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -175,7 +175,7 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 func transportError(path string) error {
 	switch path {
 	case nodeproto.SubmitPowerPath, nodeproto.SubmitLaunchPath, nodeproto.SubmitForkPath, nodeproto.SubmitStatePointPath,
-		nodeproto.RetryForkPath, nodeproto.CancelForkPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath:
+		nodeproto.RetryForkPath, nodeproto.CancelForkPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
 		return &nodeproto.Failure{Code: nodeproto.CodeUnknown}
 	default:
 		return &nodeproto.Failure{Code: nodeproto.CodeUnavailable}

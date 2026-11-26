@@ -39,6 +39,7 @@ type Server struct {
 	bootID    string
 	control   chan struct{}
 	guest     chan struct{}
+	storage   chan struct{}
 	streams   chan struct{}
 	streamMu  sync.Mutex
 	perVM     map[string]int
@@ -86,7 +87,7 @@ func New(authority nodeproto.Authority, routes map[nodeproto.Route]Route, journa
 	return &Server{
 		authority: authority, routes: copyRoutes, journal: journal, session: hex.EncodeToString(id[:]), bootID: bootID,
 		control: make(chan struct{}, nodeproto.ControlSlots), guest: make(chan struct{}, nodeproto.GuestSlots),
-		streams: make(chan struct{}, nodeproto.StreamSlots), perVM: make(map[string]int),
+		storage: make(chan struct{}, nodeproto.StorageSlots), streams: make(chan struct{}, nodeproto.StreamSlots), perVM: make(map[string]int),
 	}, nil
 }
 
@@ -124,6 +125,7 @@ func (s *Server) Handler(controllerPin string) http.Handler {
 	s.registerWorkerRPC(mux)
 	s.registerBackups(mux)
 	s.registerRuntimeRPC(mux)
+	s.registerVolumeRPC(mux)
 	s.registerStreams(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 ||
@@ -145,6 +147,13 @@ func (s *Server) handshake() nodeproto.Handshake {
 		}
 		if a, ok := route.Adapter.(interface{ NativeStandbyContract() bool }); ok {
 			info.NativeStandby = a.NativeStandbyContract()
+		}
+		if a, ok := route.Adapter.(interface{ Admit(string) error }); ok {
+			for _, action := range []string{"configure", "delete", "service_create", "service_delete", "service_update", "task_cancel", "task_start", rt.VMSnapshotDelete} {
+				if a.Admit(action) == nil {
+					info.AdmittedActions = append(info.AdmittedActions, action)
+				}
+			}
 		}
 		routes = append(routes, info)
 	}

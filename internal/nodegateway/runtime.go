@@ -16,6 +16,7 @@ import (
 
 	"sandbox-platform/internal/nodeproto"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/smolvm"
 )
 
 func require[T any](route Route) (T, error) {
@@ -157,7 +158,8 @@ func (s *Server) registerMutations(mux *http.ServeMux) {
 		}, in.Expected.ExecutionEpoch == 0, true)
 	})
 	scopedRPC(s, mux, nodeproto.SubmitStatePointPath, func(ctx context.Context, scope nodeproto.Route, route Route, in rt.StatePointSubmission) (rt.OperationReceipt, error) {
-		if !validBinding(in.Expected) || !rt.ManagedStatePoint(in.Kind) || !nodeproto.ValidID(in.Parameters.CaptureID) {
+		if !validBinding(in.Expected) || !rt.ManagedStatePoint(in.Kind) || !nodeproto.ValidID(in.Parameters.CaptureID) ||
+			(in.Kind == rt.VMRestore) != (in.Expected.IncarnationID == nil) {
 			return rt.OperationReceipt{}, rt.ErrInvalid
 		}
 		a, err := require[rt.StatePointControl](route)
@@ -170,8 +172,16 @@ func (s *Server) registerMutations(mux *http.ServeMux) {
 		}, false, in.Kind == rt.VMRestore || in.Kind == rt.VMRollback)
 	})
 	scopedRPC(s, mux, nodeproto.SubmitForkPath, func(ctx context.Context, scope nodeproto.Route, route Route, in rt.ForkSubmission) (rt.OperationReceipt, error) {
-		if !nodeproto.ValidExecution(in.Expected) || !rt.IsNativeFork(in.Kind) {
+		children := in.Parameters.Children
+		admission := rt.ForkAdmission(in.Parameters.Admission)
+		if !nodeproto.ValidExecution(in.Expected) || !rt.IsNativeFork(in.Kind) || len(children) == 0 || len(children) > rt.MaxForkChildren ||
+			(in.Kind == rt.IndependentFork && len(children) != 1) || (admission != rt.ForkAllOrReject && admission != rt.ForkBestEffort) {
 			return rt.OperationReceipt{}, rt.ErrInvalid
+		}
+		for _, child := range children {
+			if err := smolvm.ValidateName(child); err != nil {
+				return rt.OperationReceipt{}, err
+			}
 		}
 		a, err := require[rt.NativeForkControl](route)
 		if err != nil {
@@ -205,7 +215,7 @@ func validBinding(in rt.LaunchBinding) bool {
 
 func validateLaunch(route Route, in rt.LaunchSubmission) error {
 	p := in.Parameters
-	if !validBinding(in.Expected) || in.Expected.IncarnationID != nil || in.Kind != rt.Launch || !nodeproto.ValidID(p.Name) ||
+	if !validBinding(in.Expected) || in.Expected.IncarnationID != nil || in.Kind != rt.Launch || smolvm.ValidateName(p.Name) != nil ||
 		p.BootProfile != rt.SystemBootProfile || p.Init != "/sbin/init" || p.CPUs == 0 || p.MemoryMiB == 0 || len(p.Disks) == 0 {
 		return rt.ErrInvalid
 	}
@@ -358,7 +368,23 @@ func (s *Server) queryOperation(ctx context.Context, scope nodeproto.Route, rout
 	if retained && entry.Scope.Route != scope {
 		return rt.OperationReceipt{}, &nodeproto.Failure{Code: nodeproto.CodeRoute}
 	}
+	var volumeUncertain bool
+	if !retained {
+		volume, err := lookupVolume(ctx, s.journal.db, id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return rt.OperationReceipt{}, err
+		}
+		if err == nil {
+			if volume.Scope != scope {
+				return rt.OperationReceipt{}, &nodeproto.Failure{Code: nodeproto.CodeRoute}
+			}
+			volumeUncertain = volume.Receipt == nil && volume.Refusal == ""
+		}
+	}
 	receipt, err := a.QueryOperation(ctx, id)
+	if volumeUncertain {
+		return rt.OperationReceipt{}, uncertain()
+	}
 	if retained {
 		if entry.Refusal != "" && nativeNotFound(err) {
 			return rt.OperationReceipt{}, &nodeproto.Failure{Code: nodeproto.CodeNotFound}

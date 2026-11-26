@@ -27,6 +27,24 @@ func workerExecution(ref rt.ExecutionRef) workerclient.Execution {
 	return workerclient.Execution{InstanceID: ref.InstanceID, IncarnationID: ref.IncarnationID, Epoch: ref.ExecutionEpoch}
 }
 
+func verifyScopedExecution(ctx context.Context, route Route, expected rt.ExecutionRef) error {
+	if !nodeproto.ValidExecution(expected) {
+		return rt.ErrInvalid
+	}
+	adapter, err := require[rt.NativeControl](route)
+	if err != nil {
+		return err
+	}
+	inventory, err := adapter.NativeInventory(ctx, expected)
+	if err != nil {
+		return err
+	}
+	if inventory.Execution.ExecutionRef != expected {
+		return &nodeproto.Failure{Code: nodeproto.CodeRoute}
+	}
+	return nil
+}
+
 func (s *Server) registerStreams(mux *http.ServeMux) {
 	stream(s, mux, nodeproto.ServiceStreamPath,
 		func(in nodeproto.ServiceStream) rt.ExecutionRef { return in.Expected },
@@ -38,6 +56,9 @@ func (s *Server) registerStreams(mux *http.ServeMux) {
 				return nil, rt.ErrUnsupported
 			}
 			if err := gateAllows(ctx, s.journal.db, false, true); err != nil {
+				return nil, err
+			}
+			if err := verifyScopedExecution(ctx, route, in.Expected); err != nil {
 				return nil, err
 			}
 			a, err := route.Worker.LookupAttachment(ctx, workerExecution(in.Expected))
@@ -54,6 +75,9 @@ func (s *Server) registerStreams(mux *http.ServeMux) {
 		func(ctx context.Context, route Route, expected rt.ExecutionRef) (net.Conn, error) {
 			if route.Worker.Socket == "" {
 				return nil, rt.ErrUnsupported
+			}
+			if err := verifyScopedExecution(ctx, route, expected); err != nil {
+				return nil, err
 			}
 			return route.Worker.OpenGuestAgent(ctx, workerExecution(expected))
 		})

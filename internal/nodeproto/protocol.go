@@ -109,9 +109,10 @@ const KnownOnly = "known_only"
 
 type RouteInfo struct {
 	Route
-	NativeStop    bool `json:"native_stop"`
-	NativeStandby bool `json:"native_standby"`
-	ServiceDial   bool `json:"service_dial"`
+	NativeStop      bool     `json:"native_stop"`
+	NativeStandby   bool     `json:"native_standby"`
+	ServiceDial     bool     `json:"service_dial"`
+	AdmittedActions []string `json:"admitted_actions,omitempty"`
 }
 
 type Empty struct{}
@@ -226,7 +227,8 @@ func NativeRefusal(code string) bool {
 	case "E_CAPABILITY_UNSUPPORTED", "E_NATIVE_UNBOUND", "E_STALE_EXECUTION", "E_STATE_CONFLICT",
 		"E_VOLUME_CONFLICT", "E_OPERATION_IN_PROGRESS", "E_PERMISSION_DENIED", "E_INVALID_REQUEST",
 		"E_VOLUME_GENERATION_MISMATCH", "E_STATEPOINT_CORRUPT", "E_BUNDLE_UNAVAILABLE", "E_FENCE_UNPROVEN",
-		"E_RESOURCE_UNAVAILABLE", "E_RESOURCE_LIMIT":
+		"E_RESOURCE_UNAVAILABLE", "E_RESOURCE_LIMIT", "E_VOLUME_REQUIRES_STOPPED",
+		"E_VOLUME_STORAGE_NOT_APPLIED", "E_VOLUME_BUSY", "E_STALE_REVISION", "E_NOT_FOUND":
 		return true
 	default:
 		return false
@@ -249,6 +251,16 @@ func (f *Failure) Is(target error) bool {
 		return target == rt.ErrUnavailable
 	case CodeGateClosed:
 		return target == rt.ErrConflict
+	case CodeNativeRefused:
+		switch f.NativeCode {
+		case "E_VOLUME_REQUIRES_STOPPED":
+			return target == rt.ErrVolumeRequiresStopped || target == rt.ErrConflict
+		case "E_STALE_REVISION", "E_STALE_EXECUTION", "E_STATE_CONFLICT", "E_VOLUME_CONFLICT", "E_VOLUME_BUSY":
+			return target == rt.ErrConflict
+		case "E_NOT_FOUND":
+			return target == rt.ErrNotFound
+		}
+		return false
 	default:
 		return false
 	}

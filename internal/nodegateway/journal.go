@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS commands (
 	refusal TEXT,
 	PRIMARY KEY (operation_id, step)
 );
+CREATE TABLE IF NOT EXISTS volume_commands (
+	operation_id TEXT PRIMARY KEY,
+	scope TEXT NOT NULL,
+	digest TEXT NOT NULL,
+	receipt TEXT,
+	refusal TEXT
+);
 CREATE TABLE IF NOT EXISTS entrance (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	mode TEXT NOT NULL CHECK (mode IN ('active','cordoned','draining')),
@@ -226,6 +233,13 @@ func (j *Journal) begin(ctx context.Context, id, step string, scope commandScope
 		return entry, false, err
 	}
 	defer tx.Rollback()
+	var volume bool
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM volume_commands WHERE operation_id=?)", id).Scan(&volume); err != nil {
+		return entry, false, err
+	}
+	if volume {
+		return entry, false, &nodeproto.Failure{Code: nodeproto.CodeConflict}
+	}
 	current, err := journalLookup(ctx, tx, id, step)
 	if err == nil {
 		currentScope, err := json.Marshal(current.Scope)
@@ -279,8 +293,13 @@ func (j *Journal) operationIDs(ctx context.Context, route nodeproto.Route, limit
 		json_extract(scope,'$.Route.runtime_instance_id')=? AND json_extract(scope,'$.Route.local_instance_id')=?
 		AND json_extract(scope,'$.Route.bundle_digest')=?
 		AND refusal IS NULL AND (receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED'))
+		UNION ALL
+		SELECT operation_id FROM volume_commands WHERE receipt IS NULL AND refusal IS NULL
+		AND json_extract(scope,'$.runtime_instance_id')=? AND json_extract(scope,'$.local_instance_id')=?
+		AND json_extract(scope,'$.bundle_digest')=?
 		ORDER BY operation_id LIMIT ?`
-	rows, err := j.db.QueryContext(ctx, query, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest, limit)
+	rows, err := j.db.QueryContext(ctx, query, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest,
+		route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest, limit)
 	if err != nil {
 		return nil, err
 	}
