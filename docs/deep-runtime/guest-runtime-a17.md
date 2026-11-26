@@ -47,3 +47,24 @@ sudo python3 -B tests/integration/oci_agent_restart_kvm.py \
 smolvm `b09a5c0` 将登记文件放到 Guest 专用 tmpfs。开发 Agent 二进制摘要为 `sha256:93db40ce7acd8faccd981738237821f66b8d8c945f91ca9c46ff6747a3840cf2`。`--end branch` 启动不同宿主 PID 的 KVM 子机，实读 Guest tmpfs 内登记的 SHA-256 `054480a2d73c48b2e8e332b4b8584625e2bcb799a0186528243c3cad50bc0ba2`。子机管理 Agent 再遭 SIGKILL 后，新 Agent 取到同一登记和 crun PID 480/启动时间 91，公开 Exec 读到原进程的递增标记。`.build/a17-oci-workload-branch-v1.log` 的 SHA-256 为 `773dbba04b109e6df24a42d63ebd5f2c4d9dbad20d1b75414561b0b0d848a896`。
 
 `--end snapshot` 使用同一个开发 Agent，从公开 CLI 生成 portable checkpoint，再建另一台宿主 PID 不同的虚机并启动。夹具为私有安装按原部署契约挂载独立的恢复暂存 tmpfs。恢复目标的 Agent 遭 SIGKILL 后，新 Agent 读到原 Guest tmpfs 登记 SHA-256 `16d1d1599066661ce584727fad6168770862dbf4ec55de4f592c64933cca3596`、原 crun PID 479/启动时间 97 及递增标记。`.build/a17-oci-workload-snapshot-v2.log` 的 SHA-256 为 `4323427933e6c84815f090af27ea0ea2eacf268c886b2ab391c172cb9e65c1ef`。
+
+## 公开 CLI 恢复暂存
+
+同一个冻结 CLI 在未配置专用恢复 tmpfs 的私有 loop ext4 上，生成 checkpoint 后执行 `machine create --from` 时因路径列表只有一项而 panic，退出码为 101。`.build/a17-restore-frozen-ext4-v1.log` 的 SHA-256 为 `bd610f5f4a0e6a3947aafd9e1ba73aae6fdecb84324b7470691c0cc8174782bc`。配置专用挂载时，冻结版的公开 `machine pause` 和 `machine resume` 从该 tmpfs 提取并链接 RAM，恢复后继续原 crun 进程。`.build/a17-restore-frozen-tmpfs-v1.log` 的 SHA-256 为 `9db0ee1caf3c7a3b4d00ca963ee9c7d2d8119157f0bbaefddc849e94c48503d3`。
+
+修复 `2f39d93` 在安装只读 RAM 输入时使用已验证的暂存文件系统。缺少专用挂载时，使用机器状态目录所在的文件系统。夹具在私有命名空间为冻结 Bundle 覆盖开发版 `smolvm-bin`，二进制 SHA-256 为 `b6757ceae4a822fe9a1fa30d3f915857c57f48baf9c897b9400e3d07732e8498`，沿用上述开发 Guest Agent 和冻结 Bundle 内的 libkrun、固件及 Guest 根文件系统。三组 KVM 恢复都核对了原 crun PID、启动时间、Guest 登记及公开 Exec 取得的工作负载标记。
+
+| 夹具参数 | 观察 | `.build/` 日志及 SHA-256 |
+| --- | --- | --- |
+| `--end snapshot --without-restore-tmpfs` | CLI 创建成功。目标启动前的 `.restore-input/memory.bin` 与状态目录同处 loop ext4，恢复后继续原 crun PID 479、启动时间 85。 | `a17-restore-fixed-ext4-v1.log` `f5452ade9fd47066b8fba8a7da2b8561ec325242e931178778b8e92b635cb670` |
+| `--end resume` | 公开 Pause/Resume 的提取和只读链接都在配置的 tmpfs，恢复后继续原 crun PID 480、启动时间 87。 | `a17-restore-fixed-tmpfs-v1.log` `a7008316bf83dd39f0159f281b976d1a351986f06c1be69cd35c5c2efa5127a4` |
+| `--end snapshot` | 配置专用 tmpfs 时，portable Create 和首次 Start 继续原 crun PID 479、启动时间 85。 | `a17-restore-fixed-snapshot-v1.log` `9a15c9acb84d8944aab43eb73d50504d6e0c083a10f7a2414b2ab98a6bcec5a3` |
+
+```sh
+sudo python3 -B tests/integration/oci_agent_restart_kvm.py \
+  --bundle "$bundle" --agent "$development_agent" --smolvm-bin "$development_smolvm" \
+  --end snapshot --without-restore-tmpfs
+sudo python3 -B tests/integration/oci_agent_restart_kvm.py \
+  --bundle "$bundle" --agent "$development_agent" --smolvm-bin "$development_smolvm" \
+  --end resume
+```
