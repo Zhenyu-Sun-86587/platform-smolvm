@@ -35,4 +35,19 @@ sudo python3 -B tests/integration/oci_agent_restart_kvm.py \
   --smolvm-bin "$development_smolvm" --end history --verify-guest-cpu-contract
 ```
 
+## 小型历史语料索引
+
+下表沿用 Linux x86_64 KVM 上使用的发布工件和私有夹具。每个样本由原 reader 与生成命令重新形成完整闭包，输入只包含夹具自己的写盘字节、计数或标记。[包内九项测量和 reader 工件](candidate-fb69434.md#九项包内测量)
+
+| 样本 | Bundle、CPU 和配置 | 同一 reader 的复跑入口与结果 |
+| --- | --- | --- |
+| OCI 原生保存点 | `fb69434` 包内测量 `sha256:7681ac8c72c819d931c05d721e490ede26db61131bd698c8940a6ecb7fc83884`，Linux x86_64，OCI | `measure-managed.py` 的 `oci-capture`，记录独立双子、两盘与 RAM、Hibernate、exact Restore。包内日志 SHA-256 `555cd8fd3c0f0a3f82d7ed9a1ea993048676cbd1b39755720a13cae6f78e5876`。 |
+| System Native | 同一 `fb69434` 包内测量，Linux x86_64，Debian System，Native | `measure-managed.py --private-network` 的 `packet-native`，同私网地址及时序，持久点唤醒接回实际服务。包内日志 SHA-256 `8fdafd5b1141e5a7097c35f92fd35b9058d771f58fa2162e4a8a851049b72da0`。 |
+| System FixedInternal 与活任务 | 本页 `d8cc5d5` 原 reader，1 vCPU、512 MiB，Linux x86_64 | `statepoint_history_kvm.py`，重新恢复两个保存点后原任务 PID、启动时间、RAM、根盘标记和计数均验证。 |
+| 附加盘 | `d8cc5d5` 的 Linux x86_64 System，有两块独立可写盘与一个只读代际 | `volume_product_kvm.py --case checkpoint --checkpoint-data-only`，原卷推进后 `exact` 返回代际冲突，`clone_conflicts` 恢复各盘在切点的内容。[原始卷实测](acceptance-ledger.md#卷恢复与停机存储实测) |
+| CPU offline slots | 开发 Bundle `sha256:b79f24bd67af481dbe80c5ed9d870848b012d523107adb78a309e62043bb99b9`，Linux x86_64 System，两个已建槽 | `managed_system_vsock.py --case live-resources`，下线一个 CPU，Hibernate 恢复后保留在线集合，在新 epoch 上线原槽。`.build/native-resize-integrated-kvm-v2.log` SHA-256 `f1dd18d5b43e2d64abc68ed8b8244797adb2ef51ef3a5420e18f9060335aadf9`。[资源恢复与边界](native-power.md#wp-21-运行中调整-cpu内存和-balloon) |
+| RAM growth | 同一开发 Bundle 的 Linux x86_64 System `live-compute`，1 vCPU/512 MiB 到 2 vCPU/640 MiB | `managed_system_vsock.py --case live-resources-hot`，实际新增 134217728 字节。此配置的完整捕获按当前能力拒绝，原机继续可用。`.build/wp23/public-resize-kvm-v3.log` SHA-256 `8fa52011113e17dcd90ca3aa4b5c787ee64ea3bdecbcb59df68ed86b106a7739`。 |
+| 长 Standby | 时钟修复开发 Bundle `sha256:460a09b6b40081ed77aa3268d1fb6e0e496cbba128bf4fd3d6e9863e9599896f`，Linux x86_64 Debian System | `standby_clock_kvm.py`，两组 managed 24 秒，先后 Fork/Hibernate。两个恢复目标继续原 Guest 定时进程，均约 9.008 Guest 秒到期。`.build/a08-held-clock-kvm-v2.log` SHA-256 `c76456893b9fd25f403d75a0fc0caccbb2031bbf86fbcd2f2757f1043cd9e82f`。[长待机记录](acceptance-ledger.md#a08-长待机和保存点时钟) |
+| 便携增量 | 本页 `fb69434` 库与固件，开发 CLI `2f39d93`，1 vCPU、384 MiB，Linux x86_64 OCI | `oci_agent_restart_kvm.py --end history`，复用已有块，从同一归档选两代，分别读回各自标记与原 crun 进程。 |
+
 依所有者执行范围，构造解析器攻击载荷、利用漏洞或绕过访问控制的子项按要求跳过，且不计通过。
