@@ -146,7 +146,7 @@ def child_state(db, operation, ordinal):
     """, (operation, ordinal)).fetchone()
 
 
-def interrupt_target(db, operation, phase, ref, source_pid, bundle):
+def interrupt_target(db, operation, phase, ref, source_pid, bundle, timeout):
     current_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     samples = {}
 
@@ -154,7 +154,7 @@ def interrupt_target(db, operation, phase, ref, source_pid, bundle):
         return {name: {"observed_ms": (last - first) / 1_000_000, "samples": count}
                 for name, (first, last, count) in samples.items()}
 
-    deadline = time.monotonic() + 45
+    deadline = time.monotonic() + timeout
     with ExitStack() as stack:
         process = None
         key = None
@@ -309,7 +309,7 @@ def guest_identity(platform, ref):
     return tuple(output)
 
 
-def gate_case(platform, phase, with_container):
+def gate_case(platform, phase, with_container, cut_timeout):
     observer, _, observer_ref = machine(platform, "collector", "native")
     collector = endpoint(platform, observer)["private_ipv4"]
     run_program(platform, observer_ref, "owned-gate-collector", "collect")
@@ -377,7 +377,7 @@ def gate_case(platform, phase, with_container):
 
     accepted = fork_one("owned cut target", "owned-gate-cut")
     with catalog_reader(platform) as db:
-        cut = interrupt_target(db, accepted["operation_id"], phase, ref, source_pid, platform.bundle_id)
+        cut = interrupt_target(db, accepted["operation_id"], phase, ref, source_pid, platform.bundle_id, cut_timeout)
     print("Owned activation cut", json.dumps({"requested_phase": phase, "bundle_digest": platform.bundle_id, **cut}, sort_keys=True), flush=True)
     def terminal():
         result = platform.app("operations/" + accepted["operation_id"])
@@ -473,9 +473,12 @@ def main():
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(), required=True)
     parser.add_argument("--phase", choices=PHASES, required=True)
+    parser.add_argument("--cut-timeout", type=int, default=45, help="seconds to observe the selected cut (default: 45)")
     parser.add_argument("--use-installation", action="store_true")
     parser.add_argument("--container", action="store_true", help="run an owned OCI workload in the System Guest")
     args = parser.parse_args()
+    if args.cut_timeout < 1:
+        parser.error("--cut-timeout must be positive")
     if os.geteuid() != 0:
         parser.error("local KVM requires an isolated privileged fixture")
     if os.environ.get("OWNED_GATE_NAMESPACE") != "1":
@@ -496,7 +499,7 @@ def main():
         platform = Platform(args, root, stack, (NETWORK,), use_installation=args.use_installation)
         try:
             platform.start()
-            succeeded = gate_case(platform, args.phase, args.container)
+            succeeded = gate_case(platform, args.phase, args.container, args.cut_timeout)
             peak = Path("/sys/fs/cgroup") / slice_name / "memory.peak"
             if peak.is_file():
                 print("Owned fixture slice memory peak", peak.read_text().strip(), flush=True)
