@@ -1,0 +1,141 @@
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-x: auto;
+  margin: 0 0 24px;
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs a {
+  flex: none;
+  padding: 8px 12px 10px;
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+
+.tabs a[aria-current=page] {
+  box-shadow: 0 2px 0 var(--primary);
+  color: var(--foreground);
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.sectionToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.previewSection {
+  margin-bottom: 32px;
+}
+
+.previewSection h2 {
+  font-size: 14px;
+}
+
+.previewSection p {
+  color: var(--muted-foreground);
+}
+
+.previewSection > div {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 10px;
+}
+
+.previewSection > div span:nth-child(3) { margin-top: 9px; }
+
+.integrationToolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.integrationToolbar > strong {
+  margin-right: auto;
+}
+
+.integrationToolbar > strong span {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.integrationToolbar label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-foreground);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 9px;
+}
+
+.integrationToolbar label input {
+  border: 0;
+  background: none;
+  min-width: 0;
+  padding-left: 0;
+}
+
+.integrationGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 215px), 1fr));
+  gap: 12px;
+}
+
+.integrationGrid button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 10px;
+  align-items: start;
+  padding: 18px;
+  min-height: 145px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--foreground);
+  text-align: left;
+}
+
+.integrationGrid button:hover {
+  border-color: var(--primary);
+}
+
+.integrationGrid svg {
+  color: var(--accent);
+}
+
+.integrationGrid small {
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10px;
+}
+
+.integrationGrid :is(strong, p) {
+  grid-column: 1 / -1;
+}
+
+.integrationGrid p {
+  margin: 0;
+  color: var(--muted-foreground);
+}
