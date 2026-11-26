@@ -107,6 +107,10 @@ class CLI:
         wait_for(lambda: self.json("machines", "metrics", machine)["platform"]["active_access_holds"] == 0, timeout=30)
 
     def delete(self, machine):
+        # A published Fork child can precede the first verified Stop barrier.
+        # Wait by reading capabilities, then submit a single guarded Stop.
+        wait_for(lambda: self.json("machines", "show", machine)["capabilities"]
+                 .get("lifecycle.stop", {}).get("supported"), timeout=90)
         self.idle_access(machine)
         stopped = self.operation("machines", "stop", machine)
         assert stopped["source_disposition"] == "EXITED", stopped

@@ -23,6 +23,8 @@ def check_partial_batch(cli, parent):
     assert failure["effect"] == "none" and not denied.stdout, failure
     unchanged = cli.json("operations", "get", operation)
     assert unchanged["children"] == observed["children"]
+    cli.ready_machine(retained["machine_id"])
+    assert cli.guest(retained["machine_id"], "/bin/cat", "/run/j11-state") == cli.guest(parent, "/bin/cat", "/run/j11-state")
     deleted = cli.delete(retained["machine_id"])
     return dict(operation_id=operation, capture_id=observed["result"]["capture_id"],
                 children=[retained["machine_id"], refused["machine_id"]], refusal=refused["error_code"],
