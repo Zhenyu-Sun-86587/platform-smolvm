@@ -235,6 +235,16 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 		req.Header[key] = values
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+	default:
+		// The idempotency key is for explicit receipt recovery. Prevent the
+		// transport from rewinding or resending a mutation after transmission.
+		req.GetBody = nil
+		if req.Body == nil || req.Body == http.NoBody {
+			req.Body = io.NopCloser(bytes.NewReader(nil))
+		}
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err

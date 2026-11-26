@@ -30,7 +30,8 @@ preserved in its output. A local operation wait timeout uses exit status
 `operations wait OPERATION`. When the server cannot confirm a mutation
 effect, keep the original control epoch, idempotency key, revision, request
 and target. The CLI prints the intent flags for a lost or uncertain reply. In JSON mode,
-the single error object contains the original intent. Verify the original
+the single error object contains the original intent. The transport does not
+resend a mutation once transmission may have begun. Verify the original
 effect before deciding what to do next.
 
 `--json` emits compact JSON for management results. API errors and wait
