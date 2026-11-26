@@ -10,12 +10,14 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
+	"slices"
 	"time"
 )
 
 type AccessEndpoint struct {
 	Trigger     string
 	Revision    int64
+	ServiceID   string
 	Reauthorize func(context.Context) error
 	operationID string
 }
@@ -33,15 +35,39 @@ const StatePointWakeFailed = "STATEPOINT_RESTORE_FAILED"
 
 // CheckAccessPrincipal revalidates a live credential before continuing machine access.
 func (e *Engine) CheckAccessPrincipal(ctx context.Context, p auth.Principal, machine string) error {
-	var scope string
-	err := e.DB.ReadDB().QueryRowContext(ctx, `SELECT c.scope_json FROM credentials c JOIN principals p ON p.id=c.principal_id
+	return e.checkAccessPrincipal(ctx, p, machine, "")
+}
+
+func (e *Engine) checkAccessPrincipal(ctx context.Context, p auth.Principal, machine, serviceID string) error {
+	var kind, scope string
+	err := e.DB.ReadDB().QueryRowContext(ctx, `SELECT c.kind,c.scope_json FROM credentials c JOIN principals p ON p.id=c.principal_id
         WHERE c.id=? AND p.id=? AND p.disabled=0 AND c.revoked_at IS NULL AND (c.expires_at IS NULL OR c.expires_at>?)`,
-		p.CredentialID, p.ID, time.Now().UnixMilli()).Scan(&scope)
+		p.CredentialID, p.ID, time.Now().UnixMilli()).Scan(&kind, &scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return auth.ErrUnauthenticated
 	}
 	if err != nil {
 		return err
+	}
+	if kind == "client_certificate" {
+		var certificate struct {
+			ServiceIDs []string `json:"service_ids"`
+		}
+		if serviceID == "" || p.Scope != (auth.Scope{Access: "tunnel", MachineID: machine}) ||
+			json.Unmarshal([]byte(scope), &certificate) != nil || !slices.Contains(certificate.ServiceIDs, serviceID) {
+			return auth.ErrForbidden
+		}
+		var enabled bool
+		err := e.DB.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(
+            SELECT 1 FROM services WHERE id=? AND machine_id=? AND kind='tcp-mtls' AND enabled=1)`,
+			serviceID, machine).Scan(&enabled)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			return auth.ErrForbidden
+		}
+		return nil
 	}
 	var actual auth.Scope
 	if err = json.Unmarshal([]byte(scope), &actual); err != nil {
@@ -66,7 +92,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
 	reauthorize := func() error {
-		if err := e.CheckAccessPrincipal(ctx, p, b.MachineID); err != nil {
+		if err := e.checkAccessPrincipal(ctx, p, b.MachineID, entry.ServiceID); err != nil {
 			return err
 		}
 		if entry.Reauthorize != nil {
