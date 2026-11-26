@@ -9,7 +9,7 @@ from contextlib import ExitStack, suppress
 from datetime import datetime, timedelta, timezone
 import grp
 import hashlib
-from http.client import HTTPConnection, HTTPResponse
+from http.client import HTTPConnection, HTTPResponse, HTTPSConnection
 import io
 import json
 import os
@@ -94,7 +94,8 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack, networks=(), credential_proxies=(), state_tmpfs=False, use_installation=False):
+    def __init__(self, args, root, stack, networks=(), credential_proxies=(), state_tmpfs=False, use_installation=False,
+                 *, tls=None, gateway=None, managed_ssh=False):
         self.args = args
         self.root = root
         self.stack = stack
@@ -108,6 +109,14 @@ class Platform:
         self.credential_proxies = credential_proxies
         self.state_tmpfs = state_tmpfs
         self.use_installation = use_installation
+        self.tls = tls
+        self.gateway = gateway
+        self.managed_ssh = managed_ssh
+
+    def api_connection(self, timeout=15):
+        if self.tls:
+            return HTTPSConnection("127.0.0.1", self.port, context=self.tls[2], timeout=timeout)
+        return HTTPConnection("127.0.0.1", self.port, timeout=timeout)
 
     def start(self):
         root = self.root
@@ -177,16 +186,22 @@ class Platform:
         templates.write_text(json.dumps([dict(
             template_id="t_system", name="Debian", version=1, image_digest=image_hash,
             guest_release="system-debian-v1",
-            spec=dict(boot_mode="system", root_generation_id="fixture-system-root"),
+            spec=dict(boot_mode="system", root_generation_id="fixture-system-root",
+                      **({"managed_ssh": True} if self.managed_ssh else {})),
         )]))
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
-        self.origin = f"http://127.0.0.1:{self.port}"
+        scheme = "https" if self.tls else "http"
+        self.origin = f"{scheme}://127.0.0.1:{self.port}"
+        api = dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin)
+        if self.tls:
+            api.update(tls_cert_file=str(self.tls[0]), tls_key_file=str(self.tls[1]))
         config = root / "platform.json"
         config.write_text(json.dumps(dict(
             version=1, state_dir=str(root / "platform"), templates_file=str(templates),
-            api=dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin),
+            api=api,
+            **({"gateway": self.gateway} if self.gateway else {}),
             **({} if self.state_tmpfs else {"storage": dict(minimum_free_bytes=2 << 30, minimum_free_percent=3)}),
             **({"credential_proxies": self.credential_proxies} if self.credential_proxies else {}),
             runtime=dict(socket=str(root / "ipc/official.sock"), status_socket="",
@@ -201,7 +216,7 @@ class Platform:
         self.platform_command = [self.args.platformd, "--config", config]
         self.platform = self.spawn(self.platform_command, "platform.log")
         session, cookie = wait_for(lambda: request(
-            HTTPConnection("127.0.0.1", self.port, timeout=15), "POST", "/v1/auth/login",
+            self.api_connection(), "POST", "/v1/auth/login",
             dict(username="owner", password=password), {"Origin": self.origin},
         ), retry=(OSError,))
         self.cookie = cookie.split(";", 1)[0]
@@ -236,7 +251,7 @@ class Platform:
                             os.close(fd)
 
     def app(self, path, method="GET", body=None, headers=None, status=200, *, timeout=15):
-        return request(HTTPConnection("127.0.0.1", self.port, timeout=timeout), method, "/v1/" + path,
+        return request(self.api_connection(timeout), method, "/v1/" + path,
                        body, {"Origin": self.origin, "Cookie": self.cookie,
                               "X-CSRF-Token": self.csrf, **(headers or {})}, status)[0]
 
