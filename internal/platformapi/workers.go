@@ -140,6 +140,7 @@ func (s *Server) workerView(ctx context.Context, w registry.Worker) (workerView,
 }
 
 func (s *Server) workerRoutes() {
+	s.workerEnrollmentRoutes()
 	s.route("GET /v1/workers", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize(auth.ActionRead, ""); err != nil {
 			return err

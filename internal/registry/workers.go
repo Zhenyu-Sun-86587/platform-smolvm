@@ -201,6 +201,9 @@ func (s *Store) RevokeWorkerEnrollmentTx(ctx context.Context, tx *sql.Tx, worker
 	if n, err := result.RowsAffected(); err != nil || n != 1 {
 		return state, ErrGeneration
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM worker_enrollment_tickets WHERE worker_id=?", worker); err != nil {
+		return state, err
+	}
 	if err := AppendEvent(ctx, tx, "maintenance", "", "", map[string]any{"action": "worker_enrollment_revoked", "worker_id": worker, "generation": generation, "reason": reason}, true); err != nil {
 		return state, err
 	}

@@ -21,6 +21,8 @@ runtime:
 #     enrollment_generation: 1
 #     node_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 #     ca_file: /etc/sandbox-platform/tls/worker-ca.pem
+#     # Optional dedicated Worker CA key for enrollment tickets.
+#     # ca_signing_key_file: /etc/sandbox-platform/tls/worker-a-ca.key
 #     certificate_file: /etc/sandbox-platform/tls/controller.pem
 #     key_file: /etc/sandbox-platform/tls/controller-key.pem
 #     routes:

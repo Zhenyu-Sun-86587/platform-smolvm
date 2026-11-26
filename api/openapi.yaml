@@ -62,6 +62,73 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Worker'}
         default: {$ref: '#/components/responses/Error'}
+  /workers/{worker}/enrollment/ticket:
+    parameters:
+    - {name: worker, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: issue_worker_enrollment_ticket
+      description: Admin-only HTTPS operation. Issues a five-minute credential for the configured Worker generation and public key pin. A new ticket replaces an outstanding unused ticket.
+      parameters:
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode: {type: string, enum: [initial, rotate]}
+      responses:
+        '201':
+          description: Deliver the ticket privately to the configured Worker.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [worker_id, enrollment_generation, controller_id, control_epoch, ticket, expires_at]
+                properties:
+                  worker_id: {type: string}
+                  enrollment_generation: {type: integer, minimum: 1}
+                  controller_id: {type: string}
+                  control_epoch: {type: string}
+                  ticket: {type: string}
+                  expires_at: {type: string, format: date-time}
+        default: {$ref: '#/components/responses/Error'}
+  /workers/{worker}/enrollment/redeem:
+    parameters:
+    - {name: worker, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: redeem_worker_enrollment_ticket
+      description: Signs one CSR whose key matches the configured Worker pin over HTTPS. Repeating the same CSR and ticket before expiry returns the stored public certificate. The Worker becomes enrolled after platformd verifies its mTLS identity.
+      security:
+      - workerEnrollment: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [csr_pem]
+              properties:
+                csr_pem: {type: string, maxLength: 16384, description: PEM certificate request signed locally by the Worker key}
+      responses:
+        '200':
+          description: Issued Worker server certificate and enrollment authority.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [worker_id, enrollment_generation, controller_id, control_epoch, certificate_pem]
+                properties:
+                  worker_id: {type: string}
+                  enrollment_generation: {type: integer, minimum: 1}
+                  controller_id: {type: string}
+                  control_epoch: {type: string}
+                  certificate_pem: {type: string}
+        default: {$ref: '#/components/responses/Error'}
   /workers/{worker}/enrollment/revoke:
     parameters:
     - {name: worker, in: path, required: true, schema: {type: string}}
@@ -2764,6 +2831,11 @@ components:
     bearer:
       type: http
       scheme: bearer
+    workerEnrollment:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: WorkerEnrollment followed by a space and the single-use ticket.
     session:
       type: apiKey
       in: cookie
