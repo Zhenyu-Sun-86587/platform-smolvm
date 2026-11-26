@@ -91,3 +91,11 @@ broker 被终止后，原连接又交付一次随机数，两台 Guest 的 write
 另一次断电使用 `f2df146` Worker、修复时钟的 `0d02553` libkrun 与 `83b3d29` platformd。新 boot 在旧授权的实际盘 inode 上持有一个独立的排他锁，Worker 保留原写入预订和 `unknown` 授权，并持续报告 `recovering`。释放该锁后，Worker 自动完成围栏。Guest 在原计时进程中经过至少 26 秒 managed Standby、Hibernate 和整机重启，首次采样时原定时器仍未到期。Guest 的 monotonic、boottime 和 realtime 均在 18.069 秒时达到原定的 18 秒期限。该测试使用重新测量的开发 Bundle `sha256:6e112dd4c836df1ad2b87b5eb42d1f17ee7738262bdd19ec19bbee66b1f77c75`、旧安装的 VMM 与 firmware，宿主基础镜像分配 1792 MiB。日志 `.build/wp23/a08-a20-worker-host-f2df146-clock-ofd-v4.log` 的 SHA-256 为 `6480aa68d8f5ac4b481f7b9cd675417003d06e3c6e04dcf588635310973a7ac6`。
 
 复跑时传入本机构建的可嵌套 KVM 的 Worker 基础镜像、宿主内核与对应模块、平台程序、Bundle 安装目录和 Debian 系统镜像。使用 `--automatic-recovery` 验证全自动恢复，增加 `--orderly-shutdown` 可切换关机方式。[Worker 整机夹具](../../tests/integration/worker_host_restart_kvm.py)
+
+### 正式安装的整机复测
+
+两组整机复测使用 `1eb5104` 正式安装 `sha256:b00c0f05bc54d69bbef854ea16c3cac42d36ddc9f8413a1cedd5e5e290434f97` 和锁定平台 `c095c4f`。每组在 2304 MiB 的独立 Ubuntu Worker 宿主中，生成一个 Debian 保存点并保留一对有活跃 writer 的源机和 Fork 子机。第二次 boot 由当前 owner 重新登录并通过公开操作恢复保存点。[复跑夹具 `886d724`](../../tests/integration/worker_host_restart_kvm.py)
+
+强制断电组的 boot ID 从 `63d72f36-bfab-46cc-b84e-26685680cf48` 变为 `a6b145fe-4cfd-40d8-96b9-5e0b81f73009`。新 boot 在原盘 inode 上持有独立排他锁期间，Worker 保留旧 writer 预订。释放后自动完成两个旧执行的围栏，回收其写授权，原易失代际记为丢失。原保存点的新执行进入 epoch 2，读回原 RAM 与盘标记。定时进程 PID 753 在恢复后首次取样仍未到期，三个 Guest 时钟均约 `18.046` 秒到期。`.build/wp23/a20-power-final-1eb5104-v1.log` 的 SHA-256 为 `719d715c3cbabf2091f0ad60c440bc740c3f124da29131eda7573b0c1cfeb684`。
+
+正常关机组由原宿主的 systemd 完成关机，QEMU 正常退出后从同一盘启动。boot ID 从 `5a469bc0-4f0f-4654-8379-5bf32ffda3b9` 变为 `47dbd34d-f60c-43e7-99b6-0391be387c8c`，两个旧执行自动围栏和释放写授权，一个易失代际标为丢失。对原保存点的公开 Start 在 epoch 2 读回 RAM 和根盘标记 `eed731516721f4260a1d6c32c2d53b85`。`.build/wp23/a20-orderly-final-1eb5104-v1.log` 的 SHA-256 为 `5d1aae2f2724c9cd21a5a1d6fedeb223058715874cacdb53c25abb42df4ac122`。
