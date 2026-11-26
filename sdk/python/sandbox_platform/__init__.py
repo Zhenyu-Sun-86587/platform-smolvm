@@ -11,7 +11,7 @@ from threading import Event as ThreadEvent, Thread
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any, Callable, Iterator
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import httpx
@@ -31,6 +31,8 @@ class PlatformError(Exception):
             pass
         self.code = self.detail.get("code")
         self.operation_id = self.detail.get("operation_id")
+        self.effect = self.detail.get("effect")
+        self.retry = self.detail.get("retry")
         super().__init__(self.detail.get("message", str(self.detail)))
 
 
@@ -136,11 +138,14 @@ class Client:
 
     def download(self, path, **params) -> Iterator[bytes]:
         """Yield raw bytes. Closing the iterator releases the response."""
-        with self._http.stream("GET", self._relative(path), params=params) as response:
+        with self._http.stream("GET", self._relative(path), params=params or None) as response:
             if not response.is_success:
                 response.read()
                 self._check(response)
             yield from response.iter_bytes()
+
+    def get_operation(self, operation_id):
+        return self.get(_item("operations", operation_id))
 
     def wait_operation(self, operation_id, timeout=180, *, on_update: Callable | None = None):
         deadline = monotonic() + timeout
@@ -186,9 +191,12 @@ class Client:
         return self.mutate(_item("backups/policies", policy_id) + "/runs", intent=intent)
 
     def pages(self, path, *, limit=100, **filters) -> Iterator[dict]:
+        return self._pages(path, limit, filters)
+
+    def _pages(self, path, limit, filters) -> Iterator[dict]:
         cursor = ""
         while True:
-            page = self.get(path, limit=limit, cursor=cursor, **filters)
+            page = self._request("GET", path, params={**filters, "limit": limit, "cursor": cursor}).json()
             yield from page["items"]
             nxt = page.get("next_cursor")
             if not nxt:
@@ -260,6 +268,40 @@ class Client:
     def get_machine(self, id):
         return self.get(_item("machines", id))
 
+    def get_machine_metrics(self, machine_id):
+        """Read passive execution-scoped metrics and field availability."""
+        return self.get(_item("machines", machine_id) + "/metrics")
+
+    def get_system_metrics(self):
+        """Read metrics for the reported Worker or official runtime scope."""
+        return self.get("system/metrics")
+
+    def list_files(self, machine_id, path=None, *, limit=100):
+        filters = {} if path is None else {"path": path}
+        return self._pages(_item("machines", machine_id) + "/files/list", limit, filters)
+
+    def download_file(self, machine_id, path) -> Iterator[bytes]:
+        target = _item("machines", machine_id) + "/files?" + urlencode({"path": path})
+        return self.download(target)
+
+    def upload_file(self, machine_id, path, source, *, intent=None, revision=None):
+        """Upload a local file. Reuse the same intent to look up a lost receipt."""
+        target = _item("machines", machine_id) + "/files?" + urlencode({"path": path})
+        return self.upload(target, source, intent=intent, revision=revision)
+
+    def list_services(self, machine_id):
+        return self.pages(_item("machines", machine_id) + "/services")
+
+    def get_service(self, service_id):
+        return self.get(_item("services", service_id))
+
+    def list_snapshots(self, machine_id=None):
+        path = "snapshots" if machine_id is None else _item("machines", machine_id) + "/snapshots"
+        return self.pages(path)
+
+    def get_snapshot(self, snapshot_id):
+        return self.get(_item("snapshots", snapshot_id))
+
     def get_machine_resources(self, machine_id):
         return self.get(_item("machines", machine_id) + "/resources")
 
@@ -315,6 +357,9 @@ class Client:
         return self.mutate("lifecycle-policy-applications", {
             "default_policy_revision": default_policy_revision, "machines": list(machines),
         }, **options)
+
+    def list_running_leases(self, machine_id):
+        return self.pages(_item("machines", machine_id) + "/leases")
 
     def acquire_running_lease(self, machine_id, reason, ttl_seconds, *, revision=None, intent=None):
         if revision is None:

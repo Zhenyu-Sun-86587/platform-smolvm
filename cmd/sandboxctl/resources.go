@@ -581,6 +581,21 @@ func (c *client) files() *cobra.Command {
 		return res("machines", id) + "/files" + suffix + "?" + url.Values{"path": {target}}.Encode()
 	}
 	group.AddCommand(
+		sub("capabilities MACHINE", "Read Guest file capabilities and transfer limits", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+			var m struct {
+				Capabilities map[string]json.RawMessage `json:"capabilities"`
+			}
+			if err := c.get(cmd.Context(), res("machines", args[0]), &m); err != nil {
+				return err
+			}
+			files := map[string]json.RawMessage{}
+			for key, capability := range m.Capabilities {
+				if strings.HasPrefix(key, "files.") {
+					files[key] = capability
+				}
+			}
+			return c.print(cmd, files)
+		}),
 		sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 			return c.show(cmd, path(args[0], args[1], "/list"))
 		}),
