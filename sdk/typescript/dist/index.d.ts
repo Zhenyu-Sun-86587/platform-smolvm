@@ -21,7 +21,76 @@ export interface BackupRun {
     finished_at?: string;
     failure_code?: string;
 }
+export type WorkerPlacement = {
+    mode: "auto";
+} | {
+    mode: "pinned";
+    worker_id: string;
+};
+export type WorkerMode = "active" | "cordoned" | "draining" | "drained" | "decommissioned";
+export interface WorkerMaintenance {
+    worker_id: string;
+    mode: WorkerMode;
+    revision: number;
+    phase: string;
+    coverage: string;
+    reason?: string;
+    blockers?: string[];
+}
+export interface WorkerResources {
+    vcpus: number;
+    memory_mib: number;
+    storage_bytes: number;
+    heavy_slots: number;
+}
+export interface WorkerSample {
+    sequence: number;
+    source: string;
+    session: {
+        host_boot_id: string;
+        broker_session_id: string;
+        node_session_id: string;
+    };
+    budget: {
+        capacity: WorkerResources;
+        allocated: WorkerResources;
+    };
+    profiles: {
+        runtime_instance_id: string;
+        local_instance_id: string;
+        ready: boolean;
+    }[];
+}
+export interface Worker {
+    worker_id: string;
+    name: string;
+    enrollment_generation?: number;
+    enrollment_status?: "active" | "revoked";
+    desired_mode: WorkerMode;
+    observed_status: string;
+    revision: number;
+    fresh_budget: boolean;
+    sample?: WorkerSample;
+    sampled_at?: string;
+    maintenance: WorkerMaintenance;
+}
+export interface PlacementReservation {
+    operation_id: string;
+    worker_id: string;
+    runtime_instance_id: string;
+    bundle_id: string;
+    phase: string;
+    attempt: number;
+    request_digest: string;
+    native_digest?: string;
+    control_epoch: string;
+    resources: WorkerResources;
+    native_attempt: number;
+    updated_at: string;
+}
 export interface RuntimeProfile {
+    worker_id?: string;
+    local_instance_id?: string;
     runtime_instance_id: string;
     runtime_bundle_id: string;
     state_reader_id: string;
@@ -62,6 +131,11 @@ export interface ForkBatch {
     };
 }
 export interface ErrorDetail {
+    candidates?: {
+        worker_id: string;
+        runtime_instance_id?: string;
+        reason: string;
+    }[];
     code?: string;
     message?: string;
     effect?: Effect;
@@ -83,6 +157,7 @@ export interface OperationChild {
     error_code?: string;
 }
 export interface Operation {
+    worker_id?: string;
     operation_id: string;
     control_epoch?: string;
     source_machine_id?: string;
@@ -185,6 +260,7 @@ export interface SystemMetrics extends MetricObservation {
     platform: PlatformMetrics;
 }
 export interface Control {
+    installation_id?: string;
     control_epoch: string;
     default_boot_mode?: BootMode;
     runtime_version?: string;
@@ -396,6 +472,7 @@ export interface NetworkDefaults {
     default_network_id?: string;
 }
 export interface CreateMachine {
+    placement?: WorkerPlacement;
     live_compute_growth?: boolean;
     lifecycle_policy?: LifecyclePolicyPatch;
     boot_mode?: BootMode;
@@ -412,12 +489,15 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
     resources?: Resources & ResourcePatch;
     network?: Required<NetworkSelection>;
     machine_id: string;
+    worker_id?: string;
     desktop_profile?: "software-vnc-v1";
     spec?: {
         resources?: Resources;
     };
     revision: number;
     binding_generation: number;
+    owner_status?: string;
+    last_confirmed_power_state?: PowerState;
     power_state?: PowerState;
     health?: {
         vm: string;
@@ -445,6 +525,7 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
     state_reason?: unknown;
     binding?: {
         binding_id?: string;
+        worker_id?: string;
         runtime_instance_id?: string;
         runtime_bundle_id?: string;
         execution_epoch?: number;
@@ -582,6 +663,7 @@ export interface VolumeSpec {
     lifecycle?: "persistent" | "ephemeral" | "machine";
 }
 export interface Volume extends VolumeSpec {
+    worker_id?: string;
     volume_id: string;
     owner_id: string;
     runtime_bundle_id: string;
@@ -825,6 +907,16 @@ export declare class Client {
         generation: number;
         revision: number;
     }): Promise<Operation>;
+    listWorkers(signal?: AbortSignal): AsyncGenerator<Worker, any, any>;
+    getWorker(id: string, signal?: AbortSignal): Promise<Worker>;
+    getPlacement(operationId: string, signal?: AbortSignal): Promise<PlacementReservation>;
+    setWorkerMode(id: string, mode: WorkerMode, reason: string, revision: number, options?: WriteOptions): Promise<WorkerMaintenance>;
+    revokeWorkerEnrollment(id: string, generation: number, reason: string, revision: number, options?: WriteOptions): Promise<{
+        worker_id: string;
+        revision: number;
+        enrollment_generation: number;
+        enrollment_status: "revoked";
+    }>;
     listRuntimeProfiles(signal?: AbortSignal): AsyncGenerator<RuntimeProfile, any, any>;
     machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions): Promise<Operation>;
     private machineMutation;
