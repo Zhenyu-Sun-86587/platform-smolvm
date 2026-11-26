@@ -60,7 +60,7 @@ func (c Client) call(ctx context.Context, q request, pass *os.File, expect *desc
 	backup := q.Method == "PrepareBackupClosure" || q.Method == "ReadBackupMember" || q.Method == "ReleaseBackupClosure"
 	statePointRelease := q.Method == "ReleaseStatePoint"
 	privateWake := q.Method == "QueryPrivatePacketWakeEndpoint" || q.Method == "QueryPrivatePacketWakeRule" || q.Method == "ApplyPrivatePacketWakeRule"
-	readOnly := q.Method == "Health" || q.Method == "QueryWorkerBudget" || q.Method == "QueryResource" || q.Method == "QueryOperation"
+	readOnly := q.Method == "Health" || q.Method == "QueryWorkerBudget" || q.Method == "QueryResource" || q.Method == "QueryOperation" || q.Method == "QueryInstanceBinding"
 	if !filepath.IsAbs(c.Socket) || c.Bundle == "" || (!backup && !statePointRelease && !readOnly && q.Expected == nil) ||
 		(q.Expected != nil && (q.Expected.InstanceID == "" || q.Expected.Epoch < 0 ||
 			(!lifecycleMethod(q.Method) && (q.Expected.Epoch < 1 || q.Expected.IncarnationID == "" && !privateWake)))) {
