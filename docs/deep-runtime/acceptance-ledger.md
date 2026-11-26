@@ -13,6 +13,7 @@
 | A16 | 携带复制的父机凭据访问 public API 或 relay、重放已撤销凭据 | 显式授予与撤销、当前授权状态、正常 relay 请求 |
 | A20 | 用过期的 TAP 租约修订或在恢复围栏期间发起业务连接 | 核对当前租约、DNS、路由回执和获准连接 |
 | A21、A22 | 伪造来源身份、使用他人或已失效凭据尝试连接 | 同一所有者已授权连接的并发唤醒、服务修订、在途连接撤销 |
+| A23 | 使用非管理员凭据尝试注册备份 | 已授权备份、发布中断、双网络模式恢复 |
 | A24 | 在恢复后的公开接口提交旧控制代次的写请求 | 用新会话核验新旧发行件恢复后的控制代次、同一所有者和备份 |
 | A29 | 复用已消费的终端票据、以只读身份写入终端 | 有效会话的断开、持有、凭新票据重连、按序输入、退出和回收 |
 | A32 | 子机使用复制的父租约令牌、冒用旧 execution 续租 | 同一所有者的续租、到期、主动释放与 UI 状态 |
@@ -130,7 +131,7 @@
 | A20 | 冻结基线与开发修复，组件重启和虚拟主机换 boot 已验证 | platformd、Serve、broker 分别退出，systemd 接管前后分别中断。修复后的 Worker 重认原有 TCP 会话、TAP 和 writer，同一块盘录得九轮应答。独立虚拟 Worker 正常关机和断电后，两份旧写授权自动释放，原易失代际标记丢失，同一持久点恢复原 RAM 和盘数据。[组件及整机实测](managed-recovery.md#worker-主机换-boot-后的恢复)、[网络与 DNS](A20_LIVE_NETWORK_RECOVERY.md) | 在含两项恢复修复的完整冻结包复跑。 |
 | A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
 | A22 | 冻结桌面与开发网关，服务修订和活流验收通过 | 桌面单次票据交付真实 framebuffer，Worker 确认原生租约后 API 返回会话。延迟和丢失确认、授权撤回、到期、平台重启均已测，休眠后新授权请求接回原 Xvfb。Guest grant 撤销关闭在途 SSE。f2df146 正向测量组合的 HTTPS SSE 和 mTLS 在 revision 1→2 后切换实际端口，旧流关闭。撤销已建立流的令牌或证书只关闭该流，独立合法流继续。OpenSSH 修订关闭旧流，pidfd 确认旧 VMM 退出，合法新连接唤醒原保存点，从 epoch 1 转至 2 并校验 host key 和 RAM 标记。[服务修订与关闭记录](service-revision-a22.md)、`.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log` | — |
-| A23 | 开发实机，原生引用、并发与发布恢复通过 | Native 用同一 run 跨 Worker 和 platformd 中断备份原 checkpoint、休眠点与独立卷。并发公开删除后 Worker 引用继续保护原数据。暂存缺块和原 reader 缺失均保留已验证备份。关闭及删除旧源后在新 Worker 恢复原 RAM、根盘、独立卷和 Native `/32`。1017 在途备份升级到 1018 后保持两路原选择。六组 ext4 发布和保留中断已通过。既有 Native、FixedInternal 实测还覆盖错误密钥、等长篡改、服务 PID、隔离网络与非管理员注册拒绝。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | 开发 Worker `1eb5104` 已通过 FixedInternal 交接中断。待同一冻结安装复跑 Native 和 FixedInternal。 |
+| A23 | `1eb5104` 正式安装，Native 和 FixedInternal 交接、独立恢复通过 | 两种网络模式均以原 run 跨 Worker 和 platformd 中断，保持原 checkpoint、休眠点与独立卷的选择。并发公开删除后 Worker 引用继续保护数据，暂存缺块和原 reader 缺失均保留已验证备份。退役旧源后，新 Worker 恢复原 RAM、根盘和独立卷。Native 使用新 `/32`，FixedInternal 保留内部地址并换到新 VIP。此前 1017 在途备份升级到 1018 后保持两路原选择，六组 ext4 发布和保留中断通过。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[正式安装双模式](#a23-正式安装的双模式备份交接)、[发布中断记录](#a23-备份发布与保留中断) | 旧夹具的非管理员权限尝试按本轮范围跳过，且不计通过。 |
 | A24 | 最终平台锁 `c095c4f`，迁移中断、升级和回退通过 | `0.1.6` 向 schema 1019 迁移写入未提交 WAL 时终止，19 张旧表及全部行保持一致。完成升级后旧二进制拒绝打开新 schema。两版本分别恢复备份，原 owner 新登录，继续读取原暂停记录及各自新的 control epoch。锁定平台包在 Ubuntu 24.04 KVM 中通过正式安装器升级，官方 Serve 在升级期间连续运行。跨 schema 回退被拒绝，整机断电后系统服务、原数据库、owner 和两份备份再次核验。[最终平台锁及实机](platform-upgrade-a24.md)、[此前发行件](#a24-历史发行件升级与回退) | 旧控制代次的写入子项按要求跳过，且不计通过。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
@@ -157,6 +158,17 @@
 两个真实 Serve 共用一个 Worker，各自保存一份独立卷代际。schema 1017 的平台在第一路 Worker 提交备份引用后被终止。schema 1018 随后接续同一公开 run，以 SHA-256 `b3775d658ee910bb342412791592c4611a0a34ce799468e71854fd16e6b6d6b5` 的原 schema 1017 数据库验证两路归档。第一路 Worker 的原 closure 字节相等，完成验证后两路引用均已释放。
 
 同一安装随后公开提交卷快照删除并使其停在已 dispatch 的状态。并发备份保持 `running`，目录快照没有提交标记，Worker 没有建立备份引用。恢复 Worker 后，原删除成功；同一备份运行选定仍保留的两个代际并通过核验。日志 `.build/release-d8cc5d5/native-backup-legacy-two-routes-a23-v1.log` 的 SHA-256 为 `e864b875cc3978c0b0091cf14854bd322fee8c25aba6b041d4974b58f283a4d5`。[双路及卷删除夹具](../../tests/integration/native_backup_restart_kvm.py)
+
+### A23 正式安装的双模式备份交接
+
+用 `1eb5104` 正式安装 `sha256:b00c0f05bc54d69bbef854ea16c3cac42d36ddc9f8413a1cedd5e5e290434f97` 和锁定平台 `c095c4f` 串行各跑一组。夹具以只读挂载使用安装件。两组在 Worker 建立引用之前确认目录已密封，公开删除选中的 checkpoint 和卷快照后确认备份继续持有原闭包。中断后，同一个 run 在 Worker `recovering` 阶段恢复，验证归档后才释放两个引用。后续普通的存储缺块与 reader 暂时不可用故障均保留此前两份合格归档。
+
+旧源经公开 Stop 和 Delete 退出。管理员在独立空目录恢复 catalog，核对原保存点摘要及卷代际数据，并核对实例绑定、TAP 租约和唤醒规则表为空。新 Worker 和 Serve 使用同一安装件启动原 checkpoint，两种模式均为新逻辑实例、新 attachment 和 epoch 1，读回原 RAM、根盘及独立卷数据。[双模式复现](../../tests/integration/native_backup_restart_kvm.py)
+
+| 源网络模式 | 恢复 Guest IPv4 | 新私网 IPv4 | 原闭包 SHA-256 | 日志与 SHA-256 |
+| --- | --- | --- | --- | --- |
+| Native | `10.194.0.2/32` | `10.194.0.2` | `40d42a95a0960b9a7c6122da689b3c7bcb19a0b8a9b4738e29b991e2b0bbe5af` | `.build/a23-1eb5104-installed-native-handoff-v1.log` `4d9fdc39dfdb63380d91eeced125da197a871c472f8ecd0f8dccadc922b2b6e3` |
+| FixedInternal | `10.0.2.15/24` | `10.194.0.2` | `23a49d4be2a3bb92eeb72e89a757b03c7024dd28a19d38a5d15a22e075afd2e8` | `.build/a23-1eb5104-installed-fixed-handoff-v1.log` `a6f5030798ceb9d7e595678007467f6a39cfffbdf93d951b8581167c93750b3a` |
 
 ### A24 历史发行件升级与回退
 
