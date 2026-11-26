@@ -94,7 +94,8 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack, networks=(), credential_proxies=()):
+    def __init__(self, args, root, stack, networks=(), credential_proxies=(), *,
+                 gateway=None, platform_worker=None):
         self.args = args
         self.root = root
         self.stack = stack
@@ -106,6 +107,8 @@ class Platform:
         self.epoch = ""
         self.networks = networks
         self.credential_proxies = credential_proxies
+        self.gateway = gateway
+        self.platform_worker = platform_worker or self.worker
 
     def start(self):
         root = self.root
@@ -169,13 +172,14 @@ class Platform:
             version=1, state_dir=str(root / "platform"), templates_file=str(templates),
             api=dict(listen=f"127.0.0.1:{self.port}", public_origin=self.origin),
             storage=dict(minimum_free_bytes=2 << 30, minimum_free_percent=3),
+            **({"gateway": self.gateway} if self.gateway else {}),
             **({"credential_proxies": self.credential_proxies} if self.credential_proxies else {}),
             runtime=dict(socket=str(root / "ipc/official.sock"), status_socket="",
                          data_dir=str(root / "official"), custom=[dict(
                              instance_id=self.serve_id, bundle_digest=self.bundle_id,
                              state_reader_id=handshake["state_reader_id"], socket=str(self.serve),
                              manifest=str(self.bundle / "runtime-bundle.json"),
-                             worker_socket=str(self.worker), guest_relay_dir=str(self.relay_dir),
+                             worker_socket=str(self.platform_worker), guest_relay_dir=str(self.relay_dir),
                              private_networks=self.networks,
                          )]),
         )))

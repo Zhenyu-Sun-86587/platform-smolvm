@@ -16,6 +16,7 @@ import (
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
@@ -57,8 +58,10 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 		}
 		token := v.Token
 		var generation, rev int64
-		var locked bool
-		err = tx.QueryRowContext(ctx, "SELECT binding_generation,revision,EXISTS(SELECT 1 FROM operation_locks WHERE machine_id=machines.id) FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL", b.MachineID, b.ID).Scan(&generation, &rev, &locked)
+		var activeKind string
+		err = tx.QueryRowContext(ctx, `SELECT binding_generation,revision,coalesce((
+			SELECT o.kind FROM operation_locks l JOIN operations o ON o.id=l.operation_id WHERE l.machine_id=machines.id
+		),'') FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL`, b.MachineID, b.ID).Scan(&generation, &rev, &activeKind)
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
@@ -69,7 +72,8 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 			if revision != rev {
 				return registry.MutationResult{}, registry.ErrRevision
 			}
-			if locked {
+			// Hibernate serializes an authorized wake with STOP_COMMIT in the Worker.
+			if activeKind != "" && activeKind != rt.Hibernate {
 				return registry.MutationResult{}, registry.ErrOperationActive
 			}
 			if task.Reason == "" || len(task.Reason) > 200 {
