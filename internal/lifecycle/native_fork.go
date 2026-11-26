@@ -16,13 +16,31 @@ import (
 )
 
 type nativeForkIntent struct {
-	Submission        rt.ForkSubmission          `json:"submission"`
-	SourceDisks       []rt.ForkDiskEvidence      `json:"source_disks"`
-	SourceDisposition registry.SourceDisposition `json:"source_disposition"`
-	Receipt           *rt.OperationReceipt       `json:"receipt,omitempty"`
-	RetryRequested    bool                       `json:"retry_requested,omitempty"`
-	CancelRequested   bool                       `json:"cancel_requested,omitempty"`
-	RetryFrom         *rt.OperationReceipt       `json:"retry_from,omitempty"`
+	Submission            rt.ForkSubmission          `json:"submission"`
+	SourceDisks           []rt.ForkDiskEvidence      `json:"source_disks"`
+	SourceDisposition     registry.SourceDisposition `json:"source_disposition"`
+	Receipt               *rt.OperationReceipt       `json:"receipt,omitempty"`
+	RetryRequested        bool                       `json:"retry_requested,omitempty"`
+	CancelRequested       bool                       `json:"cancel_requested,omitempty"`
+	RetryFrom             *rt.OperationReceipt       `json:"retry_from,omitempty"`
+	UnpublishedActivation bool                       `json:"unpublished_activation,omitempty"`
+}
+
+func (intent *nativeForkIntent) rememberAbortedActivation(receipt rt.OperationReceipt) {
+	for _, child := range receipt.Fork.Children {
+		if child.Phase == "ABORTED" && child.ActivationDecision == "commit" {
+			intent.UnpublishedActivation = true
+			return
+		}
+	}
+}
+
+func (intent *nativeForkIntent) setUnpublishedEffect(step *registry.TransitionRequest) {
+	step.Effect = registry.EffectNone
+	if intent.UnpublishedActivation {
+		step.Effect = registry.EffectUnknown
+		step.FencedActivationFailure = true
+	}
 }
 
 func observedForkCapabilities(inventory rt.NativeInventory) map[string]rt.Capability {
@@ -254,6 +272,7 @@ func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkContro
 	result := map[string]any{"machine_id": j.Op.MachineID, "capture_id": progress.CaptureID,
 		"admission": rt.ForkAdmission(intent.Submission.Parameters.Admission), "admitted_child_ids": admitted}
 	intent.Receipt = &receipt
+	intent.rememberAbortedActivation(receipt)
 	step := registry.TransitionRequest{State: registry.Observing, Stage: progress.Stage, Effect: registry.EffectUnknown, Result: JSON(result), Dispatch: JSON(j.Intent)}
 	if receipt.Phase == "ABORTED" && receipt.Decision == "ABORT" && !j.Op.SourceLockReleased {
 		return j.confirmForkAbort(ctx, control, receipt, step)
@@ -275,11 +294,15 @@ func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkContro
 
 func (j *Job) confirmForkAbort(ctx context.Context, control rt.NativeForkControl, receipt rt.OperationReceipt, step registry.TransitionRequest) error {
 	progress := receipt.Fork
-	step.Effect = registry.EffectNone
+	j.Intent.Fork.setUnpublishedEffect(&step)
+	if step.FencedActivationFailure && (!progress.SourceReleased || progress.Stage != "aborted") {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker has no fenced disposition for the committed fork target"})
+	}
 	state := registry.Failed
 	code := "NATIVE_FORK_ABORTED"
 	if progress.SourceReleased && progress.Stage == "aborted" {
-		cancelled := progress.Outcome == "cancelled" && progress.Error == nil && allAdmittedTargetsCancelled(progress.Children)
+		cancelled := step.Effect == registry.EffectNone && progress.Outcome == "cancelled" &&
+			progress.Error == nil && allAdmittedTargetsCancelled(progress.Children)
 		for ordinal, child := range progress.Children {
 			if child.Phase != "ABORTED" && child.Phase != "RESERVED" {
 				return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "aborted fork still has a dispatched child"})
@@ -440,8 +463,8 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 		return j.recordForkProgress(ctx, step)
 	}
 	if ready == 0 {
-		step.Effect = registry.EffectNone
-		if allAdmittedTargetsCancelled(receipt.Fork.Children) {
+		j.Intent.Fork.setUnpublishedEffect(&step)
+		if step.Effect == registry.EffectNone && allAdmittedTargetsCancelled(receipt.Fork.Children) {
 			step.Error = JSON(map[string]string{"code": "FORK_CANCELLED", "message": "Worker confirmed cancellation of every admitted target"})
 			return j.finish(ctx, registry.Cancelled, step)
 		}

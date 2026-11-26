@@ -226,8 +226,15 @@ func (j *Job) confirmStatePoint(ctx context.Context, control rt.StatePointContro
 		if code == "" {
 			code = "NATIVE_OPERATION_ABORTED"
 		}
-		return j.finish(ctx, registry.Failed, registry.TransitionRequest{Effect: registry.EffectNone,
-			Error: JSON(map[string]string{"code": strings.TrimPrefix(code, "E_"), "message": point.Error})})
+		step := registry.TransitionRequest{Effect: registry.EffectNone,
+			Error: JSON(map[string]string{"code": strings.TrimPrefix(code, "E_"), "message": point.Error})}
+		if point.ActivationDecision == "commit" {
+			if kind != "restore_target" || receipt.Decision != "ABORT" || point.Stage != "aborted" || receipt.Execution != nil {
+				return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker has no fenced disposition for the committed StatePoint target"})
+			}
+			step.Effect, step.FencedActivationFailure = registry.EffectUnknown, true
+		}
+		return j.Failed(ctx, step)
 	}
 	if receipt.Phase != "COMPLETED" || !statePointDigestValid(point.ManifestDigest) || point.RepresentationID == "" {
 		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker did not prove the committed StatePoint root"})

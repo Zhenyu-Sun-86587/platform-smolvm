@@ -592,8 +592,13 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 	if r.State == RecoveryRequired {
 		op.Effect = EffectUnknown
 	}
+	fencedActivationFailure := r.FencedActivationFailure && r.State == Failed && r.Effect == EffectUnknown &&
+		len(op.Dispatch) != 0 && binding.RuntimeInstanceID != "" && binding.RuntimeBundleID != "" &&
+		(rt.IsNativeFork(op.Kind) || op.Kind == rt.VMRestore || op.Kind == "start") &&
+		!slices.ContainsFunc(op.Children, func(child OperationChild) bool { return child.State == "ready" })
 	if !oneOf(op.Effect, EffectNone, EffectApplied, EffectPartial, EffectUnknown) ||
-		(oneOf(r.State, Succeeded, Failed, Cancelled) && op.Effect == EffectUnknown) ||
+		(oneOf(r.State, Succeeded, Failed, Cancelled) && op.Effect == EffectUnknown && !fencedActivationFailure) ||
+		(r.FencedActivationFailure && !fencedActivationFailure) ||
 		(r.State == Cancelled && op.Effect != EffectNone) {
 		return Operation{}, fmt.Errorf("%w: invalid effect for operation state", ErrInvalid)
 	}
@@ -642,7 +647,7 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 			if _, err := tx.ExecContext(ctx, "UPDATE runtime_bindings SET status = 'retired' WHERE id = ?", binding.ID); err != nil {
 				return Operation{}, err
 			}
-			if op.Effect == EffectNone && op.BindingGeneration == 1 {
+			if (op.Effect == EffectNone || fencedActivationFailure && op.Kind == rt.VMRestore) && op.BindingGeneration == 1 {
 				if err := deleteMachine(ctx, tx, op.MachineID); err != nil {
 					return Operation{}, err
 				}

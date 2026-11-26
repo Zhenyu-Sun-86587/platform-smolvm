@@ -280,6 +280,9 @@ type TransitionRequest struct {
 	ReleaseSourceLock bool
 	ForkChildren      []ForkChildTransition
 	ForkRetryOrdinals []int
+	// FencedActivationFailure settles an unpublished native target whose Worker
+	// recorded commit before proving its exit. The guest-side effect is unknown.
+	FencedActivationFailure bool
 }
 
 type ForkChildTransition struct {

@@ -205,7 +205,7 @@ func (s *Store) BeginNativeForkRetryTx(ctx context.Context, tx *sql.Tx, id strin
 		return Operation{}, ErrRevision
 	}
 	if !rt.IsNativeFork(op.Kind) || !op.SourceLockReleased ||
-		!oneOf(op.State, Succeeded, Failed) || !oneOf(op.Effect, EffectNone, EffectPartial) || !json.Valid(dispatch) {
+		!oneOf(op.State, Succeeded, Failed) || !oneOf(op.Effect, EffectNone, EffectPartial, EffectUnknown) || !json.Valid(dispatch) {
 		return Operation{}, ErrOperationState
 	}
 	retryable := false

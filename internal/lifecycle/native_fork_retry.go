@@ -31,6 +31,7 @@ func (j *Job) reconcileForkRetry(ctx context.Context, query rt.NativeForkControl
 			return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker fork differs from the previously verified terminal result"})
 		}
 		intent.RetryFrom = &receipt
+		intent.rememberAbortedActivation(receipt)
 		if err := j.Stage(ctx, "worker_fork_retry", ""); err != nil {
 			return err
 		}
@@ -150,6 +151,7 @@ func (j *Job) confirmForkRetry(ctx context.Context, receipt rt.OperationReceipt)
 		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker retry has no new child attempt"})
 	}
 	intent.Receipt, intent.RetryRequested, intent.RetryFrom = &receipt, false, nil
+	intent.rememberAbortedActivation(receipt)
 	step.Dispatch = JSON(j.Intent)
 	if j.Op.Effect == registry.EffectNone {
 		step.Effect = registry.EffectUnknown
@@ -165,6 +167,8 @@ func (j *Job) rejectForkRetry(ctx context.Context, reason error) error {
 	state := registry.Failed
 	if j.Op.Effect == registry.EffectPartial {
 		state = registry.Succeeded
+	} else {
+		intent.setUnpublishedEffect(&step)
 	}
 	return j.finish(ctx, state, step)
 }
