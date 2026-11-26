@@ -48,11 +48,15 @@ func workerServiceBackend(ctx context.Context, socket string, binding registry.B
 
 func (s *Server) editWorkerService(ctx context.Context, j *lifecycle.Job, worker string) error {
 	if j.Op.Kind == "service_create" {
-		if _, _, err := workerServiceAttachment(ctx, worker, j.Binding); err != nil {
-			return err
-		}
 		svc, err := s.requestedService(j)
 		if err != nil {
+			return err
+		}
+		if j.Binding.PowerState == registry.PowerStopped && j.Binding.ExecutionEpoch == 0 && svc.Protocol == "vnc" {
+			if err := s.admitOfflineDesktopService(ctx, j, svc); err != nil {
+				return err
+			}
+		} else if _, _, err := workerServiceAttachment(ctx, worker, j.Binding); err != nil {
 			return err
 		}
 		return j.Done(ctx, registry.TransitionRequest{
@@ -95,4 +99,47 @@ func (s *Server) editWorkerService(ctx context.Context, j *lifecycle.Job, worker
 			return registry.AppendEvent(ctx, tx, "service", j.Op.MachineID, j.Op.ID, map[string]string{"service_id": request.ID}, false)
 		},
 	})
+}
+
+func (s *Server) admitOfflineDesktopService(ctx context.Context, j *lifecycle.Job, svc service) error {
+	notReady := &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "an offline desktop declaration requires a first-start System VNC profile and a private network"}
+	if svc.PublicHost != "" || svc.PublicPort != 0 {
+		return notReady
+	}
+	desktop, err := s.requiresDesktopSession(ctx, svc)
+	if err != nil {
+		return err
+	}
+	client, managed := lifecycle.PolicyClient(j.Runtime, j.Binding)
+	launcher, ok := j.Runtime.(rt.NativeLauncher)
+	if !desktop || !managed || !ok {
+		return notReady
+	}
+	machine, err := s.DB.GetMachine(ctx, svc.MachineID)
+	if err != nil {
+		return err
+	}
+	plan, err := s.FirstSystemLaunch(ctx, machine, j.Binding)
+	if err != nil {
+		return err
+	}
+	network := plan.Network
+	if network == nil || network.NetworkID == "" || network.RouteDomainID == "" || network.CIDR == "" {
+		return notReady
+	}
+	binding, err := launcher.DiscoverLaunchBinding(ctx, j.Binding.RuntimeName)
+	if err != nil {
+		return err
+	}
+	if binding.InstanceID != j.Binding.RuntimeInstanceObjectID || binding.IncarnationID != nil || binding.ExecutionEpoch != 0 {
+		return registry.ErrStaleObservation
+	}
+	status, err := s.ObservePolicy(ctx, j.Binding, client)
+	if err != nil {
+		return err
+	}
+	if !status.FirstLaunchSupported || status.Power != "STOPPED" || status.Execution() != lifecycle.WorkerExecution(j.Binding) {
+		return notReady
+	}
+	return nil
 }

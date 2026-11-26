@@ -60,6 +60,15 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	scope := WorkerExecution(b)
 	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
+	reauthorize := func() error {
+		if err := e.checkAccessPrincipal(ctx, p, b.MachineID); err != nil {
+			return err
+		}
+		if entry.Reauthorize != nil {
+			return entry.Reauthorize(ctx)
+		}
+		return nil
+	}
 	request := func(ctx context.Context, method, key string, args map[string]any, out *protectionReceipt) error {
 		args["principal"] = p.ID
 		args["protection_id"] = id
@@ -91,21 +100,31 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		}
 		scope = st.Execution()
 		if ack.ID == "" {
-			if err = e.checkAccessPrincipal(ctx, p, m.ID); err != nil {
+			if err = reauthorize(); err != nil {
 				return none, nil, err
 			}
-			if entry.Reauthorize != nil {
-				if err = entry.Reauthorize(ctx); err != nil {
-					return none, nil, err
-				}
-			}
+			args := map[string]any{"reason": entry.Trigger, "trigger": entry.Trigger,
+				"expected_binding_revision": st.Revision, "authorization_revision": 1, "endpoint_revision": entry.Revision}
 			if st.Power == "STOPPED" {
 				if !enteredStopped {
 					return none, nil, &Failure{Code: "STATE_CONFLICT", Message: "execution stopped while access was pending"}
 				}
-				policy, _ := e.DB.LifecyclePolicy(ctx, m.ID)
+				policy, err := e.DB.LifecyclePolicy(ctx, m.ID)
+				if err != nil {
+					return none, nil, err
+				}
 				if !policy.Desired.Wake.ColdStart {
 					return none, nil, &Failure{Code: "SERVICE_NOT_READY", Message: "cold wake is disabled"}
+				}
+				if st.Epoch == 0 {
+					if !st.FirstLaunchSupported {
+						return none, nil, &Failure{Code: "SERVICE_NOT_READY", Message: "this Worker requires an explicit first start"}
+					}
+					plan, err := e.FirstSystemLaunch(ctx, m, b)
+					if err != nil {
+						return none, nil, err
+					}
+					args["first_launch"] = plan
 				}
 			}
 			// A stable wake demand also covers an observed Running source that may
@@ -117,8 +136,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				}
 				release = e.connectionRelease(a, client)
 			}
-			err = request(ctx, "RequestWake", id+"-admit", map[string]any{"reason": entry.Trigger, "trigger": entry.Trigger,
-				"expected_binding_revision": st.Revision, "authorization_revision": 1, "endpoint_revision": entry.Revision}, &ack)
+			err = request(ctx, "RequestWake", id+"-admit", args, &ack)
 			if err != nil {
 				var fault *workerclient.Fault
 				if errors.As(err, &fault) && (fault.Code == "E_STALE_EXECUTION" || fault.Code == "E_STALE_REVISION") {
@@ -134,11 +152,13 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		if ack.State == "released" {
 			return none, nil, auth.ErrForbidden
 		}
-		if ack.Wake != "" && ack.Kind == "wake" && st.Power == "RUNNING" {
-			allowed := e.checkAccessPrincipal(ctx, p, m.ID)
-			if allowed == nil && entry.Reauthorize != nil {
-				allowed = entry.Reauthorize(ctx)
+		if ack.Kind == "wake" && st.Power != "RUNNING" {
+			if err = reauthorize(); err != nil {
+				return none, nil, err
 			}
+		}
+		if ack.Wake != "" && ack.Kind == "wake" && st.Power == "RUNNING" {
+			allowed := reauthorize()
 			err = request(ctx, "AuthorizeWakeActivation", fmt.Sprintf("%s-confirm-%d", id, ack.Revision), map[string]any{"expected_revision": ack.Revision,
 				"wake_operation": ack.Wake, "authorized": allowed == nil, "authorization_revision": 1, "endpoint_revision": entry.Revision}, &ack)
 			if allowed != nil {
@@ -177,13 +197,8 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				}
 				b = *fresh.CurrentBinding
 			}
-			if err = e.checkAccessPrincipal(ctx, p, m.ID); err != nil {
+			if err = reauthorize(); err != nil {
 				return none, nil, err
-			}
-			if entry.Reauthorize != nil {
-				if err = entry.Reauthorize(ctx); err != nil {
-					return none, nil, err
-				}
 			}
 			assigned = true
 			return b, release, nil

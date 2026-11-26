@@ -13,16 +13,17 @@ import (
 )
 
 type WorkerLifecycleStatus struct {
-	StatePoint  string   `json:"statepoint"`
-	Instance    string   `json:"instance_id"`
-	Incarnation string   `json:"incarnation_id"`
-	Epoch       int64    `json:"execution_epoch"`
-	Revision    int64    `json:"binding_revision"`
-	Applied     int64    `json:"applied_revision"`
-	Power       string   `json:"power"`
-	Suspended   bool     `json:"controlled_suspended"`
-	Blockers    []string `json:"blockers"`
-	Collectors  map[string]struct {
+	FirstLaunchSupported bool     `json:"first_launch_supported"`
+	StatePoint           string   `json:"statepoint"`
+	Instance             string   `json:"instance_id"`
+	Incarnation          string   `json:"incarnation_id"`
+	Epoch                int64    `json:"execution_epoch"`
+	Revision             int64    `json:"binding_revision"`
+	Applied              int64    `json:"applied_revision"`
+	Power                string   `json:"power"`
+	Suspended            bool     `json:"controlled_suspended"`
+	Blockers             []string `json:"blockers"`
+	Collectors           map[string]struct {
 		Session string `json:"session"`
 		Seq     int64  `json:"seq"`
 	} `json:"collectors"`

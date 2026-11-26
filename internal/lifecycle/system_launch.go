@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -50,6 +51,54 @@ func (request Create) ValidateSystemCreate() error {
 	return nil
 }
 
+func (e *Engine) systemLaunchSpec(ctx context.Context, request Create) (templates.Spec, error) {
+	template, err := e.DB.GetTemplate(ctx, request.TemplateID)
+	if err != nil {
+		return templates.Spec{}, err
+	}
+	spec, err := templates.ReadSpec(template)
+	if err != nil {
+		return spec, err
+	}
+	if spec.BootMode != rt.BootSystem {
+		return spec, registry.ErrInvalid
+	}
+	return spec, request.ValidateSystemCreate()
+}
+
+// FirstSystemLaunch derives the first launch from the accepted machine and its
+// authoritative offline attachments. The Worker still authorizes the actual slot.
+func (e *Engine) FirstSystemLaunch(ctx context.Context, m registry.Machine, b registry.Binding) (rt.LaunchParameters, error) {
+	if m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID || m.DeletedAt != nil ||
+		b.PowerState != registry.PowerStopped || b.ExecutionEpoch != 0 || b.IncarnationID != "" || b.RuntimeInstanceObjectID == "" {
+		return rt.LaunchParameters{}, registry.ErrStaleObservation
+	}
+	var request Create
+	if err := json.Unmarshal(m.Spec, &request); err != nil {
+		return rt.LaunchParameters{}, err
+	}
+	request.TemplateID = m.TemplateID
+	spec, err := e.systemLaunchSpec(ctx, request)
+	if err != nil {
+		return rt.LaunchParameters{}, err
+	}
+	return e.systemLaunchParameters(ctx, b, b.RuntimeInstanceObjectID, request, spec.RootGenerationID)
+}
+
+func (e *Engine) systemLaunchParameters(ctx context.Context, b registry.Binding, instance string, request Create, root string) (rt.LaunchParameters, error) {
+	route := rt.VolumeRoute{RuntimeInstanceID: b.RuntimeInstanceID, RuntimeBundleID: b.RuntimeBundleID}
+	attachments, err := volumes.LaunchDisks(ctx, e.DB.ReadDB(), b.MachineID, instance, route)
+	if err != nil {
+		return rt.LaunchParameters{}, err
+	}
+	disks := []rt.LaunchDisk{{AttachmentID: b.ID + "-root", DeviceID: "root", Role: "root", GenerationID: root}}
+	return rt.LaunchParameters{
+		Name: b.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
+		MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
+		Network: request.Network, LiveComputeGrowth: request.LiveComputeGrowth, Disks: append(disks, attachments...),
+	}, nil
+}
+
 func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError error) error {
 	launcher, ok := j.Runtime.(rt.NativeLauncher)
 	if routeError != nil || !ok || bindingRuntime(j.Binding).Legacy() {
@@ -70,18 +119,8 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 	if err := j.prepareDispatch(ctx); err != nil || j.Op.Terminal() {
 		return err
 	}
-	template, err := j.DB.GetTemplate(ctx, request.TemplateID)
+	spec, err := j.systemLaunchSpec(ctx, request)
 	if err != nil {
-		return j.fail(ctx, err)
-	}
-	spec, err := templates.ReadSpec(template)
-	if err != nil {
-		return j.fail(ctx, err)
-	}
-	if spec.BootMode != rt.BootSystem {
-		return j.fail(ctx, registry.ErrInvalid)
-	}
-	if err := request.ValidateSystemCreate(); err != nil {
 		return j.fail(ctx, err)
 	}
 	binding, err := launcher.DiscoverLaunchBinding(ctx, j.Binding.RuntimeName)
@@ -103,22 +142,11 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 		return j.Done(ctx, registry.TransitionRequest{Observation: &observation, Effect: registry.EffectApplied,
 			PromoteBinding: true, DesiredPower: "stopped", Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "boot_mode": rt.BootSystem})})
 	}
-	route := rt.VolumeRoute{RuntimeInstanceID: j.Binding.RuntimeInstanceID, RuntimeBundleID: j.Binding.RuntimeBundleID}
-	attachments, err := volumes.LaunchDisks(ctx, j.DB.ReadDB(), j.Op.MachineID, binding.InstanceID, route)
+	parameters, err := j.systemLaunchParameters(ctx, j.Binding, binding.InstanceID, request, spec.RootGenerationID)
 	if err != nil {
 		return j.fail(ctx, err)
 	}
-	disks := []rt.LaunchDisk{{AttachmentID: j.Binding.ID + "-root", DeviceID: "root", Role: "root", GenerationID: spec.RootGenerationID}}
-	disks = append(disks, attachments...)
-	intent := rt.LaunchSubmission{
-		OperationID: j.Op.ID, Expected: binding, Kind: rt.Launch,
-		Parameters: rt.LaunchParameters{
-			Name: j.Binding.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
-			MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
-			Network: request.Network, LiveComputeGrowth: request.LiveComputeGrowth,
-			Disks: disks,
-		},
-	}
+	intent := rt.LaunchSubmission{OperationID: j.Op.ID, Expected: binding, Kind: rt.Launch, Parameters: parameters}
 	intent.RequestDigest = launchDigest(intent)
 	j.Intent.Launch = &intent
 	if err := j.Stage(ctx, "worker_launch", "running"); err != nil {
