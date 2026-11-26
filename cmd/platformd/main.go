@@ -18,6 +18,7 @@ import (
 	"sandbox-platform/internal/backups"
 	"sandbox-platform/internal/config"
 	"sandbox-platform/internal/lifecycle"
+	"sandbox-platform/internal/nodes"
 	"sandbox-platform/internal/platformapi"
 	"sandbox-platform/internal/registry"
 	"sandbox-platform/internal/runtime"
@@ -119,6 +120,10 @@ func run() error {
 		}
 	}
 	c.Runtime.Custom = allowedRoutes
+	workers, err := nodes.Register(ctx, db, c.Nodes, custom)
+	if err != nil {
+		return err
+	}
 	engine := lifecycle.New(db, runtime.NewResolver(official, custom), c)
 	catalog, err := snapshots.Open(db, c)
 	if err != nil {
@@ -130,6 +135,8 @@ func run() error {
 	}
 	httpServer := &http.Server{Addr: c.API.Listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10}
 	go api.StartTCP(ctx)
+	nodesDone := make(chan struct{})
+	go func() { defer close(nodesDone); nodes.Run(ctx, workers) }()
 	backupDone := make(chan struct{})
 	go func() { defer close(backupDone); backups.Run(ctx, db, c, *cfg) }()
 	workerDone := make(chan struct{})
@@ -154,6 +161,7 @@ func run() error {
 	_ = httpServer.Close()
 	<-workerDone
 	<-backupDone
+	<-nodesDone
 	if errors.Is(result, http.ErrServerClosed) {
 		return nil
 	}

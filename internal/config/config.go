@@ -1,4 +1,4 @@
-// Package config loads operator-owned settings for the single-node platform.
+// Package config loads operator-owned settings for the platform.
 package config
 
 import (
@@ -17,6 +17,7 @@ import (
 )
 
 type Config struct {
+	Nodes         []Node `yaml:"nodes,omitempty"`
 	Version       int
 	TemplatesFile string `yaml:"templates_file"`
 	StateDir      string `yaml:"state_dir"`
@@ -192,6 +193,9 @@ func Load(path string) (Config, error) {
 		}
 		instances[route.InstanceID] = true
 		sockets[route.Socket] = true
+	}
+	if err := validateNodes(c.Nodes, instances); err != nil {
+		return c, err
 	}
 	if c.Storage.MinPercent < 0 || c.Storage.MinPercent > 100 || c.Lifecycle.Heavy < 1 || c.Gateway.MaxConnections < 1 || c.Gateway.MaxWaiters < 1 || c.Gateway.WaitSeconds < 1 {
 		return c, errors.New("invalid capacity settings")

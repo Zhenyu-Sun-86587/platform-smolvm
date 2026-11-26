@@ -86,6 +86,30 @@ func (e *Engine) FirstSystemLaunch(ctx context.Context, m registry.Machine, b re
 }
 
 func (e *Engine) systemLaunchParameters(ctx context.Context, b registry.Binding, instance string, request Create, root string) (rt.LaunchParameters, error) {
+	if b.WorkerID != "" && b.WorkerID != registry.LocalWorkerID {
+		template, err := e.DB.GetTemplate(ctx, request.TemplateID)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		root, err = e.DB.TemplateGeneration(ctx, b, template.ImageDigest)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		adapter, err := e.ForBinding(b)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		networks, ok := adapter.(interface {
+			ResolveLaunchNetwork(context.Context, *rt.LaunchNetwork) (*rt.LaunchNetwork, error)
+		})
+		if !ok {
+			return rt.LaunchParameters{}, rt.ErrUnsupported
+		}
+		request.Network, err = networks.ResolveLaunchNetwork(ctx, request.Network)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+	}
 	route := rt.VolumeRoute{RuntimeInstanceID: b.RuntimeInstanceID, RuntimeBundleID: b.RuntimeBundleID}
 	attachments, err := volumes.LaunchDisks(ctx, e.DB.ReadDB(), b.MachineID, instance, route)
 	if err != nil {

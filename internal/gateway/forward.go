@@ -86,10 +86,15 @@ type trackedConn struct {
 
 func (c trackedConn) Write(b []byte) (int, error) { c.started.Store(true); return c.Conn.Write(b) }
 func (c trackedConn) CloseWrite() error {
-	if t, ok := c.Conn.(*net.TCPConn); ok {
-		return t.CloseWrite()
+	return closeWrite(c.Conn)
+}
+
+func closeWrite(conn net.Conn) error {
+	half, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		return errors.New("service stream does not support closing its write side")
 	}
-	return nil
+	return half.CloseWrite()
 }
 
 func recheckWhileActive(ctx context.Context, check func(context.Context) error, denied func(error)) {
@@ -234,12 +239,12 @@ func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 				return
 			}
 			half = true
-			close(clientHalf)
-			e = conn.(*net.TCPConn).CloseWrite()
+			e = closeWrite(conn)
 			if e != nil {
 				result <- e
 				return
 			}
+			close(clientHalf)
 		}
 	}()
 	go func() {
