@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sandbox-platform/internal/registry"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/tasks"
 	"strings"
 	"time"
@@ -55,15 +56,19 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 			continue
 		}
 		if custom && b.RuntimeInstanceObjectID != "" {
+			var manager *tasks.Hello
+			if _, ok := adapter.(rt.NativeGuestControl); ok && b.ExecutionEpoch > 0 && b.PowerState == registry.PowerRunning {
+				manager = e.sampleNativeTasks(ctx, b)
+			}
 			if client, ok := PolicyClient(adapter, b); ok {
 				if e.ReconcileWorkerLeases != nil {
 					e.ReconcileWorkerLeases(ctx, b, client)
 				}
 				if status, err := e.ObservePolicy(ctx, b, client); err == nil {
 					if status.Decision != nil && status.Decision.Stage == "completed" && (status.Power == "HIBERNATED" || status.Epoch > b.ExecutionEpoch) {
-						_ = e.projectAutoPower(ctx, b, adapter, status, status.Decision.ID)
+						_ = e.projectAutoPower(ctx, b, adapter, status, status.Decision.ID, "")
 					}
-					e.reportActivity(ctx, m, b, adapter, client, status)
+					e.reportActivity(ctx, m, b, adapter, client, status, manager)
 				}
 			}
 			// Public machine metadata cannot identify a native execution epoch.

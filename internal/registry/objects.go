@@ -299,6 +299,11 @@ func canonicalJSON(raw json.RawMessage) ([]byte, error) {
 }
 
 func (s *Store) ObserveMachine(ctx context.Context, bindingID string, observation Observation) error {
+	return s.ObserveOwnedMachine(ctx, bindingID, "", observation)
+}
+
+// An operation can project its verified wake while it holds the machine lock.
+func (s *Store) ObserveOwnedMachine(ctx context.Context, bindingID, operationID string, observation Observation) error {
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -312,7 +317,7 @@ func (s *Store) ObserveMachine(ctx context.Context, bindingID string, observatio
 	if err != nil {
 		return err
 	}
-	if m.DeletedAt != nil || m.CurrentBinding == nil || m.CurrentBinding.ID != bindingID || m.ActiveOperationID != "" {
+	if m.DeletedAt != nil || m.CurrentBinding == nil || m.CurrentBinding.ID != bindingID || m.ActiveOperationID != operationID {
 		return ErrStaleObservation
 	}
 	changed, err := persistObservation(ctx, tx, binding, observation)

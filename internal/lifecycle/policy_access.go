@@ -17,6 +17,7 @@ type AccessEndpoint struct {
 	Trigger     string
 	Revision    int64
 	Reauthorize func(context.Context) error
+	operationID string
 }
 type protectionReceipt struct {
 	ID          string `json:"protection_id"`
@@ -148,12 +149,12 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 			}
 		}
 		if ack.Kind == "hold" && ack.State == "active" && ack.Incarnation == scope.IncarnationID && st.Power == "RUNNING" {
-			if b.ExecutionEpoch != scope.Epoch || b.IncarnationID != scope.IncarnationID {
+			if b.ExecutionEpoch != scope.Epoch || b.IncarnationID != scope.IncarnationID || b.PowerState != registry.PowerRunning {
 				adapter, err := e.ForBinding(b)
 				if err != nil {
 					return none, nil, err
 				}
-				if err = e.projectAutoPower(ctx, b, adapter, st, ack.Wake); err != nil && !errors.Is(err, registry.ErrStaleObservation) {
+				if err = e.projectAutoPower(ctx, b, adapter, st, ack.Wake, entry.operationID); err != nil && !errors.Is(err, registry.ErrStaleObservation) {
 					return none, nil, err
 				}
 				fresh, err := e.DB.GetMachine(ctx, m.ID)
@@ -194,7 +195,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 
 // Confirm a Worker automatic transition with the same native receipt and live
 // inventory used by explicit platform operations before updating the binding.
-func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapter rt.Adapter, st WorkerLifecycleStatus, operation string) error {
+func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapter rt.Adapter, st WorkerLifecycleStatus, operation, owner string) error {
 	control, ok := adapter.(rt.StatePointControl)
 	if !ok {
 		return rt.ErrUnsupported
@@ -219,9 +220,10 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		x := nativeObservation(b, b.ExecutionRef(), registry.PowerHibernated, "")
 		x.Native.HibernatedCapture = st.StatePoint
 		x.RuntimeIdentity = nil
-		return e.DB.ObserveMachine(ctx, b.ID, x)
+		return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 	}
-	if st.Power == "RUNNING" && st.Incarnation != "" && st.Epoch > b.ExecutionEpoch {
+	if st.Power == "RUNNING" && st.Incarnation != "" && (st.Epoch > b.ExecutionEpoch ||
+		(st.Epoch == b.ExecutionEpoch && st.Incarnation == b.IncarnationID && b.PowerState == registry.PowerStandby)) {
 		current, err := control.DiscoverExecution(ctx, b.RuntimeName)
 		if err != nil {
 			return err
@@ -236,6 +238,15 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		vm := inv.Execution
 		if vm.ExecutionRef != current || vm.BundleDigest != b.RuntimeBundleID || vm.Phase != "registered" || vm.PIDStartTime <= 0 || vm.PID <= 0 || vm.HostBootID == "" || inv.Inventory.SourceDisposition != "RUNNING" {
 			return registry.ErrStaleObservation
+		}
+		if current == b.ExecutionRef() {
+			if !inv.ManagedStandby() {
+				return registry.ErrStaleObservation
+			}
+			x := nativeObservation(b, current, registry.PowerRunning, b.RuntimeBundleID+"/"+inv.Inventory.Protocol)
+			x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
+			x.Native.ForkCapabilities = observedForkCapabilities(inv)
+			return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 		}
 		// A concurrent access can journal a newer authorization decision.
 		// The registered VMM identifies the actual launch or restore receipt.
@@ -263,7 +274,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		x.Native.VerifiedRestore = !x.Native.VerifiedLaunch
 		x.Native.ForkCapabilities = observedForkCapabilities(inv)
 		x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
-		return e.DB.ObserveMachine(ctx, b.ID, x)
+		return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 	}
 	return nil
 }

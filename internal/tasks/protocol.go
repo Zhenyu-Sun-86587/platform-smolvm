@@ -16,6 +16,7 @@ const (
 	SocketPath      = "/run/sandbox-taskd/control.sock"
 	BootstrapPath   = "/usr/local/sbin/sandbox-bootstrap"
 	TaskctlPath     = "/usr/local/bin/taskctl"
+	DefaultWorkDir  = "/workspace"
 	DefaultStateDir = "/var/lib/sandbox-taskd"
 	documentLimit   = 2 << 20
 )
@@ -120,6 +121,7 @@ type Hello struct {
 	Cgroup     bool     `json:"cgroup_v2_usable"`
 	Reason     string   `json:"reason,omitempty"`
 	Barrier    *Capture `json:"barrier,omitempty"`
+	Transition string   `json:"pending_transition,omitempty"`
 	Active     int      `json:"active"`
 	Unknown    int      `json:"unknown"`
 }

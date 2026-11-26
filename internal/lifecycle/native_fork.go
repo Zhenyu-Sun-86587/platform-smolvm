@@ -125,6 +125,7 @@ func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
 	j.Intent.Fork = &nativeForkIntent{
 		Submission: request, SourceDisks: inventory.ForkDisks(), SourceDisposition: registry.SourceDisposition(inventory.Inventory.SourceDisposition),
 	}
+	j.Intent.SourceTaskBinding = GuestBinding(j.Binding)
 	if err := j.Stage(ctx, "worker_fork", ""); err != nil {
 		return err
 	}
