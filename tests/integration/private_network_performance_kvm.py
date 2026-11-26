@@ -19,7 +19,6 @@ from managed_system_vsock import Platform, digest, wait_for
 
 
 PORT = 18133
-PROGRAM = "/run/private-network-performance.pl"
 CGROUP = Path("/sys/fs/cgroup")
 
 
@@ -50,16 +49,14 @@ def packet_counts(platform, endpoint):
     return {"rx": receive, "tx": send}
 
 
-def start_probe(platform, endpoint, program):
+def start_probe(platform, endpoint):
     ref = endpoint["execution"]
     addresses = json.loads(platform.guest(ref, ["ip", "-4", "-j", "address", "show", "scope", "global"]))
     address = endpoint["endpoint"]["guest_ipv4"]
     interface, = [link["ifname"] for link in addresses if any(addr["local"] == address for addr in link["addr_info"])]
     endpoint["interface"] = interface
-    platform.guest(ref, ["/bin/sh", "-ec", 'cat > "$1"', "owned", PROGRAM], stdin=program)
-    platform.guest(ref, ["/usr/bin/perl", "-c", PROGRAM])
-    platform.guest(ref, ["systemd-run", "--unit=wp22-private-network-performance", "/usr/bin/perl", PROGRAM,
-                         "server", str(PORT)])
+    endpoint["probe"] = platform.place_probe(ref, platform.args.probe)
+    platform.guest(ref, ["systemd-run", "--unit=wp22-private-network-performance", endpoint["probe"], "server", str(PORT)])
     wait_for(lambda: f":{PORT:04X}".encode() in platform.guest(ref, ["cat", "/proc/net/tcp"]))
     endpoint["vmm"] = vmm_identity(platform, endpoint)
 
@@ -75,7 +72,7 @@ def measure(platform, source, target, kind):
     started = time.monotonic_ns()
     cpu_before = {name: cpu_usec(machine) for name, machine in vmm.items()}
     answer = json.loads(platform.guest(source["execution"], [
-        "/usr/bin/perl", PROGRAM, kind, str(PORT), target["endpoint"]["private_ipv4"], source["endpoint"]["private_ipv4"],
+        source["probe"], kind, str(PORT), target["endpoint"]["private_ipv4"], source["endpoint"]["private_ipv4"],
     ]))
     cpu = {name: cpu_usec(machine) - cpu_before[name] for name, machine in vmm.items()}
     elapsed = time.monotonic_ns() - started
@@ -91,8 +88,9 @@ def measure(platform, source, target, kind):
         answer["p95_ns"] = nearest_rank(samples, 0.95)
     else:
         transfers = answer["transfers"]
-        assert len(transfers) == len({transfer["sha256"] for transfer in transfers}) == 3, answer
-        assert all(transfer["bytes"] == (4 << 20) and transfer["elapsed_ns"] > 0 for transfer in transfers), answer
+        assert [transfer["sequence"] for transfer in transfers] == [0, 1, 2], answer
+        assert all(transfer["verified"] and transfer["bytes"] == (4 << 20) and transfer["elapsed_ns"] > 0
+                   for transfer in transfers), answer
         sent_mib = sum(transfer["bytes"] for transfer in transfers) / (1 << 20)
         seconds = sum(transfer["elapsed_ns"] for transfer in transfers) / 1e9
         answer["payload_mib_per_second"] = sent_mib / seconds
@@ -102,10 +100,9 @@ def measure(platform, source, target, kind):
 
 
 def run(platform, network, mode):
-    program = (Path(__file__).resolve().parents[1] / "fixtures/private-network-performance.pl").read_text()
     first, second = [launch(platform, label, network, mode) for label in ("alpha", "beta")]
     for endpoint in (first, second):
-        start_probe(platform, endpoint, program)
+        start_probe(platform, endpoint)
     assert first["vmm"]["scope"] != second["vmm"]["scope"]
     assert first["mtu"] == second["mtu"] == 1500
     private = [endpoint["endpoint"]["private_ipv4"] for endpoint in (first, second)]
@@ -126,13 +123,13 @@ def run(platform, network, mode):
     worker_host = dict(available_vcpus=len(os.sched_getaffinity(0)), kernel=os.uname().release, machine=os.uname().machine,
                        cpu_model=cpu_model, virtualization=virtualization)
     witness(platform, "wp22-owned-network-performance", mode=mode, mtu=1500, worker_host=worker_host,
-            platformd=digest(platform.args.platformd), system_image=digest(platform.args.system_image),
+            platformd=digest(platform.args.platformd), system_image=digest(platform.args.system_image), probe=digest(platform.args.probe),
             endpoints=identity_info, directions=directions)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("bundle", "platformd", "system-image"):
+    for key in ("bundle", "platformd", "system-image", "probe"):
         parser.add_argument("--" + key, type=lambda path: Path(path).resolve(strict=True), required=True)
     parser.add_argument("--network-mode", choices=("native", "fixed_internal"), required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp"))
