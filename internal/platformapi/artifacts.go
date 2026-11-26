@@ -141,11 +141,13 @@ func (s *Server) artifactRoutes() {
 			}
 			kind := "snapshot_" + action
 			job := map[string]any{"snapshot_id": snap.ID}
+			var admitRuntime func(rt.BundleRoute, string) error
 			if snap.VM != nil {
 				if action != "delete" {
 					return rt.ErrUnsupported
 				}
-				if _, err := s.vmSnapshotWorker(snap); err != nil {
+				admitRuntime = func(rt.BundleRoute, string) error {
+					_, err := s.vmSnapshotWorker(snap)
 					return err
 				}
 				kind = rt.VMSnapshotDelete
@@ -167,7 +169,7 @@ func (s *Server) artifactRoutes() {
 			}
 			env := envelope(r, p, v)
 			job["revision"], job["verification"] = rev, v.Verification
-			op, _, err := s.DB.Accept(ctx, registry.AcceptRequest{Kind: kind, Request: lifecycle.JSON(job), Scope: env.Scope, Epoch: env.Epoch, Key: env.Key, PrincipalID: p.ID, CredentialID: p.CredentialID, Heavy: action == "verify"})
+			op, _, err := s.DB.Accept(ctx, registry.AcceptRequest{Kind: kind, Request: lifecycle.JSON(job), Scope: env.Scope, Epoch: env.Epoch, Key: env.Key, PrincipalID: p.ID, CredentialID: p.CredentialID, Heavy: action == "verify", AdmitRuntime: admitRuntime})
 			if err != nil {
 				return err
 			}

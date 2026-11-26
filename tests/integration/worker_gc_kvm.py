@@ -270,6 +270,20 @@ def run(platform):
           "replayed tombstone automatically; inode removed; final revision", deleted_row["revision"],
           "no live references; template bytes retained", flush=True)
 
+    config = platform.root / "platform.json"
+    settings = json.loads(config.read_text())
+    settings["runtime"]["custom"] = []
+    config.write_text(json.dumps(settings))
+    platform.restart()
+    replay = platform.app(snapshot_url, "DELETE", {}, headers, status=202)
+    assert replay["operation_id"] == deleted["operation_id"] and replay["state"] == "succeeded", replay
+    conflict = platform.app(snapshot_url, "DELETE", {}, {**headers, "If-Match": f'"{revision + 1}"'}, status=409)
+    assert conflict["error"]["code"] == "IDEMPOTENCY_CONFLICT", conflict
+    fresh = platform.app(snapshot_url, "DELETE", {}, {**headers, "Idempotency-Key": "a05-new-delete"}, status=409)
+    assert fresh["error"]["code"] == "NOT_SUPPORTED", fresh
+    print("Retired the runtime route and restarted platformd; the original DELETE returned its completed",
+          "receipt, the same key rejected a changed revision and a fresh DELETE required the original route", flush=True)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

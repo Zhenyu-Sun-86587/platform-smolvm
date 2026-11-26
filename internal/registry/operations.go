@@ -266,7 +266,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	if route != (rt.BundleRoute{}) || rt.FullStateOperationCapability(r.Kind) != "" {
+	// Snapshot deletion checks the route recorded on the snapshot, independently
+	// of a machine binding. An existing receipt survives retirement of that route.
+	if route != (rt.BundleRoute{}) || rt.FullStateOperationCapability(r.Kind) != "" || r.Kind == rt.VMSnapshotDelete {
 		if r.AdmitRuntime == nil {
 			return Operation{}, false, rt.ErrUnsupported
 		}

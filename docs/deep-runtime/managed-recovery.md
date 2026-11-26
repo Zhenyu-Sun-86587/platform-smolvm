@@ -48,6 +48,8 @@ Chromium 使用常规 Tasks 页，在原本没有 `/workspace` 的 Debian 镜像
 
 最终开发 Bundle 为 `sha256:fce5eef7a49ffdf7256c193963dd261f743a0e27e12526f95b9c94c1b699d3d5`，reader 为 `development-resource-gc-v2`，Worker 为 `sha256:2458d27a6e430500522704263a9cc753802b38c2eaf8a0f34c18b0450fd572da`。该次共享块 inode 318792 实占 2,760,704 字节，并发围栏拒绝 60 次。删除 checkpoint 回收了 55 个只被它引用的 chunk，休眠根继续保留 57 个共享 chunk，直至旧休眠根释放。Worker 将原 tombstone 的修订 3 推进到删除后的修订 4。原始记录在 `.build/release-d8cc5d5/worker-gc-a05-kvm-v6.log`（SHA-256 `f8f42ecd16d589c0e050facbac106f9994d423d1168db7d44382d2300ddfbc05`）。
 
+另一次完整复测在资源回收后从平台配置移除原运行时并重启 platformd。同凭据、幂等键与修订返回原先成功的删除操作。复用该键修改修订得到 `IDEMPOTENCY_CONFLICT`，新键提交则得到 `NOT_SUPPORTED`。平台先核对回执，再为新操作检查原 Worker 路由。记录为 `.build/wp23/a05-route-retirement-kvm-v2.log`（SHA-256 `bca24be727c8e22fbf0789eb74be207b87ad1b5597007f85e35c3301c00eda3d`）。
+
 复现使用开发 Worker 与匹配的 platformd。独立网络和挂载命名空间、临时存储目录及专用 systemd slice 由夹具创建。测试库只装入此次 Worker，依据块文件的精确路径设置崩溃切点。
 
 ```sh
