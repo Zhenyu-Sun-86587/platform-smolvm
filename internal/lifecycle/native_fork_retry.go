@@ -16,6 +16,7 @@ func (e *Engine) RetryNativeFork(ctx context.Context, tx *sql.Tx, op registry.Op
 		return registry.Operation{}, registry.ErrOperationState
 	}
 	intent.Fork.RetryRequested = true
+	intent.Fork.CancelRequested = false
 	intent.Stage = "fork_retry"
 	return e.DB.BeginNativeForkRetryTx(ctx, tx, op.ID, version, JSON(intent))
 }

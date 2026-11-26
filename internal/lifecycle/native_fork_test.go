@@ -16,6 +16,7 @@ type forkRuntime struct {
 	references  map[string]rt.ExecutionRef
 	forkReceipt rt.OperationReceipt
 	retries     int
+	cancels     int
 }
 
 func (n *forkRuntime) DiscoverExecution(_ context.Context, name string) (rt.ExecutionRef, error) {
@@ -84,8 +85,25 @@ func (n *forkRuntime) RetryFork(_ context.Context, id string, control rt.ForkCon
 	return rt.OperationReceipt{}, rt.ErrUnavailable
 }
 
-func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
-	ctx := context.Background()
+func (n *forkRuntime) CancelFork(_ context.Context, id string, control rt.ForkControl) (rt.OperationReceipt, error) {
+	if id != n.forkReceipt.OperationID || control.RequestDigest != n.forkReceipt.RequestDigest ||
+		control.Expected != n.references["source"] || control.ExpectedRevision != n.forkReceipt.Revision {
+		return rt.OperationReceipt{}, rt.ErrInvalid
+	}
+	n.cancels++
+	n.forkReceipt.Revision++
+	for i := range n.forkReceipt.Fork.Children {
+		child := &n.forkReceipt.Fork.Children[i]
+		if child.Phase == "NEW" {
+			child.Cancelled, child.Phase = true, "ABORTED"
+		}
+	}
+	n.forkReceipt.Phase, n.forkReceipt.Fork.Stage = "COMPLETED", "complete"
+	return rt.OperationReceipt{}, rt.ErrUncertain
+}
+
+func nativeForkFixture(t *testing.T, ctx context.Context) (*Engine, *forkRuntime, registry.AcceptRequest) {
+	t.Helper()
 	official := &createRuntime{}
 	engine, owner, epoch := runtimeTestEngine(t, ctx, official)
 	engine.Config.StateDir = t.TempDir()
@@ -113,6 +131,13 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 	request := registry.AcceptRequest{Kind: rt.ForkBatch, PrincipalID: owner, Epoch: epoch, Key: "fork-key", Scope: "POST /v1/machines/source/fork-batches",
 		MachineID: "source", ExpectedGeneration: 1, Heavy: true, Request: json.RawMessage(`{"children":[{"name":"first"},{"name":"second"}]}`),
 		ForkChildren: []string{"first", "second"}, AdmitRuntime: engine.AdmitRuntime, AdmitNative: engine.AdmitNativeFork}
+	return engine, worker, request
+}
+
+func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
+	ctx := context.Background()
+	engine, worker, request := nativeForkFixture(t, ctx)
+	db, owner, epoch := engine.DB, request.PrincipalID, request.Epoch
 	accepted, _, err := db.Accept(ctx, request)
 	if err != nil || len(accepted.Children) != 2 {
 		t.Fatal(accepted, err)
@@ -192,5 +217,85 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 	}
 	if _, replay, err := db.Mutate(ctx, envelope, apply); err != nil || !replay {
 		t.Fatal(replay, err)
+	}
+}
+
+func TestNativeForkCancellationOwnsOnlyUncommittedTargets(t *testing.T) {
+	for _, stage := range []string{"preflight", "children", "partial"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx := context.Background()
+			engine, worker, req := nativeForkFixture(t, ctx)
+			db := engine.DB
+			op, _, err := db.Accept(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := func() registry.Operation {
+				t.Helper()
+				got, err := db.GetOperation(ctx, op.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			drive := func() {
+				t.Helper()
+				if err := engine.drive(ctx, read()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "preflight" {
+				_, err = db.Transition(ctx, op.ID, registry.TransitionRequest{State: registry.Dispatching,
+					Stage: "preflight", Dispatch: JSON(Intent{Stage: "preflight"})})
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				drive()
+				if stage == "children" {
+					worker.forkReceipt.Fork.Children[0].Phase = "NEW"
+				}
+				drive()
+				drive()
+			}
+			current := read()
+			envelope := registry.MutationRequest{PrincipalID: req.PrincipalID, Epoch: req.Epoch, Key: "cancel",
+				Scope: "POST /v1/operations/" + op.ID + "/cancel", Request: JSON(struct{}{}), ExpectedRevision: current.Version}
+			apply := func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+				out, err := engine.CancelNativeForkTx(ctx, tx, op.ID, current.Version)
+				return registry.MutationResult{Response: JSON(out)}, err
+			}
+			first, replay, err := db.Mutate(ctx, envelope, apply)
+			if err != nil || replay {
+				t.Fatal(err, replay)
+			}
+			if stage != "preflight" {
+				if read().Stage != "fork_cancel_requested" || engine.drive(ctx, read()) != rt.ErrUncertain {
+					t.Fatal(read())
+				}
+				engine = New(db, engine.runtimes, engine.Config)
+				drive()
+			}
+			final := read()
+			if stage == "partial" {
+				if final.State != registry.Succeeded || final.Effect != registry.EffectPartial || final.Children[0].State != "ready" ||
+					final.Children[0].MachineID != op.Children[0].MachineID || final.Children[1].ErrorCode != "FORK_CHILD_CANCELLED" {
+					t.Fatal(final)
+				}
+			} else if final.State != registry.Cancelled || final.Effect != registry.EffectNone {
+				t.Fatal(final)
+			}
+			wantCalls := 1
+			if stage == "preflight" {
+				wantCalls = 0
+			}
+			if worker.submissions != wantCalls || worker.cancels != wantCalls {
+				t.Fatal(worker.submissions, worker.cancels)
+			}
+			last, replay, err := db.Mutate(ctx, envelope, apply)
+			if err != nil || !replay || string(last) != string(first) {
+				t.Fatal(err, replay, string(last))
+			}
+		})
 	}
 }

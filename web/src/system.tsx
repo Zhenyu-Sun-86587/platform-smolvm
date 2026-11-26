@@ -67,6 +67,9 @@ function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">)
 }
 
 function OperationDetail({ item, actions }: { item: Operation; actions: Actions }) {
+  const activeFork = (item.kind === "fork_batch" || item.kind === "independent_fork") &&
+    (item.state === "dispatching" || item.state === "observing") && item.children?.some(child => child.state === "pending") &&
+    !["fork_cancel_requested", "fork_retry", "worker_fork_retry"].includes(item.stage)
   return <>
     <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition, source_lock_released: item.source_lock_released }} />
     {item.error && <div className="callout" role="alert"><strong>{item.error.code}</strong><span>{item.error.message}</span><span>Effect {item.error.effect ?? item.effect}</span>{item.error.retry && <span>Retry {label(item.error.retry)}</span>}</div>}
@@ -91,10 +94,11 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
         title: "Reconcile operation", description: "Observe the current state and resume reconciliation for this operation.",
         act: () => actions.mutate(operation(item.operation_id) + "/reconcile")
       })}>Reconcile</button>
-      {item.state === "queued" && <button onClick={() => actions.dialog({
-        title: "Cancel queued operation", destructive: true,
+      {(item.state === "queued" || activeFork) && <button onClick={() => actions.dialog({
+        title: activeFork ? "Cancel pending fork targets" : "Cancel queued operation", destructive: true,
+        description: activeFork ? "The Worker will cancel targets that have not committed. You can follow each target in this operation." : undefined,
         act: () => actions.mutate(operation(item.operation_id) + "/cancel")
-      })}>Cancel operation</button>}
+      })}>{activeFork ? "Cancel pending targets" : "Cancel operation"}</button>}
     </div>
   </>
 }

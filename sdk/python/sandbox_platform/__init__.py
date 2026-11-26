@@ -170,6 +170,9 @@ class Client:
             revision = self.get(path)["revision"]
         return self.mutate(path + "/retry", revision=revision, intent=intent)
 
+    def cancel_operation(self, operation_id, *, revision=None, intent=None):
+        return self.mutate(_item("operations", operation_id) + "/cancel", revision=revision, intent=intent)
+
     def list_backup_policies(self):
         return self.pages("backups/policies")
 

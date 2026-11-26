@@ -59,6 +59,17 @@ func (s *Server) operationsRoutes() {
 					return registry.MutationResult{}, registry.ErrOperationState
 				}
 				if act == "cancel" {
+					if rt.IsNativeFork(op.Kind) {
+						var version int64
+						if r.Header.Get("If-Match") != "" {
+							version, err = revision(r)
+							if err != nil {
+								return registry.MutationResult{}, err
+							}
+						}
+						updated, err := s.CancelNativeForkTx(ctx, tx, id, version)
+						return registry.MutationResult{Response: lifecycle.JSON(updated)}, err
+					}
 					if op.Kind == "wake" {
 						return registry.MutationResult{}, &lifecycle.Failure{Code: "OPERATION_IN_PROGRESS", Message: "shared wake remains owned by lifecycle worker"}
 					}
