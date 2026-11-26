@@ -323,8 +323,21 @@ def gate_case(platform, phase, with_container):
         response = platform.guest(target, ["/usr/bin/perl", PROGRAM, "request", token]).decode().strip().split("\t")
         assert response[0] == token and tuple(response[2:]) == expected, response
         receipt = [ip, *response]
-        wait_for(lambda: receipt in rows(), timeout=8)
-        return receipt
+
+        def received():
+            matches = [entry for entry in rows() if entry[1] == token]
+            if matches:
+                assert matches == [receipt], (matches, receipt)
+                return matches[0]
+
+        try:
+            return wait_for(received, timeout=8)
+        except TimeoutError:
+            recent = [entry for entry in rows() if entry[0] == ip][-4:]
+            print("Owned loopback completed without collector receipt", json.dumps({
+                "expected": receipt, "recent_from_sender": recent,
+            }), flush=True)
+            raise
 
     wait_for(lambda: any(row[0] == source_ip for row in rows()), retry=(RuntimeError, OSError))
     before = round_trip(ref, source_ip, old_identity)
@@ -368,18 +381,29 @@ def gate_case(platform, phase, with_container):
 
     with catalog_reader(platform) as db:
         failed = child_state(db, accepted["operation_id"], TARGET_ORDINAL)
-        leases = db.execute("SELECT state FROM network_tap_leases WHERE incarnation_id=?", (
-            cut["before"]["incarnation_id"],
-        )).fetchall()
+        key = (cut["before"]["incarnation_id"], cut["before"]["execution_epoch"])
+        leases = db.execute("""
+            SELECT t.state, k.lease_id IS NOT NULL AS published FROM network_tap_leases t
+            LEFT JOIN network_kernel_receipts k USING(lease_id)
+            WHERE t.incarnation_id=? AND t.execution_epoch=?
+        """, key).fetchall()
+        grants = db.execute("SELECT state FROM writer_grants WHERE incarnation_id=? AND execution_epoch=?", key).fetchall()
+        reserved = db.execute("SELECT COUNT(*) FROM writer_reservations WHERE incarnation_id=? AND execution_epoch=?", key).fetchone()[0]
     failed_child = finished["children"][TARGET_ORDINAL]
     assert finished["state"] == "failed" and finished["effect"] == "none", finished
     assert failed_child["state"] in ("failed", "quarantined") and failed["operation_phase"] == "ABORTED", finished
     assert failed["process_phase"] == "exited" and failed["phase"] != "released", dict(failed)
-    assert all(lease["state"] == "retired" for lease in leases), [dict(lease) for lease in leases]
+    assert leases and all(lease["state"] == "retired" and not lease["published"] for lease in leases), [dict(lease) for lease in leases]
+    assert grants and all(grant["state"] == "released" for grant in grants) and reserved == 0, (grants, reserved)
     visible = platform.app("machines")["items"]
     assert not any(item.get("machine_id") == failed_child.get("machine_id") for item in visible), visible
     cut_ip = str(ipaddress.IPv4Address(cut["before"]["address"]))
     assert all(row[0] != cut_ip for row in rows()), "collector saw I/O from failed target"
+    print("Owned activation settled", json.dumps({
+        "phase": phase, "operation_id": accepted["operation_id"], "target": dict(failed),
+        "leases": [dict(lease) for lease in leases], "grants": [dict(grant) for grant in grants],
+        "source_disposition": finished["source_disposition"], "effect": finished["effect"],
+    }, sort_keys=True), flush=True)
 
     completed = platform.complete(fork_one("owned positive target", "owned-gate-positive"))
     assert completed["source_lock_released"] and completed["source_disposition"] == "RUNNING", completed
@@ -390,9 +414,9 @@ def gate_case(platform, phase, with_container):
     assert all(old != new for old, new in zip(old_identity, new_identity, strict=True)), (old_identity, new_identity)
     child_ip = endpoint(platform, child["machine_id"])["private_ipv4"]
     assert child_ip not in (source_ip, collector)
-    received = round_trip(target, child_ip, new_identity)
-    first_child = next(row for row in rows() if row[0] == child_ip)
+    first_child = wait_for(lambda: next((row for row in rows() if row[0] == child_ip), None), timeout=8)
     assert tuple(first_child[3:]) == new_identity and int(first_child[2]) > 1, first_child
+    received = round_trip(target, child_ip, new_identity)
     if with_container:
         status = container_status(platform, target)
         assert status[0] == original[0] and status[1] > original[1], (original, status)
@@ -401,6 +425,7 @@ def gate_case(platform, phase, with_container):
         assert first == next(row for row in rows() if row[0] == child_ip and row[1].startswith("container-"))
         assert int(first[2]) > int(container_proof["source_before"][2]), (first, container_proof)
         container_proof["child_first_external"] = first
+    assert all(row[0] != cut_ip for row in rows()), "collector saw I/O from failed target"
     print("Owned activation witness", json.dumps({
         "phase": phase, "bundle_digest": platform.bundle_id, "effect": finished["effect"],
         "operation_id": accepted["operation_id"], "positive_operation_id": completed["operation_id"],
