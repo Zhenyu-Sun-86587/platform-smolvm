@@ -352,6 +352,8 @@ def gate_case(platform, phase, with_container, cut_timeout):
                                                 "-p", "ActiveState", "-p", "ExecMainStatus"]),
                 "sender_routes": observe(target, ["ip", "-4", "route"]),
                 "sender_neighbors": observe(target, ["ip", "neigh"]),
+                "sender_link": observe(target, ["ip", "-s", "link", "show", "dev", "eth0"]),
+                "sender_queue": observe(target, ["tc", "-s", "qdisc", "show", "dev", "eth0"]),
                 "collector_unit": observe(observer_ref, ["systemctl", "show", "owned-gate-collector",
                                                          "-p", "ActiveState", "-p", "ExecMainStatus"]),
                 "collector_bytes": observe(observer_ref, ["wc", "-c", RECEIPTS]),
@@ -447,7 +449,15 @@ def gate_case(platform, phase, with_container, cut_timeout):
     assert child_ip not in (source_ip, collector)
     first_child = wait_for(lambda: next((row for row in rows() if row[0] == child_ip), None), timeout=8)
     assert tuple(first_child[3:]) == new_identity and int(first_child[2]) > 1, first_child
-    received = round_trip(target, child_ip, new_identity)
+    # A restored sender can deliver its first packets and stall after a few TX completions.
+    began = time.monotonic()
+    child_replies = [round_trip(target, child_ip, new_identity)]
+    for _ in range(2):
+        time.sleep(6)
+        reply = round_trip(target, child_ip, new_identity)
+        assert int(reply[2]) > int(child_replies[-1][2]), (child_replies[-1], reply)
+        child_replies.append(reply)
+    elapsed = time.monotonic() - began
     if with_container:
         status = container_status(platform, target)
         assert status[0] == original[0] and status[1] > original[1], (original, status)
@@ -461,7 +471,8 @@ def gate_case(platform, phase, with_container, cut_timeout):
         "phase": phase, "bundle_digest": platform.bundle_id, "effect": finished["effect"],
         "operation_id": accepted["operation_id"], "positive_operation_id": completed["operation_id"],
         "source": identity(ref), "child": identity(target),
-        "source_loopback": parent, "child_loopback": received, "child_first_external": first_child,
+        "source_loopback": parent, "child_loopback": child_replies[0], "child_first_external": first_child,
+        "child_continuity": {"duration_seconds": round(elapsed, 3), "receipts": child_replies},
         "failed_address": cut_ip, "failed_activation": failed["phase"], "failed_receipts": 0,
         **({"container": container_proof} if with_container else {}),
     }, sort_keys=True), flush=True)
