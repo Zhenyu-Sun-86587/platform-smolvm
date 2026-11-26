@@ -127,7 +127,7 @@
 | A22 | 冻结安装、开发实机、本地测试，部分 | 桌面单次票据交付真实 framebuffer。Worker 确认原生运行租约后 API 才返回会话；延迟确认、丢失确认、授权撤回、到期和平台进程重启均实测。休眠后旧会话受围栏，新授权请求经现有服务唤醒策略连接原 Xvfb，Chromium noVNC 显示原画面。Guest grant 撤销立即截断进行中的 SSE。 `.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log`、`TestDesktopSessionFencesCredentialsAndExpiresLease` | 服务 revision 和证书撤销与活流进展同时发生时，分别核对新旧 HTTP、mTLS、SSH 后端以及旧 epoch。 |
 | A23 | 开发实机，原生引用、并发与发布恢复通过 | Native 用同一 run 跨 Worker 和 platformd 中断备份原 checkpoint、休眠点与独立卷。并发公开删除后 Worker 引用继续保护原数据。暂存缺块和原 reader 缺失均保留已验证备份。关闭及删除旧源后在新 Worker 恢复原 RAM、根盘、独立卷和 Native `/32`。1017 在途备份升级到 1018 后保持两路原选择。六组 ext4 发布和保留中断已通过。既有 Native、FixedInternal 实测还覆盖错误密钥、等长篡改、服务 PID、隔离网络与非管理员注册拒绝。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | 在下一冻结包分别复跑 Native 与 FixedInternal 的交接中断。 |
 | A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
-| A25 | 开发实机，部分 | 两路 Serve 共用实际 cgroup slice 和 Worker 预算，六路并发启动被拒，受保护 VM 保持。混合 Bundle 另核对两个真实 VMM scope 与共用 writer/IPAM。 `.build/worker-pressure-kvm-v5.log`、`.build/wp23/tracked-coexistence-kvm.log` | 反向启动顺序、并发 Fork/Restore 风暴和各 Bundle 的共享/私有内存统计。 |
+| A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
 | A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | dirty 集合闭包、rebase、预取/共享缓存的独立对照，以及网络存储和更高并发。 |
 
@@ -166,6 +166,21 @@
 升级到 `0.3.0-dev.5c4d060` 的 schema 1019 时，独立复跑了两组测试。候选发行清单 SHA-256 为 `c49ff28f52b40098bbb4a61d33cf981bd9445c9ec0a9823ef1990afa4618baf5`。迁移中断及新旧发行件分别恢复的记录为 `.build/wp23/a24-schema1019-registry-ext4.log`（SHA-256 `3cc82df393194944e24a173b32cb36b229464c7d695929839063e928b775e3f0`）。整机的官方 Serve PID 421 跨平台升级保持。同步后终止整机，新 boot ID 从 `0b4f0997-c02a-43fa-84ae-b3e3c07f5b91` 变为 `c224be91-ffae-4401-815f-eb4e797be616`，原 owner 和两份备份仍通过。记录为 `.build/wp23/a24-systemd-powercycle-1019.log`（SHA-256 `b7df463cb2640c6ce9fc86ed4f62a73c23a80a882bb8e178f1999c671577b7ef`）。
 
 候选 `0.3.0-dev.83b3d29` 再次通过旧安装器升级和整机掉电重启。公开升级过程中原官方 Serve PID 421 持续运行。新 boot 从原 ext4 目录启动后仍为 schema 1019，原数据库 inode、安装标识、控制代次、owner 和两份备份清单均通过核验。发行清单 SHA-256 为 `b2b253dc1fc6d463293070a7caff189c26c41f11b547fcf3110fb37ba6bac7a4`。整机记录 `.build/wp23/a24-systemd-powercycle-83b3d29.log` 的 SHA-256 为 `8de0351f5525697aeede82a4348277308f8f552cbf5ad1d2363f5a471fd2fc9d`。
+
+### A25 两个冻结 Bundle 的共享预算
+
+在两个独立的 systemd 管理器中分别验证两种 Serve 启动顺序，都使用 `fb69434` 安装目录中的同一 Worker（SHA-256 `0c6454b969bd304fb98668ff963b9dc4a2b3703acd4228ea9762b8cd326f7d9c`）。各 Serve 的 reader、Bundle、运行二进制摘要和 vCPU 进程的 cgroup 均实测。共用账本记录 3 vCPU、896 MiB 和 32 MiB 存储。每次启动第二台 VM 时，slice 的常驻用量至少增长 16 MiB，两个 Serve 均保留原有 cgroup 配置。
+
+每组均创建两个持久 checkpoint。并发导出争用同一存储额度，完成与取消分别归还一次预留。压力下，两路 Serve 各收到一次正常启动、一次双子 Fork 和一次从自己 checkpoint 恢复的请求。两次各六个并发请求全部受限流，受保护的原 VMM 存活，分配额与请求前相同。
+
+| 启动顺序 | Bundle | VMM PSS MiB | 私有映射 MiB | 共享映射 MiB |
+| --- | --- | ---: | ---: | ---: |
+| fb69434 → 86dae32 | fb69434 | 46.07 | 42.51 | 9.45 |
+| fb69434 → 86dae32 | 86dae32 | 47.12 | 43.52 | 9.54 |
+| 86dae32 → fb69434 | 86dae32 | 42.83 | 39.29 | 9.41 |
+| 86dae32 → fb69434 | fb69434 | 45.07 | 41.38 | 9.75 |
+
+各 VMM 的 `smaps_rollup` 提供上表。共享映射按进程分别观测，同一共享页可能出现在多行。两组 slice 的 `memory.current` 分别为 181,919,744 和 162,844,672 字节。原始记录为 `.build/wp23/a25-two-orders-forward-v1.log`（SHA-256 `2df07907b602a430684c5c9e5b26ce13cdee90c441b6fc24de1d21c1bcd4f19c`）和 `a25-two-orders-reverse-v1.log`（`8547f3384df5e447254d81ab7253087f2f053cbb48f6712ece2a9f42968775db`）。
 
 ### A26 同平台的双运行时
 
