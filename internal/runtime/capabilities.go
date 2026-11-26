@@ -76,6 +76,9 @@ func FullStateCapabilities(official bool) map[string]Capability {
 		"network.native_reidentity": c,
 		"boot.system_state_restore": c,
 	}
+	if !official {
+		result[NativePowerCapability("stop")] = c
+	}
 	for _, kind := range []string{Standby, Hibernate, IndependentFork, ForkBatch, VMSnapshot, VMRestore, VMRollback} {
 		result[FullStateOperationCapability(kind)] = c
 	}

@@ -58,6 +58,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	}
 	ack := protectionReceipt{}
 	scope := WorkerExecution(b)
+	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
 	request := func(ctx context.Context, method, key string, args map[string]any, out *protectionReceipt) error {
 		args["principal"] = p.ID
@@ -99,6 +100,9 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				}
 			}
 			if st.Power == "STOPPED" {
+				if !enteredStopped {
+					return none, nil, &Failure{Code: "STATE_CONFLICT", Message: "execution stopped while access was pending"}
+				}
 				policy, _ := e.DB.LifecyclePolicy(ctx, m.ID)
 				if !policy.Desired.Wake.ColdStart {
 					return none, nil, &Failure{Code: "SERVICE_NOT_READY", Message: "cold wake is disabled"}
@@ -261,6 +265,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		x := nativeObservation(b, current, registry.PowerRunning, profile)
 		x.Native.VerifiedLaunch = op.Kind == "launch"
 		x.Native.VerifiedRestore = !x.Native.VerifiedLaunch
+		x.Native.StopBarrier = &inv.Inventory.StopBarrier
 		x.Native.ForkCapabilities = observedForkCapabilities(inv)
 		x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 		return e.DB.ObserveMachine(ctx, b.ID, x)

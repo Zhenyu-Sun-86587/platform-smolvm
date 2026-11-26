@@ -60,6 +60,10 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 					e.ReconcileWorkerLeases(ctx, b, client)
 				}
 				if status, err := e.ObservePolicy(ctx, b, client); err == nil {
+					if status.Power == "STOPPED" && b.PowerState == registry.PowerStopped && status.Execution() == WorkerExecution(b) {
+						_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ExpectedExecutionEpoch: &b.ExecutionEpoch})
+						continue
+					}
 					if status.Decision != nil && status.Decision.Stage == "completed" && (status.Power == "HIBERNATED" || status.Epoch > b.ExecutionEpoch) {
 						_ = e.projectAutoPower(ctx, b, adapter, status, status.Decision.ID)
 					}

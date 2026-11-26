@@ -42,7 +42,13 @@ func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.Client, 
 	return workerclient.Client{Socket: p.LifecycleWorkerSocket(), Bundle: b.RuntimeBundleID}, true
 }
 func WorkerExecution(b registry.Binding) workerclient.Execution {
-	return workerclient.Execution{InstanceID: b.RuntimeInstanceObjectID, IncarnationID: b.IncarnationID, Epoch: b.ExecutionEpoch}
+	incarnation := b.IncarnationID
+	if b.PowerState == registry.PowerStopped {
+		// The registry keeps the last incarnation for history. A stopped
+		// Worker slot has no live incarnation at that same epoch.
+		incarnation = ""
+	}
+	return workerclient.Execution{InstanceID: b.RuntimeInstanceObjectID, IncarnationID: incarnation, Epoch: b.ExecutionEpoch}
 }
 func (s WorkerLifecycleStatus) Execution() workerclient.Execution {
 	return workerclient.Execution{InstanceID: s.Instance, IncarnationID: s.Incarnation, Epoch: s.Epoch}

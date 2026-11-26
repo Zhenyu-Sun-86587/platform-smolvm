@@ -397,15 +397,18 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 				ref.ExecutionEpoch > old.ExecutionEpoch && ref.IncarnationID != old.IncarnationID
 			hibernated := native.PowerState == PowerHibernated && native.HibernatedCapture != "" &&
 				old.ExecutionEpoch > 0 && old.ExecutionRef() == ref
+			stopped := native.VerifiedStop && native.PowerState == PowerStopped &&
+				old.PowerState == PowerRunning && old.IncarnationID != "" && old.ExecutionRef() == ref
 			if o.ExpectedExecutionEpoch == nil || old.RuntimeBundleID == "" || ref.InstanceID == "" ||
 				(old.RuntimeInstanceObjectID != "" && old.RuntimeInstanceObjectID != ref.InstanceID) ||
 				(!initialStopped && (ref.IncarnationID == "" || ref.ExecutionEpoch < 1)) ||
 				(native.VerifiedLaunch && !initialStopped && !nextLaunch) ||
 				(native.VerifiedRestore && !nextRestore) ||
+				(native.VerifiedStop && !stopped) ||
 				(!nextLaunch && !nextRestore && old.ExecutionEpoch > 0 && old.ExecutionRef() != ref) {
 				return false, ErrStaleObservation
 			}
-			if !initialStopped && !hibernated && native.PowerState != PowerRunning && native.PowerState != PowerStandby {
+			if !initialStopped && !hibernated && !stopped && native.PowerState != PowerRunning && native.PowerState != PowerStandby {
 				return false, fmt.Errorf("%w: invalid native power evidence", ErrInvalid)
 			}
 			var executionEpoch any
@@ -427,6 +430,17 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 			fields["guest_management"], _ = json.Marshal(o.GuestManagementStatus)
 			if native.ForkCapabilities != nil {
 				fields["native_fork_capabilities"], _ = json.Marshal(native.ForkCapabilities)
+			}
+			if native.StopBarrier != nil {
+				fields["native_stop_barrier"], _ = json.Marshal(*native.StopBarrier)
+			} else if old.ExecutionRef() != ref {
+				delete(fields, "native_stop_barrier")
+			}
+			if stopped {
+				delete(fields, "native_fork_capabilities")
+				delete(fields, "native_stop_barrier")
+				delete(fields, "workload")
+				delete(fields, "workload_error")
 			}
 			nativeChanged = old.ExecutionRef() != ref || old.PowerState != native.PowerState || old.CapabilityProfileID != native.VerifiedStandbyProfile
 		}
