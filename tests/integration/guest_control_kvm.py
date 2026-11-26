@@ -22,11 +22,14 @@ from managed_system_vsock import Platform, ResponseBytes, request, wait_for, wor
 
 
 class Upstream:
-    def __init__(self, root, stack):
+    def __init__(self, root, stack, *, fork_stream=False):
         self.key = "fixture-" + os.urandom(24).hex()
         self.started = threading.Event()
         self.release = threading.Event()
         self.requests = []
+        self.answers = {"/answer/" + name: os.urandom(12).hex() for name in ("source", "first", "second")} if fork_stream else {}
+        self.fork_head = os.urandom(12).hex()
+        self.fork_tail = os.urandom(12).hex()
         secret = root / "provider-key"
         secret.touch(mode=0o600)
         secret.write_text(self.key + "\n")
@@ -53,7 +56,15 @@ class Upstream:
                 self.send_header("X-Fixture-Must-Stay-Host", upstream.key)
                 self.end_headers()
                 try:
-                    if self.path == "/inspect":
+                    if self.path in upstream.answers:
+                        self.wfile.write(f"data: {upstream.answers[self.path]}\n\n".encode())
+                    elif self.path == "/fork-stream":
+                        self.wfile.write(f"data: {upstream.fork_head}\n\n".encode())
+                        self.wfile.flush()
+                        upstream.started.set()
+                        if upstream.release.wait(90):
+                            self.wfile.write(f"data: {upstream.fork_tail}\n\n".encode())
+                    elif self.path == "/inspect":
                         payload = upstream.key.encode()
                         self.wfile.write(b"data: " + payload[:13])
                         self.wfile.flush()
@@ -78,9 +89,10 @@ class Upstream:
         stack.callback(server.server_close)
         stack.callback(server.shutdown)
         stack.callback(self.release.set)
+        routes = ("/fork-stream", *self.answers) if fork_stream else ("/inspect", "/redirect", "/stream")
         self.policy = dict(id="model", upstream=f"https://127.0.0.1:{server.server_port}",
-                           credential_file=str(secret), ca_file=str(cert), allow_private=True, timeout_seconds=35,
-                           routes=[dict(method="GET", path=path) for path in ("/inspect", "/redirect", "/stream")])
+                           credential_file=str(secret), ca_file=str(cert), allow_private=True,
+                           timeout_seconds=100 if fork_stream else 35, routes=[dict(method="GET", path=path) for path in routes])
 
 
 def wire(platform, ref, probe, method, path, token, body=None, **more):
@@ -240,11 +252,130 @@ def proxy(platform, upstream, machine, ref, probe):
         print("The same Worker placed the Guest in automatic standby after the last stream hold was released.", flush=True)
 
 
+def protected_stream_fork(platform, upstream, machine, ref, probe):
+    source = "machines/" + machine
+    policy = dict(auto_standby=False, auto_hibernate=False, keep_running=True)
+    settings = platform.app(source + "/lifecycle")
+    platform.complete(platform.change(source, "protect-source", dict(expected_policy_revision=settings["desired_revision"],
+        lifecycle_policy=policy), platform.app(source), method="PATCH"))
+    lease = platform.app(source + "/leases", "POST", dict(reason="waiting for model", semantics_version=2, ttl_seconds=240),
+        {"If-Control-Epoch": platform.epoch, "If-Match": f'"{platform.app(source)["revision"]}"', "Idempotency-Key": "keep-model-running"})
+    assert lease["state"] == "active"
+    grant, token = credential(platform, machine, "credential_proxy.use", "first-stream", proxy_id="model")
+    folder = "/run/protected-model"
+    platform.guest(ref, ["mkdir", "-m", "700", folder])
+
+    def write_request(execution, filename, route, bearer):
+        message = (f"GET /v1/credential-proxies/model{route} HTTP/1.1\r\nHost: guest-relay\r\n"
+                   f"Authorization: Bearer {bearer}\r\nConnection: close\r\n\r\n")
+        platform.guest(execution, ["sh", "-ec", 'umask 077; cat > "$1"', "save", folder + "/" + filename], message)
+
+    write_request(ref, "first.req", "/fork-stream", token)
+    # The shell survives its original outbound call. Each descendant supplies a new,
+    # execution-bound request to that same shell through its own copy of the FIFO.
+    job = """set -eu
+cd "$1"
+nonce=$(cat /proc/sys/kernel/random/uuid)
+mkfifo continue
+printf '%s %s\n' "$$" "$nonce" > identity
+exec 3< first.req
+rm first.req
+"$2" <&3 3<&- > first.http 2>first.err &
+reader=$!
+exec 3<&-
+echo "$reader" > reader
+rc=0
+wait "$reader" || rc=$?
+echo "$rc" > first.done
+IFS= read -r branch < continue
+"$2" < next.req > next.http 2>next.err || { echo "$?" > next.rc; exit 1; }
+rm -f next.req
+printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
+"""
+    platform.guest(ref, ["sh", "-ec", 'sh -c "$1" job "$2" "$3" </dev/null >/dev/null 2>&1 &',
+                         "launch", job, folder, probe])
+    assert upstream.started.wait(20), "the source model request did not arrive"
+    head, tail = (("data: " + value).encode() for value in (upstream.fork_head, upstream.fork_tail))
+    wait_for(lambda: head in platform.guest(ref, ["cat", folder + "/first.http"]), timeout=12)
+    identity = platform.guest(ref, ["cat", folder + "/identity"]).strip()
+    platform.guest(ref, ["sh", "-ec", 'cd "$1"; test -d "/proc/$(cat reader)" && test ! -e first.done', "check", folder])
+    scope = dict(route_id="deep", bundle_digest=platform.bundle_id)
+    status = worker(platform.worker, "GetLifecycleStatus", expected=ref, **scope)
+    assert status["power"] == "RUNNING" and {"hold:credential_proxy", "keep_running"} <= set(status["blockers"]), status
+    with closing(sqlite3.connect(platform.root / "catalog/catalog.sqlite")) as db:
+        held, = db.execute("SELECT count(*) FROM lifecycle_protections WHERE principal=? AND incarnation_id=? AND state='active'",
+                           (grant, ref["incarnation_id"])).fetchone()
+        assert held == 1
+    single = platform.args.case == "protected-stream-single"
+    names = ("first",) if single else ("first", "second")
+    endpoint, capability, body = ("forks", "state.independent_fork", dict(child_name="First answer")) if single else (
+        "fork-batches", "state.fork_batch", dict(children=[dict(name="Answer " + name) for name in names]))
+    result = platform.complete(platform.change(source + "/" + endpoint, "fork-waiting-for-model",
+        {**body, "require_independent": True}, platform.wait_capability(source, capability)))
+    assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
+    assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
+                                                         for c in result["children"]), result
+    assert upstream.requests == [("/fork-stream", True, True)], upstream.requests
+    upstream.release.set()
+    branches = [("source", machine, ref)]
+    for name, child in zip(names, result["children"], strict=True):
+        child_id = child["machine_id"]
+        _, execution = platform.context(child_id)
+        branches.append((name, child_id, execution))
+        inherited = platform.app("machines/" + child_id + "/lifecycle")
+        assert inherited["source"] == "parent" and all(inherited["desired"][k] == v for k, v in policy.items()), inherited
+        assert not platform.app("machines/" + child_id + "/leases")["items"]
+    assert len({r["incarnation_id"] for _, _, r in branches}) == len(branches)
+    print("Model first event reached the live Guest; active hold, keep_running and lease", lease["lease_id"],
+          "on source", ref["incarnation_id"], "during capture", result["result"]["capture_id"], flush=True)
+    for name, machine_id, execution in branches:
+        platform.guest(execution, ["test", "-d", "/proc/" + identity.split()[0].decode()])
+        wait_for(lambda: platform.guest(execution, ["cat", folder + "/first.done"]), timeout=35, retry=(OSError, RuntimeError))
+        old = platform.guest(execution, ["cat", folder + "/first.http"])
+        assert head in old and (name == "source" or tail not in old)
+        next_grant, next_token = credential(platform, machine_id, "credential_proxy.use", "answer-" + name, proxy_id="model")
+        wait_for((platform.relay_dir / (execution["incarnation_id"] + ".sock")).is_socket)
+        def current_relay():
+            status, payload, _ = wire(platform, execution, probe, "GET", "control", next_token)
+            return status == 200 and json.loads(payload)["control_epoch"] == platform.epoch
+        wait_for(current_relay, timeout=25, retry=(OSError, RuntimeError))
+        path = "/answer/" + name
+        write_request(execution, "next.req", path, next_token)
+        platform.guest(execution, ["sh", "-ec", 'printf "%s\\n" "$1" > "$2/continue"', "reply", name, folder])
+        def final_result():
+            response = platform.guest(execution, ["sh", "-ec",
+                'cd "$1"; if test -e next.rc; then cat next.rc next.err; elif test -e result; then cat result; fi', "result", folder])
+            if response and not response.startswith(identity):
+                raise AssertionError((name, response, upstream.requests))
+            return response.strip()
+        completed = wait_for(final_result, timeout=30, retry=(OSError, RuntimeError))
+        assert completed == identity + b" " + name.encode(), completed
+        reply = platform.guest(execution, ["cat", folder + "/next.http"])
+        assert reply.startswith(b"HTTP/1.1 200") and ("data: " + upstream.answers[path]).encode() in reply
+        assert all(value.encode() not in reply for route, value in upstream.answers.items() if route != path)
+        with closing(sqlite3.connect(platform.root / "platform/platform.db")) as db:
+            used = db.execute("SELECT source_machine_id,used_count FROM guest_grants WHERE id=?", (next_grant,)).fetchone()
+            assert used == (machine_id, 1), used
+        print("Original process", completed.decode(), "retained first event; original stream received final event",
+              tail in old, "fresh answer from", path, flush=True)
+    expected_paths = ["/fork-stream", *("/answer/" + name for name, _, _ in branches)]
+    assert upstream.requests == [(p, True, True) for p in expected_paths], upstream.requests
+    with closing(sqlite3.connect(platform.root / "catalog/catalog.sqlite")) as db:
+        def settled():
+            return db.execute("SELECT incarnation_id,state FROM lifecycle_protections WHERE principal=?",
+                              (grant,)).fetchall() == [(ref["incarnation_id"], "released")]
+        wait_for(settled, timeout=15)
+    assert [entry["lease_id"] for entry in platform.app(source + "/leases")["items"] if entry["state"] == "active"] == [lease["lease_id"]]
+    print(endpoint, "sent exactly one original model request and", len(branches),
+          "independently authorized branch requests on", platform.bundle_id, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for field in ("bundle", "platformd", "system-image", "probe"):
         parser.add_argument("--" + field, type=lambda value: Path(value).resolve(strict=True), required=True)
-    parser.add_argument("--case", choices=("delegate", "proxy"), required=True)
+    parser.add_argument("--case", choices=("delegate", "proxy", "protected-stream-fork", "protected-stream-single"), required=True)
+    parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     parser.add_argument("--local-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
@@ -253,12 +384,22 @@ def main():
         subprocess.run(["unshare", "--mount", "--propagation", "private", "--net", "--", sys.executable,
                         __file__, *sys.argv[1:], "--local-child"], check=True)
         return
-    with tempfile.TemporaryDirectory(prefix="gcred-kvm-", dir="/var/tmp") as tmp, ExitStack() as stack:
+    fork_stream = args.case.startswith("protected-stream-")
+    with tempfile.TemporaryDirectory(prefix="gcred-kvm-", dir=args.work_dir) as tmp, ExitStack() as stack:
         root = Path(tmp)
         root.chmod(0o755)
+        if fork_stream:
+            subprocess.run(["mount", "-t", "tmpfs", "-o", "size=7G,mode=0755,nosuid,nodev", "tmpfs", root], check=True)
+            stack.callback(subprocess.run, ["umount", "-l", root], check=True)
+            slice_name = f"smolvmstream{os.getpid()}_{os.urandom(4).hex()}.slice"
+            subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                            "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
+                            slice_name, "fail", "1", "MemoryAccounting", "b", "true", "0"], check=True, stdout=subprocess.DEVNULL)
+            stack.callback(subprocess.run, ["systemctl", "stop", slice_name], check=False)
+            os.environ["SMOLVM_WORKER_SLICE_NAME"] = slice_name
         subprocess.run(["ip", "link", "set", "lo", "up"], check=True)
-        upstream = Upstream(root, stack) if args.case == "proxy" else None
-        platform = Platform(args, root, stack, credential_proxies=[upstream.policy] if upstream else ())
+        upstream = Upstream(root, stack, fork_stream=fork_stream) if args.case != "delegate" else None
+        platform = Platform(args, root, stack, credential_proxies=[upstream.policy] if upstream else (), use_installation=fork_stream)
         try:
             platform.start()
             if upstream:
@@ -274,7 +415,9 @@ def main():
             _, ref = platform.context(machine)
             wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n", retry=(RuntimeError, OSError))
             probe = platform.place_probe(ref, args.probe)
-            if upstream:
+            if fork_stream:
+                protected_stream_fork(platform, upstream, machine, ref, probe)
+            elif upstream:
                 proxy(platform, upstream, machine, ref, probe)
             else:
                 delegated(platform, machine, ref, probe)
