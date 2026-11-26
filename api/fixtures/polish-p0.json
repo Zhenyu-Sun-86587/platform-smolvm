@@ -7,7 +7,7 @@
   "capabilities": {
     "state.independent_fork": {"status":"supported","supported":true,"verified_profile":"native-v1"},
     "files.list": {"status":"supported","supported":true,"constraints":{"transport":"native_agent"}},
-    "files.read": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":67108864}},
+    "files.read": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":4294967296}},
     "files.write": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":67108864}},
     "files.preview": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":262144}},
     "files.edit": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":262144}}
@@ -29,7 +29,7 @@
     "partial": {"availability":"partial","source":"official_runtime","scope":"machine","observed_at":"2026-11-26T00:00:00Z","cpu_millis":0,"memory_mb":null,"issues":{"memory_mb":{"code":"NOT_SAMPLED","message":"No memory measurement was returned."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
     "unavailable": {"availability":"unavailable","source":"worker","scope":"machine","issues":{"runtime":{"code":"METRICS_UNAVAILABLE","message":"No measurement for this execution."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
     "stale": {"availability":"stale","source":"worker","scope":"machine","observed_at":"2026-11-26T00:00:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":3},"cpu_millis":240,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
-    "counter_reset": {"availability":"partial","source":"worker","scope":"machine","observed_at":"2026-11-26T00:01:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":4},"cpu_millis":12,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "counter_reset": {"availability":"partial","source":"worker","scope":"machine","observed_at":"2026-11-26T00:01:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_b","execution_epoch":4},"cpu_millis":12,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
     "system": {"availability":"unavailable","source":"worker","scope":"worker","platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}}
   },
   "capture": {
@@ -46,14 +46,14 @@
   "operations": {
     "accepted":{"operation_id":"op_fork","kind":"fork_batch","state":"queued","stage":"accepted","effect":"none","revision":1},
     "single_success":{"operation_id":"op_one","kind":"independent_fork","state":"succeeded","stage":"complete","effect":"applied","revision":4},
-    "partial":{"operation_id":"op_fork","kind":"fork_batch","state":"failed","stage":"complete","effect":"partial","revision":3,"children":[{"ordinal":0,"machine_id":"m1","binding_id":"b1","state":"succeeded","attempt":1,"resource_independence":"verified"},{"ordinal":1,"machine_id":"m2","binding_id":"b2","state":"failed","attempt":1,"error_code":"RESOURCE_EXHAUSTED"}]},
-    "retry_slot":{"operation_id":"op_retry","kind":"fork_batch_retry","state":"queued","stage":"accepted","effect":"none","revision":1,"children":[{"ordinal":1,"machine_id":"m2","binding_id":"b3","state":"queued","attempt":2}]},
+    "partial":{"operation_id":"op_fork","kind":"fork_batch","state":"failed","stage":"complete","effect":"partial","revision":3,"children":[{"ordinal":0,"machine_id":"m1","binding_id":"b1","state":"ready","attempt":0,"resource_independence":"verified"},{"ordinal":1,"machine_id":"m2","binding_id":"b2","state":"quarantined","attempt":0,"resource_independence":"failed","error_code":"NATIVE_CHILD_ABORTED"}]},
+    "retry_slot":{"operation_id":"op_fork","kind":"fork_batch","state":"observing","stage":"worker_fork_retry","effect":"partial","revision":5,"children":[{"ordinal":1,"machine_id":"m2","binding_id":"b2","state":"pending","attempt":1,"resource_independence":"unknown"}]},
     "recovery":{"operation_id":"op_restore","kind":"vm_restore","state":"recovery_required","stage":"observing","effect":"unknown","revision":4}
   },
   "lifecycle": {
     "inherited":{"source":"default","desired_revision":1,"applied_revision":1,"default_revision":1,"effective_status":"applied"},
     "pending_override":{"source":"override","desired_revision":3,"applied_revision":2,"default_revision":1,"effective_status":"pending","overrides":{"auto_hibernate":true}},
-    "protected":{"supported":true,"effective_status":"blocked","effective_blockers":["RUNNING_LEASE"],"worker":{"power":"running","blockers":["RUNNING_LEASE"],"controlled_suspended":false,"collectors":{"connections":{"fresh":false}}}},
+    "protected":{"supported":true,"effective_status":"blocked","effective_blockers":["lease:Waiting for model response"],"worker":{"power":"RUNNING","blockers":["lease:Waiting for model response"],"controlled_suspended":false,"collectors":{"connection":{"session":"collector_1","seq":2,"fresh":false}}}},
     "lease":{"lease_id":"lease_1","machine_id":"machine_1","principal_id":"principal_1","binding_generation":4,"semantics_version":2,"execution_epoch":3,"state":"active","revision":1,"reason":"Waiting for model response","expires_at":"2026-11-26T00:05:00Z"}
   }
 }

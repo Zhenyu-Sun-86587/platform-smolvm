@@ -66,12 +66,12 @@ export interface OperationChild {
 }
 export interface Operation {
   operation_id: string
-  control_epoch: string
+  control_epoch?: string
   source_machine_id?: string
   binding_id?: string
   runtime_name?: string
-  created_at: string
-  updated_at: string
+  created_at?: string
+  updated_at?: string
   revision: number
   state: OperationState
   machine_id?: string
@@ -183,7 +183,7 @@ export interface PolicyApplication {
 }
 export interface RunningLease {
   lease_id: string; machine_id: string; semantics_version: number; execution_epoch?: number
-  binding_generation: number; principal_id: string
+  binding_generation?: number; principal_id?: string
   revision: number; state: string; reason: string; expires_at: string; release_reason?: string; lease_token?: string
 }
 export type BootMode = "oci" | "system"
