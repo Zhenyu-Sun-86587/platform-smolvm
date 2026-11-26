@@ -23,8 +23,6 @@ runtime:
 #     # Required for an established Worker upgrading to journal identity fencing.
 #     # journal_id: value from the original stopped Node's -print-journal-id command
 #     ca_file: /etc/sandbox-platform/tls/worker-ca.pem
-#     # Optional private signing key for this Worker’s one-time CSR enrollment.
-#     ca_signing_key_file: /etc/sandbox-platform/tls/worker-a-ca.key
 #     # Optional dedicated Worker CA key for enrollment tickets.
 #     # ca_signing_key_file: /etc/sandbox-platform/tls/worker-a-ca.key
 #     certificate_file: /etc/sandbox-platform/tls/controller.pem
