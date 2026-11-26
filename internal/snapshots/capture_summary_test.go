@@ -66,7 +66,7 @@ func TestCaptureConfigurationAndScopeProjection(t *testing.T) {
 	}
 	snapshot.Manifest = json.RawMessage(`{"task_metadata_status":"stale"}`)
 	summary = SummarizeCapture(snapshot)
-	if summary.Configuration.Status != "unknown" || summary.RAM != "unknown" || summary.Disks != nil || len(summary.RestorePolicies) != 2 {
+	if summary.Configuration.Status != "unknown" || summary.Configuration.ReasonCode != "CAPTURE_CONFIGURATION_UNRECORDED" || summary.RAM != "unknown" || summary.Disks != nil || len(summary.RestorePolicies) != 2 {
 		t.Fatalf("historic snapshot: %+v", summary)
 	}
 }

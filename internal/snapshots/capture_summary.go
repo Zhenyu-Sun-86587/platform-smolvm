@@ -121,7 +121,10 @@ func captureMetadataFor(s Snapshot) captureMetadata {
 }
 
 func CapturedConfiguration(s Snapshot) *CaptureConfiguration {
-	config := captureMetadataFor(s).Configuration
+	return verifiedCaptureConfiguration(s, captureMetadataFor(s).Configuration)
+}
+
+func verifiedCaptureConfiguration(s Snapshot, config *CaptureConfiguration) *CaptureConfiguration {
 	if config == nil || config.Status != "verified" || config.SourceMachineRevision < 1 || config.TemplateID == "" ||
 		config.SchemaVersion != captureConfigurationVersion || config.CaptureID != s.VM.RuntimeCaptureID ||
 		config.ManifestDigest != s.Hash || config.ManifestDigest == "" {
@@ -138,19 +141,22 @@ func CapturedConfiguration(s Snapshot) *CaptureConfiguration {
 }
 
 func SummarizeCapture(s Snapshot) CaptureSummary {
-	summary := CaptureSummary{CaptureMode: s.CaptureMode, RAM: "unknown", ReasonCode: "CAPTURE_SCOPE_NOT_RECORDED",
-		Configuration: CaptureConfiguration{Status: "unknown", ReasonCode: "CAPTURE_CONFIGURATION_NOT_RECORDED"}}
+	summary := CaptureSummary{CaptureMode: s.CaptureMode, RAM: "unknown", ReasonCode: "CAPTURE_SCOPE_UNRECORDED",
+		Configuration: CaptureConfiguration{Status: "unknown", ReasonCode: "CAPTURE_CONFIGURATION_UNRECORDED"}}
 	if s.VM == nil {
 		return summary
 	}
-	if config := CapturedConfiguration(s); config != nil {
+	metadata := captureMetadataFor(s)
+	if config := verifiedCaptureConfiguration(s, metadata.Configuration); config != nil {
 		summary.Configuration = *config
+	} else if metadata.Configuration != nil {
+		summary.Configuration.ReasonCode = "CAPTURE_CONFIGURATION_UNVERIFIED"
 	}
 	summary.VerifiedAt = s.Closure
 	if s.State == "ready" && s.Closure != nil {
 		summary.RestorePolicies = []rt.VolumeRestorePolicy{rt.RestoreCloneConflicts, rt.RestoreExact}
 	}
-	if scope := captureMetadataFor(s).Scope; scope != nil && scope.CaptureID == s.VM.RuntimeCaptureID && scope.ManifestDigest == s.Hash && s.Hash != "" {
+	if scope := metadata.Scope; scope != nil && scope.CaptureID == s.VM.RuntimeCaptureID && scope.ManifestDigest == s.Hash && s.Hash != "" {
 		if scope.RAMBytes > 0 {
 			summary.RAM, summary.RAMBytes = "included", &scope.RAMBytes
 		}
