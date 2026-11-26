@@ -47,7 +47,6 @@ func OpenManagedSSHD(ctx context.Context, socket net.Conn, publicKey ssh.PublicK
 		"-o", "AllowUsers=root",
 		"-o", "PermitRootLogin=prohibit-password",
 		"-o", "AuthenticationMethods=publickey",
-		"-o", "PubkeyAcceptedAlgorithms=ssh-ed25519",
 		"-o", "PasswordAuthentication=no",
 		"-o", "KbdInteractiveAuthentication=no",
 		"-o", "AuthorizedKeysFile=none",
