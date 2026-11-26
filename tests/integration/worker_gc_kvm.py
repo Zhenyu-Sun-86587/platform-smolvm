@@ -23,6 +23,8 @@ class GCPlatform(Platform):
     def spawn(self, command, log):
         if Path(command[0]).name != "smolvm-resourced":
             return super().spawn(command, log)
+        if self.args.worker:
+            command = [self.args.worker, *command[1:]]
         standard = self.env
         self.env = {**standard, "LD_PRELOAD": str(self.args.cut_library),
                     "FIXTURE_GC_TARGET": str(self.root / "cut-target"),
@@ -69,7 +71,7 @@ def run(platform):
     platform.start()
     runtime_root = platform.root / "catalog"
     db = runtime_root / "catalog.sqlite"
-    binary = platform.bundle / "smolvm-resourced"
+    binary = platform.args.worker or platform.bundle / "smolvm-resourced"
     manifest = json.loads((platform.bundle / "runtime-bundle.json").read_text())
     print("Bundle", platform.bundle_id, "reader", manifest["contracts"]["state_reader_id"],
           "Worker", digest(binary), "platformd", digest(platform.args.platformd), flush=True)
@@ -289,6 +291,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for arg in ("bundle", "platformd", "system-image", "cut-library"):
         parser.add_argument("--" + arg, type=lambda path: Path(path).resolve(), required=True)
+    parser.add_argument("--installed", action="store_true", help="run from the read-only installed bundle")
+    parser.add_argument("--worker", type=lambda path: Path(path).resolve(strict=True),
+                        help="use a development Worker with the supplied Serve and VMM")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -307,7 +312,7 @@ def main():
                        stdout=subprocess.DEVNULL)
         stack.callback(subprocess.run, ["systemctl", "stop", name], check=True)
         os.environ["SMOLVM_WORKER_SLICE_NAME"] = name
-        platform = GCPlatform(args, root, stack, state_tmpfs=True)
+        platform = GCPlatform(args, root, stack, state_tmpfs=True, use_installation=args.installed)
         try:
             run(platform)
         except BaseException:

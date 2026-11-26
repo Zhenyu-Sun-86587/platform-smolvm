@@ -50,6 +50,10 @@ Chromium 使用常规 Tasks 页，在原本没有 `/workspace` 的 Debian 镜像
 
 另一次完整复测在资源回收后从平台配置移除原运行时并重启 platformd。同凭据、幂等键与修订返回原先成功的删除操作。复用该键修改修订得到 `IDEMPOTENCY_CONFLICT`，新键提交则得到 `NOT_SUPPORTED`。平台先核对回执，再为新操作检查原 Worker 路由。记录为 `.build/wp23/a05-route-retirement-kvm-v2.log`（SHA-256 `bca24be727c8e22fbf0789eb74be207b87ad1b5597007f85e35c3301c00eda3d`）。
 
+后续复测使用 `f2df146` 的冻结构建和独立 System 测量 Bundle `sha256:1d79bf8139035f924f8132fe58837686d6da9a0c72bc2c3ee2f32829882bedff`。原 Worker 在正常导出时拒绝了该 Bundle 的 reader，见 `.build/wp23/a05-f2df146-measurement-v1.log`。reader 以冒号分隔合约与修订，导出端和离线读取端误用了文件对象 ID 的格式约束。smolvm `f5aef70` 修复这两处校验，继续核对指定 reader、Bundle 和归档摘要。
+
+保持原 Serve、VMM、平台和 Debian 镜像，仅以开发 Worker `d81a5b2f5ad8d322bacc641a1a330b54db77085bd691d2bf317e0cac91c515cd` 复测。60 次并发 GC 都受引用保护，删除 checkpoint 释放 56 个私有 chunk，休眠根继续保护 55 个共同 chunk。恢复到 epoch 2 后，原 Guest 在内存和根盘读到同一标记。最后引用释放时终止 Worker，重启后清除原 inode，修订从 3 到 4。原始记录 `.build/wp23/a05-f2df146-worker-reader-v2.log` 的 SHA-256 为 `530d1d211965908fb7d7c939f231ee6dd2af87ace0c1319c8e43b42b06e61027`。该次 `f2df146` 的独立安装只公布 OCI 能力，完整 System 安装复测随包含该修复的发行包进行。
+
 复现使用开发 Worker 与匹配的 platformd。独立网络和挂载命名空间、临时存储目录及专用 systemd slice 由夹具创建。测试库只装入此次 Worker，依据块文件的精确路径设置崩溃切点。
 
 ```sh
