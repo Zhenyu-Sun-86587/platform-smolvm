@@ -312,6 +312,15 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	if r.WorkerID != "" && r.WorkerID != route.Owner() || prior.ID != "" && prior.WorkerID != route.Owner() {
 		return Operation{}, false, fmt.Errorf("%w: requested Worker differs from the pinned runtime owner", ErrConflict)
 	}
+	if r.Kind == rt.VolumeOperation {
+		var volumeRoute rt.VolumeRoute
+		if err := json.Unmarshal([]byte(request), &volumeRoute); err != nil {
+			return Operation{}, false, err
+		}
+		if route.Legacy() || volumeRoute.RuntimeInstanceID != route.InstanceID || volumeRoute.RuntimeBundleID != route.BundleID {
+			return Operation{}, false, fmt.Errorf("%w: volume requires its original Worker route and Bundle", ErrConflict)
+		}
+	}
 	op.WorkerID, op.RuntimeInstanceID, op.RuntimeBundleID, op.LocalInstanceID = route.Owner(), route.InstanceID, route.BundleID, route.LocalID()
 	if !route.Legacy() || route.Owner() != LocalWorkerID || rt.FullStateOperationCapability(r.Kind) != "" {
 		if r.AdmitRuntime == nil {

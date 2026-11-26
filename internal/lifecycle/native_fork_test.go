@@ -172,7 +172,8 @@ func testNativeForkKeepsPartialChildren(t *testing.T, workerID string) {
 	read := func() registry.Operation {
 		t.Helper()
 		op, err := db.GetOperation(ctx, accepted.ID)
-		if err != nil || op.BundleRoute() != worker.route || op.Children[0].WorkerID != workerID || op.Children[1].WorkerID != workerID {
+		if err != nil || op.BundleRoute() != worker.route || len(op.Children) != 2 ||
+			op.Children[0].WorkerID != workerID || op.Children[1].WorkerID != workerID {
 			t.Fatal(op, err)
 		}
 		return op

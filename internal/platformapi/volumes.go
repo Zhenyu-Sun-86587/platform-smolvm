@@ -226,12 +226,7 @@ func (s *Server) volumeControl(ctx context.Context, route rt.VolumeRoute) (rt.Vo
 
 func (s *Server) acceptVolume(w http.ResponseWriter, r *http.Request, p auth.Principal, intent volumeIntent, machine string, generation int64) error {
 	req := registry.AcceptRequest{Kind: rt.VolumeOperation, MachineID: machine, ExpectedGeneration: generation,
-		Heavy: intent.Command.Action == "grow", AdmitRuntime: func(route rt.BundleRoute, kind string) error {
-			if route.InstanceID != intent.RuntimeInstanceID || route.BundleID != intent.RuntimeBundleID {
-				return registry.ErrConflict
-			}
-			return s.AdmitRuntime(route, kind)
-		}}
+		Heavy: intent.Command.Action == "grow"}
 	if machine == "" {
 		req.RuntimeInstanceID = intent.RuntimeInstanceID
 	}

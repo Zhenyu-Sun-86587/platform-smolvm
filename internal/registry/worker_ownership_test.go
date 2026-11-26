@@ -175,6 +175,13 @@ func TestWorkerPinsRejectCrossNodeResources(t *testing.T) {
 			t.Fatalf("cross-Worker write succeeded: %s", statement)
 		}
 	}
+	attach := registry.AcceptRequest{Kind: rt.VolumeOperation, PrincipalID: owner.ID, Epoch: control.ControlEpoch,
+		Scope: "POST /v1/machines/vm-b/volume-attachments", Key: "attach", MachineID: "vm-b",
+		ExpectedGeneration: 1, Request: json.RawMessage(`{"runtime_instance_id":"runtime-a","runtime_bundle_id":"bundle-a"}`),
+		AdmitRuntime: func(rt.BundleRoute, string) error { t.Fatal("cross-Worker attachment reached admission"); return nil }}
+	if _, _, err := store.Accept(ctx, attach); !errors.Is(err, registry.ErrConflict) {
+		t.Fatal(err)
+	}
 	req := registry.AcceptRequest{Kind: rt.VMRestore, PrincipalID: owner.ID, Epoch: control.ControlEpoch,
 		Scope: "POST /v1/restores", Key: "restore", Name: "target", TemplateID: "tpl",
 		RuntimeInstanceID: remote.InstanceID, Request: json.RawMessage(`{"snapshot_id":"snapshot"}`),
@@ -197,5 +204,50 @@ func TestWorkerPinsRejectCrossNodeResources(t *testing.T) {
 	op, replay, err := store.Accept(ctx, req)
 	if err != nil || replay || op.BundleRoute().Key() != local.Key() {
 		t.Fatal(op, replay, err)
+	}
+}
+
+func TestWorkerEnrollmentIsUniqueAndRotationIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "platform.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	control, err := store.Control(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := registry.WorkerEnrollment{WorkerID: "worker-a", Generation: 1, Authority: control.ControlEpoch, CertificateFingerprint: "cert-a"}
+	second := registry.WorkerEnrollment{WorkerID: "worker-b", Generation: 1, Authority: control.ControlEpoch, CertificateFingerprint: "cert-b"}
+	for _, enrollment := range []registry.WorkerEnrollment{first, second} {
+		if err := store.RegisterWorker(ctx, registry.Worker{ID: enrollment.WorkerID, Name: enrollment.WorkerID}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.EnrollWorker(ctx, enrollment); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := first
+	changed.Generation++
+	changed.CertificateFingerprint = second.CertificateFingerprint
+	if err := store.EnrollWorker(ctx, changed); !errors.Is(err, registry.ErrConflict) {
+		t.Fatal(err)
+	}
+	if got, err := store.GetWorkerEnrollment(ctx, first.WorkerID); err != nil || got.Generation != first.Generation || got.CertificateFingerprint != first.CertificateFingerprint {
+		t.Fatal(got, err)
+	}
+	changed.CertificateFingerprint = "cert-a-new"
+	if err := store.EnrollWorker(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnrollWorker(ctx, changed); err != nil {
+		t.Fatal("replay", err)
+	}
+	if err := store.EnrollWorker(ctx, first); !errors.Is(err, registry.ErrConflict) {
+		t.Fatal("old generation", err)
+	}
+	if got, err := store.GetWorkerEnrollment(ctx, changed.WorkerID); err != nil || got.Generation != changed.Generation || got.CertificateFingerprint != changed.CertificateFingerprint {
+		t.Fatal(got, err)
 	}
 }
