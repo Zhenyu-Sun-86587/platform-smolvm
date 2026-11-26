@@ -73,6 +73,10 @@ func (s *Server) desktopWorker(binding registry.Binding) (workerclient.Client, b
 	return client, managed, nil
 }
 
+func desktopExecutionRequired() error {
+	return &lifecycle.Failure{Code: "DESKTOP_EXECUTION_REQUIRED", Message: "start the machine to create a desktop session on its current execution"}
+}
+
 func (s *Server) admitDesktop(ctx context.Context, id string, p auth.Principal) (desktopSession, error) {
 	session, err := s.desktopFor(ctx, id, p)
 	if err != nil {
@@ -99,12 +103,26 @@ func (s *Server) admitDesktop(ctx context.Context, id string, p auth.Principal) 
 		return session, s.verifyDesktop(ctx, id, p)
 	}
 	if !session.workerRev.Valid {
-		if err := s.acquireDesktopProtection(ctx, session, binding, client, p); err != nil {
+		if binding.PowerState == registry.PowerHibernated || binding.PowerState == registry.PowerStopped {
+			return session, desktopExecutionRequired()
+		}
+		unlock, err := s.lockLeaseDelivery(ctx, session.ID)
+		if err != nil {
 			return session, err
 		}
+		defer unlock()
 		session, err = s.desktopFor(ctx, id, p)
 		if err != nil {
 			return session, err
+		}
+		if !session.workerRev.Valid {
+			if err := s.acquireDesktopProtection(ctx, session, binding, client, p); err != nil {
+				return session, err
+			}
+			session, err = s.desktopFor(ctx, id, p)
+			if err != nil {
+				return session, err
+			}
 		}
 	}
 	if err := s.verifyDesktop(ctx, id, p); err != nil {
@@ -129,14 +147,11 @@ func desktopProtectionStatus(ctx context.Context, client workerclient.Client, sc
 }
 
 func desktopWorkerError(err error) error {
-	if workerclient.RetryDelivery(err) {
-		return errors.Join(rt.ErrUnavailable, errors.New("waiting for Worker desktop protection"))
-	}
 	var fault *workerclient.Fault
-	if errors.As(err, &fault) {
+	if errors.As(err, &fault) && !workerclient.RetryDelivery(err) {
 		return leaseFault(fault)
 	}
-	return err
+	return errors.Join(rt.ErrUnavailable, errors.New("waiting for Worker desktop protection"))
 }
 
 func (s *Server) createDesktopIntent(ctx context.Context, session desktopSession, scope workerclient.Execution) error {
@@ -202,7 +217,7 @@ func (s *Server) acquireDesktopProtection(ctx context.Context, session desktopSe
 		Trigger: "service_access", Revision: session.serviceRev, Reauthorize: reauthorize,
 	})
 	if err != nil {
-		return desktopWorkerError(err)
+		return err
 	}
 	defer release()
 	if ready.ID != binding.ID || ready.Generation != binding.Generation || lifecycle.WorkerExecution(ready) != scope {
@@ -267,7 +282,8 @@ func (s *Server) publishDesktopProtection(ctx context.Context, session desktopSe
 		return err
 	}
 	if n == 1 {
-		if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state=? WHERE id=? AND state=?", desktopApplied, session.ID, desktopSent); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state=?,receipt_json=? WHERE id=? AND state=?", desktopApplied,
+			string(lifecycle.JSON(ack)), session.ID, desktopSent); err != nil {
 			return err
 		}
 		if err = registry.AppendEvent(ctx, tx, "lease", session.MachineID, "", map[string]string{"lease_id": session.LeaseID, "state": "active"}, false); err != nil {
@@ -278,6 +294,11 @@ func (s *Server) publishDesktopProtection(ctx context.Context, session desktopSe
 }
 
 func (s *Server) releaseDesktopProtection(ctx context.Context, session desktopSession) error {
+	unlock, err := s.lockLeaseDelivery(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	intent, err := s.readDesktopIntent(ctx, session)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && intent.state == desktopClosed {
 		return nil
@@ -285,12 +306,13 @@ func (s *Server) releaseDesktopProtection(ctx context.Context, session desktopSe
 	if err != nil {
 		return err
 	}
-	retire := func(state string) error {
-		_, err := s.DB.DB().ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state=?,secret=x'' WHERE id=? AND state=?", desktopClosed, session.ID, state)
+	retire := func(receipt *desktopProtection) error {
+		_, err := s.DB.DB().ExecContext(ctx, "UPDATE lifecycle_lease_intents SET state=?,receipt_json=?,secret=x'' WHERE id=? AND state=?",
+			desktopClosed, string(lifecycle.JSON(receipt)), session.ID, intent.state)
 		return err
 	}
 	if intent.state == desktopPending {
-		return retire(desktopPending)
+		return retire(nil)
 	}
 	binding, err := s.DB.GetBinding(ctx, session.BindingID)
 	if err != nil {
@@ -306,12 +328,9 @@ func (s *Server) releaseDesktopProtection(ctx context.Context, session desktopSe
 	ack, err := desktopProtectionStatus(ctx, client, intent.scope, session)
 	var fault *workerclient.Fault
 	if errors.As(err, &fault) && fault.Code == "E_NOT_FOUND" {
-		// A sent acquire can still reach the Worker. Retain the close work until
-		// that request is settled or the original execution is fenced.
-		if intent.state == desktopApplied || lifecycle.WorkerExecution(binding) != intent.scope {
-			return retire(intent.state)
-		}
-		return nil
+		// Delivery is serialized with the earlier acquire and the released
+		// registry row fences any subsequent acquire of this same lease.
+		return retire(nil)
 	}
 	if err != nil {
 		return desktopWorkerError(err)
@@ -328,7 +347,7 @@ func (s *Server) releaseDesktopProtection(ctx context.Context, session desktopSe
 		if err := client.Lifecycle(ctx, "ReleaseRunningLease", fmt.Sprintf("%s-release-%d", session.ID, ack.Revision), intent.scope,
 			map[string]any{"protection_id": session.LeaseID, "principal": session.leaseOwner, "token": string(token), "expected_revision": ack.Revision}, &ack); err != nil {
 			if errors.As(err, &fault) && fault.Code == "E_STALE_EXECUTION" {
-				return retire(intent.state)
+				return retire(nil)
 			}
 			return desktopWorkerError(err)
 		}
@@ -336,7 +355,7 @@ func (s *Server) releaseDesktopProtection(ctx context.Context, session desktopSe
 			return registry.ErrConflict
 		}
 	}
-	return retire(intent.state)
+	return retire(&ack)
 }
 
 func (s *Server) recoverDesktopLeases(ctx context.Context) {
@@ -357,6 +376,8 @@ func (s *Server) recoverDesktopLeases(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = s.releaseDesktopProtection(ctx, session)
+		release, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = s.releaseDesktopProtection(release, session)
+		cancel()
 	}
 }

@@ -106,12 +106,12 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		var desktopProfile, controlEpoch string
 		if err := tx.QueryRowContext(ctx, `SELECT b.id,b.generation,COALESCE(b.execution_epoch,0),m.revision,
 			COALESCE(json_extract(t.spec_json,'$.desktop_profile'),''),ctl.control_epoch,COALESCE(b.runtime_instance_id,''),
-			COALESCE(b.runtime_bundle_id,''),COALESCE(b.runtime_instance_object_id,''),COALESCE(b.incarnation_id,''),
+			COALESCE(b.runtime_bundle_id,''),COALESCE(b.runtime_instance_object_id,''),COALESCE(b.incarnation_id,''),b.power_state,
 			EXISTS(SELECT 1 FROM operation_locks WHERE machine_id=m.id)
 			FROM machines m JOIN templates t ON t.id=m.template_id JOIN runtime_bindings b ON b.id=m.current_binding_id
 			JOIN meta ctl ON ctl.id=1 WHERE m.id=? AND m.deleted_at IS NULL`, mid).
 			Scan(&session.BindingID, &session.Generation, &session.Epoch, &machineRev, &desktopProfile, &controlEpoch,
-				&binding.RuntimeInstanceID, &binding.RuntimeBundleID, &binding.RuntimeInstanceObjectID, &binding.IncarnationID, &active); err != nil {
+				&binding.RuntimeInstanceID, &binding.RuntimeBundleID, &binding.RuntimeInstanceObjectID, &binding.IncarnationID, &binding.PowerState, &active); err != nil {
 			return registry.MutationResult{}, err
 		}
 		if desktopProfile != templates.DesktopSoftwareVNC || session.Epoch < 1 {
@@ -130,6 +130,9 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		_, managed, err := s.desktopWorker(binding)
 		if err != nil {
 			return registry.MutationResult{}, err
+		}
+		if managed && (binding.PowerState == registry.PowerHibernated || binding.PowerState == registry.PowerStopped) {
+			return registry.MutationResult{}, desktopExecutionRequired()
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT revision FROM services WHERE id=? AND machine_id=? AND enabled=1
 			AND kind='vnc' AND public_host IS NULL AND public_port IS NULL`, request.ServiceID, mid).Scan(&session.serviceRev); err != nil {

@@ -149,20 +149,28 @@ func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Cli
 	// HTTP replays and the recovery monitor share the durable intent. Only its
 	// owner acquires a temporary access hold. Each waiter then reads the receipt
 	// and applies its own one-time token disclosure rule.
+	release, err := s.lockLeaseDelivery(ctx, id)
+	if err != nil {
+		return Lease{}, err
+	}
+	defer release()
+	return s.driveWorkerLease(ctx, client, id, disclose)
+}
+
+func (s *Server) lockLeaseDelivery(ctx context.Context, id string) (func(), error) {
 	for {
 		done := make(chan struct{})
 		current, busy := s.leaseDeliveries.LoadOrStore(id, done)
 		if !busy {
-			defer func() {
+			return func() {
 				s.leaseDeliveries.Delete(id)
 				close(done)
-			}()
-			return s.driveWorkerLease(ctx, client, id, disclose)
+			}, nil
 		}
 		select {
 		case <-current.(chan struct{}):
 		case <-ctx.Done():
-			return Lease{}, ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
 }
