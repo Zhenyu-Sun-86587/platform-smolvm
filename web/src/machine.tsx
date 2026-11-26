@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react"
-import type { Machine, MachineNetwork, Page, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
+import type { Machine, MachineNetwork, MachineResourceStatus, Page, ResourcePatch, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
 import { machine as machinePath, service, snapshot, task } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
 import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, query, Records, Section, segment, State, str, time, useRemote } from "./common"
@@ -8,6 +8,7 @@ import { PageIntro } from "./daytona/page"
 import { Button } from "./daytona/button"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuContent } from "./daytona/dropdown-menu"
 import { useCollection } from "./api"
+import type { Field } from "./common"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
@@ -58,7 +59,62 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
   </>
 }
 
-function Overview({ machine, actions }: Context) {
+function ManagedResources({ machine, actions, revision }: Context) {
+  const path = machinePath(machine.machine_id)
+  const result = useRemote<MachineResourceStatus>(path + "/resources", revision)
+  const data = result.data
+  const compute = data?.compute
+  const seen = compute?.observed
+  const caps = compute?.capabilities
+  const fields: Field[] = []
+  if (seen?.online_cpus != null && seen.cpus && (caps?.cpu_offline?.available_now || caps?.cpu_online?.available_now || caps?.cpu_grow?.available_now)) {
+    fields.push({ name: "cpu_count", label: "Online vCPUs", type: "number", value: seen.online_cpus,
+      min: caps.cpu_offline?.available_now ? 1 : seen.online_cpus,
+      max: caps.cpu_grow?.available_now ? seen.cpus.capacity : caps.cpu_online?.available_now ? seen.cpus.created : seen.online_cpus })
+  }
+  const ram = seen?.ram
+  const memory = seen?.memory_mib ?? (ram ? ram.boot_mib + ram.plugged / 1048576 : undefined)
+  if (ram && caps?.memory_grow?.available_now) {
+    fields.push({ name: "memory_mib", label: "Allocated memory (MiB)", type: "number", value: memory, min: memory,
+      max: ram.boot_mib + ram.capacity / 1048576, note: "Increase in 128 MiB increments." })
+  }
+  if (seen?.balloon && caps?.balloon?.available_now) {
+    fields.push({ name: "balloon_target_mib", label: "Balloon target (MiB)", type: "number", value: seen.balloon.target_mib, min: 0 })
+  }
+  if (data?.cpu_limit) {
+    fields.push({ name: "cpu_limit_millicpus", label: "CPU bandwidth (millicpus)", type: "number",
+      value: data.cpu_limit.requested_millicpus ?? "", min: 1, note: "Clear the field to restore the allocated bandwidth." })
+  }
+  const edit = () => actions.dialog({ title: "Adjust live resources", submit: "Apply", fields, act: async form => {
+    const patch: ResourcePatch = {}
+    for (const field of fields) {
+      const raw = str(form, field.name)
+      if (raw === String(field.value ?? "")) continue
+      if (field.name === "cpu_limit_millicpus" && raw === "") patch.cpu_limit_millicpus = null
+      else {
+        const value = Number(raw)
+        if (!raw || !Number.isSafeInteger(value) || value < (field.min ?? 0)) throw new Error("Enter a valid integer for " + field.label)
+        Object.assign(patch, { [field.name]: value })
+      }
+    }
+    if (!Object.keys(patch).length) throw new Error("Choose a setting to change.")
+    return actions.mutate(path, { resources: patch, expected_generation: machine.binding_generation }, { method: "PATCH", revision: machine.revision })
+  } })
+  const quota = data?.cpu_limit
+  return <Section title="Live resources" actions={fields.length > 0 && <button onClick={edit}>Adjust</button>}>
+    <Callout error={result.error}/>
+    {data && <Details value={{
+      profile: compute?.profile, online_vCPUs: seen?.online_cpus, allocated_vCPU_slots: seen?.cpus?.created,
+      allocated_memory_MiB: memory, balloon_target_MiB: seen?.balloon?.target_mib, balloon_actual_MiB: seen?.balloon?.actual_mib,
+      effective_millicpus: quota ? quota.quota_usec === null ? "Unlimited" : quota.quota_usec * 1000 / quota.period_usec : undefined,
+      full_state_capture: compute ? compute.capture_compatible ? "Compatible" : "Unavailable for this profile" : undefined,
+      pending_operation: compute?.pending?.operation_id
+    }}/>}
+    {data && [...new Set(Object.values(data.issues).map(issue => issue.message))].map(message => <p key={message}>{message}</p>)}
+  </Section>
+}
+
+function Overview({ machine, actions, revision }: Context) {
   const resources = machine.resources ?? machine.spec?.resources
   return <>
     <div className="spec-strip">{[
@@ -69,7 +125,7 @@ function Overview({ machine, actions }: Context) {
     ].map(({Icon,label,value,unit})=><div key={label}><span><Icon size={15}/>{label}</span><strong>{value??"—"} <small>{unit}</small></strong></div>)}</div>
     <Section title="Machine configuration" actions={<button onClick={() => actions.dialog({
       title: "Edit machine", submit: "Save",
-      fields: [
+      fields: bundleBound(machine) ? [{ name: "name", label: "Name", value: machine.name, required: true }] : [
         { name: "name", label: "Name", value: machine.name, required: true },
         { name: "cpu_count", label: "vCPUs", value: resources?.cpu_count, type: "number", min: 1 },
         { name: "memory_mib", label: "Memory (MiB)", value: resources?.memory_mib, type: "number", min: 1 },
@@ -106,6 +162,7 @@ function Overview({ machine, actions }: Context) {
       </details>
       {machine.operation_id && <div className="panel-footer"><a href={"#/operations/" + segment(machine.operation_id)}>Operation {machine.operation_id}</a></div>}
     </Section>
+    {bundleBound(machine) && <ManagedResources machine={machine} actions={actions} revision={revision}/>}
     <Section title="Capabilities">
       <div className="rows">{[...new Set([...featureKeys, ...Object.keys(machine.capabilities ?? {})])].map(key => {
         const capability = machine.capabilities?.[key]

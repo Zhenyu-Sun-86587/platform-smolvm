@@ -67,6 +67,10 @@ func (c Client) call(ctx context.Context, q request, pass *os.File, expect *desc
 	if q.Method == "PrepareBackupClosure" {
 		timeout = 120 * time.Second
 	}
+	if q.Method == "QueryNativeResources" || q.Method == "SubmitNativeResize" {
+		// The Worker also samples the current Guest Agent and VMM for these calls.
+		timeout = 20 * time.Second
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	peer, err := (&net.Dialer{}).DialContext(ctx, "unixpacket", c.Socket)

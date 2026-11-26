@@ -109,6 +109,7 @@ export function MachineList({
         if (selected?.system) {
           const runtimeID = values?.get("runtime_instance_id") ?? systemRuntimes[0]?.runtime_instance_id
           const availableNetworks = (networks.items ?? []).filter(network => network.runtime_instance_id === runtimeID)
+          const growth = systemRuntimes.find(runtime => runtime.runtime_instance_id === runtimeID)?.capabilities["boot.live_compute_growth"]
           return [...common,
             {name: "runtime_instance_id", label: "Runtime", required: true,
               options: systemRuntimes.map(runtime => ({value: runtime.runtime_instance_id}))},
@@ -118,6 +119,10 @@ export function MachineList({
               ]},
               {name: "network_mode", label: "Network mode", options: [{value: "", label: "Use platform default"}, ...networkModes],
                 note: "Native uses a private address inside the guest. Fixed internal keeps a stable guest address and assigns a separate private address."},
+            ] : []),
+            ...(growth?.supported && growth.status === "supported" ? [
+              {name: "live_compute_growth", label: "Enable live CPU and RAM growth", type: "checkbox" as const,
+                note: "This compute profile disables full VM snapshots, hibernation and live fork."},
             ] : []),
             {name: "start", label: "Start after creation", type: "checkbox" as const, value: true,
               note: "Leave the machine stopped to attach volumes before the first boot."},
@@ -149,6 +154,7 @@ export function MachineList({
         }
         if (selected?.system) {
           body.boot_mode = "system"
+          if (form.has("live_compute_growth")) body.live_compute_growth = true
           body.runtime_instance_id = str(form, "runtime_instance_id")
           const networkID = str(form, "network_id")
           const mode = networkModes.find(mode => mode.value === str(form, "network_mode"))?.value

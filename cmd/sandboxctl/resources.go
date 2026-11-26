@@ -87,6 +87,54 @@ func (c *client) update(use, path, method string, scoped bool) *cobra.Command {
 	return cmd
 }
 
+func (c *client) machineResize() *cobra.Command {
+	var cpus uint8
+	var memory, balloon, limit uint32
+	var clear bool
+	cmd := sub("resize MACHINE", "Apply machine resource settings", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		patch := map[string]any{}
+		if cmd.Flags().Changed("cpus") {
+			if cpus == 0 {
+				return errors.New("cpus must be positive")
+			}
+			patch["cpu_count"] = cpus
+		}
+		if cmd.Flags().Changed("memory-mib") {
+			if memory == 0 {
+				return errors.New("memory-mib must be positive")
+			}
+			patch["memory_mib"] = memory
+		}
+		if cmd.Flags().Changed("balloon-mib") {
+			patch["balloon_target_mib"] = balloon
+		}
+		if cmd.Flags().Changed("cpu-limit-millicpus") {
+			if limit == 0 {
+				return errors.New("cpu-limit-millicpus must be positive")
+			}
+			patch["cpu_limit_millicpus"] = limit
+		}
+		if clear {
+			patch["cpu_limit_millicpus"] = nil
+		}
+		if len(patch) == 0 {
+			return errors.New("provide a resource setting to change")
+		}
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		return c.mutation(cmd, "PATCH", res("machines", m.ID), map[string]any{"expected_generation": m.Generation, "resources": patch}, m.Revision)
+	})
+	cmd.Flags().Uint8Var(&cpus, "cpus", 0, "Target number of online vCPUs")
+	cmd.Flags().Uint32Var(&memory, "memory-mib", 0, "Target allocated memory in MiB")
+	cmd.Flags().Uint32Var(&balloon, "balloon-mib", 0, "Balloon target in MiB (zero deflates)")
+	cmd.Flags().Uint32Var(&limit, "cpu-limit-millicpus", 0, "Maximum CPU bandwidth in millicpus")
+	cmd.Flags().BoolVar(&clear, "clear-cpu-limit", false, "Restore the allocated vCPU bandwidth")
+	cmd.MarkFlagsMutuallyExclusive("cpu-limit-millicpus", "clear-cpu-limit")
+	return cmd
+}
+
 func (c *client) machines() *cobra.Command {
 	group := &cobra.Command{Use: "machines", Short: "Manage persistent workspaces"}
 	group.AddCommand(c.list("list", "machines", false), c.showItem("machines"), c.update("patch MACHINE", "machines", "PATCH", true))
@@ -96,12 +144,15 @@ func (c *client) machines() *cobra.Command {
 	group.AddCommand(sub("metrics MACHINE", "Read runtime resource metrics", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.show(cmd, res("machines", args[0])+"/metrics")
 	}))
+	group.AddCommand(sub("resources MACHINE", "Read resource settings, capabilities and measured allocation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		return c.show(cmd, res("machines", args[0])+"/resources")
+	}), c.machineResize())
 	group.AddCommand(sub("network MACHINE", "Read the current private network attachment", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.show(cmd, res("machines", args[0])+"/network")
 	}))
 
 	var template, bootMode, runtimeInstance, networkID, networkMode string
-	var start, idle bool
+	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		resources := map[string]int{"cpu_count": cpu, "memory_mib": memory}
@@ -111,6 +162,9 @@ func (c *client) machines() *cobra.Command {
 		}
 		if bootMode != "" {
 			body["boot_mode"] = bootMode
+		}
+		if liveGrowth {
+			body["live_compute_growth"] = true
 		}
 		if runtimeInstance != "" {
 			body["runtime_instance_id"] = runtimeInstance
@@ -125,10 +179,10 @@ func (c *client) machines() *cobra.Command {
 			}
 			body["network"] = network
 		}
-		if bootMode != "system" || cmd.Flags().Changed("storage-gib") {
+		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("storage-gib") {
 			resources["storage_gib"] = storage
 		}
-		if bootMode != "system" || cmd.Flags().Changed("overlay-gib") {
+		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
 		if cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds") {
@@ -139,6 +193,7 @@ func (c *client) machines() *cobra.Command {
 	create.Flags().StringVar(&template, "template", "", "Registered template ID")
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
+	create.Flags().BoolVar(&liveGrowth, "live-compute-growth", false, "Enable live CPU and RAM growth on a compatible System runtime and disable full VM state capture")
 	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
 	create.Flags().StringVar(&networkID, "network", "", "Registered Worker private network for System templates")
 	create.Flags().StringVar(&networkMode, "network-mode", "", "System network mode (native or fixed_internal), using the platform default when omitted")

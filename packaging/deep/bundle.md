@@ -104,6 +104,12 @@ The packer selects `RuntimeManagedAcceptance/2` when both directions were measur
 
 Serve exposes `network.native`, `network.fixed_internal`, `network.tap` and `network.tap_restore` for the measured Debian managed private-network profile while the configured Worker reports the expected executable digest. These cases certify restore at the same reserved address. `network.native_reidentity` remains unknown pending a release measurement of independent Native identity change. Both acceptance schemas provide the evidence for `lifecycle.standby` and `boot.system_state_restore`. The two packet cases additionally qualify for `lifecycle.standby_wake`. Existing version 1 evidence remains valid for install, verification and historical readers.
 
+### Measure live resource changes
+
+Pass `--live-resources` to `measure-managed.py` to qualify a System build for CPU and RAM hot-add. The two KVM cases use the public platform API. The parked profile offlines a CPU and confirms each balloon target. A platform restart during an unresponsive balloon preserves the confirmed CPU change and the rejected balloon result. The live-compute profile adds a CPU slot, grows RAM by 128 MiB, verifies the Guest CPU set and memory, applies 1500 millicpus, and clears the limit back to two allocated CPUs.
+
+The packer includes both resource logs, the System disk and the runtime measurement digest in `RuntimeManagedAcceptance/3`. Both resource cases must run against the same binaries and Guest image. The private-network option can be combined with these measurements. An installed Serve publishes `boot.live_compute_growth` for this profile when its Worker matches the measured executable. The machine resources endpoint reports the controls available on each running Guest.
+
 ## Retain a historical reader and roll back selection
 
 Install each release in its own digest-named directory. Keep a separate Serve process, Unix socket and writable state directory for each release. Configure each verified endpoint under `runtime.custom` with the values from `sandboxctl admin runtime-capabilities`. The Worker broker and its resource catalog are shared. Existing bindings keep their Serve identity and Bundle digest. Switch the selected runtime for new instances to the earlier installed route to roll back new-instance placement. A binary rollback of platformd follows the [platform rollback procedure](../install/README.md) and requires a compatible pre-upgrade database backup for schema changes.

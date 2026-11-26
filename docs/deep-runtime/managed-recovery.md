@@ -13,3 +13,9 @@
 运行时复现入口为 smolvm 仓库中的 `tests/test_deep_managed_launch.py --fork-faults --statepoint --bundle <目录> --guest <计数器>`。本地原始记录位于工作区下的 `.build/network-gate-libs/fork-point-integrated-v3.log`、`.build/platform-native-oci-fork.log` 和 `.build/wp10/statepoint-platform-oci-v2.log`。
 
 System 另行验证。带 Agent 的 System 镜像使用 vsock，开发 Bundle 缺少该设备的 parked rebind 合同时会拒绝捕获。支持范围以每台源机的实测设备清单为准。
+
+## 运行中的 StatePoint reader 跨 Worker 重启
+
+2026-11-26 从冻结安装 `d8cc5d5` 的持久点恢复 VMM，再用 `SIGKILL` 终止 Worker。替换 Worker 核对仍存活的原 PID、只读 RAM 的原始 inode 及其 1376124928 字节内容，重新取得原 reader 与同一租约。租约修订从 2 变为 4，Worker 回到 `ready`。用旧安装 `91e2c72` 重跑，VMM 缺少重新导出 FD 的能力，租约保持 `unknown`，Worker 保持 `recovering`。两次均使用各自安装的 VMM 和 reader。
+
+复现入口为 `tests/integration/worker_restart_kvm.py` 的 `durable-reader` 和 `legacy-reader-no-reexport`。实机原始记录分别位于 `.build/wp13-tracked-durable-reader-kvm.log` 和 `.build/wp13-tracked-old-reader-negative-kvm.log`。

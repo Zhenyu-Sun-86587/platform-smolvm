@@ -69,6 +69,7 @@ type Create struct {
 	TemplateID        string            `json:"template_id"`
 	RuntimeInstanceID string            `json:"runtime_instance_id,omitempty"`
 	BootMode          rt.BootMode       `json:"boot_mode,omitempty"`
+	LiveComputeGrowth bool              `json:"live_compute_growth,omitempty"`
 	Network           *rt.LaunchNetwork `json:"network,omitempty"`
 	Resources         struct {
 		CPUs    uint8  `json:"cpu_count"`
@@ -241,6 +242,11 @@ func (j *Job) Done(ctx context.Context, r registry.TransitionRequest) error {
 	return j.finish(ctx, registry.Succeeded, r)
 }
 
+// Failed records a settled failure with the observed effect and any receipts.
+func (j *Job) Failed(ctx context.Context, r registry.TransitionRequest) error {
+	return j.finish(ctx, registry.Failed, r)
+}
+
 func (j *Job) finish(ctx context.Context, state string, r registry.TransitionRequest) error {
 	if j.Op.State != registry.Observing {
 		if err := j.transition(ctx, registry.TransitionRequest{State: registry.Observing, Stage: "verify", Effect: r.Effect}); err != nil {
@@ -375,7 +381,7 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	}
 	native, hasNative := j.Runtime.(rt.NativeControl)
 	useNative := hasNative && !bindingRuntime(j.Binding).Legacy() && rt.NativePowerCapability(op.Kind) != ""
-	configReplay := dispatched && op.Kind == "configure" && (j.Intent.Stage == "apply_lifecycle_policy" || j.Intent.Stage == "managed_resource_cpu_limit")
+	configReplay := dispatched && op.Kind == "configure" && (j.Intent.Stage == "apply_lifecycle_policy" || j.Intent.Stage == "managed_resource_cpu_limit" || j.Intent.Stage == "managed_resources")
 	if dispatched && !configReplay {
 		if useNative {
 			return j.reconcileNative(ctx, native)

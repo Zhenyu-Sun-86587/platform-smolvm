@@ -244,6 +244,17 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	var route rt.BundleRoute
 	if prior.CurrentBinding != nil {
 		route = rt.BundleRoute{InstanceID: prior.CurrentBinding.RuntimeInstanceID, BundleID: prior.CurrentBinding.RuntimeBundleID}
+		if route != (rt.BundleRoute{}) && rt.CapturesLiveState(r.Kind) {
+			var spec struct {
+				LiveComputeGrowth bool `json:"live_compute_growth"`
+			}
+			if err := json.Unmarshal(prior.Spec, &spec); err != nil {
+				return Operation{}, false, err
+			}
+			if spec.LiveComputeGrowth {
+				return Operation{}, false, &rt.CapabilityError{Capability: rt.FullStateOperationCapability(r.Kind), Status: rt.LiveGrowthCaptureStatus()}
+			}
+		}
 	}
 	if r.RuntimeInstanceID != "" {
 		route, err = loadRuntimeRoute(ctx, tx, r.RuntimeInstanceID)

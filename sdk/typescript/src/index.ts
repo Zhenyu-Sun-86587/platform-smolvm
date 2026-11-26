@@ -90,6 +90,28 @@ export interface Control {
   capabilities?: Record<string, Capability>
 }
 export interface Resources { cpu_count: number; memory_mib: number; storage_gib?: number; overlay_gib?: number }
+export type ResourcePatch = Partial<Resources> & { cpu_limit_millicpus?: number | null; balloon_target_mib?: number }
+export interface MachineResourceStatus {
+  machine_id: string
+  binding_generation: number
+  power_state: string
+  requested: ResourcePatch
+  execution?: { instance_id: string; incarnation_id: string; execution_epoch: number }
+  compute?: {
+    profile: string
+    capture_compatible: boolean
+    capabilities: Record<string, { supported: boolean; available_now: boolean; reason: string | null }>
+    observed: {
+      cpus?: { created: number; capacity: number } | null; online_cpus?: number | null
+      memory_mib?: number | null
+      ram?: { boot_mib: number; mapped: number; plugged: number; capacity: number } | null
+      balloon?: { target_mib: number; actual_mib: number } | null; scope_memory_current_bytes?: number | null
+    }
+    pending?: { operation_id: string; stage: string } | null
+  }
+  cpu_limit?: { requested_millicpus: number | null; quota_usec: number | null; period_usec: number }
+  issues: Record<string, { code: string; message: string }>
+}
 export interface IdlePolicy { enabled: boolean; timeout_seconds: number }
 export interface WakeConditions { api_access: boolean; service_access: boolean; private_network_packet: boolean; allow_cold_start: boolean }
 export interface LifecyclePolicy {
@@ -132,6 +154,7 @@ export interface MachineNetwork extends Required<NetworkSelection> {
 }
 export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
+  live_compute_growth?: boolean
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
   runtime_instance_id?: string
@@ -144,6 +167,7 @@ export interface CreateMachine {
 }
 export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "network"> {
   lifecycle_policy?: LifecycleStatus
+  resources?: Resources & ResourcePatch
   network?: Required<NetworkSelection>
   machine_id: string
   desktop_profile?: "software-vnc-v1"
@@ -559,6 +583,16 @@ export class Client {
 
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
+  getMachineResources(id: string, signal?: AbortSignal) { return this.get<MachineResourceStatus>(machine(id) + "/resources", signal) }
+  async configureResources(id: string, resources: ResourcePatch, options: MachineWriteOptions = {}) {
+    let { revision, generation } = options
+    if (revision === undefined || generation === undefined) {
+      const current = await this.getMachine(id, options.signal)
+      revision ??= current.revision
+      generation ??= current.binding_generation
+    }
+    return this.mutate(machine(id), { resources, expected_generation: generation }, { ...options, method: "PATCH", revision })
+  }
   listPrivateNetworks(signal?: AbortSignal) { return this.pages<PrivateNetwork>("networks", 100, signal) }
   getMachineNetwork(id: string, signal?: AbortSignal) { return this.get<MachineNetwork>(machine(id) + "/network", signal) }
   async setNetworkDefaults(defaults: NetworkDefaults, options: WriteOptions = {}) {

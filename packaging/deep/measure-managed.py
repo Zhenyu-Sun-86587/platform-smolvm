@@ -95,6 +95,7 @@ def measure(args):
     (output / managed_evidence.log_name("oci-capture")).parent.mkdir()
     runs = {}
     network_runs = {}
+    resource_runs = {}
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="managed-acceptance-") as temp:
         temp = Path(temp)
@@ -119,6 +120,8 @@ def measure(args):
                  "system-relay": (system, [*product, "--case", "relay"])}
         if args.private_network:
             cases.update({case: (system, [*product, "--case", case]) for case in managed_evidence.PACKET_DIRECTIONS})
+        if args.live_resources:
+            cases.update({case: (system, [*product, "--case", case]) for case in managed_evidence.RESOURCE_PROFILES})
         for case, (fixture, command) in cases.items():
             path = output / managed_evidence.log_name(case)
             with path.open("wb") as log:
@@ -129,6 +132,8 @@ def measure(args):
             if case in managed_evidence.PACKET_DIRECTIONS:
                 source_mode, target_mode = managed_evidence.PACKET_DIRECTIONS[case]
                 network_runs[case] = {**run, "source_mode": source_mode, "target_mode": target_mode}
+            elif case in managed_evidence.RESOURCE_PROFILES:
+                resource_runs[case] = {**run, "profile": managed_evidence.RESOURCE_PROFILES[case]}
             else:
                 runs[case] = run
         template = output / managed_evidence.SYSTEM_TEMPLATE
@@ -142,6 +147,10 @@ def measure(args):
             evidence["schema"] = managed_evidence.SCHEMA_V2
             evidence["private_network"] = {"measurement_bundle_digest": measured_bundle,
                                            "system_template_sha256": checksum(template), "runs": network_runs}
+        if args.live_resources:
+            evidence["schema"] = managed_evidence.SCHEMA_V3
+            evidence["live_resources"] = {"measurement_bundle_digest": measured_bundle,
+                                          "system_template_sha256": checksum(template), "runs": resource_runs}
         (output / managed_evidence.EVIDENCE).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
 
@@ -152,6 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--counter", type=Path, help="precompiled static kvm-parked-block-guest fixture")
     parser.add_argument("--probe", type=Path, help="precompiled static vsock-probe fixture")
     parser.add_argument("--private-network", action="store_true", help="also measure both managed private-network directions in KVM")
+    parser.add_argument("--live-resources", action="store_true", help="measure public resource adjustments on both System compute profiles in KVM")
     parser.add_argument("--cc", default="cc", help="C compiler for Guest test fixtures")
     try:
         measure(parser.parse_args())

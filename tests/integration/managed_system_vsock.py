@@ -323,6 +323,65 @@ def fork_case(platform, source, ref, probe, seen_cids):
     return completed["children"]
 
 
+def gate_without_agent(platform, source, ref, probe, seen_cids):
+    script = "/var/tmp/gate-counter.sh"
+    platform.guest(ref, ["/usr/bin/tee", script], r"""set -eu
+path=/var/tmp/gate-counter-$1
+i=0
+while :; do
+    printf '%s %s\n' "$$" "$i" > "$path.next"
+    mv "$path.next" "$path"
+    i=$((i+1))
+    sleep 0.1
+done
+""")
+    for label, prefix in (("system", []), ("nested", ["/usr/bin/unshare", "--pid", "--fork", "--mount-proc"])):
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-counter-" + label, *prefix,
+                             "/bin/sh", script, label])
+
+    def counts(execution):
+        files = ["/var/tmp/gate-counter-system", "/var/tmp/gate-counter-nested"]
+        rows = platform.guest(execution, ["/bin/cat", *files]).splitlines()
+        return [tuple(map(int, row.split())) for row in rows]
+
+    def advanced(execution, previous):
+        sample = counts(execution)
+        return (len(sample) == 2 and all(count > old for (_, count), old in zip(sample, previous))
+                and sample)
+
+    def agent_unavailable(execution):
+        try:
+            platform.native(f"/instances/{execution['instance_id']}/guest/ping", dict(expected=execution, request={}))
+        except RuntimeError as error:
+            _, status, body = error.args[0]
+            detail = json.loads(body)
+            assert status == 503 and detail.get("code") == "E_GUEST_MANAGEMENT_UNAVAILABLE", (status, detail)
+            return True
+        return False
+
+    before = wait_for(lambda: advanced(ref, [2, 2]), retry=(RuntimeError, OSError))
+    assert before[0][0] > 1 and before[1][0] == 1, before
+    for action, seconds in (("start", 60), ("stop", 1)):
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
+                             "--timer-property=AccuracySec=100ms", "/usr/bin/systemctl", action, "smolvm-agent.service"])
+    wait_for(lambda: agent_unavailable(ref), timeout=15)
+    op = platform.complete(platform.change(source + "/fork-batches", "fork-with-agent-stopped", {
+        "children": [{"name": "Agent stopped child"}], "require_independent": True,
+    }, platform.app(source)))
+    assert op["source_lock_released"] and op["source_disposition"] == "RUNNING", op
+    (child,) = op["children"]
+    view, target = platform.context(child["machine_id"])
+    assert view["power_state"] == "running" and target["incarnation_id"] != ref["incarnation_id"], view
+    assert child["state"] == "ready" and child["resource_independence"] == "verified", child
+    assert agent_unavailable(ref) and agent_unavailable(target), "Agent restarted before the fork committed"
+    print("The ordinary Guest Agent was unavailable before capture and on both VMs after the independent fork committed.", flush=True)
+    for label, execution in (("source", ref), ("child", target)):
+        after = wait_for(lambda: advanced(execution, [n for _, n in before]), retry=(RuntimeError, OSError))
+        assert [pid for pid, _ in after] == [pid for pid, _ in before], (before, after)
+        print(f"{label}: same System and nested PID counters advanced from {before} to {after}.", flush=True)
+    inherited_agent(platform, target, probe, seen_cids)
+
+
 def statepoint_case(platform, source, ref, probe, seen_cids):
     peer = source_peer(platform, ref)
     view = platform.app(source)
@@ -796,6 +855,13 @@ def cpu_limit_case(platform, source, machine_id, ref, historical):
         operation = wait_for(rejected)
         assert operation["state"] == "failed" and operation["error"]["code"] == "CAPABILITY_UNSUPPORTED", operation
         assert quota(ref) == original
+        report = platform.app(source + "/resources")
+        assert report["execution"] == ref and report["issues"]["cpu_limit"]["code"] == "CAPABILITY_UNSUPPORTED", report
+        mixed = platform.change(source, "historical-mixed", {"keep_running": True, "resources": {"cpu_count": 1}},
+                                platform.app(source), method="PATCH")
+        partial = wait_for(lambda: (op if (op := platform.app("operations/" + mixed["operation_id"]))["state"] == "failed" else None))
+        assert partial["effect"] == "partial" and partial["result"]["applied_lifecycle_revision"] > 0, partial
+        assert platform.app(source)["keep_running"] and quota(ref) == original
         print("The historical Worker refused the public CPU limit request and kept the kernel quota.", flush=True)
         return
 
@@ -816,6 +882,96 @@ def cpu_limit_case(platform, source, machine_id, ref, historical):
     amount, period = quota(new)
     assert (amount, period) == original and restored["requested_millicpus"] is None, (original, restored)
     print("Public CPU limit and replay matched the kernel quota. Exact restore kept 250 millicpus. Clearing restored the original allocated quota.", flush=True)
+
+
+def live_resources_case(platform, source, ref, hot):
+    def status():
+        report = platform.app(source + "/resources")
+        assert report["execution"] == ref and report["compute"]["capture_compatible"] == (not hot), report
+        assert report["compute"]["profile"] == ("live-compute" if hot else "parked-capture"), report
+        return report
+
+    def memory_kib():
+        return int(platform.guest(ref, ["/bin/cat", "/proc/meminfo"]).splitlines()[0].split()[1])
+
+    def patch(key, values):
+        return platform.change(source, key, {"resources": values}, platform.app(source), method="PATCH")
+
+    prior = platform.app(source)
+    initial = status()
+    before = initial["compute"]["observed"]
+    assert before["online_cpus"] == (1 if hot else 2) and before["balloon"]["actual_mib"] == 0, before
+    old_mem = memory_kib()
+    target = {"cpu_count": 2 if hot else 1, "balloon_target_mib": 16}
+    if hot:
+        target["memory_mib"] = 640
+        if "cpu_limit" in initial:
+            target["cpu_limit_millicpus"] = 1500
+    accepted = platform.change(source, "live-compute", {"resources": target}, prior, method="PATCH")
+    result = platform.complete(accepted)["result"]
+    assert len(result["changes"]) == len(target) - ("cpu_limit_millicpus" in target)
+    assert all(p["stage"] == "completed" for p in result["changes"]), result
+    assert result["execution"] == ref
+    assert platform.change(source, "live-compute", {"resources": target}, prior, method="PATCH")["operation_id"] == accepted["operation_id"]
+    report = status()
+    observed = report["compute"]["observed"]
+    assert all(report["requested"][k] == v for k, v in target.items()), report
+    assert observed["online_cpus"] == target["cpu_count"] and observed["cpus"]["created"] == 2
+    assert observed["balloon"] == {"actual_mib": 16, "target_mib": 16}, observed
+    assert platform.guest(ref, ["/bin/cat", "/sys/devices/system/cpu/online"]).strip() == (b"0-1" if hot else b"0")
+    if hot:
+        assert observed["ram"]["mapped"] == observed["ram"]["plugged"] == 128 << 20, observed
+        assert memory_kib() > old_mem + 96 * 1024
+        source_view = platform.app(source)
+        assert not source_view["capabilities"]["state.hibernate"]["supported"]
+        denial = platform.change(source + "/hibernate", "incompatible-cut", {}, source_view, status=409)
+        assert denial["error"]["code"] == "CAPABILITY_UNSUPPORTED", denial
+        assert status()["execution"] == ref
+        if "cpu_limit_millicpus" in target:
+            quota = report["cpu_limit"]
+            assert quota["requested_millicpus"] == 1500 and quota["quota_usec"] * 1000 == 1500 * quota["period_usec"], quota
+    else:
+        invalid = patch("unsupported-combination", {"cpu_count": 2, "memory_mib": 896})
+        failed = wait_for(lambda: (op if (op := platform.app("operations/" + invalid["operation_id"]))["state"] == "failed" else None))
+        assert failed["effect"] == "none" and failed["error"]["code"] == "CAPABILITY_UNSUPPORTED", failed
+        assert status()["compute"]["observed"]["online_cpus"] == 1
+    platform.restart()
+    assert platform.complete(accepted)["result"] == result
+    clear = {"balloon_target_mib": 0}
+    if "cpu_limit_millicpus" in target:
+        clear["cpu_limit_millicpus"] = None
+    if not hot:
+        clear["cpu_count"] = 2
+    platform.complete(patch("return-resources", clear))
+    final = status()["compute"]["observed"]
+    assert final["online_cpus"] == 2 and final["balloon"]["actual_mib"] == final["balloon"]["target_mib"] == 0
+    if "cpu_limit_millicpus" in target:
+        quota = status()["cpu_limit"]
+        assert quota["requested_millicpus"] is None and quota["quota_usec"] == 2 * quota["period_usec"], quota
+        print("Verified 1500 millicpus and restored the two-slot kernel allocation.", flush=True)
+    if not hot:
+        driver = "/sys/bus/virtio/drivers/virtio_balloon"
+        device = platform.guest(ref, ["/bin/sh", "-ec", 'set -- "$1"/virtio*; test -d "$1"; basename "$1"', "device", driver]).decode().strip()
+        assert device.startswith("virtio")
+        platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" > "$2/unbind"', "unbind", device, driver])
+        pending = patch("recover-partial", {"cpu_count": 1, "balloon_target_mib": 12})
+        def waiting_for_balloon():
+            current = status()
+            progress = current["compute"].get("pending") or {}
+            return current if progress.get("change", {}).get("change") == "balloon" else None
+        during = wait_for(waiting_for_balloon)
+        assert during["requested"]["cpu_count"] == 1 and during["requested"]["balloon_target_mib"] == 0, during
+        platform.restart()
+        failure = wait_for(lambda: (op if (op := platform.app("operations/" + pending["operation_id"]))["state"] == "failed" else None))
+        assert failure["effect"] == "partial" and failure["result"]["changes"][0]["change"]["cpus"] == 1, failure
+        assert failure["result"]["rejected"]["stage"] == "aborted", failure
+        report = status()
+        assert report["requested"]["cpu_count"] == report["compute"]["observed"]["online_cpus"] == 1
+        assert report["requested"]["balloon_target_mib"] == report["compute"]["observed"]["balloon"]["actual_mib"] == 0
+        platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" > "$2/bind"', "bind", device, driver])
+        print("After platformd was killed during balloon adjustment, its original operation reported the confirmed CPU change and the rejected balloon separately.", flush=True)
+    print(f"Public {report['compute']['profile']} settings matched the live Linux CPU set, VMM balloon and durable operation after platform restart. Target {target}.", flush=True)
+    print(f"Resource measurement {report['compute']['profile']} on {platform.bundle_id}.", flush=True)
 
 
 def policy_case(platform, source, machine_id, execution):
@@ -903,6 +1059,8 @@ def test(args, root, stack, case):
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
     )
+    if case == "live-resources-hot":
+        intent.update(live_compute_growth=True, resources=dict(cpu_count=1, memory_mib=512))
     if packet_case:
         intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case.endswith("-native") else "native")
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
@@ -913,6 +1071,9 @@ def test(args, root, stack, case):
     _, ref = platform.context(machine_id)
     wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
              retry=(RuntimeError, OSError))
+    if case in ("live-resources", "live-resources-hot"):
+        live_resources_case(platform, source, ref, case == "live-resources-hot")
+        return
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
                for device in inventory["inventory"]["devices"])
@@ -943,6 +1104,8 @@ def test(args, root, stack, case):
         relay_case(platform, source, machine_id, ref, probe)
     elif case == "fork":
         fork_case(platform, source, ref, probe, seen)
+    elif case == "gate-without-agent":
+        gate_without_agent(platform, source, ref, probe, seen)
     elif case == "statepoint":
         statepoint_case(platform, source, ref, probe, seen)
     elif case == "successive-captures":
@@ -960,7 +1123,8 @@ def main():
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
-                        "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical"), action="append")
+                        "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
+                        "live-resources", "live-resources-hot", "gate-without-agent"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

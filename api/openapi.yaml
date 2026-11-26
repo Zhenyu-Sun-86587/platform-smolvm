@@ -2307,6 +2307,19 @@ paths:
         '101':
           description: WebSocket upgraded
         default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/resources:
+    get:
+      operationId: get_machine_resources
+      summary: Read configured resources and measurements from the current execution
+      parameters:
+      - {name: machine, in: path, required: true, schema: {type: string, minLength: 1}}
+      responses:
+        '200':
+          description: Current settings, Worker measurements and reasons for unavailable observations
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MachineResourceStatus'}
+        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/metrics:
     get:
       operationId: get_machines_machine_metrics
@@ -2919,8 +2932,64 @@ components:
         memory_mib: {type: integer, minimum: 1}
         storage_gib: {type: integer, minimum: 1}
         overlay_gib: {type: integer, minimum: 1}
+      additionalProperties: false
+    ResourcePatch:
+      type: object
+      properties:
+        cpu_count: {type: integer, minimum: 1, maximum: 255}
+        memory_mib: {type: integer, minimum: 1}
+        storage_gib: {type: integer, minimum: 1}
+        overlay_gib: {type: integer, minimum: 1}
+        balloon_target_mib: {type: integer, minimum: 0, description: "Amount to reclaim through the Guest balloon. Zero deflates the balloon."}
         cpu_limit_millicpus: {type: [integer, "null"], minimum: 1, description: "CPU bandwidth in millicpus. Set null to restore the allocated vCPU ceiling."}
       additionalProperties: false
+    MachineResourceStatus:
+      type: object
+      required: [machine_id, binding_generation, power_state, requested, issues]
+      properties:
+        machine_id: {type: string}
+        binding_generation: {type: integer}
+        power_state: {type: string}
+        requested: {$ref: '#/components/schemas/ResourcePatch'}
+        execution:
+          type: object
+          required: [instance_id, incarnation_id, execution_epoch]
+          properties:
+            instance_id: {type: string}
+            incarnation_id: {type: string}
+            execution_epoch: {type: integer, minimum: 1}
+        compute:
+          type: object
+          required: [profile, capture_compatible, capabilities, observed]
+          properties:
+            profile: {type: string}
+            capture_compatible: {type: boolean}
+            capabilities:
+              type: object
+              additionalProperties:
+                type: object
+                required: [supported, available_now, reason]
+                properties:
+                  supported: {type: boolean}
+                  available_now: {type: boolean}
+                  reason: {type: [string, "null"]}
+            observed: {type: object, additionalProperties: true}
+            pending: {type: [object, "null"]}
+        cpu_limit:
+          type: object
+          required: [requested_millicpus, quota_usec, period_usec]
+          properties:
+            requested_millicpus: {type: [integer, "null"]}
+            quota_usec: {type: [integer, "null"]}
+            period_usec: {type: integer}
+        issues:
+          type: object
+          additionalProperties:
+            type: object
+            required: [code, message]
+            properties:
+              code: {type: string}
+              message: {type: string}
     LifecyclePolicy:
       type: object
       additionalProperties: false
@@ -3000,6 +3069,7 @@ components:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
         boot_mode: {$ref: '#/components/schemas/BootMode'}
+        live_compute_growth: {type: boolean, default: false, description: "Opt in to live CPU and RAM growth on a compatible System runtime. This profile disables full VM state capture."}
         network: {$ref: '#/components/schemas/MachineNetwork'}
         runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. System templates require a verified System runtime.}
         resources: {$ref: '#/components/schemas/Resources'}
@@ -3025,7 +3095,7 @@ components:
         expected_policy_revision: {type: integer, minimum: 1}
         lifecycle_policy: {$ref: '#/components/schemas/LifecyclePolicy'}
         name: {type: string, minLength: 1}
-        resources: {$ref: '#/components/schemas/Resources'}
+        resources: {$ref: '#/components/schemas/ResourcePatch'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
         keep_running: {type: boolean}
         expected_generation: {type: integer, minimum: 1}
@@ -3038,9 +3108,10 @@ components:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
         boot_mode: {$ref: '#/components/schemas/BootMode'}
+        live_compute_growth: {type: boolean}
         desktop_profile: {const: software-vnc-v1}
         network: {$ref: '#/components/schemas/MachineNetwork'}
-        resources: {$ref: '#/components/schemas/Resources'}
+        resources: {$ref: '#/components/schemas/ResourcePatch'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}
         keep_running: {type: boolean}
         revision: {type: integer, minimum: 1}

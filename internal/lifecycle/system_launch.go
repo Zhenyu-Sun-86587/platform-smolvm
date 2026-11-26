@@ -14,20 +14,33 @@ import (
 )
 
 func (e *Engine) SystemBootCapability(ctx context.Context, route rt.BundleRoute) (rt.Capability, error) {
+	boot, _, err := e.SystemLaunchCapabilities(ctx, route)
+	return boot, err
+}
+
+func (e *Engine) SystemLaunchCapabilities(ctx context.Context, route rt.BundleRoute) (rt.Capability, rt.Capability, error) {
 	unknown := rt.FullStateCapabilities(false)[rt.SystemBootCapability]
 	adapter, err := e.runtimes.ForBinding(rt.BindingRuntime{BundleRoute: route})
 	launcher, ok := adapter.(rt.NativeLauncher)
 	if err != nil || !ok {
-		return unknown, nil
+		return unknown, unknown, nil
+	}
+	if profiles, ok := adapter.(interface {
+		SystemLaunchCapabilities(context.Context) (rt.Capability, rt.Capability, error)
+	}); ok {
+		return profiles.SystemLaunchCapabilities(ctx)
 	}
 	capability, err := launcher.SystemBoot(ctx)
 	if err != nil {
-		return unknown, err
+		return unknown, unknown, err
 	}
-	return capability, nil
+	return capability, unknown, nil
 }
 
 func (request Create) ValidateSystemCreate() error {
+	if request.LiveComputeGrowth && request.Resources.CPUs > 16 {
+		return fmt.Errorf("%w: live compute growth supports up to 16 vCPU slots", registry.ErrInvalid)
+	}
 	if request.Resources.Storage != 0 || request.Resources.Overlay != 0 {
 		return fmt.Errorf("%w: the System root disk capacity is determined by its template", registry.ErrInvalid)
 	}
@@ -102,8 +115,8 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 		Parameters: rt.LaunchParameters{
 			Name: j.Binding.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
 			MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
-			Network: request.Network,
-			Disks:   disks,
+			Network: request.Network, LiveComputeGrowth: request.LiveComputeGrowth,
+			Disks: disks,
 		},
 	}
 	intent.RequestDigest = launchDigest(intent)

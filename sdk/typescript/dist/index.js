@@ -231,6 +231,16 @@ export class Client {
     }
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
+    getMachineResources(id, signal) { return this.get(machine(id) + "/resources", signal); }
+    async configureResources(id, resources, options = {}) {
+        let { revision, generation } = options;
+        if (revision === undefined || generation === undefined) {
+            const current = await this.getMachine(id, options.signal);
+            revision ??= current.revision;
+            generation ??= current.binding_generation;
+        }
+        return this.mutate(machine(id), { resources, expected_generation: generation }, { ...options, method: "PATCH", revision });
+    }
     listPrivateNetworks(signal) { return this.pages("networks", 100, signal); }
     getMachineNetwork(id, signal) { return this.get(machine(id) + "/network", signal); }
     async setNetworkDefaults(defaults, options = {}) {
