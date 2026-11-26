@@ -18,11 +18,12 @@ const systemSSHCommand = "/usr/local/sbin/sandbox-system-ssh-sync"
 const SystemSSHPort = 2222
 
 type nativeSSHEvidence struct {
-	Ready        bool                  `json:"ssh_ready"`
-	Key          string                `json:"ssh_host_key,omitempty"`
-	KeysetDigest string                `json:"ssh_keyset_digest,omitempty"`
-	Execution    rt.ExecutionRef       `json:"ssh_execution"`
-	FileTransfer *rt.GuestFileEvidence `json:"file_transfer,omitempty"`
+	Ready        bool                        `json:"ssh_ready"`
+	Key          string                      `json:"ssh_host_key,omitempty"`
+	KeysetDigest string                      `json:"ssh_keyset_digest,omitempty"`
+	Execution    rt.ExecutionRef             `json:"ssh_execution"`
+	FileTransfer *rt.GuestFileEvidence       `json:"file_transfer,omitempty"`
+	ExecStream   *rt.GuestExecStreamEvidence `json:"exec_stream,omitempty"`
 }
 
 type nativeSSHRequest struct {
@@ -92,8 +93,10 @@ func (e *Engine) observeSystemGuest(ctx context.Context, binding registry.Bindin
 		evidence = nativeSSHEvidence{Execution: ref}
 	}
 	evidence.FileTransfer = nil
+	evidence.ExecStream = nil
 	if _, ok := PolicyClient(adapter, binding); ok && capabilities != nil {
 		evidence.FileTransfer = &rt.GuestFileEvidence{Execution: ref, Supported: slices.Contains(capabilities, rt.SystemFileTransferCapability)}
+		evidence.ExecStream = &rt.GuestExecStreamEvidence{Execution: ref, Supported: slices.Contains(capabilities, rt.SystemExecStreamCapability)}
 	}
 	x.GuestManagementEvidence = JSON(evidence)
 	if !profile.ManagedSSH {
@@ -199,6 +202,7 @@ func (j *Job) driveNativeSSH(ctx context.Context, routeError error) error {
 	x.GuestManagementStatus = "ready"
 	var previous nativeSSHEvidence
 	_ = json.Unmarshal(j.Binding.GuestManagementEvidence, &previous)
-	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref, FileTransfer: previous.FileTransfer})
+	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref,
+		FileTransfer: previous.FileTransfer, ExecStream: previous.ExecStream})
 	return j.Done(ctx, registry.TransitionRequest{Effect: registry.EffectApplied, Observation: &x})
 }
