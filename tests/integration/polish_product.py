@@ -99,3 +99,66 @@ def check_capture(platform, path, ref):
                           captured=before, parent_limit_after=750, restored_request=actual["requested"],
                           restored_execution=child["incarnation_id"], summary=summary,
                           restored_cpu_limit=actual.get("cpu_limit"))), flush=True)
+
+
+def check_lease_and_fork(platform, path, ref):
+    import time
+    from authorized_services_kvm import worker_get
+
+    lease = platform.app(path + "/leases", "POST", {"reason": "polish slow HTTP", "ttl_seconds": 180,
+        "semantics_version": 2}, {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "polish-run-lease",
+                                 "If-Match": f'"{platform.app(path)["revision"]}"'})
+    assert lease["state"] == "active" and lease["execution_epoch"] == ref["execution_epoch"]
+    # Both endpoints live in the test guest. Only the fixture releases the model response.
+    program = r"""
+use strict;
+use warnings;
+use IO::Socket::INET;
+my $server = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0,
+                                    Listen => 1, Proto => 'tcp') or die $!;
+my $port = $server->sockport;
+my $pid = fork(); defined $pid or die $!;
+if ($pid == 0) {
+    close $server;
+    my $client = IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port, Proto => 'tcp') or die $!;
+    print {$client} "GET /model HTTP/1.0\r\n\r\n";
+    local $/;
+    my $response = <$client>;
+    open my $out, '>', '/run/polish-model-result' or die $!;
+    print {$out} $response;
+    exit;
+}
+my $conn = $server->accept or die $!;
+my $request = <$conn>;
+die "unexpected request" unless $request eq "GET /model HTTP/1.0\r\n";
+while (<$conn>) { last if $_ eq "\r\n"; }
+open my $marker, '>', '/run/polish-model-wait' or die $!;
+print {$marker} $pid; close $marker;
+until (-e '/run/polish-model-release') { select undef, undef, undef, 0.2; }
+print {$conn} "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+close $conn;
+waitpid $pid, 0;
+"""
+    platform.guest(ref, ["sh", "-ec", "cat >/run/polish-model.pl; perl /run/polish-model.pl </dev/null >/run/polish-model.log 2>&1 &"], stdin=program)
+    wait_for(lambda: platform.guest(ref, ["cat", "/run/polish-model-wait"]).strip(), retry=(RuntimeError,))
+    policy = platform.app(path + "/lifecycle")
+    platform.complete(platform.change(path, "polish-short-idle", {
+        "expected_policy_revision": policy["desired_revision"],
+        "lifecycle_policy": {"auto_standby": True, "standby_after_seconds": 2, "auto_hibernate": False,
+                             "min_running_after_wake_seconds": 0, "keep_running": False}
+    }, platform.app(path), method="PATCH"))
+    start = time.monotonic()
+    while time.monotonic() - start < 4:
+        status = worker_get(platform, "GetLifecycleStatus", ref)
+        assert status["power"] == "RUNNING" and "lease:polish slow HTTP" in status["blockers"], status
+        time.sleep(.25)
+    view = platform.wait_capability(path, "state.fork_batch")
+    batch = platform.change(path + "/fork-batches", "polish-manual-fork", {
+        "children": [{"name": "polish protected child"}], "require_independent": True}, view)
+    child, = platform.complete(batch)["children"]
+    assert child["state"] == "ready" and child["resource_independence"] == "verified", child
+    platform.guest(ref, ["touch", "/run/polish-model-release"])
+    wait_for(lambda: platform.guest(ref, ["cat", "/run/polish-model-result"]).endswith(b"\r\n\r\nOK"),
+             retry=(RuntimeError,))
+    print(json.dumps(dict(case="lease_wait_fork", operation=batch["operation_id"], child=child["machine_id"],
+                          source=ref["incarnation_id"], lease_state=lease["state"], bundle=platform.bundle_id)), flush=True)
