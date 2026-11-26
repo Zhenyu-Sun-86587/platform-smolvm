@@ -78,8 +78,8 @@ function Login({ ready }: { ready: () => void }) {
 }
 
 const mayHaveEffect = (error: unknown) => !(error instanceof PlatformError) ||
-  error.detail.effect === "unknown" || error.detail.effect === "partial" || Boolean(error.detail.operation_id) ||
-  error.detail.retry === "verify_original_intent" || error.status >= 500 || error.status === 408
+  error.detail.effect === "unknown" || error.detail.effect === "partial" || error.detail.effect === "applied" ||
+  Boolean(error.detail.operation_id) || error.detail.retry === "verify_original_intent" || error.status >= 500 || error.status === 408
 
 function App() {
   const [{ at, background }, setView] = useState(initialView)

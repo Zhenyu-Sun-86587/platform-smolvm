@@ -1,6 +1,6 @@
 import { Client, PlatformError } from "../../../sdk/typescript/src/index"
 import type {
-  Capability, Control, CreateMachine, GuestFileEntry, Machine, MachineMetrics, Operation, PowerState,
+  Capability, Control, CreateMachine, GuestFileEntry, Machine, MachineMetrics, MachineNetwork, Operation, PowerState,
   PrivateNetwork, RuntimeProfile, Service, SystemMetrics,
 } from "../../../sdk/typescript/src/index"
 
@@ -28,6 +28,11 @@ const capabilities: Record<string, Capability> = {
 }
 const names: Record<string, string> = { [atlas]: "atlas-dev", [fork]: "atlas-dev-fork", [cedar]: "cedar-lab" }
 const network: PrivateNetwork = { network_id: "fixture-private", runtime_instance_id: "fixture-worker", cidr: "10.80.0.0/24" }
+const atlasNetwork: MachineNetwork = {
+  network_id: network.network_id, mode: "fixed_internal", state: "reserved",
+  attachment_id: "fixture-atlas-network", private_ipv4: "10.80.0.12",
+  dns_name: "atlas-dev.fixture.internal",
+}
 const control: Control & { runtime_ready: boolean; principal: { username: string } } = {
   control_epoch: epoch, runtime_ready: true, default_boot_mode: "system",
   principal: { username: "Taylor" }, runtime_version: "Fixture", capabilities,
@@ -123,7 +128,13 @@ export class FixtureClient extends Client {
         : scene === "46" ? [atlas, fork]
           : scene === "01" || desktopRegionalScenes.has(scene) ? [atlas, cedar]
             : [atlas]
-    this.machines = ids.map(id => fixtureMachine(id, state, undefined, scene === "guest-unavailable" || scene === "files-unavailable"))
+    this.machines = ids.map(id => {
+      const machine = fixtureMachine(id, state, undefined, scene === "guest-unavailable" || scene === "files-unavailable")
+      if (scene === "22" && id === atlas) {
+        machine.network = { network_id: atlasNetwork.network_id, mode: atlasNetwork.mode }
+      }
+      return machine
+    })
   }
 
   private services(machine: Machine): Service[] {
@@ -208,6 +219,7 @@ export class FixtureClient extends Client {
       if (!machine) throw new PlatformError(404, { code: "MACHINE_NOT_FOUND", message: "The fixture machine is unavailable." })
       if (!resource) return json(machine)
       if (resource === "services") return page(this.services(machine))
+      if (resource === "network" && machine.network) return json(atlasNetwork)
       if (emptyMachinePaths.has(resource)) return page([])
       if (resource === "resources") return json({
         machine_id: machine.machine_id, binding_generation: machine.binding_generation,
