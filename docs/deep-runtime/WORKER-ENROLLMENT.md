@@ -21,7 +21,7 @@ openssl pkey -in node-key.pem -pubout -outform DER |
 Copy the displayed digest to the configured Worker's `node_spki_pin` with
 the `sha256:` prefix. Configure its HTTPS endpoint and generation in
 platformd. Use generation 1 for the first enrollment and the next generation
-for a rotation. Reload platformd with the new configuration before requesting
+for a rotation. Restart platformd with the new configuration before requesting
 a ticket.
 
 Use an administrative management token and the current control epoch to
@@ -29,8 +29,7 @@ request a ticket. Keep the response file private.
 
 ```bash
 umask 077
-printf 'Authorization: Bearer %s
-' "$platform_admin_token" |
+printf 'Authorization: Bearer %s\n' "$platform_admin_token" |
   curl --fail --silent --show-error --cacert "$platform_ca" \
     -H @- -H "If-Control-Epoch: $control_epoch" -H 'Content-Type: application/json' \
     --data '{"mode":"initial"}' \
