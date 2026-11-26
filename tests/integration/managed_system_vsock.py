@@ -744,8 +744,18 @@ def verify_volume_after_retirement(platform, volume, child_ref):
     print("An unstarted System slot also retired at epoch zero without allocating an execution.", flush=True)
 
 
-def saved_wake_failure_case(platform, source, ref):
-    platform.guest(ref, ["/bin/sh", "-ec", "printf original-saved-memory >/run/saved-wake-failure"])
+def saved_wake_failure_case(platform, source, ref, *, exact_only=False):
+    def root_volume(execution):
+        inventory = platform.native(f"/instances/{execution['instance_id']}/inventory")
+        attachments = [d["block"]["managed_attachment"] for d in inventory["inventory"]["devices"] if d.get("block")]
+        root, = [a for a in attachments if a["role"] == "root"]
+        assert root["volume_id"] and root["execution_epoch"] == execution["execution_epoch"], root
+        return root["volume_id"]
+
+    original_root = root_volume(ref)
+    disk_marker = os.urandom(16).hex()
+    platform.guest(ref, ["/bin/sh", "-ec", 'printf original-saved-memory >/run/saved-wake-failure; '
+                         'printf %s "$1" > /root/saved-wake-disk; sync /root/saved-wake-disk', "marker", disk_marker])
     hibernated = platform.complete(platform.change(source + "/hibernate", "save-for-failed-wake", {}, platform.app(source)))
     point = hibernated["result"]["statepoint"]
     original = platform.app(source)
@@ -827,26 +837,30 @@ def saved_wake_failure_case(platform, source, ref):
             LEFT JOIN target_activations a ON a.operation_id=g.operation_id
             WHERE g.operation_id=? AND e.execution_epoch=g.execution_epoch""", (failed,)).fetchone()
         assert writer in (("released", "exited", None, None), ("released", "exited", None, "none")), writer
-    try:
-        platform.native("/operations", dict(kind="launch", operation_id="forbidden-saved-cold-launch",
-            request_digest="sha256:" + "3" * 64, expected=advanced, parameters=dict(name=original["runtime_name"],
-                boot_profile="system-debian-v1", cpus=1, memory_mib=512, init="/sbin/init", args=[],
-                disks=[dict(attachment_id="root", device_id="root", role="root", generation_id="fixture-system-root", read_only=False)])))
-    except RuntimeError as error:
-        _, status, body = error.args[0]
-        assert status == 409 and json.loads(body)["code"] == "E_STATE_CONFLICT", error
-    else:
-        raise AssertionError("Worker accepted a cold launch over a saved execution")
+    if not exact_only:
+        try:
+            platform.native("/operations", dict(kind="launch", operation_id="forbidden-saved-cold-launch",
+                request_digest="sha256:" + "3" * 64, expected=advanced, parameters=dict(name=original["runtime_name"],
+                    boot_profile="system-debian-v1", cpus=1, memory_mib=512, init="/sbin/init", args=[],
+                    disks=[dict(attachment_id="root", device_id="root", role="root", generation_id="fixture-system-root", read_only=False)])))
+        except RuntimeError as error:
+            _, status, body = error.args[0]
+            assert status == 409 and json.loads(body)["code"] == "E_STATE_CONFLICT", error
+        else:
+            raise AssertionError("Worker accepted a cold launch over a saved execution")
     print("A restore VMM exited after receiving its writer grant and before Guest identity began. "
-          "The Worker released the grant, retained the saved cut and rejected a cold launch on the advanced slot.", flush=True)
+          "The Worker released the grant and retained the original saved cut.", flush=True)
 
     restored = platform.complete(platform.change(source + "/start", "repair-preserved-wake", {}, platform.app(source)))
     _, live = platform.context(original["machine_id"])
     assert live["execution_epoch"] == ref["execution_epoch"] + 2 and restored["result"]["statepoint"]["capture_id"] == point["capture_id"], restored
     assert wait_for(lambda: platform.guest(live, ["/bin/cat", "/run/saved-wake-failure"]), retry=(OSError, RuntimeError)) == b"original-saved-memory"
+    assert root_volume(live) == original_root
+    assert platform.guest(live, ["/bin/cat", "/root/saved-wake-disk"]).decode() == disk_marker
     after = worker(platform.worker, "GetLifecycleStatus", expected=live, **scope)
     assert after["power"] == "RUNNING" and after["statepoint"] is None, after
-    print("An explicit exact retry used the same StatePoint and recovered the original RAM at the next unoccupied epoch.", flush=True)
+    print("Explicit exact retry recovered the original StatePoint, RAM and root volume", original_root,
+          "at epoch", live["execution_epoch"], flush=True)
 
 
 def statepoint_case(platform, source, ref, probe, seen_cids):
@@ -1572,8 +1586,8 @@ def test(args, root, stack, case):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
-    platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "grant-rollback"),
-                        use_installation=case in ("fork-lost-reply", "grant-rollback"))
+    platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
+                        use_installation=case in ("fork-lost-reply", "grant-rollback", "saved-wake-exact"))
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
@@ -1589,7 +1603,7 @@ def test(args, root, stack, case):
     if retirement:
         intent.update(start=False, network=dict(network_id="packet-net", mode="native"),
                       lifecycle_policy=dict(keep_running=True, wake_conditions=dict(allow_cold_start=True)))
-    if case == "saved-wake-failure":
+    if case in ("saved-wake-failure", "saved-wake-exact"):
         intent.update(resources=dict(cpu_count=1, memory_mib=512), lifecycle_policy=dict(keep_running=True,
             retry_backoff_seconds=2, wake_conditions=dict(allow_cold_start=True, api_access=True)))
     created = platform.change("machines", "create", intent)
@@ -1621,8 +1635,8 @@ def test(args, root, stack, case):
     if case == "fork-lost-reply":
         fork_after_lost_reply(platform, source, ref)
         return
-    if case == "saved-wake-failure":
-        saved_wake_failure_case(platform, source, ref)
+    if case in ("saved-wake-failure", "saved-wake-exact"):
+        saved_wake_failure_case(platform, source, ref, exact_only=case == "saved-wake-exact")
         return
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
@@ -1677,7 +1691,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
@@ -1702,7 +1716,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
-        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply", "grant-rollback"):
+        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply", "grant-rollback", "saved-wake-exact"):
             slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
             subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                             "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",

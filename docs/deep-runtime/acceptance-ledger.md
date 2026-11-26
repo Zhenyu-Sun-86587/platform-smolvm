@@ -130,7 +130,7 @@
 | A20 | 冻结基线与开发修复，组件重启和虚拟主机换 boot 已验证 | platformd、Serve、broker 分别退出，systemd 接管前后分别中断。修复后的 Worker 重认原有 TCP 会话、TAP 和 writer，同一块盘录得九轮应答。独立虚拟 Worker 正常关机和断电后，两份旧写授权自动释放，原易失代际标记丢失，同一持久点恢复原 RAM 和盘数据。[组件及整机实测](managed-recovery.md#worker-主机换-boot-后的恢复)、[网络与 DNS](A20_LIVE_NETWORK_RECOVERY.md) | 在含两项恢复修复的完整冻结包复跑。 |
 | A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
 | A22 | 冻结桌面与开发网关，服务修订和活流验收通过 | 桌面单次票据交付真实 framebuffer，Worker 确认原生租约后 API 返回会话。延迟和丢失确认、授权撤回、到期、平台重启均已测，休眠后新授权请求接回原 Xvfb。Guest grant 撤销关闭在途 SSE。f2df146 正向测量组合的 HTTPS SSE 和 mTLS 在 revision 1→2 后切换实际端口，旧流关闭。撤销已建立流的令牌或证书只关闭该流，独立合法流继续。OpenSSH 修订关闭旧流，pidfd 确认旧 VMM 退出，合法新连接唤醒原保存点，从 epoch 1 转至 2 并校验 host key 和 RAM 标记。[服务修订与关闭记录](service-revision-a22.md)、`.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log` | — |
-| A23 | 开发实机，原生引用、并发与发布恢复通过 | Native 用同一 run 跨 Worker 和 platformd 中断备份原 checkpoint、休眠点与独立卷。并发公开删除后 Worker 引用继续保护原数据。暂存缺块和原 reader 缺失均保留已验证备份。关闭及删除旧源后在新 Worker 恢复原 RAM、根盘、独立卷和 Native `/32`。1017 在途备份升级到 1018 后保持两路原选择。六组 ext4 发布和保留中断已通过。既有 Native、FixedInternal 实测还覆盖错误密钥、等长篡改、服务 PID、隔离网络与非管理员注册拒绝。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | 在下一冻结包分别复跑 Native 与 FixedInternal 的交接中断。 |
+| A23 | 开发实机，原生引用、并发与发布恢复通过 | Native 用同一 run 跨 Worker 和 platformd 中断备份原 checkpoint、休眠点与独立卷。并发公开删除后 Worker 引用继续保护原数据。暂存缺块和原 reader 缺失均保留已验证备份。关闭及删除旧源后在新 Worker 恢复原 RAM、根盘、独立卷和 Native `/32`。1017 在途备份升级到 1018 后保持两路原选择。六组 ext4 发布和保留中断已通过。既有 Native、FixedInternal 实测还覆盖错误密钥、等长篡改、服务 PID、隔离网络与非管理员注册拒绝。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | 开发 Worker `1eb5104` 已通过 FixedInternal 交接中断。待同一冻结安装复跑 Native 和 FixedInternal。 |
 | A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
@@ -143,6 +143,8 @@
 当前平台在公布已验证回执前同步父目录，重启时重新验证已发布的归档。备份保留流程在启动时核查待处理的回执，并在删除上一份归档前确认保留份数有足够的可验证副本。六组复测覆盖暂存、已改名但回执未提交、已验证但尚未开始清理、旧目录进入清理、旧目录已删除但回执尚未更新，以及重启时最新归档遭到单字节篡改。每次恢复均保留同一运行 ID、暂存数据库 inode 和内容摘要。损坏场景先独立验证上一份仍可恢复，修复最新副本再完成保留处理。六组 ext4 实测日志 `.build/wp23/a23-publication-ext4.log` 的 SHA-256 为 `f21203617b6c7d3bd0cc7068ef4f2c538c8e43882bfb8e4ecc0ad01ec1ab5bf7`。[备份中断夹具](../../tests/integration/backup_publication_crash.py)
 
 ### A23 原生备份选择与中断恢复
+
+自有 FixedInternal System 在开发 Worker `1eb5104`（开发 Bundle `0b9e399f082e7b021a4cd078711b5bcd46843bdbb8c08b1f6f4bae923e4232b5`）完成了同一组工作。源停止并删除后，新 Worker 在原生归档中新建 catalog。恢复前的 bindings、TAP 租约、包唤醒规则均为零。恢复后新的路由域获得私网地址 `10.194.0.2`，Guest 仍使用 `10.0.2.15/24`，RAM、根盘和独立卷的标记相符。日志 `.build/a23-1eb5104-development-fixed-handoff-v1.log` 的 SHA-256 为 `dddff22c705c3e5f9277b2986fc59c118561407f5e274d4fb241871e3858ea51`。
 
 在真实 Debian KVM 上，认证的公开请求选定 checkpoint、当前 Hibernate 点和独立卷代际。Worker 离线时，平台先持久保存选定的目录快照。已有休眠点的公开 Delete 和显式释放受围栏。公开 Wake 及再次 Hibernate 更新了当前恢复点，原休眠根继续阻止 GC，原 run 保持选定此前的点。Worker 确认引用后，暂存阶段成功删除公开 checkpoint 和独立卷快照，四次直接 GC 仍被拒绝。
 
@@ -207,6 +209,10 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 | A35 | `fb69434` 冻结安装，运行中的单子 Fork 和双子批次均通过 | 源关闭自动休眠、开启 keep_running 并持有有效租约。Guest 已收到 HTTPS 模型流的首个 SSE 事件，Worker 确认代理连接仍有活动保护。源和各子分支保留同一原进程、内存 nonce 和首事件，原业务请求只到达一次。各分支用独立授权取得互不相同的后续响应，子机继承策略和空租约列表。[原始运行与请求计数](guest-delegation.md#active-model-streams-during-fork) | — |
 | A36 | fb69434 冻结安装通过 Stop、首桌面和禁止失败冷启，开发 Worker 的显式 exact 重试通过 | API 隐式唤醒策略分别约束 Running 与 Hibernated，私网 TCP 与已有桌面分别按其服务策略唤醒。冻结 Stop 在普通 Agent 停用时确认 writer、旧执行和待处理唤醒受到围栏，重新冷启读回根盘、挂载卷和裸盘。冻结首桌面从 epoch 0 空槽并发启动一个执行，复用租约并回收确认期间撤销的授权，真实传输 800×480 画面。两种保存恢复故障都保留同一 Hibernated 保存点，冻结 Worker 拒绝冷启。一个已发给失败目标的 writer grant 完整释放后，此版的显式 exact 仍返回 `VOLUME_GENERATION_MISMATCH`。修复后的 Worker 在同一测试中确认失败目标退出、授权释放且尚未发出身份 BEGIN，随后从原保存点恢复 RAM。[开发修复与同夹具对照](candidate-fb69434.md#保存唤醒修复的开发复测)。[同包 Stop、首桌面与失败原记录](candidate-fb69434.md#安装后公开操作) · `.build/wp10/debian-lease-and-protected-fork-kvm-v2.log` · `.build/platform-desktop-worker-lease-wake-policy-v3.log` | 用修复后的冻结运行时验证围栏失败目标后的 exact 重试，确认原保存点、卷和 RAM。 |
 
+### A36 保存点唤醒失败后的显式重试
+
+`managed_system_vsock.py --case saved-wake-exact` 使用只读的开发 Bundle `0b9e399f082e7b021a4cd078711b5bcd46843bdbb8c08b1f6f4bae923e4232b5` 和 A31 记录的平台二进制。丢失本次保存点的索引时，所有者请求返回稳定的恢复错误。随后在一次恢复已取得 writer、尚未开始 Guest 身份交接时终止该目标。Worker 回收原 writer，保留同一 StatePoint。所有者显式启动后从该点恢复至 epoch 3，原 RAM 标记、逻辑根卷 ID 和单独写入根卷的随机标记均相同。记录为 `.build/wp23/a36-owned-exact-retry-1eb5104-development-v1.log`，SHA-256 `a823414f2adb88dbe4df5442117a27e21070faa5380df915af396049a1ad0564`，新冻结安装待复测。
+
 ### A30 保护与自动休眠提交
 
 只读 `fb69434` 安装使用独立 cgroup 和 512 MiB System。所有者的设置与租约走公共 API，夹具从同一个 Worker 日志读取自动候选的真实阶段。`arming` 收到保护的两组均取消候选并保留 epoch 1。已写入 `stop_committed` 的两组完成原休眠。配置组通过显式启动接回保存点，运行租约组凭合法访问自动接回，再在新执行上续租和释放。四组均读回原 `/run` 标记，跨过原 5 秒 TTL 与 2 秒空闲期限时各有对应保护。入口为 `tests/integration/lifecycle_idle_kvm.py --protection keep-running|lease --side before|after`。
@@ -220,7 +226,7 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 
 ### A31 并发服务与管理 API
 
-两条已授权请求从同一屏障放行。HTTP 服务向自己的 Guest 追加一条业务记录，管理 API 通过 Guest exec 追加另一条记录。测试使用只读冻结安装 `fb69434`、System 镜像 SHA-256 `f7b0611ebb21af630addeddf95717aae284f7aa44b4abe2ee7c3933919570b02` 和修复后的平台二进制 `ecfc92b523d63234163618ca8d04a788db57853d844891c430f03f1d585a8306`。此前在原平台的 Standby 切点出现一次 HTTP 500，日志显示两条请求均等候 Worker 的 `GetLifecycleStatus` 应答超时。修复后每次控制层重试沿用原执行、请求键和载荷，业务仅在持有当前执行的保护后交付。
+两条已授权请求从同一屏障放行。HTTP 服务向自己的 Guest 追加一条业务记录，管理 API 通过 Guest exec 追加另一条记录。测试使用只读冻结安装 `fb69434`、System 镜像 SHA-256 `f7b0611ebb21af630addeddf95717aae284f7aa44b4abe2ee7c3933919570b02` 和修复后的平台二进制 `ecfc92b523d63234163618ca8d04a788db57853d844891c430f03f1d585a8306`。原平台曾在 Standby 切点返回 HTTP 500。一组单独延迟 Worker 应答的对照记录了两条 `GetLifecycleStatus` 读取超时。修复后每次控制层重试沿用原执行、请求键和载荷，业务仅在持有当前执行的保护后交付。
 
 | 初态与切点 | 实测结果 | `.build/wp23/` 日志与 SHA-256 |
 | --- | --- | --- |

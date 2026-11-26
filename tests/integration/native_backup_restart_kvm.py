@@ -2,7 +2,7 @@
 """Restart a public native backup across both pin boundaries on Debian KVM."""
 
 import argparse
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 import grp
 import hashlib
 import json
@@ -89,12 +89,32 @@ def db_rows(db, sql, *parameters):
         return connection.execute(sql, parameters).fetchall()
 
 
-def recovery(platform, archive, native, saved, sleeping, marker, volume, volume_marker, old_execution):
+def guest_address(platform, execution):
+    snapshot = json.loads(platform.guest(execution, ["/usr/sbin/ip", "-j", "-4", "addr", "show", "dev", "eth0"]))
+    address, = [a for interface in snapshot for a in interface["addr_info"] if a["scope"] == "global"]
+    return address["local"], address["prefixlen"]
+
+
+@contextmanager
+def unavailable_reader(platform):
+    # All processes in this fixture share a private mount namespace. Concealing
+    # the installation here keeps every file and inode in the release intact.
+    with tempfile.TemporaryDirectory(dir=platform.root, prefix="offline-reader-") as empty:
+        subprocess.run(["mount", "--bind", empty, platform.bundle], check=True)
+        try:
+            yield
+        finally:
+            subprocess.run(["umount", platform.bundle], check=True)
+
+
+def recovery(platform, archive, native, saved, sleeping, marker, volume, volume_marker, old_execution, origin_address):
     destination = platform.root / "archives" / "independent"
     platform.backup_admin("recover-native", "--archive", archive, "--output", destination, "--worker-catalog")
     catalog = destination / Path(native["directory"]).name
     db = catalog / "catalog.sqlite"
     assert not db_rows(db, "SELECT 1 FROM executions WHERE phase!='exited'")
+    for table in ("instance_bindings", "network_tap_leases", "private_packet_wake_rules"):
+        assert db_rows(db, f"SELECT count(*) FROM {table}") == [(0,)], table
     for point in (saved, sleeping):
         assert db_rows(db, "SELECT manifest_digest FROM statepoints WHERE capture_id=?", point["capture_id"]) == [
             (point["manifest_digest"],)
@@ -138,13 +158,19 @@ def recovery(platform, archive, native, saved, sleeping, marker, volume, volume_
         assert ref["execution_epoch"] == 1 and ref["incarnation_id"] != old_execution["incarnation_id"]
         assert receipt["statepoint"]["manifest_digest"] == saved["manifest_digest"]
         network = receipt["statepoint"]["network_recovery"]
-        assert network["mode"] == "native" and network["source"]["route_domain_id"] == "backup-origin", network
+        assert network["mode"] == platform.args.network_mode and network["source"]["route_domain_id"] == "backup-origin", network
         assert network["target"]["route_domain_id"] == "independent-destination", network
         assert network["target"]["attachment_id"] != network["source"]["attachment_id"], network
+        assert network["source"]["guest_ipv4"] == origin_address[0], network
+        assert network["target"]["private_ipv4"] != network["source"]["private_ipv4"], network
         for file in ("/run/a23-ram", "/root/a23-disk"):
             assert platform.guest(ref, ["/bin/cat", file]).strip() == marker
-        observed = platform.guest(ref, ["/usr/sbin/ip", "-o", "-4", "addr", "show", "dev", "eth0"])
-        assert (network["target"]["guest_ipv4"] + "/32").encode() in observed, observed
+        observed = guest_address(platform, ref)
+        assert observed[0] == network["target"]["guest_ipv4"], (observed, network)
+        if network["mode"] == "fixed_internal":
+            assert observed == origin_address, (observed, origin_address)
+        else:
+            assert observed == (network["target"]["private_ipv4"], 32), (observed, network)
         # Reap only the test's exact recovered VMM before its store is removed.
         pid = vmm_pid(platform, ref)
         descriptor = os.pidfd_open(pid)
@@ -153,9 +179,9 @@ def recovery(platform, archive, native, saved, sleeping, marker, volume, volume_
             assert select.select([descriptor], [], [], 10)[0]
         finally:
             os.close(descriptor)
-        print("Independent Native execution restored the two exact Guest markers and the independent volume bytes",
+        print("Independent", network["mode"], "execution restored both Guest markers and independent volume bytes",
               marker.decode(), "epoch", ref["execution_epoch"], "route", network["target"]["route_domain_id"],
-              "Guest IPv4", network["target"]["guest_ipv4"], flush=True)
+              "Guest IPv4", observed, "private IPv4", network["target"]["private_ipv4"], flush=True)
     finally:
         platform.serve = original_socket
 
@@ -170,10 +196,10 @@ def run(platform):
     print("Bundle", platform.bundle_id, "Worker", digest(platform.bundle / "smolvm-resourced"),
           "platformd", digest(platform.args.platformd), flush=True)
     wait_for(lambda: any(row["state"] == "verified" for row in platform.app("backups")["items"]))
-    created = platform.change("machines", "a23-system", {"name": "Native backup proof", "template_id": "t_system",
+    created = platform.change("machines", "a23-system", {"name": "Backup handoff", "template_id": "t_system",
         "boot_mode": "system", "runtime_instance_id": platform.serve_id, "start": False,
         "resources": {"cpu_count": 1, "memory_mib": 512},
-        "network": {"network_id": "backup-source", "mode": "native"}})
+        "network": {"network_id": "backup-source", "mode": platform.args.network_mode}})
     platform.complete(created)
     machine = "machines/" + created["machine_id"]
     product = Product(platform)
@@ -197,6 +223,7 @@ def run(platform):
     previous_archive = archives / previous
     previous_manifest = digest(previous_archive / "backup-manifest.json")
     ref = product.start(machine)
+    origin_address = guest_address(platform, ref)
     marker = os.urandom(18).hex().encode()
     platform.guest(ref, ["/bin/sh", "-ec", f'echo {marker.decode()} >/run/a23-ram; echo {marker.decode()} >/root/a23-disk; sync'])
     capture = platform.complete(platform.change(machine + "/snapshots", "a23-checkpoint", {"capture_mode": "vm"}, platform.app(machine)))["result"]
@@ -337,11 +364,11 @@ def run(platform):
 
     # The current hibernated source is the remaining selection of these runs.
     sleeping_block, = [row[0] for row in db_rows(catalog, "SELECT child_resource_id FROM resource_edges WHERE owner_resource_id=?", later_sleeping["representation_id"])]
-    for filename, key in ((worker_state / "objects" / sleeping_block / "data", "missing-block"),
-                          (platform.bundle / "runtime-bundle.json", "missing-reader")):
-        hidden = filename.with_name(filename.name + ".fixture-held")
-        try:
+    for key in ("missing-block", "missing-reader"):
+        with ExitStack() as unavailable:
             if key == "missing-block":
+                filename = worker_state / "objects" / sleeping_block / "data"
+                hidden = filename.with_name(filename.name + ".fixture-held")
                 gate = BackupFiles(archives)
                 try:
                     failed = platform.submit_backup("a23-" + key)
@@ -352,21 +379,19 @@ def run(platform):
                             return False
                         assert db_rows(database, "SELECT worker_pinned FROM native_backup_selections WHERE backup_id=?", failed) == [(1,)]
                         filename.rename(hidden)
+                        unavailable.callback(hidden.rename, filename)
                         return True
 
                     gate.at_open(platform.platform, remove_member, seconds=90)
                 finally:
                     gate.close()
             else:
-                filename.rename(hidden)
+                unavailable.enter_context(unavailable_reader(platform))
                 failed = platform.submit_backup("a23-" + key)
             assert platform.backup(failed, state="failed")["failure_code"] == "NATIVE_CLOSURE_UNAVAILABLE"
             assert not (archives / failed).exists()
             assert digest(archive / "backup-manifest.json") == verified_manifest
             assert digest(previous_archive / "backup-manifest.json") == previous_manifest
-        finally:
-            if hidden.exists():
-                hidden.rename(filename)
     assert platform.backup_admin("verify", "--archive", archive)["backup_id"] == ident
     print("Missing immutable block and original reader failed new runs while both verified archives remained intact", flush=True)
 
@@ -375,7 +400,7 @@ def run(platform):
     product.stop(machine, original)
     product.applied(machine, machine=machine, method="DELETE")
     kill(platform.source_worker)
-    recovery(platform, archive, native, saved, sleeping, marker, generation, volume_marker, original)
+    recovery(platform, archive, native, saved, sleeping, marker, generation, volume_marker, original, origin_address)
 
 
 def resume_legacy_routes(platform):
@@ -485,6 +510,8 @@ def main():
         parser.add_argument("--" + key, type=lambda path: Path(path).resolve(), required=True)
     parser.add_argument("--previous-platformd", type=lambda path: Path(path).resolve(),
                         help="run the two-route in-flight migration with a schema 1017 binary")
+    parser.add_argument("--network-mode", choices=("native", "fixed_internal"), default="native")
+    parser.add_argument("--use-installation", action="store_true", help="expose the installed Bundle read-only")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -508,7 +535,7 @@ def main():
                        stdout=subprocess.DEVNULL)
         stack.callback(subprocess.run, ["systemctl", "stop", cgroup], check=True)
         os.environ["SMOLVM_WORKER_SLICE_NAME"] = cgroup
-        platform = BackupPlatform(args, root, stack, state_tmpfs=True,
+        platform = BackupPlatform(args, root, stack, state_tmpfs=True, use_installation=args.use_installation,
                                   networks=(dict(network_id="backup-source", route_domain_id="backup-origin", cidr="10.112.0.0/24"),))
         try:
             if args.previous_platformd:
