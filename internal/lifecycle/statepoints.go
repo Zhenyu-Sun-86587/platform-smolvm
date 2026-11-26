@@ -13,6 +13,8 @@ import (
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/workerclient"
+	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/volumes"
 )
@@ -136,9 +138,6 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 		return rt.StatePointSubmission{}, err
 	}
 	request := rt.StatePointSubmission{OperationID: j.Op.ID, Kind: kind}
-	if kind == rt.VMSnapshot {
-		j.Intent.SourceTaskBinding = GuestBinding(j.Binding)
-	}
 	ref := j.Binding.ExecutionRef()
 	request.Expected = rt.LaunchBinding{InstanceID: ref.InstanceID, IncarnationID: &ref.IncarnationID, ExecutionEpoch: ref.ExecutionEpoch}
 	if kind == rt.VMRestore {
@@ -164,19 +163,22 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 		}
 	case kind == rt.VMRestore || kind == rt.VMRollback:
 		request.Parameters.Mode = v.VolumeRestorePolicy
-		var instance, bundle, machine string
+		var instance, bundle, machine, manifest, manifestDigest string
 		var bindingID, raw sql.NullString
 		err := j.DB.ReadDB().QueryRowContext(ctx, `SELECT v.runtime_capture_id,v.runtime_instance_id,v.runtime_bundle_id,s.source_machine_id,
-			o.binding_id,json_extract(o.dispatch_json,'$.source_task_binding') FROM vm_snapshot_provenance v
+			o.binding_id,json_extract(o.dispatch_json,'$.source_task_binding'),s.manifest_json,s.sha256 FROM vm_snapshot_provenance v
 			JOIN snapshots s ON s.id=v.snapshot_id LEFT JOIN operations o ON o.id=v.operation_id
 			WHERE v.snapshot_id=? AND s.state='ready'`, v.SnapshotID).
-			Scan(&request.Parameters.CaptureID, &instance, &bundle, &machine, &bindingID, &raw)
+			Scan(&request.Parameters.CaptureID, &instance, &bundle, &machine, &bindingID, &raw, &manifest, &manifestDigest)
 		if err != nil {
 			return request, err
 		}
 		if instance != j.Binding.RuntimeInstanceID || bundle != j.Binding.RuntimeBundleID || (kind == rt.VMRollback && machine != j.Op.MachineID) {
 			return request, &Failure{"BUNDLE_UNAVAILABLE", "StatePoint requires its original Worker slot and Bundle"}
 		}
+		j.Intent.CaptureConfig = snapshots.CapturedConfiguration(snapshots.Snapshot{
+			Hash: manifestDigest, Manifest: json.RawMessage(manifest), VM: &snapshots.VMProvenance{RuntimeCaptureID: request.Parameters.CaptureID},
+		})
 		if j.Op.Kind == rt.VMRestore && bindingID.Valid {
 			if raw.Valid {
 				var captured tasks.Binding
@@ -189,6 +191,20 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 		}
 	default:
 		request.Parameters.CaptureID = "point-" + strings.TrimPrefix(j.Op.ID, "op_")
+	}
+	if kind == rt.VMSnapshot {
+		m, err := j.DB.GetMachine(ctx, j.Binding.MachineID)
+		if err != nil {
+			return request, err
+		}
+		if m.CurrentBinding == nil || m.CurrentBinding.ID != j.Binding.ID || m.CurrentBinding.ExecutionRef() != ref || m.ActiveOperationID != j.Op.ID {
+			return request, registry.ErrGeneration
+		}
+		config, err := snapshots.CaptureSpec(m.Spec, m.TemplateID, m.Revision, request.Parameters.CaptureID)
+		if err != nil {
+			return request, err
+		}
+		j.Intent.SourceTaskBinding, j.Intent.CaptureConfig = GuestBinding(j.Binding), config
 	}
 	request.RequestDigest = statePointDigest(request)
 	return request, nil
@@ -320,10 +336,18 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 	if TaskMetadataStatus(j.Binding) != "unavailable" {
 		taskStatus = "stale"
 	}
+	config := j.Intent.CaptureConfig
+	if config != nil && config.CaptureID == point.CaptureID {
+		fixed := *config
+		fixed.ManifestDigest = point.ManifestDigest
+		config = &fixed
+	}
 	manifest := struct {
 		rt.StatePointProgress
-		TaskMetadataStatus string `json:"task_metadata_status"`
-	}{point, taskStatus}
+		TaskMetadataStatus string                          `json:"task_metadata_status"`
+		Configuration      *snapshots.CaptureConfiguration `json:"captured_configuration,omitempty"`
+		Scope              *snapshots.CapturedScope        `json:"captured_scope,omitempty"`
+	}{point, taskStatus, config, j.observeCapturedScope(ctx, point)}
 	return j.Done(ctx, registry.TransitionRequest{Effect: registry.EffectApplied, SourceDisposition: registry.SourceDisposition(point.OriginalSourceDisposition),
 		Result: JSON(map[string]any{"snapshot_id": id, "capture_id": point.CaptureID, "statepoint": point, "task_metadata_status": taskStatus}),
 		Apply: func(ctx context.Context, tx *sql.Tx) error {
@@ -345,6 +369,24 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 			}
 			return registry.AppendEvent(ctx, tx, "snapshot", j.Binding.MachineID, j.Op.ID, map[string]string{"snapshot_id": id, "state": "ready"}, false)
 		}})
+}
+
+// The durable receipt authorizes publication even if this optional detailed
+// readback is unavailable (for example with a historical Worker).
+func (j *Job) observeCapturedScope(ctx context.Context, point rt.StatePointProgress) *snapshots.CapturedScope {
+	runtime, ok := j.Runtime.(interface{ WorkerSocket() string })
+	request := j.Intent.StatePoint
+	if !ok || runtime.WorkerSocket() == "" || request == nil || request.Expected.IncarnationID == nil {
+		return nil
+	}
+	client := workerclient.Client{Socket: runtime.WorkerSocket(), Bundle: j.Binding.RuntimeBundleID}
+	ref := workerclient.Execution{InstanceID: request.Expected.InstanceID, IncarnationID: *request.Expected.IncarnationID,
+		Epoch: request.Expected.ExecutionEpoch}
+	raw, err := client.StatePointCapture(ctx, ref, request.OperationID, request.RequestDigest, point.CaptureID)
+	if err != nil {
+		return nil
+	}
+	return snapshots.ReadCapturedScope(raw, *request, point)
 }
 
 func (j *Job) completeStatePointStop(ctx context.Context, control rt.StatePointControl, point rt.StatePointProgress, rollback bool) error {
@@ -422,6 +464,17 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 		transition.SourceDisposition = registry.SourceExited
 		result["rescue_capture_id"] = rescue.RescueCaptureID
 	}
+	configuration := j.Intent.CaptureConfig
+	if configuration != nil && configuration.ManifestDigest != point.ManifestDigest {
+		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "restore target manifest differs from the captured configuration"})
+	}
+	if j.Op.Kind == rt.VMRestore || j.Op.Kind == rt.VMRollback {
+		if configuration == nil {
+			result["capture_configuration_status"] = "unknown"
+		} else {
+			result["capture_configuration_status"] = configuration.Status
+		}
+	}
 	if rescue != nil || len(products) != 0 {
 		transition.Apply = func(ctx context.Context, tx *sql.Tx) error {
 			for _, product := range products {
@@ -431,6 +484,15 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 				}
 			}
 			if rescue != nil {
+				if configuration != nil {
+					// Snapshot configuration changes with promotion. Preserve all
+					// non-VM settings and the machine's current identity and policy.
+					if _, err := tx.ExecContext(ctx, `UPDATE machines SET spec_json=json_patch(
+						json_remove(spec_json,'$.boot_mode','$.live_compute_growth','$.network','$.resources'), ?)
+						WHERE id=? AND template_id=?`, string(configuration.Spec), j.Op.MachineID, configuration.TemplateID); err != nil {
+						return err
+					}
+				}
 				return j.recordStatePoint(ctx, tx, *rescue, rescue.RescueCaptureID, "rollback_rescue")
 			}
 			return nil
