@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-from authorized_services_kvm import Platform, identity, stop, witness, worker_get
+from authorized_services_kvm import Platform, identity, witness, worker_get
 from managed_system_vsock import digest, wait_for
 
 
@@ -166,8 +166,6 @@ def exercise(platform, networks, case):
         assert identity(platform.context(local["machine"])[1]) == identity(local["execution"])
     witness(platform, "a13-authorized-" + case, endpoints=endpoints, hairpins=hairpins, directions=directions,
             route_domains=[first["route_domain"], second["route_domain"]])
-    for local in (first, second):
-        stop(platform, local["machine"])
 
 
 def main():
