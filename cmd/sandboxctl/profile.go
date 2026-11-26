@@ -261,6 +261,10 @@ func readPrivate(path string, limit int64) ([]byte, error) {
 }
 
 func writePrivate(path string, data []byte) error {
+	return writePrivateChecked(path, data, nil)
+}
+
+func writePrivateChecked(path string, data []byte, beforeRename func() error) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".sandboxctl-*")
 	if err != nil {
@@ -278,6 +282,11 @@ func writePrivate(path string, data []byte) error {
 	}
 	if err := f.Close(); err != nil {
 		return err
+	}
+	if beforeRename != nil {
+		if err := beforeRename(); err != nil {
+			return err
+		}
 	}
 	return os.Rename(name, path)
 }

@@ -55,7 +55,8 @@ The generated aliases use the selected saved origin and credential.
 
 Use `ssh myapp.sandbox`, `scp file myapp.sandbox:/tmp/`, or select
 `myapp.sandbox` in VS Code Remote SSH. A qualified System Guest and
-a machine-scoped manage token are sufficient for managed SSH. The local
+an authorized private network are required. A machine-scoped manage token
+can access its permitted workspace. The local
 profile holds the Ed25519 user key and short-lived certificate. Connection
 preparation runs through an exact alias, and OpenSSH verifies the platform's
 current Guest host key. The generated configuration contains static IDs and

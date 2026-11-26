@@ -3233,6 +3233,7 @@ components:
             files.write: {$ref: '#/components/schemas/GuestFileCapability'}
             files.preview: {$ref: '#/components/schemas/GuestFileCapability'}
             files.edit: {$ref: '#/components/schemas/GuestFileCapability'}
+            access.managed_ssh: {$ref: '#/components/schemas/ManagedSSHCapability'}
         binding:
           type: object
           properties:
@@ -3428,6 +3429,20 @@ components:
       required:
       - ticket
       additionalProperties: false
+    ManagedSSHCapability:
+      description: Passive configuration and host-key evidence for the intrinsic System SSH path.
+      allOf:
+      - {$ref: '#/components/schemas/Capability'}
+      - properties:
+          constraints:
+            type: object
+            required: [manage_allowed, path, host_key_status, reachability]
+            properties:
+              manage_allowed: {type: boolean, description: Whether the current principal may manage this machine.}
+              path: {enum: [configured, unavailable, unknown]}
+              host_key_status: {enum: [observed, unavailable, unknown], description: Fresh verified host-key evidence for the current execution.}
+              reachability: {enum: [unknown, unavailable], description: The passive view never probes TCP reachability.}
+              guest_port: {type: integer, enum: [2222], description: The private SSH port when the path is configured.}
     GuestFileCapability:
       allOf:
       - {$ref: '#/components/schemas/Capability'}
