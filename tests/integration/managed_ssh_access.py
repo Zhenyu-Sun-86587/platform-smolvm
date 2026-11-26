@@ -5,20 +5,24 @@ import hashlib
 import ipaddress
 import json
 import os
+import select
 from pathlib import Path
 import subprocess
+import time
 from urllib.parse import urlencode, urlsplit
 
 from authorized_services_kvm import NETWORK, PROGRAM, SERVICE_PORT, machine, write_service
 from managed_system_vsock import wait_for
+from service_revision_kvm import mutate
 
 
 def check(platform, args, keys):
     mid, view, ref = machine(platform, "ssh-first-use", args.mode)
     path = "machines/" + mid
-    credential = platform.change("tokens", "managed-ssh-token", {
+    issued = platform.change("tokens", "managed-ssh-token", {
         "label": "Disposable first login", "scope": {"access": "manage", "machine_id": mid},
-    }, status=200)["token"]
+    }, status=200)
+    credential = issued["token"]
     authority = urlsplit(view["web_url"]).hostname
     assert authority == "vm-" + mid[2:] + ".owned-services.test"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SANDBOX", "SSH_", "XDG_"))}
@@ -114,7 +118,23 @@ def check(platform, args, keys):
         restored = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
         assert restored[0] == "0" and restored[1] == router and restored[-1] == "2222", restored
         assert platform.context(mid)[1]["execution_epoch"] > ref["execution_epoch"]
+        # Revocation must sever this transport even if its SSH certificate is still valid.
+        with subprocess.Popen(["ssh", "-oBatchMode=yes", alias, "echo connected; exec sleep 90"],
+                              env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL) as active:
+            try:
+                assert select.select([active.stdout], [], [], 45)[0] and active.stdout.readline() == b"connected\n"
+                tick = time.monotonic()
+                receipt = mutate(platform, "DELETE", "tokens/" + issued["token_id"], "revoke-managed-ssh",
+                                 issued["revision"], {}, 200)
+                assert receipt["status"] == "revoked"
+                assert active.wait(timeout=12) == 255
+                revoke_ms = round(1000 * (time.monotonic() - tick))
+            finally:
+                if active.poll() is None:
+                    active.kill()
+        run("ssh", "-oBatchMode=yes", alias, "id -u", code=255)
         print(json.dumps(dict(case="managed-ssh-and-web", mode=args.mode, machine_id=mid, ssh_source=connection[0],
                               guest_port=connection[-1], new_user_exit=23, agent=False, published_ssh=False,
-                              sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
+                              revocation_ms=revoke_ms, sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
                               direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
