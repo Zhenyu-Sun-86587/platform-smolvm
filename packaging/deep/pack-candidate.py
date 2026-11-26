@@ -87,12 +87,12 @@ def source_licenses(stage, lock, kernel, crun):
         "smolvm": {"LICENSE": stage / "LICENSE",
                    "THIRD-PARTY-NOTICES.md": licenses / "smolvm-THIRD-PARTY-NOTICES.md",
                    "patches/crun/build-inputs.json": None, "src/portable_checkpoint.rs": None},
-        "libkrun": {"LICENSE": licenses / "libkrun-LICENSE"},
+        "libkrun": {"LICENSE": licenses / "libkrun-LICENSE", "src/vmm/src/lib.rs": None},
         "libkrunfw": {name: licenses / f"libkrunfw-{name}" for name in (
             "LICENSE-GPL-2.0-only", "LICENSE-LGPL-2.1-only",
         )},
     }
-    smolvm = {}
+    selected_sources = {}
     for repository, files in source_members.items():
         with tarfile.open(stage / "sources" / f"{repository}.tar.gz", "r:gz") as archive:
             require(archive.pax_headers.get("comment") == lock["sources"][repository]["commit"],
@@ -100,7 +100,7 @@ def source_licenses(stage, lock, kernel, crun):
             for name, target in files.items():
                 content = regular_member(archive, name)
                 if target is None:
-                    smolvm[name] = content
+                    selected_sources[repository, name] = content
                 else:
                     target.write_bytes(content)
 
@@ -108,7 +108,7 @@ def source_licenses(stage, lock, kernel, crun):
     kernel_copy = stage / "sources" / f"{kernel_name}.tar.xz"
     shutil.copyfile(kernel, kernel_copy)
     require(sha256(kernel_copy) == lock["kernel"]["archive_sha256"], "kernel archive differs from the build lock")
-    crun_input = json.loads(smolvm["patches/crun/build-inputs.json"])
+    crun_input = json.loads(selected_sources["smolvm", "patches/crun/build-inputs.json"])
     crun_name = "crun-" + match(crun_input["version"], r"[0-9]+(?:\.[0-9]+)+", "crun source version")
     crun_copy = stage / "sources" / f"{crun_name}.tar.gz"
     shutil.copyfile(crun, crun_copy)
@@ -141,12 +141,14 @@ def source_licenses(stage, lock, kernel, crun):
         encoding="utf-8",
     )
     reader = re.search(rb'^pub const RUNTIME_ABI: &str = "([a-z0-9-]+)";$',
-                       smolvm["src/portable_checkpoint.rs"], re.M)
+                       selected_sources["smolvm", "src/portable_checkpoint.rs"], re.M)
     require(reader is not None, "cannot identify the pinned portable checkpoint reader")
-    return reader[1].decode()
+    clock_tag = re.search(rb'^const KVM_X86_STANDBY_CHECKPOINT_TAG: &\[u8; 8\] = b"(SMVCSBY1)";$',
+                          selected_sources["libkrun", "src/vmm/src/lib.rs"], re.M)
+    return reader[1].decode(), clock_tag[1].decode() if clock_tag else None
 
 
-def write_profiles(stage, lock, evidence, reader, managed=False, private_network=False, live_resources=False):
+def write_profiles(stage, lock, evidence, reader, clock_tag, managed=False, private_network=False, live_resources=False):
     profiles = stage / "profiles"
     profiles.mkdir()
     guest, cpu, kvm = (evidence[name] for name in ("guest", "host_cpu", "kvm"))
@@ -165,11 +167,15 @@ def write_profiles(stage, lock, evidence, reader, managed=False, private_network
         "virtio_devices": guest["virtio_devices"], "kernel_release": guest["kernel_release"],
         "vcpu_count": 2, "memory_mib": 512,
     })
-    write_json(profiles / "clock.json", {
+    clock = {
         "schema": "RuntimeClockContract/1", "guest_clocksource": guest["clocksource"],
         "x86_vm_state_ioctls": ["KVM_GET_CLOCK", "KVM_SET_CLOCK"],
         "tsc_migration_template": "intel-portable", "verified_operations": ["oci-boot", *(["managed-fork", "hibernate-restore"] if managed else [])],
-    })
+    }
+    if clock_tag:
+        clock.update(schema="RuntimeClockContract/2", standby_checkpoint=clock_tag,
+                     standby_clock="freeze-through-activation")
+    write_json(profiles / "clock.json", clock)
     sources = lock["sources"]
     contracts = {name: 1 for name in (*PROTOCOLS, *(managed_evidence.MANAGED if managed else ()))}
     if private_network:
@@ -203,7 +209,7 @@ def main():
                     "candidate packing requires the measured OCI identity helper")
             lock, _ = read_locks(stage / BUILD_LOCK, stage / TOOLCHAIN_LOCK)
             evidence = checked_evidence(args.evidence, stage, lock)
-            reader = source_licenses(stage, lock, args.kernel_archive, args.crun_archive)
+            reader, clock_tag = source_licenses(stage, lock, args.kernel_archive, args.crun_archive)
             private_network = live_resources = False
             if args.managed_evidence:
                 inputs = args.managed_evidence
@@ -223,7 +229,7 @@ def main():
                 with (stage / "NOTICE").open("a", encoding="utf-8") as notice:
                     notice.write("The System template includes a Debian guest disk with installed package copyright files under /usr/share/doc. "
                                  "The managed acceptance record identifies the tested disk, build and KVM fixture results.\n")
-            write_profiles(stage, lock, evidence, reader, bool(args.managed_evidence), private_network, live_resources)
+            write_profiles(stage, lock, evidence, reader, clock_tag, bool(args.managed_evidence), private_network, live_resources)
             checksum = pack_bundle(stage, output)
         require(verify_bundle(output, expected=checksum) == checksum, "candidate digest verification failed")
         print(checksum)

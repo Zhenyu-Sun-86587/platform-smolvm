@@ -23,7 +23,7 @@
 | A05 | 开发实机、本地测试 | 同一 Debian 块代际同时受 checkpoint、休眠根、未决操作和备份导出保护。公开删除 checkpoint 后，导出仍持有原 inode，休眠仍可恢复原 RAM 和根盘数据。单独持有操作或块导出都阻止回收。最后引用释放后 Worker 在 unlink 前被终止，恢复围栏解除后重放原 tombstone，删掉磁盘文件并清除依赖边。 [实测与复现](managed-recovery.md#statepoint-引用与实物回收) | 用下一次冻结安装复跑。 |
 | A06 | 冻结测量、开发实机，部分 | 冻结 OCI 在 child 激活前失败，重试保留已成功 child 和原 capture。开发 Worker 记录 STOP_COMMIT 重启后的原执行退出，并拒绝错误 lineage、OFD 或 epoch。 `managed/oci-capture.log`、`.build/wp10/durable-statepoint.log`、`.build/wp10/parked-block.log` | 逐阶段断连、丢 ACK、Worker/进程崩溃与源并发变化的矩阵，逐案核对原 decision、导出身份与失败 held 归宿。 |
 | A07 | fb69434 冻结安装，无后代与活后代两组通过 | 两组从捕获到旧 VMM 退出均保持控制台计数和四个盘头摘要。真实 chunk 路径错误后可在 STOP 前取消并回原 Standby，STOP 后 Worker 重启只收敛退出。持久根独立恢复原 PID 和卷，临时导出 pin 释放。无后代组释放 180,129,792 字节实分配 RAM；活后代组释放 30,875,648 字节并保留 163,090,432 字节共享 RAM，后代校验 96 MiB 冷数据。相同安装件另通过真实私网 SYN 停止切点。[切点、回收口径与原始记录](hibernate-cut-qualification.md) | — |
-| A08 | 冻结测量、开发实机，部分 | 真实控制器从 Running 进入 Standby，越过 guest 报告 TTL 后继续 Hibernate，后续按原执行点恢复。开发 managed Standby/Wake 以同一 execution epoch 得到 STANDBY 和 RUNNING 回执。 `managed/lifecycle.log`、`.build/network-gate-libs/platform-native-power-combined.log`、`smolvm/libkrun/tests/guest_gate/probe.py` | 当前候选的 raw 拒绝 strict clone、长待机原点、无新增 RAM 持久化及盘代际、时钟仅补偿一次的联合测量。 |
+| A08 | `fb69434` 冻结对照，修复后开发实机通过 | Raw 拒绝严格独立 Fork。Raw 和 managed Standby 均保持原 VMM 和资源图，managed 保留原 Gate。冻结件将暂停计入 Guest 时间，Fork 子机和 Hibernate 恢复时已触发定时器。修复后原机 Wake 原键重放、独立子机及新 epoch 恢复均按原 Guest 9 秒到期。[实机时钟与回执](#a08-长待机和保存点时钟) | 在包含修复的冻结安装上复跑，另验跨宿主重启。 |
 | A09 | 冻结测量、开发实机，部分 | 同一真实切点恢复 RAM 和两个 writer。双盘 VMM 测试先确认两盘 flush，旧 FD 尚在时源保持 held，随后一起 pivot。 `managed/oci-capture.log`、`.build/block-kvm/live-pivot.log`、`.build/wp10/parked-block.log` | 随机截取应用多盘未完成事务的相位，覆盖合法不相等盘计数，验证跨 capture 的输入组合必拒。 |
 | A10 | 开发实机，部分 | 两个 Bundle 共用 Worker 时，第二路不能取得运行中的 writer。真实 OFD 逃逸阻止旧进程通过退出围栏，三盘场景验证独立 writable heads。隔离 ext4 ENOSPC 验证 Create/Grow 未发布新 head，原写卷随后可冷启。[实际字节与故障范围](#卷恢复与停机存储实测) `.build/wp23/tracked-coexistence-kvm.log`、`.build/block-kvm/evidence.log`、`.build/wp10/product-managed-kvm.log` | 同一代际的 RW/RO 与 RW/RW、硬链接/路径别名、可共享 immutable RO 和未知 writer 的交叉矩阵。 |
 | A11 | 冻结安装与开发实机，旧 checkpoint 对照通过 | 两个持久 RW 卷在保存点后各自写入新数据。原挂接释放并转挂至另一虚机，源实例删除且私有盘实际移除后，公开 `exact` 仍报告 `VOLUME_GENERATION_MISMATCH` 和 `effect=none`。`clone_conflicts` 返回两个不同的新卷 ID，恢复旧 RAM 与两盘旧字节。只读代际通过两个独立挂接共享。平台重启、克隆再休眠及精确唤醒后仍可查新卷并读到克隆写入。[实际字节、卷映射与运行范围](#卷恢复与停机存储实测) | 含新卷目录投影的冻结安装复测。 |
@@ -46,6 +46,19 @@
 | `a04-live-provider-fb69434-v1.log` | `b633f5fc91424918a941648f39010b96ba8963dbfdf43bb4145d3c7d538f3ff6` |
 | `a04-broker-only-fb69434-v2.log` | `5da3b69f5f77dce711fccb6a54364b4dc1e36f40ab06c666c582b064e47849b2` |
 | `a04-last-provider-fb69434-v2.log` | `9b3a1805864f5aeec95ec241d80da16b472c14f9c999cb30f4ca78a1c3913ec2` |
+
+### A08 长待机和保存点时钟
+
+在同一物理 Linux KVM 宿主机上使用 `fb69434` 安装 `sha256:a9b41917173a0eea2306aa41276b59fa314e1d54f9d52f45766bcf2ce7698c35`、平台 `c011476` 和相同 Debian System 镜像。Guest 记录 `CLOCK_MONOTONIC`、`CLOCK_BOOTTIME`、`CLOCK_REALTIME`、原定时器进程和起点。Raw 等待 12 秒，两个 managed 场景各等待 24 秒。Worker 的资源、写盘 head、StatePoint 行和对象文件列表在每段 Standby 前后逐项相同。Raw 独立 Fork 收到 `E_STATE_CONFLICT`。两种原机 Wake 保留 PID、incarnation 和 epoch。同键请求重放均返回原操作。[KVM 夹具](../../tests/integration/standby_clock_kvm.py)
+
+冻结件中 Fork 子机和 Hibernate 恢复的首次 Guest 时钟采样已经分别推进约 31.936 和 32.762 秒。修复版在只读私有挂载上替换 libkrun `0d02553` 和 Worker `f4fa5f5`，开发 Bundle 摘要为 `sha256:460a09b6b40081ed77aa3268d1fb6e0e496cbba128bf4fd3d6e9863e9599896f`。独立子机具有新身份，原机仍停在同一 hold。Hibernate 保留从 `STANDBY` 取得的 StatePoint，原 VMM 经 pidfd 确认退出。保存点额外离线 12 秒后，新 incarnation 以原 instance ID 和下一 epoch 继续。首次采样时两台新执行都保有原定时器 PID，三种钟均未跨过 9 秒到期点，恢复后的钟速与宿主活跃时间一致。
+
+| 实机组件 | Raw Wake 到期 | Managed Wake 到期 | Fork 子机到期 | Hibernate 恢复到期 | `.build/` 日志及 SHA-256 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 精确 `fb69434` 安装 | 9.004 秒 | 9.008 秒 | 30.475 秒 | 32.295 秒 | `a08-fb69434-standby-clock-kvm-v4.log` `db7ee7954690017fe2755883e685bd84eacfac2e79c28194840395f97badaf2f` |
+| 修复开发 Bundle | 9.002 秒 | 9.008 秒 | 9.007 秒 | 9.008 秒 | `a08-held-clock-kvm-v2.log` `c76456893b9fd25f403d75a0fc0caccbb2031bbf86fbcd2f2757f1043cd9e82f` |
+
+新 reader 的 `SMVCSBY1` 记录源机停驻时长和原 KVM clock/TSC 样本。目标库归一化保存点，Worker 按同一 envelope 校验 Guest Gate，目标在激活前单独扣除本地等待。构建使用带该 reader 的 libkrun 时生成 `RuntimeClockContract/2`。历史 reader 使用 `RuntimeClockContract/1`，其字节摘要可直接用于对照。
 
 ### 卷恢复与停机存储实测
 
