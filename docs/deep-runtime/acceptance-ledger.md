@@ -42,9 +42,9 @@
 | A03 | 86dae32 冻结安装，分支隔离、精确恢复及末引用回收通过 | 根与左右兄弟并行读写 1024 个私有页和两个盘扇区，三代递归树逐个围栏根、左和中间祖先并清理运行路径。叶子独立 Hibernate/Restore 时右兄弟持续写入。恢复后的叶子保留 Guest PID 和三卷身份，从原保存点精确推进一个 tick。最后一支退出后，三份 volatile 资源和传输均回收，旧 backing 无 FD 或映射，逻辑谱系与 durable StatePoint 仍可查。[同树 KVM 验收](candidate-86dae32.md#a03-递归分支独立写入休眠和末引用回收) | — |
 | A04 | fb69434 安装件，三种 provider 场景通过 | 活源和活子分别给重启的 broker 交还原 sealed RAM。仅 broker 持有，以及 broker 与唯一源 VMM 同时退出时，恢复均报告 `lost`，保留 capture 引用，拒绝 GC，新 reader 的不可用回执携带零个 FD。开发平台另验证原 child 提供两块可写头后公开 Fork 继续原 PID。[资源身份和日志](#a04-broker-与最后一个-ram-provider)、`.build/wp23/tracked-provider-kvm.log` | — |
 | A05 | 1eb5104 冻结安装 | 同一 Debian 块代际同时受 checkpoint、休眠根、未决操作和备份导出保护。公开删除 checkpoint 后，导出仍持有原 inode，休眠仍可恢复原 RAM 和根盘数据。单独持有操作或块导出都阻止回收。最后引用释放后 Worker 在 unlink 前被终止，恢复围栏解除后重放原 tombstone，删掉磁盘文件并清除依赖边。 [实测与复现](managed-recovery.md#statepoint-引用与实物回收) 最后引用释放后，中断处的 inode 回收在新 Worker 上完成。[安装复测](#1eb5104-安装后的故障恢复与终端) | — |
-| A06 | 冻结调用方测试、开发 Worker 恢复，18 组实机切点通过 | 真实请求进程中途退出后仍可重取相同 checkpoint 与密封 RAM FD。真实 Worker 或源 VMM 分别在 9 个阶段退出，覆盖双可写盘切换、RAM 导出与子机启动。源停止的 6 个前期切点无子机，3 个后期切点各完成一个子机。9 次 Worker 替换均继续原决策，各完成一个子机。[请求、Worker 与源虚机的退出切点](#a06-捕获调用方退出与部分导出) | 对包含恢复修复的最终安装复测。 |
+| A06 | 冻结安装 1eb5104，18 组捕获中断实机通过 | 真实请求进程中途退出后仍可重取相同 checkpoint 与密封 RAM FD。真实 Worker 或源 VMM 分别在 9 个阶段退出，覆盖双可写盘切换、RAM 导出与子机启动。源停止的 6 个前期切点无子机，3 个后期切点各完成一个子机。9 次 Worker 替换均继续原决策，各完成一个子机。[请求、Worker 与源虚机的退出切点](#a06-捕获调用方退出与部分导出) 同一冻结 Worker 和替换进程复测全部九阶段，结果详见上述记录。 | — |
 | A07 | fb69434 冻结安装，无后代与活后代两组通过 | 两组从捕获到旧 VMM 退出均保持控制台计数和四个盘头摘要。真实 chunk 路径错误后可在 STOP 前取消并回原 Standby，STOP 后 Worker 重启只收敛退出。持久根独立恢复原 PID 和卷，临时导出 pin 释放。无后代组释放 180,129,792 字节实分配 RAM；活后代组释放 30,875,648 字节并保留 163,090,432 字节共享 RAM，后代校验 96 MiB 冷数据。相同安装件另通过真实私网 SYN 停止切点。[切点、回收口径与原始记录](hibernate-cut-qualification.md) | — |
-| A08 | `fb69434` 冻结对照，修复后开发实机通过 | Raw 拒绝严格独立 Fork。Raw 和 managed Standby 均保持原 VMM 和资源图，managed 保留原 Gate。冻结件将暂停计入 Guest 时间，Fork 子机和 Hibernate 恢复时已触发定时器。修复后原机 Wake 原键重放、独立子机及新 epoch 恢复均按原 Guest 9 秒到期。独立虚拟 Worker 断电换 boot 后，另一个原 Guest 定时器在 18.069 秒到期。[跨 boot 时钟](managed-recovery.md#worker-主机换-boot-后的恢复)。[实机时钟与回执](#a08-长待机和保存点时钟) | 在包含修复的冻结安装上复跑。 |
+| A08 | 冻结安装 1eb5104 和独立 Worker 换 boot 均通过 | Raw 拒绝严格独立 Fork。Raw 和 managed Standby 均保持原 VMM 和资源图，managed 保留原 Gate。冻结件将暂停计入 Guest 时间，Fork 子机和 Hibernate 恢复时已触发定时器。修复后原机 Wake 原键重放、独立子机及新 epoch 恢复均按原 Guest 9 秒到期。独立虚拟 Worker 断电换 boot 后，另一个原 Guest 定时器在 18.069 秒到期。[跨 boot 时钟](managed-recovery.md#worker-主机换-boot-后的恢复)。[实机时钟与回执](#a08-长待机和保存点时钟) 最终安装的四个恢复路径均保留原 Guest 定时器。 | — |
 | A09 | fb69434 冻结安装，交错多盘切点通过 | 八次独立 Fork 覆盖已提交、准备、两种写入中和两种合法先盘。目标在原 PID 的 RAM 相位读回双盘计数，完整 WriterPivot 同时包含两盘。持久 exact Restore 保留未完成事务的两盘差异，再提交原事务。两个实际 capture 各取一盘的组合在两个源 RAM 绑定下均拒绝，目标无控制 socket 与 Guest 输出。[多盘状态、左右盘实测和反例](multidisk-phase-qualification.md) | — |
 | A10 | fb69434 冻结 Worker 的 FD 矩阵及双开发 Bundle KVM 通过 | 同 Bundle 与跨 Bundle 的同代 RW/RW、RW/RO 争用均被拒。硬链接按同一 inode 互斥，路径符号链接拒绝登记。重启后只接受原带锁 OFD，最后一个原 OFD 关闭后才发放后继 writer。封存后两路在独立只读租约下共享同一 inode。开发实机另确认两份 Runtime Bundle 的 KVM 共用 Worker，第二路无法挂接活写卷。[矩阵与证据摘要](block-ownership-qualification.md) · [卷故障实测](#卷恢复与停机存储实测) | — |
 | A11 | fb69434 原安装与 f2df146 测量组合通过 | 原持久卷在保存后推进并转挂，源删除回收当前私有写头。公开 exact 报 VOLUME_GENERATION_MISMATCH 与 effect=none，clone_conflicts 从确切捕获代恢复旧 RAM 与双盘，发布独立卷及共享只读代。平台重启、Hibernate 和 exact Wake 后均保留公开映射与数据。[安装和测量数据](volume-lifecycle-qualification.md#a11-旧保存点与独立推进的持久卷) | f2df146 System 安装授权尚未发布。 |
@@ -78,6 +78,8 @@
 
 真实 Worker 和源 VMM 分别在 `arming`、`parking`、`standby`、`holding`、`pivoting`、`exporting`、`source_return`、`waking`、`children` 九个持久化阶段经 pidfd 终止。源退出的前六组终止原操作并释放 writer，没有发布子机。后三组各恢复一个子机。九次冻结 Worker `0c6454b969bd304fb98668ff963b9dc4a2b3703acd4228ea9762b8cd326f7d9c` 退出后，开发 Worker `d81a5b2f5ad8d322bacc641a1a330b54db77085bd691d2bf317e0cac91c515cd` 接管同一源 VMM，核对两盘 writer、原操作和执行身份，分别完成一个子机。子机串口输出含自己的主机名和原任务 PID，计数继续增加。另一次独立试验在恢复期间留下另一项未完操作，确认 Worker 等待该项完成处理再开放。smolvm `4651074` 提供恢复逻辑和 `tests/managed_capture_crash_kvm.py`。逐项日志位于 `.build/wp23/a06-cut-matrix-v8.sha256`，清单 SHA-256 为 `e9dc957d0ddb75ada8a527f962cab1ee19646461334b39eca3de80e8b5285951`。
 
+冻结安装 `1eb5104` 的十八组中断使用同一个 Worker 二进制 `f9a0812af46952abdd86cb99f596862e8f9f097c3e84dbebbe92cac50ad23448`。源进程在返回前退出的六组均终止操作并发布零个子机；从 `source_return` 起的三组各发布一个子机。Worker 在任一阶段退出后，替换进程都从原批次完成一个子机。逐组日志记录了捕获 ID、writer 阶段、操作终态和 Guest PID。`.build/wp23/a06-cut-matrix-installed-1eb5104.sha256` 含全部十八份日志的摘要，清单 SHA-256 为 `04444ecdec2f572d61748e11244bb2459c02cf155bdc13b532a7e36105228021`。
+
 ### A08 长待机和保存点时钟
 
 在同一物理 Linux KVM 宿主机上使用 `fb69434` 安装 `sha256:a9b41917173a0eea2306aa41276b59fa314e1d54f9d52f45766bcf2ce7698c35`、平台 `c011476` 和相同 Debian System 镜像。Guest 记录 `CLOCK_MONOTONIC`、`CLOCK_BOOTTIME`、`CLOCK_REALTIME`、原定时器进程和起点。Raw 等待 12 秒，两个 managed 场景各等待 24 秒。Worker 的资源、写盘 head、StatePoint 行和对象文件列表在每段 Standby 前后逐项相同。Raw 独立 Fork 收到 `E_STATE_CONFLICT`。两种原机 Wake 保留 PID、incarnation 和 epoch。同键请求重放均返回原操作。[KVM 夹具](../../tests/integration/standby_clock_kvm.py)
@@ -90,6 +92,8 @@
 | 修复开发 Bundle | 9.002 秒 | 9.008 秒 | 9.007 秒 | 9.008 秒 | `a08-held-clock-kvm-v2.log` `c76456893b9fd25f403d75a0fc0caccbb2031bbf86fbcd2f2757f1043cd9e82f` |
 
 新 reader 的 `SMVCSBY1` 记录源机停驻时长和原 KVM clock/TSC 样本。目标库归一化保存点，Worker 按同一 envelope 校验 Guest Gate，目标在激活前单独扣除本地等待。构建使用带该 reader 的 libkrun 时生成 `RuntimeClockContract/2`。历史 reader 使用 `RuntimeClockContract/1`，其字节摘要可直接用于对照。
+
+正式安装 `1eb5104` 分别复测 Raw Wake、独立 Fork 子机、原机 managed Wake 和 Hibernate 后的恢复。原 9 秒 Guest 定时器在四条路径依次于 9.008、9.009、9.009 和 9.011 秒触发。两个 managed 场景的原 Standby 均保持 24 秒。独立 Worker 断电换 boot 后，另一个 18 秒 Guest 定时器于 18.046 秒到期。`.build/wp23/a08-clock-final-1eb5104-v1.log` 的 SHA-256 为 `eba158e9b6d5cefccbae2821b591d8a455f34cd68d1bb2e3acd338c082b17c2e`。[整机复测](managed-recovery.md#正式安装的整机复测)
 
 ### 卷恢复与停机存储实测
 
