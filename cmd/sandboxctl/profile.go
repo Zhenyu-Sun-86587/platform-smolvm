@@ -88,7 +88,7 @@ func (c *client) readProfile() (localProfile, error) {
 }
 
 func (c *client) applyProfile() error {
-	if !c.explicitProfile && c.explicitOrigin && c.token != "" {
+	if c.token != "" {
 		return nil
 	}
 	profile, err := c.readProfile()
@@ -163,9 +163,6 @@ func (c *client) login() *cobra.Command {
 			return err
 		}
 		if existing, err := c.readProfile(); err == nil {
-			if !c.explicitOrigin {
-				c.origin = existing.Origin
-			}
 			base, err := platformOrigin(c.origin)
 			if err != nil {
 				return err

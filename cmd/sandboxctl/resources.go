@@ -48,7 +48,13 @@ func (c *client) list(use, path string, machineScoped bool) *cobra.Command {
 			}
 		}
 		query := url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}}
-		return c.show(cmd, endpoint+"?"+query.Encode())
+		if err := c.show(cmd, endpoint+"?"+query.Encode()); err != nil {
+			return err
+		}
+		if path == "machines" && !machineScoped {
+			c.refreshSSHAliases(cmd)
+		}
+		return nil
 	})
 	command.Flags().StringVar(&cursor, "cursor", "", "Cursor from the preceding page")
 	command.Flags().IntVar(&limit, "limit", 100, "Maximum items in this page")

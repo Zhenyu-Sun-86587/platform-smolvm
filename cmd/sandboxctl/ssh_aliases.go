@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -119,10 +120,6 @@ func (c *client) syncSSHAliases(ctx context.Context, install bool, target string
 	if err != nil {
 		return "", 0, err
 	}
-	aliases, err := pinned.visibleSSHAliases(ctx)
-	if err != nil {
-		return "", 0, err
-	}
 	dir, err := c.localDirectory()
 	if err != nil {
 		return "", 0, err
@@ -130,40 +127,143 @@ func (c *client) syncSSHAliases(ctx context.Context, install bool, target string
 	if err := ensurePrivateDirectory(dir); err != nil {
 		return "", 0, err
 	}
-	profile, err := c.profileDirectory()
-	if err != nil {
-		return "", 0, err
-	}
-	binary, err := os.Executable()
-	if err != nil {
-		return "", 0, err
-	}
-	config, err := managedSSHConfig(binary, dir, c.profileName, filepath.Join(profile, "ssh"), aliases)
-	if err != nil {
-		return "", 0, err
-	}
 	lock, err := sshFileLock(ctx, filepath.Join(dir, ".ssh-config.lock"))
 	if err != nil {
 		return "", 0, err
 	}
 	defer lock.Close()
+
+	marker := filepath.Join(dir, "installed-ssh.json")
 	generated := filepath.Join(dir, "managed-ssh.conf")
-	if err := writePrivate(generated, []byte(config)); err != nil {
+	if install && target == "" {
+		ownerDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", 0, err
+		}
+		target = filepath.Join(ownerDir, ".ssh", "config")
+	}
+	if !install {
+		state, err := readInstalledSSH(marker)
+		if err != nil {
+			return "", 0, err
+		}
+		target = state.Target
+	}
+	count, err := c.writeSSHAliases(ctx, pinned, dir, generated)
+	if err != nil {
 		return "", 0, err
 	}
 	if install {
-		if target == "" {
-			ownerDir, err := os.UserHomeDir()
-			if err != nil {
-				return "", 0, err
-			}
-			target = filepath.Join(ownerDir, ".ssh", "config")
-		}
 		if err := installSSHInclude(target, generated); err != nil {
 			return "", 0, err
 		}
 	}
-	return generated, len(aliases), nil
+	if target != "" {
+		state := installedSSH{Profile: c.profileName, Target: target}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			return "", 0, err
+		}
+		if err := writePrivate(marker, raw); err != nil {
+			return "", 0, err
+		}
+	}
+	return generated, count, nil
+}
+
+type installedSSH struct {
+	Profile string `json:"profile"`
+	Target  string `json:"target"`
+}
+
+func readInstalledSSH(marker string) (installedSSH, error) {
+	var state installedSSH
+	raw, err := readPrivate(marker, 16<<10)
+	if errors.Is(err, os.ErrNotExist) {
+		return state, nil
+	}
+	if err != nil {
+		return state, err
+	}
+	if json.Unmarshal(raw, &state) != nil || !profileNamePattern.MatchString(state.Profile) || !filepath.IsAbs(state.Target) {
+		return installedSSH{}, errors.New("invalid installed SSH configuration record")
+	}
+	return state, nil
+}
+
+func (c *client) writeSSHAliases(ctx context.Context, pinned *client, dir, generated string) (int, error) {
+	aliases, err := pinned.visibleSSHAliases(ctx)
+	if err != nil {
+		return 0, err
+	}
+	profile, err := c.profileDirectory()
+	if err != nil {
+		return 0, err
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	config, err := managedSSHConfig(binary, dir, c.profileName, filepath.Join(profile, "ssh"), aliases)
+	if err != nil {
+		return 0, err
+	}
+	return len(aliases), writePrivate(generated, []byte(config))
+}
+
+func (c *client) refreshSSHAliases(cmd *cobra.Command) {
+	if !c.useProfiles {
+		return
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+	defer cancel()
+	if err := c.refreshInstalledSSH(ctx); err != nil {
+		warning := "could not refresh managed SSH aliases; run sandboxctl ssh-config sync: " + err.Error()
+		if c.jsonOutput {
+			_ = json.NewEncoder(cmd.ErrOrStderr()).Encode(map[string]string{"warning": warning})
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), warning)
+		}
+	}
+}
+
+func (c *client) refreshInstalledSSH(ctx context.Context) error {
+	dir, err := c.localDirectory()
+	if err != nil {
+		// An explicit URL/token can be used without any local configuration.
+		return nil
+	}
+	marker := filepath.Join(dir, "installed-ssh.json")
+	state, err := readInstalledSSH(marker)
+	if err != nil || state.Profile != c.profileName {
+		return err
+	}
+	lock, err := sshFileLock(ctx, filepath.Join(dir, ".ssh-config.lock"))
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	state, err = readInstalledSSH(marker)
+	if err != nil || state.Profile != c.profileName {
+		return err
+	}
+	generated := filepath.Join(dir, "managed-ssh.conf")
+	target, err := readSSHConfig(state.Target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !strings.Contains(string(target), sshInclude(generated)) {
+		return err
+	}
+	pinned, err := c.pinnedClient()
+	if err != nil {
+		return err
+	}
+	if pinned.origin != c.origin {
+		return nil
+	}
+	_, err = c.writeSSHAliases(ctx, pinned, dir, generated)
+	return err
 }
 
 func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (string, error) {
@@ -239,11 +339,15 @@ func installSSHInclude(target, include string) error {
 	} else if err != nil {
 		return err
 	}
-	prefix := "# sandboxctl managed aliases\nInclude " + sshConfigArg(include) + "\n"
+	prefix := sshInclude(include)
 	if strings.HasPrefix(string(raw), prefix) {
 		return nil
 	}
 	return writePrivate(target, append([]byte(prefix), raw...))
+}
+
+func sshInclude(path string) string {
+	return "# sandboxctl managed aliases\nInclude " + sshConfigArg(path) + "\n"
 }
 
 func readSSHConfig(path string) ([]byte, error) {

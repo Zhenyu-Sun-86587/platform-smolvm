@@ -395,7 +395,14 @@ func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, 
 		if op.terminal() && (!c.noWait || c.strictResult) {
 			return c.operationResult(cmd, raw, op)
 		}
-		if !op.terminal() && !c.noWait {
+		if op.terminal() {
+			if err := c.print(cmd, raw); err != nil {
+				return err
+			}
+			c.refreshAliasesAfterOperation(cmd, op)
+			return nil
+		}
+		if !c.noWait {
 			if !c.jsonOutput {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Observing operation %s\n", op.ID)
 			}
@@ -459,10 +466,21 @@ func (c *client) operationResult(cmd *cobra.Command, raw json.RawMessage, op ope
 	if err := c.print(cmd, raw); err != nil {
 		return err
 	}
+	c.refreshAliasesAfterOperation(cmd, op)
 	if op.State != "succeeded" || c.strictResult && (op.Effect == "partial" || op.Effect == "unknown") {
 		return exitStatus(1)
 	}
 	return nil
+}
+
+func (c *client) refreshAliasesAfterOperation(cmd *cobra.Command, op operation) {
+	if op.State != "succeeded" {
+		return
+	}
+	switch op.Kind {
+	case "create", "fork", "branch", "independent_fork", "fork_batch", "clone", "restore", "vm_restore", "delete", "configure":
+		c.refreshSSHAliases(cmd)
+	}
 }
 
 func (c *client) wait(cmd *cobra.Command, id string) error {
