@@ -74,8 +74,8 @@ if ($mode eq 'collect') {
         }
     }
 } elsif ($mode eq 'request') {
-    my ($token) = @args;
-    my $socket = IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => 18091, Proto => 'udp') or die $!;
+    my ($token, $port) = @args;
+    my $socket = IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port // 18091, Proto => 'udp') or die $!;
     $socket->send($token) or die $!;
     IO::Select->new($socket)->can_read(4) or die "owned loopback request timed out";
     $socket->recv(my $body = '', 256);
@@ -94,20 +94,22 @@ use POSIX qw(uname);
 my ($sink) = @ARGV;
 my $namespace = readlink '/proc/self/ns/pid' or die $!;
 die "expected OCI PID 1" unless $$ == 1;
-open my $commands, '+<', '/work/commands' or die $!;
-my $poll = IO::Select->new($commands);
+my $listener = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 18095, Proto => 'udp') or die $!;
+my $poll = IO::Select->new($listener);
 my $sequence = 0;
 while (1) {
-    my $input = '';
-    sysread($commands, $input, 64) if $poll->can_read(0.35);
     ++$sequence;
-    if ($input =~ /\Acontainer-[0-9a-f]{24}\z/) {
+    if ($poll->can_read(0.35)) {
+        my $peer = $listener->recv(my $input = '', 64);
+        next unless defined($peer) && $input =~ /\Acontainer-[0-9a-f]{24}\z/;
         open my $id, '<', '/guest-identity/machine-id' or die $!;
         chomp(my $machine = <$id>);
         close $id;
         my (undef, $hostname) = uname();
         my $socket = IO::Socket::INET->new(PeerAddr => $sink, PeerPort => 18093, Proto => 'udp') or die $!;
-        $socket->send(join("\t", $input, $sequence, $hostname, $machine) . "\n") or die $!;
+        my $body = join("\t", $input, $sequence, $hostname, $machine) . "\n";
+        $socket->send($body) or die $!;
+        $listener->send($body, 0, $peer) or die $!;
     }
     open my $status, '>', '/work/status.new' or die $!;
     print {$status} "$$ $namespace $sequence\n";
@@ -242,7 +244,6 @@ def start_container(platform, ref, sink):
     platform.guest(ref, ["ln", "-s", "ld-musl-x86_64.so.1", runtime + "/libc.musl-x86_64.so.1"])
     crun = [runtime + "/ld-musl-x86_64.so.1", "--library-path", runtime, runtime + "/crun"]
     assert b"crun version" in platform.guest(ref, [*crun, "--version"])
-    platform.guest(ref, ["mkfifo", work + "/commands"])
     config = {"ociVersion": "1.0.2", "root": {"path": "rootfs", "readonly": True},
               "process": {"terminal": False, "cwd": "/", "user": {"uid": 0, "gid": 0}, "noNewPrivileges": True,
                           "args": ["/usr/bin/perl", "/work/container.pl", sink], "env": ["LANG=C"]},
@@ -259,18 +260,38 @@ def container_status(platform, ref):
     return namespace, int(counter)
 
 
+def wait_for_container(platform, ref, previous=None):
+    def advancing():
+        now = container_status(platform, ref)
+        if previous is None:
+            return now
+        assert now[0] == previous[0], (previous, now)
+        return now if now[1] > previous[1] else None
+
+    try:
+        return wait_for(advancing, timeout=20, retry=(RuntimeError, OSError))
+    except TimeoutError as error:
+        detail = platform.guest(ref, ["journalctl", "-u", "owned-gate-container.service", "-n", "20", "--no-pager"])
+        raise RuntimeError(detail.decode(errors="replace")) from error
+
+
 def container_message(platform, ref, ip, expected, rows):
     token = "container-" + os.urandom(12).hex()
-    platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" > "$2"', "owned", token, CONTAINER + "/work/commands"])
+    reply = platform.guest(ref, ["/usr/bin/perl", PROGRAM, "request", token, "18095"]).decode().strip().split("\t")
+    assert reply[0] == token and tuple(reply[2:]) == expected, reply
 
     def received():
         matches = [entry for entry in rows() if entry[1] == token]
         if matches:
             (entry,) = matches
-            assert entry[0] == ip and tuple(entry[3:]) == expected, entry
+            assert entry == [ip, *reply], (entry, reply)
             return entry
 
-    return wait_for(received, timeout=8)
+    try:
+        return wait_for(received, timeout=8)
+    except TimeoutError:
+        print("Owned container loopback completed without collector receipt", json.dumps([ip, *reply]), flush=True)
+        raise
 
 
 def endpoint(platform, mid):
@@ -310,11 +331,7 @@ def gate_case(platform, phase, with_container):
     container_proof = {}
     if with_container:
         start_container(platform, ref, collector)
-        try:
-            original = wait_for(lambda: container_status(platform, ref), timeout=20, retry=(RuntimeError, OSError))
-        except TimeoutError as error:
-            detail = platform.guest(ref, ["journalctl", "-u", "owned-gate-container.service", "-n", "20", "--no-pager"])
-            raise RuntimeError(detail.decode(errors="replace")) from error
+        original = wait_for_container(platform, ref)
         system_namespace = platform.guest(ref, ["readlink", "/proc/1/ns/pid"]).decode().strip()
         assert original[0] != system_namespace
         first = container_message(platform, ref, source_ip, old_identity, rows)
@@ -343,8 +360,7 @@ def gate_case(platform, phase, with_container):
     parent = round_trip(ref, source_ip, old_identity)
     assert int(parent[2]) > int(before[2]), (before, parent)
     if with_container:
-        status = container_status(platform, ref)
-        assert status[0] == original[0] and status[1] > original[1], (original, status)
+        wait_for_container(platform, ref, original)
         container_proof["source_after_failure"] = container_message(platform, ref, source_ip, old_identity, rows)
     if not cut["hit"]:
         print("Requested cut was not proved.", flush=True)
@@ -380,6 +396,7 @@ def gate_case(platform, phase, with_container):
     if with_container:
         status = container_status(platform, target)
         assert status[0] == original[0] and status[1] > original[1], (original, status)
+        container_proof["child_continued_counter"] = wait_for_container(platform, target, status)[1]
         first = container_message(platform, target, child_ip, new_identity, rows)
         assert first == next(row for row in rows() if row[0] == child_ip and row[1].startswith("container-"))
         assert int(first[2]) > int(container_proof["source_before"][2]), (first, container_proof)
