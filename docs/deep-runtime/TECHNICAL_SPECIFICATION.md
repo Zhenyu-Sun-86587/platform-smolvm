@@ -903,6 +903,8 @@ Fork 子实例的新 endpoint 和 managed SSH identity 独立；同机器恢复�
 
 create/start明确要求workload启动却收到workload_error：operation failed/effect applied，保留已运行VM供修复。正确Fork/Restore中可选Task adoption失败：核心operation成功，health降级；不得重跑被复制的进程。必要network identity失败：目标quarantine，不能成功公开入口。
 
+原生 Fork 的每个子尝试可在 Worker 回执中携带 `activation_decision`。`none` 表示该执行尚未持久化放行决定，`commit` 表示已请求放行，旧 Worker 可省略此字段。平台按操作、子执行身份及代次核对回执。同一尝试已确认 `commit` 后发生证据回退，或收到未知值，操作进入 `recovery_required`。没有子机发布时，若任何已围栏退出的尝试记录过 `commit`，公开终态为 `failed`、`effect=unknown`。退出前可证明尚无放行决定时为 `failed`、`effect=none`。另有子机已发布时保留 `effect=partial` 和各子机结果。显式重试沿用原公开操作并保留此前尝试的不确定结果。独立 Restore 和同机保存状态启动同样区分围栏退出前的放行决定。
+
 用户明确请求Stop/Delete/Rollback并允许结束旧运行态时，不能强制一个已关闭的Task Manager逐任务cancel成功；VMM可直接完成原生停止/替换，任务索引按实际证据标interrupted/unknown。自动闲置策略仍应遵守activity保护，不能混用手动授权与自动破坏。
 
 ### 13.3 错误信封
