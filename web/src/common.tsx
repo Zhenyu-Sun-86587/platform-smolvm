@@ -150,6 +150,7 @@ export function Dialog({ config, close }: { config: DialogConfig; close: () => v
       {config.content}
       <form onChange={dynamic ? event => setValues(new FormData(event.currentTarget)) : undefined} onSubmit={event => {
         event.preventDefault()
+        if (busy) return
         const form = new FormData(event.currentTarget)
         setBusy(true)
         setError(undefined)

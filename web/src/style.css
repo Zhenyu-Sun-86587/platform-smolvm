@@ -1127,7 +1127,6 @@ td small {
 .console-overlay.legacy-form-overlay {
   z-index: 66;
 }
-.console-detail-overlay,
 .navigation-overlay {
   backdrop-filter: none;
 }
@@ -1159,7 +1158,7 @@ td small {
 .console-detail-overlay {
   z-index: 50;
 }
-.console-detail-close {
+.console-detail-controls {
   position: absolute;
   top: 15px;
   right: 18px;
@@ -1428,9 +1427,14 @@ td small {
     padding: 16px 16px max(16px, env(safe-area-inset-bottom));
     border-left: 0;
   }
-  .console-detail-close {
-    top: 12px;
-    right: 10px;
+  .console-detail-controls {
+    position: sticky;
+    z-index: 2;
+    top: -16px;
+    margin: -16px -16px 0;
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--background);
   }
   .console-modal,
   .form-dialog,
