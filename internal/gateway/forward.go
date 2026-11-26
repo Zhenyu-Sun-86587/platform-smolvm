@@ -19,12 +19,15 @@ import (
 )
 
 const ForwardingHeader = "X-Sandbox-Forwarding"
+const UpstreamReasonHeader = "X-Sandbox-Upstream-Reason"
 
 type Backend struct {
 	Port        uint16
 	Protocol    string
 	ServerName  string
 	DialPrivate func(context.Context) (net.Conn, error)
+	// Observe receives the result of authorized upstream traffic.
+	Observe func(error) string
 }
 
 // Dial is called with a backend resolved from the current binding and port table.
@@ -36,11 +39,19 @@ func (b Backend) Dial(ctx context.Context, recheck func(context.Context) error) 
 	if err := recheck(ctx); err != nil {
 		return nil, err
 	}
+	var conn net.Conn
+	var err error
 	if b.DialPrivate != nil {
-		return b.DialPrivate(ctx)
+		conn, err = b.DialPrivate(ctx)
+	} else {
+		d := net.Dialer{Timeout: 8 * time.Second}
+		conn, err = d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(b.Port))))
 	}
-	d := net.Dialer{Timeout: 8 * time.Second}
-	return d.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(b.Port))))
+	// HTTP needs an actual response, including the upstream TLS handshake.
+	if b.Observe != nil && b.Protocol != "http" && b.Protocol != "https" {
+		b.Observe(err)
+	}
+	return conn, err
 }
 func clean(h http.Header) {
 	for k := range h {
@@ -104,13 +115,19 @@ func (b Backend) HTTP(w http.ResponseWriter, r *http.Request, check func(context
 	defer cancel()
 	go recheckWhileActive(ctx, check, func(error) { cancel() })
 	r = r.WithContext(ctx)
-	var dialed, started atomic.Bool
+	var dialed, admitted, started atomic.Bool
 	transport := &http.Transport{Proxy: nil, ForceAttemptHTTP2: false, DisableKeepAlives: true, ResponseHeaderTimeout: 2 * time.Minute, TLSHandshakeTimeout: 8 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: b.ServerName}}
 	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 		if !dialed.CompareAndSwap(false, true) {
 			return nil, errors.New("backend request may not be replayed")
 		}
-		conn, err := b.Dial(ctx, check)
+		conn, err := b.Dial(ctx, func(ctx context.Context) error {
+			if err := check(ctx); err != nil {
+				return err
+			}
+			admitted.Store(true)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -130,6 +147,9 @@ func (b Backend) HTTP(w http.ResponseWriter, r *http.Request, check func(context
 			p.SetXForwarded()
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			if b.Observe != nil {
+				b.Observe(nil)
+			}
 			clean(resp.Header)
 			clean(resp.Trailer)
 			cookies := resp.Header.Values("Set-Cookie")
@@ -145,12 +165,17 @@ func (b Backend) HTTP(w http.ResponseWriter, r *http.Request, check func(context
 			resp.Header.Del("Trailer")
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			stage := "not_started"
 			if started.Load() {
 				stage = "may_have_started"
 			}
 			w.Header().Set(ForwardingHeader, stage)
+			if b.Observe != nil && admitted.Load() {
+				if reason := b.Observe(err); reason != "" {
+					w.Header().Set(UpstreamReasonHeader, reason)
+				}
+			}
 			http.Error(w, "Service backend unavailable", 502)
 		}}
 	proxy.ServeHTTP(w, r)
