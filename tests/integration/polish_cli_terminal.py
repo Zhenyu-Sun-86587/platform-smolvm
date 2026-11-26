@@ -4,7 +4,6 @@ import errno
 import fcntl
 import json
 import os
-from pathlib import Path
 import pty
 import select
 import signal
@@ -87,3 +86,5 @@ def check(platform, args, keys, private_key):
                           bundle=platform.bundle_id, execution_epoch=ref["execution_epoch"],
                           pty_initial=[24, 80], pty_resized=[31, 101], pty_exit=27,
                           ssh_exit=21, ssh_stdout=ssh.stdout.decode())), flush=True)
+    from polish_cli_power import check as check_power
+    check_power(platform, args, mid, env)
