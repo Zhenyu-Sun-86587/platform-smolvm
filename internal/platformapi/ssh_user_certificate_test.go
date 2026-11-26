@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/customsmolvm"
 	"sandbox-platform/internal/snapshots"
 )
 
@@ -143,30 +145,37 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 	} {
 		post("m_parent", parent, body(bad), false, false, http.StatusBadRequest)
 	}
+	for _, response := range []*httptest.ResponseRecorder{
+		post("m_parent", parent, body(plain), false, false, http.StatusConflict),
+		post("m_child", global, body(plain), false, false, http.StatusConflict),
+		post("m_parent", "", body(plain), true, true, http.StatusConflict),
+	} {
+		if !strings.Contains(response.Body.String(), `"code":"SSH_ROUTER_UNVERIFIED"`) {
+			t.Fatal(response.Body.String())
+		}
+	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "secrets", "ssh-user-ca")); !os.IsNotExist(err) {
 		t.Fatalf("rejected requests created a signing authority: %v", err)
 	}
 
-	readCertificate := func(w *httptest.ResponseRecorder, machine string) *ssh.Certificate {
+	readCertificate := func(machine string) *ssh.Certificate {
 		t.Helper()
-		var response struct {
-			Certificate string    `json:"certificate"`
-			ExpiresAt   time.Time `json:"expires_at"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		source := netip.MustParsePrefix("10.40.0.1/32")
+		signed, expires, err := s.SignManagedSSHCertificate(machine, key, source)
+		if err != nil {
 			t.Fatal(err)
 		}
-		pub, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(response.Certificate))
+		pub, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(signed))
 		cert, ok := pub.(*ssh.Certificate)
 		if err != nil || !ok || len(options) != 0 || len(rest) != 0 {
 			t.Fatalf("invalid OpenSSH certificate response: %v", err)
 		}
 		if cert.CertType != ssh.UserCert || cert.KeyId != machine || !bytes.Equal(cert.Key.Marshal(), key.Marshal()) ||
 			len(cert.ValidPrincipals) != 1 || cert.ValidPrincipals[0] != "root" ||
-			cert.ValidBefore-cert.ValidAfter != 120 || uint64(response.ExpiresAt.Unix()) != cert.ValidBefore {
+			cert.ValidBefore-cert.ValidAfter != 120 || uint64(expires.Unix()) != cert.ValidBefore {
 			t.Fatalf("unexpected certificate scope: %+v", cert)
 		}
-		if len(cert.CriticalOptions) != 0 || len(cert.Extensions) != 2 {
+		if len(cert.CriticalOptions) != 1 || cert.CriticalOptions["source-address"] != source.String() || len(cert.Extensions) != 2 {
 			t.Fatalf("unexpected certificate permissions: %+v", cert.Permissions)
 		}
 		if _, ok := cert.Extensions["permit-pty"]; !ok {
@@ -179,15 +188,15 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 		if checker.CheckCert("root", cert) != nil || checker.CheckCert("other", cert) == nil {
 			t.Fatal("certificate not limited to root")
 		}
-		checker.Clock = func() time.Time { return response.ExpiresAt }
+		checker.Clock = func() time.Time { return expires }
 		if checker.CheckCert("root", cert) == nil {
 			t.Fatal("expired certificate accepted")
 		}
 		return cert
 	}
-	cert := readCertificate(post("m_parent", parent, body(plain), false, false, http.StatusOK), "m_parent")
-	child := readCertificate(post("m_child", global, body(plain), false, false, http.StatusOK), "m_child")
-	renewed := readCertificate(post("m_parent", "", body(plain), true, true, http.StatusOK), "m_parent")
+	cert := readCertificate("m_parent")
+	child := readCertificate("m_child")
+	renewed := readCertificate("m_parent")
 	if bytes.Equal(cert.SignatureKey.Marshal(), child.SignatureKey.Marshal()) ||
 		!bytes.Equal(cert.SignatureKey.Marshal(), renewed.SignatureKey.Marshal()) {
 		t.Fatal("signing authority was not persisted per machine")
@@ -197,4 +206,37 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	post("m_parent", parent, body(plain), false, false, http.StatusUnauthorized)
+}
+
+func TestManagedSSHRouterPrefixUsesExactWorkerNetwork(t *testing.T) {
+	binding := registry.Binding{RuntimeInstanceID: "serve", RuntimeBundleID: "bundle"}
+	const socket = "/worker"
+	target := customsmolvm.PrivateNetwork{ID: "network", RouteDomainID: "domain", CIDR: "10.40.0.0/24"}
+	other := customsmolvm.PrivateNetwork{ID: "another", RouteDomainID: "another-domain", CIDR: "10.50.0.0/24"}
+	route := customsmolvm.Route{InstanceID: "serve", Bundle: "bundle", WorkerSocket: socket,
+		DefaultNetworkID: other.ID, PrivateNetworks: []customsmolvm.PrivateNetwork{other, target}}
+	launch := rt.LaunchNetwork{NetworkID: target.ID, Mode: rt.FixedInternalNetwork, RouteDomainID: target.RouteDomainID, CIDR: target.CIDR}
+	guest := netip.MustParseAddr("10.40.0.20")
+	routes := []customsmolvm.Route{route}
+	if matched := sshRouterPrefix(routes, binding, socket, launch, target.ID, guest); matched.String() != "10.40.0.1/32" {
+		t.Fatalf("router source = %v", matched)
+	}
+	if sshRouterPrefix(routes, binding, "/another-worker", launch, target.ID, guest).IsValid() ||
+		sshRouterPrefix(routes, binding, socket, launch, other.ID, guest).IsValid() ||
+		sshRouterPrefix(routes, binding, socket, launch, target.ID, netip.MustParseAddr("10.40.0.255")).IsValid() ||
+		sshRouterPrefix([]customsmolvm.Route{route, route}, binding, socket, launch, target.ID, guest).IsValid() {
+		t.Fatal("accepted unknown or ambiguous Worker topology")
+	}
+	for _, cidr := range []string{"10.40.0.0/25", "10.40.0.1/24", "10.0.0.0/7"} {
+		changed := target
+		changed.CIDR = cidr
+		route.PrivateNetworks = []customsmolvm.PrivateNetwork{changed}
+		if sshRouterPrefix([]customsmolvm.Route{route}, binding, socket, launch, target.ID, guest).IsValid() {
+			t.Fatalf("accepted changed router CIDR %s", cidr)
+		}
+	}
+	route.PrivateNetworks = []customsmolvm.PrivateNetwork{target, target}
+	if sshRouterPrefix([]customsmolvm.Route{route}, binding, socket, launch, target.ID, guest).IsValid() {
+		t.Fatal("accepted ambiguous network ID")
+	}
 }
