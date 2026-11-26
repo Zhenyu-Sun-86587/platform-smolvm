@@ -20,7 +20,9 @@ const operationColumns = `id, control_epoch, COALESCE(principal_id, ''), COALESC
 	COALESCE(source_machine_id, ''), COALESCE(binding_id, ''), binding_generation, runtime_name,
 	kind, state, stage, request_json, COALESCE(dispatch_json, ''), COALESCE(result_json, ''),
 	COALESCE(error_json, ''), effect, created_at, updated_at, version, heavy, wake_pending,
-	COALESCE(source_disposition, ''), source_lock_released`
+	COALESCE(source_disposition, ''), source_lock_released, worker_id,
+	COALESCE(runtime_instance_id,''), COALESCE(runtime_bundle_id,''),
+	COALESCE((SELECT i.local_instance_id FROM runtime_instances i WHERE i.id=operations.runtime_instance_id),'')`
 
 func scanOperation(row scanner) (Operation, error) {
 	var op Operation
@@ -28,7 +30,8 @@ func scanOperation(row scanner) (Operation, error) {
 	var created, updated int64
 	err := row.Scan(&op.ID, &op.ControlEpoch, &op.PrincipalID, &op.MachineID, &op.SourceMachineID, &op.BindingID,
 		&op.BindingGeneration, &op.RuntimeName, &op.Kind, &op.State, &op.Stage, &request, &dispatch, &result, &failure,
-		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending, &op.SourceDisposition, &op.SourceLockReleased)
+		&op.Effect, &created, &updated, &op.Version, &op.Heavy, &op.WakePending, &op.SourceDisposition, &op.SourceLockReleased,
+		&op.WorkerID, &op.RuntimeInstanceID, &op.RuntimeBundleID, &op.LocalInstanceID)
 	op.Request = json.RawMessage(request)
 	op.Dispatch = json.RawMessage(dispatch)
 	if result != "" {
@@ -48,7 +51,7 @@ func readOperation(ctx context.Context, q queryer, id string) (Operation, error)
 		return op, err
 	}
 	rows, err := q.QueryContext(ctx, `SELECT c.ordinal, b.machine_id, c.binding_id, c.state,
-		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, ''), c.resource_proof_json, c.attempt
+		COALESCE(c.resource_independence, ''), COALESCE(c.error_code, ''), c.resource_proof_json, c.attempt, b.worker_id
 		FROM operation_children c JOIN runtime_bindings b ON b.id = c.binding_id
 		WHERE c.operation_id = ? ORDER BY c.ordinal`, op.ID)
 	if err != nil {
@@ -58,7 +61,7 @@ func readOperation(ctx context.Context, q queryer, id string) (Operation, error)
 	for rows.Next() {
 		var child OperationChild
 		var proof string
-		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode, &proof, &child.Attempt); err != nil {
+		if err := rows.Scan(&child.Ordinal, &child.MachineID, &child.BindingID, &child.State, &child.ResourceIndependence, &child.ErrorCode, &proof, &child.Attempt, &child.WorkerID); err != nil {
 			return Operation{}, err
 		}
 		if err := json.Unmarshal([]byte(proof), &child.ResourceProof); err != nil {
@@ -111,6 +114,9 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	}
 	if !validateLabel(r.Kind, 100) {
 		return Operation{}, false, fmt.Errorf("%w: operation kind is required", ErrInvalid)
+	}
+	if r.WorkerID != "" && !validWorkerID(r.WorkerID) {
+		return Operation{}, false, fmt.Errorf("%w: invalid Worker ID", ErrInvalid)
 	}
 	if err := validateForkChildren(r); err != nil {
 		return Operation{}, false, err
@@ -185,9 +191,10 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		Locks                                           []Lock
 		RuntimeInstanceID                               string             `json:",omitempty"`
 		ForkChildren                                    []string           `json:",omitempty"`
+		WorkerID                                        string             `json:",omitempty"`
 		Placement                                       *placement.Request `json:",omitempty"`
 	}{r.Kind, r.MachineID, r.Name, r.TemplateID, r.DesiredPower, idleCanonical,
-		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.Placement}
+		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.WorkerID, r.Placement}
 	fingerprint, err := mutationFingerprint(ctx, tx, envelope, target)
 	if err != nil {
 		return Operation{}, false, err
@@ -247,10 +254,10 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	var route rt.BundleRoute
+	route := rt.BundleRoute{WorkerID: prior.WorkerID}
 	if prior.CurrentBinding != nil {
-		route = rt.BundleRoute{InstanceID: prior.CurrentBinding.RuntimeInstanceID, BundleID: prior.CurrentBinding.RuntimeBundleID}
-		if route != (rt.BundleRoute{}) && rt.CapturesLiveState(r.Kind) {
+		route = prior.CurrentBinding.BundleRoute()
+		if !route.Legacy() && rt.CapturesLiveState(r.Kind) {
 			var spec struct {
 				LiveComputeGrowth bool `json:"live_compute_growth"`
 			}
@@ -266,6 +273,17 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		route, err = loadRuntimeRoute(ctx, tx, r.RuntimeInstanceID)
 		if err != nil {
 			return Operation{}, false, err
+		}
+	}
+	if r.Kind == rt.VMRestore || r.Kind == rt.VMRollback || r.Kind == rt.VMSnapshotDelete {
+		pinned, err := snapshotRuntimeRoute(ctx, tx, request)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		if r.Kind == rt.VMSnapshotDelete {
+			route = pinned
+		} else if route.Key() != pinned.Key() {
+			return Operation{}, false, fmt.Errorf("%w: StatePoint requires its original Worker route and Bundle", ErrConflict)
 		}
 	}
 	reservation, err := operationPlacementRequest(ctx, tx, r, prior, route, op.Request)
@@ -291,9 +309,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			bindingSpec = request
 		}
 	}
-	// Snapshot deletion checks the route recorded on the snapshot, independently
-	// of a machine binding. An existing receipt survives retirement of that route.
-	if route != (rt.BundleRoute{}) || rt.FullStateOperationCapability(r.Kind) != "" || r.Kind == rt.VMSnapshotDelete {
+	if r.WorkerID != "" && r.WorkerID != route.Owner() || prior.ID != "" && prior.WorkerID != route.Owner() {
+		return Operation{}, false, fmt.Errorf("%w: requested Worker differs from the pinned runtime owner", ErrConflict)
+	}
+	op.WorkerID, op.RuntimeInstanceID, op.RuntimeBundleID, op.LocalInstanceID = route.Owner(), route.InstanceID, route.BundleID, route.LocalID()
+	if !route.Legacy() || route.Owner() != LocalWorkerID || rt.FullStateOperationCapability(r.Kind) != "" {
 		if r.AdmitRuntime == nil {
 			return Operation{}, false, rt.ErrUnsupported
 		}
@@ -301,7 +321,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	if route != (rt.BundleRoute{}) && (rt.NativePowerCapability(r.Kind) != "" || rt.IsNativeFork(r.Kind) || r.Kind == "delete") {
+	if !route.Legacy() && (rt.NativePowerCapability(r.Kind) != "" || rt.IsNativeFork(r.Kind) || r.Kind == "delete") {
 		if r.ExpectedGeneration < 1 {
 			return Operation{}, false, fmt.Errorf("%w: native operation requires an expected binding generation", ErrInvalid)
 		}
@@ -351,8 +371,8 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO machines
-			(id, name, template_id, revision, binding_generation, desired_power, spec_json, idle_policy_json, keep_running, last_user_activity_at)
-			VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`, op.MachineID, r.Name, r.TemplateID, desired, spec, idle, r.KeepRunning, now.UnixMilli()); err != nil {
+			(id, name, template_id, revision, binding_generation, desired_power, spec_json, idle_policy_json, keep_running, last_user_activity_at, worker_id)
+			VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)`, op.MachineID, r.Name, r.TemplateID, desired, spec, idle, r.KeepRunning, now.UnixMilli(), op.WorkerID); err != nil {
 			return Operation{}, false, uniqueConflict(err)
 		}
 		if err = SeedLifecycle(ctx, tx, op.MachineID, op.SourceMachineID, r.Request, op.ID); err != nil {
@@ -405,7 +425,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		op.RuntimeName = prior.CurrentBinding.RuntimeName
 	}
 
-	if route != (rt.BundleRoute{}) && oneOf(op.Kind, "task_start", "task_cancel") {
+	if !route.Legacy() && oneOf(op.Kind, "task_start", "task_cancel") {
 		if r.CredentialID == "" || prior.CurrentBinding == nil {
 			return Operation{}, false, fmt.Errorf("%w: native task mutation requires a current binding and credential", ErrInvalid)
 		}
@@ -417,10 +437,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO operations
 		(id, control_epoch, principal_id, machine_id, source_machine_id, binding_id, binding_generation, runtime_name,
-		kind, state, stage, request_json, dispatch_json, effect, created_at, updated_at, heavy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, op.ID, op.ControlEpoch, op.PrincipalID, nullable(op.MachineID),
+		kind, state, stage, request_json, dispatch_json, effect, created_at, updated_at, heavy, worker_id, runtime_instance_id, runtime_bundle_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, op.ID, op.ControlEpoch, op.PrincipalID, nullable(op.MachineID),
 		nullable(op.SourceMachineID), nullable(op.BindingID), op.BindingGeneration, op.RuntimeName, op.Kind, op.State, op.Stage,
-		request, nullable(string(op.Dispatch)), op.Effect, now.UnixMilli(), now.UnixMilli(), op.Heavy)
+		request, nullable(string(op.Dispatch)), op.Effect, now.UnixMilli(), now.UnixMilli(), op.Heavy,
+		op.WorkerID, nullable(op.RuntimeInstanceID), nullable(op.RuntimeBundleID))
 	if err != nil {
 		return Operation{}, false, err
 	}
@@ -509,9 +530,9 @@ func allocateBinding(ctx context.Context, tx *sql.Tx, op *Operation, request str
 	}
 	digest := sha256.Sum256(canonical)
 	_, err = tx.ExecContext(ctx, `INSERT INTO runtime_bindings
-		(id, machine_id, generation, runtime_name, status, task_namespace, spec_hash, runtime_instance_id, runtime_bundle_id)
-		VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?, ?)`, op.BindingID, op.MachineID, op.BindingGeneration,
-		op.RuntimeName, namespace, hex.EncodeToString(digest[:]), nullable(route.InstanceID), nullable(route.BundleID))
+		(id, machine_id, generation, runtime_name, status, task_namespace, spec_hash, runtime_instance_id, runtime_bundle_id, worker_id)
+		VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?)`, op.BindingID, op.MachineID, op.BindingGeneration,
+		op.RuntimeName, namespace, hex.EncodeToString(digest[:]), nullable(route.InstanceID), nullable(route.BundleID), route.Owner())
 	if err != nil || route.BundleID == "" {
 		return err
 	}

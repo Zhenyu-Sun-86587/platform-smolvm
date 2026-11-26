@@ -326,8 +326,8 @@ func (s *Store) RecordWorkerMaintenanceEvidence(ctx context.Context, worker stri
 	if err != nil {
 		return state, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE worker_maintenance SET phase=?,evidence_json=? WHERE worker_id=? AND revision=?`,
-		state.Phase, string(raw), worker, expectedRevision); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE worker_maintenance SET phase=?,evidence_json=?,revision=? WHERE worker_id=?`,
+		state.Phase, string(raw), expectedRevision, worker); err != nil {
 		return state, err
 	}
 	state.Coverage = proof.Coverage

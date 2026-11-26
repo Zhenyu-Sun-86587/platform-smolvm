@@ -58,6 +58,8 @@ type Snapshot struct {
 
 type VMProvenance struct {
 	OperationID       string `json:"operation_id"`
+	WorkerID          string `json:"worker_id"`
+	LocalInstanceID   string `json:"-"`
 	RuntimeInstanceID string `json:"runtime_instance_id"`
 	RuntimeBundleID   string `json:"runtime_bundle_id"`
 	StateReaderID     string `json:"state_reader_id"`
@@ -194,7 +196,9 @@ func readTrust(c config.Config, local ed25519.PublicKey) (map[string]ed25519.Pub
 
 const columns = `id,COALESCE(source_machine_id,''),COALESCE(source_generation,0),purpose,task_content,state,COALESCE(sha256,''),COALESCE(size_bytes,0),provenance,revision,label,COALESCE(manifest_json,'null'),created_at,closure_verified_at,restore_verified_at,
 	COALESCE(v.operation_id,''),COALESCE(v.runtime_instance_id,''),COALESCE(v.runtime_bundle_id,''),
-	COALESCE(v.state_reader_id,''),COALESCE(v.runtime_capture_id,'')`
+	COALESCE(v.state_reader_id,''),COALESCE(v.runtime_capture_id,''),
+	COALESCE((SELECT i.worker_id FROM runtime_instances i WHERE i.id=v.runtime_instance_id),''),
+	COALESCE((SELECT i.local_instance_id FROM runtime_instances i WHERE i.id=v.runtime_instance_id),'')`
 const fromSnapshots = ` FROM snapshots LEFT JOIN vm_snapshot_provenance v ON v.snapshot_id=snapshots.id`
 
 type scanner interface{ Scan(...any) error }
@@ -206,7 +210,7 @@ func scan(row scanner) (Snapshot, error) {
 	var closure, restored sql.NullInt64
 	var vm VMProvenance
 	err := row.Scan(&s.ID, &s.MachineID, &s.Generation, &s.Purpose, &s.Content, &s.State, &s.Hash, &s.Size, &s.Provenance, &s.Revision, &s.Label, &raw, &created, &closure, &restored,
-		&vm.OperationID, &vm.RuntimeInstanceID, &vm.RuntimeBundleID, &vm.StateReaderID, &vm.RuntimeCaptureID)
+		&vm.OperationID, &vm.RuntimeInstanceID, &vm.RuntimeBundleID, &vm.StateReaderID, &vm.RuntimeCaptureID, &vm.WorkerID, &vm.LocalInstanceID)
 	s.CaptureMode = CaptureManagedTasks
 	if vm.OperationID != "" {
 		s.CaptureMode, s.VM = CaptureVM, &vm

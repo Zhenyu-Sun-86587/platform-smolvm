@@ -132,7 +132,7 @@ func (e *Engine) queueNativeSSH(ctx context.Context, binding registry.Binding, d
 		MachineID: binding.MachineID, ExpectedGeneration: binding.Generation, Kind: "sync_keys",
 		Request: request,
 		AdmitRuntime: func(route rt.BundleRoute, _ string) error {
-			if route != bindingRuntime(binding).BundleRoute {
+			if route.Key() != binding.BundleRoute().Key() {
 				return rt.ErrUnsupported
 			}
 			return nil

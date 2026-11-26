@@ -109,7 +109,7 @@ func (s *Server) volumeRoutes() {
 		if v.State == "deleted" {
 			return registry.ErrNotFound
 		}
-		control, err := s.volumeControl(v.VolumeRoute)
+		control, err := s.volumeControl(r.Context(), v.VolumeRoute)
 		if err != nil {
 			return err
 		}
@@ -204,8 +204,16 @@ func (s *Server) volumeRoutes() {
 	s.volumeAttachmentRoutes()
 }
 
-func (s *Server) volumeControl(route rt.VolumeRoute) (rt.VolumeControl, error) {
-	adapter, err := s.ForBinding(registry.Binding{RuntimeInstanceID: route.RuntimeInstanceID, RuntimeBundleID: route.RuntimeBundleID})
+func (s *Server) volumeControl(ctx context.Context, route rt.VolumeRoute) (rt.VolumeControl, error) {
+	registered, err := s.DB.GetRuntimeRoute(ctx, route.RuntimeInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	if registered.BundleID != route.RuntimeBundleID {
+		return nil, registry.ErrConflict
+	}
+	adapter, err := s.ForBinding(registry.Binding{WorkerID: registered.WorkerID, LocalInstanceID: registered.LocalInstanceID,
+		RuntimeInstanceID: registered.InstanceID, RuntimeBundleID: registered.BundleID})
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +226,12 @@ func (s *Server) volumeControl(route rt.VolumeRoute) (rt.VolumeControl, error) {
 
 func (s *Server) acceptVolume(w http.ResponseWriter, r *http.Request, p auth.Principal, intent volumeIntent, machine string, generation int64) error {
 	req := registry.AcceptRequest{Kind: rt.VolumeOperation, MachineID: machine, ExpectedGeneration: generation,
-		Heavy: intent.Command.Action == "grow"}
+		Heavy: intent.Command.Action == "grow", AdmitRuntime: func(route rt.BundleRoute, kind string) error {
+			if route.InstanceID != intent.RuntimeInstanceID || route.BundleID != intent.RuntimeBundleID {
+				return registry.ErrConflict
+			}
+			return s.AdmitRuntime(route, kind)
+		}}
 	if machine == "" {
 		req.RuntimeInstanceID = intent.RuntimeInstanceID
 	}
@@ -257,7 +270,7 @@ func (s *Server) volumeAttachmentRoutes() {
 			if err != nil {
 				return err
 			}
-			control, err := s.volumeControl(volume.VolumeRoute)
+			control, err := s.volumeControl(r.Context(), volume.VolumeRoute)
 			if err != nil {
 				return err
 			}

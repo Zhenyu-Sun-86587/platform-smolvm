@@ -242,13 +242,7 @@ func insertPlacementReservation(ctx context.Context, tx *sql.Tx, op Operation, r
 // operationPlacementRequest scopes every existing-resource action to the
 // persisted owner and derives source compute for native Fork and Wake.
 func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest, prior Machine, route rt.BundleRoute, request json.RawMessage) (*placement.Request, error) {
-	worker := route.WorkerID
-	if prior.CurrentBinding != nil {
-		worker = prior.CurrentBinding.WorkerID
-	}
-	if worker == "" {
-		worker = "local-worker"
-	}
+	worker := route.Owner()
 	if r.Kind != "create" || r.Placement == nil {
 		if err := checkWorkerEntrance(ctx, tx, worker, r.Kind); err != nil {
 			return nil, err
@@ -290,15 +284,13 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 	if prior.CurrentBinding == nil || (r.Kind == "start" && prior.CurrentBinding.PowerState == PowerRunning) {
 		return nil, nil
 	}
-	if worker == "local-worker" {
-		var sampled bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
-			OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&sampled); err != nil {
-			return nil, err
-		}
-		if !sampled {
-			return nil, nil
-		}
+	var enrolledOrSampled bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
+		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&enrolledOrSampled); err != nil {
+		return nil, err
+	}
+	if !enrolledOrSampled {
+		return nil, nil
 	}
 	count := int64(1)
 	capability := rt.SystemBootCapability

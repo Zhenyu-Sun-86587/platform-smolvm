@@ -92,7 +92,7 @@ func TestDriveResolvesStoredBindingBeforeDispatch(t *testing.T) {
 	official := &createRuntime{}
 	engine, owner, epoch := runtimeTestEngine(t, ctx, official)
 	db := engine.DB
-	customRoute := rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}
+	customRoute := rt.BundleRoute{WorkerID: rt.LocalWorkerID, InstanceID: "serve", BundleID: "bundle", LocalInstanceID: "serve"}
 	if err := db.RegisterRuntime(ctx, customRoute, "isolated-socket", JSON(map[string]string{"schema": "RuntimeBundle/1"})); err != nil {
 		t.Fatal(err)
 	}

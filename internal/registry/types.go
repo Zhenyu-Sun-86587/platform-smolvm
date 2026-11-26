@@ -61,6 +61,7 @@ type Template struct {
 
 type Machine struct {
 	ID                 string          `json:"machine_id"`
+	WorkerID           string          `json:"worker_id"`
 	Name               string          `json:"name"`
 	TemplateID         string          `json:"template_id"`
 	Revision           int64           `json:"revision"`
@@ -89,6 +90,8 @@ const (
 )
 
 type Binding struct {
+	WorkerID                string          `json:"worker_id"`
+	LocalInstanceID         string          `json:"-"`
 	RuntimeInstanceID       string          `json:"runtime_instance_id,omitempty"`
 	RuntimeBundleID         string          `json:"runtime_bundle_id,omitempty"`
 	RuntimeInstanceObjectID string          `json:"runtime_instance_object_id,omitempty"`
@@ -106,6 +109,10 @@ type Binding struct {
 	TaskNamespace           string          `json:"task_namespace"`
 	SpecHash                string          `json:"spec_hash"`
 	Observation
+}
+
+func (b Binding) BundleRoute() rt.BundleRoute {
+	return rt.BundleRoute{WorkerID: b.WorkerID, InstanceID: b.RuntimeInstanceID, BundleID: b.RuntimeBundleID, LocalInstanceID: b.LocalInstanceID}
 }
 
 func (b Binding) ExecutionRef() rt.ExecutionRef {
@@ -170,6 +177,10 @@ const (
 
 type Operation struct {
 	ID                 string            `json:"operation_id"`
+	WorkerID           string            `json:"worker_id"`
+	RuntimeInstanceID  string            `json:"runtime_instance_id,omitempty"`
+	RuntimeBundleID    string            `json:"runtime_bundle_id,omitempty"`
+	LocalInstanceID    string            `json:"-"`
 	ControlEpoch       string            `json:"control_epoch"`
 	PrincipalID        string            `json:"-"`
 	MachineID          string            `json:"machine_id,omitempty"`
@@ -207,6 +218,7 @@ const (
 
 type OperationChild struct {
 	Ordinal              int                   `json:"ordinal"`
+	WorkerID             string                `json:"worker_id"`
 	MachineID            string                `json:"machine_id"`
 	BindingID            string                `json:"binding_id"`
 	State                string                `json:"state"`
@@ -214,6 +226,10 @@ type OperationChild struct {
 	ResourceIndependence string                `json:"resource_independence,omitempty"`
 	ErrorCode            string                `json:"error_code,omitempty"`
 	ResourceProof        []rt.ForkDiskEvidence `json:"-"`
+}
+
+func (o Operation) BundleRoute() rt.BundleRoute {
+	return rt.BundleRoute{WorkerID: o.WorkerID, InstanceID: o.RuntimeInstanceID, BundleID: o.RuntimeBundleID, LocalInstanceID: o.LocalInstanceID}
 }
 
 func (o Operation) Terminal() bool {
@@ -247,6 +263,7 @@ type AcceptRequest struct {
 	KeepRunning           bool
 	Heavy                 bool
 	AllocateBinding       bool
+	WorkerID              string
 	RuntimeInstanceID     string
 	ForkChildren          []string
 	Locks                 []Lock

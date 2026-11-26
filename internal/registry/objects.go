@@ -115,14 +115,14 @@ func (s *Store) ListTemplates(ctx context.Context) ([]Template, error) {
 
 const machineColumns = `m.id, m.name, m.template_id, m.revision, m.binding_generation,
 	m.desired_power, m.spec_json, m.idle_policy_json, m.keep_running, m.last_user_activity_at,
-	m.deleted_at, COALESCE(m.current_binding_id, ''), COALESCE(l.operation_id, '')`
+	m.deleted_at, COALESCE(m.current_binding_id, ''), COALESCE(l.operation_id, ''), m.worker_id`
 
 func scanMachine(row scanner) (Machine, string, error) {
 	var m Machine
 	var bindingID, spec, idle string
 	var lastActivity, deleted sql.NullInt64
 	err := row.Scan(&m.ID, &m.Name, &m.TemplateID, &m.Revision, &m.BindingGeneration,
-		&m.DesiredPower, &spec, &idle, &m.KeepRunning, &lastActivity, &deleted, &bindingID, &m.ActiveOperationID)
+		&m.DesiredPower, &spec, &idle, &m.KeepRunning, &lastActivity, &deleted, &bindingID, &m.ActiveOperationID, &m.WorkerID)
 	m.Spec = json.RawMessage(spec)
 	m.IdlePolicy = json.RawMessage(idle)
 	m.LastUserActivityAt = timePtr(lastActivity)
@@ -218,7 +218,8 @@ const bindingColumns = `id, machine_id, generation, runtime_name, status, task_n
 	guest_management_evidence_json, COALESCE(state_reason_json, ''),
 	COALESCE(runtime_instance_id,''), COALESCE(runtime_bundle_id,''), COALESCE(runtime_instance_object_id,''),
 	COALESCE(incarnation_id,''), COALESCE(execution_epoch,0), power_state, health_json,
-	COALESCE(capability_profile_id,''), COALESCE(last_capture_id,'')`
+	COALESCE(capability_profile_id,''), COALESCE(last_capture_id,''), worker_id,
+	COALESCE((SELECT i.local_instance_id FROM runtime_instances i WHERE i.id=runtime_bindings.runtime_instance_id),'')`
 
 func scanBinding(row scanner) (Binding, error) {
 	var b Binding
@@ -228,7 +229,7 @@ func scanBinding(row scanner) (Binding, error) {
 		&b.SpecHash, &b.ObservedState, &b.NativeState, &b.Availability, &identity, &observed, &b.RuntimePauseID,
 		&b.PauseStatus, &ports, &b.GuestManagementStatus, &guestEvidence, &reason,
 		&b.RuntimeInstanceID, &b.RuntimeBundleID, &b.RuntimeInstanceObjectID, &b.IncarnationID,
-		&b.ExecutionEpoch, &b.PowerState, &health, &b.CapabilityProfileID, &b.LastCaptureID)
+		&b.ExecutionEpoch, &b.PowerState, &health, &b.CapabilityProfileID, &b.LastCaptureID, &b.WorkerID, &b.LocalInstanceID)
 	b.Health = json.RawMessage(health)
 	b.RuntimeIdentity = json.RawMessage(identity)
 	b.ObservedAt = timePtr(observed)
