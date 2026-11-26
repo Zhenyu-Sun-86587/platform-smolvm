@@ -162,3 +162,44 @@ waitpid $pid, 0;
              retry=(RuntimeError,))
     print(json.dumps(dict(case="lease_wait_fork", operation=batch["operation_id"], child=child["machine_id"],
                           source=ref["incarnation_id"], lease_state=lease["state"], bundle=platform.bundle_id)), flush=True)
+
+
+def check_passive_metrics(platform, path, ref):
+    from pathlib import Path
+    from authorized_services_kvm import worker_get
+    from datetime import datetime
+
+    inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
+    pid = inventory["execution"]["pid"]
+    group, = [line.removeprefix("0::") for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+              if line.startswith("0::")]
+    scope = Path("/sys/fs/cgroup") / group.lstrip("/")
+
+    def cpu_millis():
+        values = dict(row.split() for row in (scope / "cpu.stat").read_text().splitlines())
+        return int(values["usage_usec"]) // 1000
+
+    low = cpu_millis()
+    sample = platform.app(path + "/metrics")
+    high = cpu_millis()
+    assert sample["source"] == "cgroup_v2" and sample["scope"] == "machine" and sample["availability"] == "partial", sample
+    assert low <= sample["cpu_millis"] <= high and sample["memory_mb"] > 0, (low, sample, high)
+    assert sample.get("rss_mb") is None and datetime.fromisoformat(sample["observed_at"]).tzinfo
+    assert sample["execution"]["incarnation_id"] == ref["incarnation_id"]
+    system = platform.app("system/metrics")
+    assert system["scope"] == "worker" and system["allocated_memory_mb"] > 0 and system.get("used_memory_mb") is None, system
+    platform.complete(platform.change(path + "/standby", "polish-standby", {},
+                                      platform.wait_capability(path, "lifecycle.standby")))
+    for _ in range(3):
+        platform.app("machines")
+        assert platform.app(path)["power_state"] == "standby"
+        metrics = platform.app(path + "/metrics")
+        assert metrics["platform"]["active_access_holds"] == 0
+        assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "STANDBY"
+    listing = platform.app(path + "/files/list?path=/root")
+    assert isinstance(listing["items"], list)
+    assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "RUNNING"
+    print(json.dumps(dict(case="metrics_standby", bundle=platform.bundle_id, execution=sample["execution"],
+                          observed_at=sample["observed_at"], cpu_millis=sample["cpu_millis"],
+                          cpu_bracket=[low, high], memory_mb=sample["memory_mb"],
+                          worker_allocated_mb=system["allocated_memory_mb"], file_woke_guest=True)), flush=True)
