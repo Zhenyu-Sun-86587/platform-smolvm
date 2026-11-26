@@ -27,6 +27,7 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
+INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1590,7 +1591,7 @@ def test(args, root, stack, case):
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
     platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
-                        use_installation=case in ("fork-lost-reply", "grant-rollback", "saved-wake-exact"))
+                        use_installation=case in INSTALLED_CASES)
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
@@ -1719,7 +1720,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
-        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply", "grant-rollback", "saved-wake-exact"):
+        if selection[0].startswith("packet-cut-") or selection[0] == "packet-activity" or selection[0] in INSTALLED_CASES:
             slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
             subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                             "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
