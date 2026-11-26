@@ -1,6 +1,7 @@
 package nodegateway
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -81,17 +82,56 @@ func kvmReady() bool {
 func (s *Server) registerSample(mux *http.ServeMux) {
 	var mu sync.Mutex
 	var sequence int64
+	var artifactCursor string
 	rootRPC(s, mux, nodeproto.SamplePath, func(ctx context.Context, req nodeproto.SampleRequest) (nodeproto.SampleReply, error) {
 		if !mu.TryLock() {
 			return nodeproto.SampleReply{}, &nodeproto.Failure{Code: nodeproto.CodeBusy}
 		}
 		defer mu.Unlock()
 		sequence++
-		return s.collectSample(ctx, req, sequence)
+		return s.collectSample(ctx, req, sequence, &artifactCursor)
 	})
 }
 
-func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest, sequence int64) (nodeproto.SampleReply, error) {
+type rootCheck struct {
+	key      string
+	profile  int
+	artifact nodeproto.Artifact
+	verify   func(context.Context, string, string) (int64, error)
+}
+
+// Recheck immutable roots within a slice of the heartbeat deadline. Warming
+// or missing imports may exclude a template while other routes remain usable.
+func sampleRoots(ctx context.Context, checks []rootCheck, cursor *string, profiles []placement.RuntimeProfile, receipts map[string][]nodeproto.Artifact) {
+	slices.SortFunc(checks, func(a, b rootCheck) int { return cmp.Compare(a.key, b.key) })
+	start, found := slices.BinarySearchFunc(checks, *cursor, func(check rootCheck, key string) int {
+		return cmp.Compare(check.key, key)
+	})
+	if found {
+		start++
+	}
+	window, closeWindow := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer closeWindow()
+	for i := range checks {
+		if window.Err() != nil {
+			break
+		}
+		check := checks[(start+i)%len(checks)]
+		*cursor = check.key
+		probe, cancel := context.WithTimeout(window, 100*time.Millisecond)
+		size, err := check.verify(probe, check.artifact.Generation, check.artifact.Digest)
+		cancel()
+		if err != nil || size <= 0 {
+			continue
+		}
+		profile := &profiles[check.profile]
+		check.artifact.Bytes = size
+		profile.Artifacts = append(profile.Artifacts, check.artifact.Digest)
+		receipts[profile.RuntimeInstanceID] = append(receipts[profile.RuntimeInstanceID], check.artifact)
+	}
+}
+
+func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest, sequence int64, artifactCursor *string) (nodeproto.SampleReply, error) {
 	var reply nodeproto.SampleReply
 	if !nodeproto.ValidID(req.Nonce) || len(req.Routes) == 0 || len(req.Routes) > 64 || len(req.Pending)+len(req.AccessWakes) > nodeproto.ReconcileLimit {
 		return reply, rt.ErrInvalid
@@ -119,6 +159,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		Sequence: sequence, Source: placement.SourceWorkerBudget, QueryNonce: req.Nonce}
 	reply.Artifacts = map[string][]nodeproto.Artifact{}
 	availableKVM := kvmReady()
+	var roots []rootCheck
 	for _, requested := range req.Routes {
 		route := profiles[requested.RuntimeInstanceID]
 		measured, ok := route.Adapter.(interface {
@@ -139,17 +180,20 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 			if !route.RootGenerations[candidate.Generation] {
 				continue
 			}
-			if size, e := route.Worker.VerifyRoot(ctx, candidate.Generation, candidate.Digest); e == nil {
-				candidate.Bytes = size
-				p.Artifacts = append(p.Artifacts, candidate.Digest)
-				reply.Artifacts[p.RuntimeInstanceID] = append(reply.Artifacts[p.RuntimeInstanceID], candidate)
-			}
+			roots = append(roots, rootCheck{key: requested.RuntimeInstanceID + "/" + candidate.Digest,
+				profile: len(sample.Profiles), artifact: candidate, verify: route.Worker.VerifyRoot})
 		}
 		sample.Profiles = append(sample.Profiles, p)
 	}
+	sampleRoots(ctx, roots, artifactCursor, sample.Profiles, reply.Artifacts)
+	observations, stopObserving := context.WithTimeout(ctx, time.Second)
+	defer stopObserving()
 	// Only a native operation that has transactionally passed resourced admission
 	// can be covered by the budget read below. A WakeDemand has no such receipt.
 	for _, q := range req.Pending {
+		if observations.Err() != nil {
+			break
+		}
 		route, ok := profiles[q.RuntimeInstanceID]
 		if !ok || !nodeproto.ValidID(q.OperationID) || !nodeproto.ValidDigest(q.Digest) || q.Attempt < 1 {
 			continue
@@ -158,7 +202,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		if !ok {
 			continue
 		}
-		receipt, e := native.QueryOperation(ctx, q.OperationID)
+		receipt, e := native.QueryOperation(observations, q.OperationID)
 		if e != nil || receipt.OperationID != q.OperationID || receipt.RequestDigest != q.Digest || receipt.BundleDigest != route.Worker.Bundle ||
 			receipt.RouteID != "deep" || receipt.Revision < 1 || receipt.InstanceID == "" {
 			continue
@@ -189,6 +233,9 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 	// Access wake receipts are native launch/restore decisions observed before
 	// this budget. The controller also checks the original demand and execution.
 	for _, q := range req.AccessWakes {
+		if observations.Err() != nil {
+			break
+		}
 		route, ok := profiles[q.RuntimeInstanceID]
 		if !ok || !nodeproto.ValidID(q.OperationID) {
 			return reply, rt.ErrInvalid
@@ -197,7 +244,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		if !ok {
 			continue
 		}
-		receipt, err := native.QueryOperation(ctx, q.OperationID)
+		receipt, err := native.QueryOperation(observations, q.OperationID)
 		if err == nil && receipt.OperationID == q.OperationID && receipt.Phase == "COMPLETED" &&
 			(receipt.Kind == "launch" || receipt.Kind == "restore_target") && receipt.BundleDigest == route.Worker.Bundle {
 			reply.AccessWakes = append(reply.AccessWakes, nodeproto.AccessWakeAdmission{AccessWakeQuery: q, Receipt: receipt})
