@@ -19,6 +19,7 @@ type nativeForkIntent struct {
 	SourceDisposition registry.SourceDisposition `json:"source_disposition"`
 	Receipt           *rt.OperationReceipt       `json:"receipt,omitempty"`
 	RetryRequested    bool                       `json:"retry_requested,omitempty"`
+	CancelRequested   bool                       `json:"cancel_requested,omitempty"`
 	RetryFrom         *rt.OperationReceipt       `json:"retry_from,omitempty"`
 }
 
@@ -188,6 +189,9 @@ func (j *Job) reconcileNativeFork(ctx context.Context, control rt.NativeForkCont
 	if intent.RetryRequested {
 		return j.reconcileForkRetry(ctx, control, receipt)
 	}
+	if intent.CancelRequested {
+		return j.reconcileForkCancellation(ctx, control, receipt)
+	}
 	return j.confirmNativeFork(ctx, control, receipt)
 }
 
@@ -213,21 +217,32 @@ func (j *Job) checkForkReceipt(receipt rt.OperationReceipt) error {
 	return verifyForkReceiptChildren(request, progress.Children)
 }
 
+func (j *Job) checkForkAttempts(receipt rt.OperationReceipt) error {
+	intent, progress := j.Intent.Fork, receipt.Fork
+	if previous := intent.Receipt; previous != nil && (previous.Fork == nil || len(previous.Fork.Children) != len(progress.Children) || receipt.Revision < previous.Revision) {
+		return &Failure{"RECOVERY_REQUIRED", "Worker fork receipt revision regressed"}
+	}
+	for ordinal, child := range progress.Children {
+		if j.Op.Children[ordinal].State == "ready" && (child.Phase != "COMPLETED" || child.Cancelled) {
+			return &Failure{"RECOVERY_REQUIRED", "Worker fork changed a previously published child"}
+		}
+		if child.Attempt != j.Op.Children[ordinal].Attempt || (intent.Receipt == nil && child.ExecutionEpoch != 1) ||
+			(intent.Receipt != nil && !sameForkAttempt(child, intent.Receipt.Fork.Children[ordinal])) {
+			return &Failure{"RECOVERY_REQUIRED", "Worker fork changed a child outside a recorded retry"}
+		}
+	}
+	return nil
+}
+
 func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkControl, receipt rt.OperationReceipt) error {
 	j.Written = true
 	if err := j.checkForkReceipt(receipt); err != nil {
 		return j.fail(ctx, err)
 	}
+	if err := j.checkForkAttempts(receipt); err != nil {
+		return j.fail(ctx, err)
+	}
 	intent, progress := j.Intent.Fork, receipt.Fork
-	if previous := intent.Receipt; previous != nil && (previous.Fork == nil || len(previous.Fork.Children) != len(progress.Children) || receipt.Revision < previous.Revision) {
-		return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker fork receipt revision regressed"})
-	}
-	for ordinal, child := range progress.Children {
-		if child.Attempt != j.Op.Children[ordinal].Attempt || (intent.Receipt == nil && child.ExecutionEpoch != 1) ||
-			(intent.Receipt != nil && !sameForkAttempt(child, intent.Receipt.Fork.Children[ordinal])) {
-			return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "Worker fork changed a child outside a recorded retry"})
-		}
-	}
 	admitted := make([]string, 0, len(progress.Children))
 	for ordinal, child := range progress.Children {
 		if child.AdmissionError == "" {
@@ -262,12 +277,11 @@ func (j *Job) confirmForkAbort(ctx context.Context, control rt.NativeForkControl
 	state := registry.Failed
 	code := "NATIVE_FORK_ABORTED"
 	if progress.SourceReleased && progress.Stage == "aborted" {
-		cancelled := progress.Outcome == "cancelled" && progress.Error == nil
+		cancelled := progress.Outcome == "cancelled" && progress.Error == nil && allAdmittedTargetsCancelled(progress.Children)
 		for ordinal, child := range progress.Children {
 			if child.Phase != "ABORTED" && child.Phase != "RESERVED" {
 				return j.fail(ctx, &Failure{"RECOVERY_REQUIRED", "aborted fork still has a dispatched child"})
 			}
-			cancelled = cancelled && (child.Cancelled || child.AdmissionError != "")
 			childCode := code
 			if child.AdmissionError != "" {
 				childCode = "RESOURCE_LIMIT"
@@ -319,6 +333,18 @@ func sameForkAttempt(a, b rt.ForkChildReceipt) bool {
 	return a.Name == b.Name && a.InstanceID == b.InstanceID && a.OperationID == b.OperationID &&
 		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt && a.AdmissionError == b.AdmissionError &&
 		(b.IncarnationID == nil || (a.IncarnationID != nil && *a.IncarnationID == *b.IncarnationID)) && (!b.Cancelled || a.Cancelled)
+}
+
+func allAdmittedTargetsCancelled(children []rt.ForkChildReceipt) bool {
+	cancelled := false
+	for _, child := range children {
+		if child.Cancelled {
+			cancelled = true
+		} else if child.AdmissionError == "" {
+			return false
+		}
+	}
+	return cancelled
 }
 
 func (j *Job) recordForkProgress(ctx context.Context, step registry.TransitionRequest) error {
@@ -395,6 +421,10 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 	}
 	if ready == 0 {
 		step.Effect = registry.EffectNone
+		if allAdmittedTargetsCancelled(receipt.Fork.Children) {
+			step.Error = JSON(map[string]string{"code": "FORK_CANCELLED", "message": "Worker confirmed cancellation of every admitted target"})
+			return j.finish(ctx, registry.Cancelled, step)
+		}
 		step.Error = JSON(map[string]string{"code": "NATIVE_FORK_NO_CHILDREN", "message": "Worker completed the fork without a ready child"})
 		return j.finish(ctx, registry.Failed, step)
 	}

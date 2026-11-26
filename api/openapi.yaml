@@ -2533,6 +2533,7 @@ paths:
     post:
       operationId: post_operations_operation_cancel
       summary: Cancel a durable operation
+      description: An active native fork records a cancellation request for its pinned Worker. Poll the operation for its confirmed effect and individual child outcomes. Targets already committed retain their identities.
       parameters:
       - name: operation
         in: path

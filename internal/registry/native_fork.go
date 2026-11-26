@@ -137,8 +137,30 @@ func advanceNativeFork(ctx context.Context, tx *sql.Tx, op *Operation, r Transit
 }
 
 func verifiedForkCancellation(op Operation, r TransitionRequest) bool {
-	return rt.IsNativeFork(op.Kind) && op.State == Observing && r.State == Cancelled && r.Effect == EffectNone &&
-		r.Stage == "completed" && len(r.ForkChildren) == len(op.Children)
+	if !rt.IsNativeFork(op.Kind) || r.State != Cancelled || r.Effect != EffectNone || r.Stage != "completed" {
+		return false
+	}
+	if op.State == Dispatching && op.Stage == "preflight" && op.Effect == EffectNone && !op.SourceLockReleased {
+		return true
+	}
+	if op.State != Observing || op.Effect == EffectPartial || len(op.Children) == 0 {
+		return false
+	}
+	verified := len(r.ForkChildren)
+	for _, change := range r.ForkChildren {
+		if change.State != "quarantined" || !oneOf(change.ErrorCode, "FORK_CANCELLED", "FORK_CHILD_CANCELLED", "RESOURCE_LIMIT") {
+			return false
+		}
+	}
+	for _, child := range op.Children {
+		if child.State != "pending" {
+			if child.State != "quarantined" || !oneOf(child.ErrorCode, "FORK_CANCELLED", "FORK_CHILD_CANCELLED", "RESOURCE_LIMIT") {
+				return false
+			}
+			verified++
+		}
+	}
+	return verified == len(op.Children)
 }
 
 func reopenForkChild(ctx context.Context, tx *sql.Tx, operationID string, child *OperationChild) error {

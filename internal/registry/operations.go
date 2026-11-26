@@ -81,6 +81,10 @@ func (s *Store) GetOperation(ctx context.Context, id string) (Operation, error) 
 	return op, tx.Commit()
 }
 
+func (s *Store) GetOperationTx(ctx context.Context, tx *sql.Tx, id string) (Operation, error) {
+	return readOperation(ctx, tx, id)
+}
+
 func (s *Store) ListPending(ctx context.Context) ([]Operation, error) {
 	rows, err := s.reader.QueryContext(ctx, "SELECT "+operationColumns+
 		" FROM operations WHERE state IN ('queued', 'dispatching', 'observing', 'recovery_required') ORDER BY created_at, id")

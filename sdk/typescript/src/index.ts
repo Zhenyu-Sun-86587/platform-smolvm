@@ -685,6 +685,9 @@ export class Client {
     const revision = options.revision ?? (await this.getOperation(id, options.signal)).revision
     return this.mutate<Operation>(operation(id) + "/retry", {}, { ...options, revision })
   }
+  cancelOperation(id: string, options: WriteOptions = {}) {
+    return this.mutate<Operation>(operation(id) + "/cancel", {}, options)
+  }
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
   listDesktopSessions(id: string, signal?: AbortSignal) {
     return this.pages<DesktopSession>(machine(id) + "/desktop-sessions", 100, signal)

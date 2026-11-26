@@ -12,10 +12,19 @@ import (
 
 var _ rt.NativeForkControl = (*Adapter)(nil)
 var _ rt.ForkRetryControl = (*Adapter)(nil)
+var _ rt.ForkCancelControl = (*Adapter)(nil)
 
 func (a *Adapter) RetryFork(ctx context.Context, id string, control rt.ForkControl) (OperationReceipt, error) {
+	return a.controlFork(ctx, id, "retry", control)
+}
+
+func (a *Adapter) CancelFork(ctx context.Context, id string, control rt.ForkControl) (OperationReceipt, error) {
+	return a.controlFork(ctx, id, "cancel", control)
+}
+
+func (a *Adapter) controlFork(ctx context.Context, id, action string, control rt.ForkControl) (OperationReceipt, error) {
 	if !identifier.MatchString(id) || !validDigest(control.RequestDigest) || !validExecution(control.Expected) || control.ExpectedRevision < 1 {
-		return OperationReceipt{}, fmt.Errorf("%w: invalid fork retry scope", rt.ErrInvalid)
+		return OperationReceipt{}, fmt.Errorf("%w: invalid fork %s scope", rt.ErrInvalid, action)
 	}
 	payload, err := json.Marshal(control)
 	if err != nil {
@@ -27,7 +36,7 @@ func (a *Adapter) RetryFork(ctx context.Context, id string, control rt.ForkContr
 	}
 	defer endpoint.CloseIdleConnections()
 	var receipt OperationReceipt
-	if err := exchange(ctx, endpoint, http.MethodPost, extensionPath+"/operations/"+id+"/retry", payload, &receipt); err != nil {
+	if err := exchange(ctx, endpoint, http.MethodPost, extensionPath+"/operations/"+id+"/"+action, payload, &receipt); err != nil {
 		return OperationReceipt{}, err
 	}
 	return receipt, validateReceipt(receipt, a.route.Bundle, id)

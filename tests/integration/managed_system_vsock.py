@@ -340,6 +340,63 @@ def agent_unavailable(platform, execution):
     return False
 
 
+def cancel_partial_fork(platform, source, ref):
+    marker = os.urandom(16).hex()
+    platform.guest(ref, ["/usr/bin/tee", "/var/tmp/fork-cancel-marker"], marker)
+    view = platform.wait_capability(source, "state.fork_batch")
+    path = source + "/fork-batches"
+    body = dict(children=[dict(name="Keep committed child"), dict(name="Cancel pending child")], require_independent=True)
+    accepted = platform.change(path, "fork-to-cancel", body, view)
+    op_id = accepted["operation_id"]
+    operation = "operations/" + op_id
+    with sqlite3.connect(f"file:{platform.root}/catalog/catalog.sqlite?mode=ro", uri=True) as db:
+        until = time.monotonic() + 45
+        while time.monotonic() < until:
+            target = db.execute("""SELECT e.pid,e.pid_start_time FROM managed_fork_children c
+                JOIN executions e ON e.last_operation_id=c.operation_id
+                WHERE c.batch_id=? AND c.ordinal=1 AND e.phase!='exited' AND NOT EXISTS (
+                SELECT 1 FROM target_activations a WHERE a.operation_id=c.operation_id AND a.decision='commit')""", (op_id,)).fetchone()
+            if target:
+                break
+            time.sleep(0.005)
+        else:
+            raise TimeoutError("second fork target did not reach registration before its commit")
+        pid, start = target
+        with os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as pending:
+            assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == start
+            signal.pidfd_send_signal(pending.fileno(), signal.SIGSTOP)
+            try:
+                def committed_child():
+                    current = platform.app(operation)
+                    return current if current["children"][0]["state"] == "ready" else None
+                partial = wait_for(committed_child, timeout=40)
+                assert partial["state"] == "observing" and partial["effect"] == "partial", partial
+                capture = partial["result"]["capture_id"]
+                first = partial["children"][0]
+                assert first["resource_independence"] == "verified" and partial["children"][1]["state"] == "pending"
+                requested = platform.change(operation + "/cancel", "cancel-pending-fork", {}, status=200)
+                assert requested["stage"] == "fork_cancel_requested" and requested["effect"] == "partial", requested
+                platform.restart()
+                assert platform.change(operation + "/cancel", "cancel-pending-fork", {}, status=200) == requested
+                wait_for(lambda: db.execute("SELECT cancel_requested FROM managed_fork_batches WHERE operation_id=?",
+                                            (op_id,)).fetchone()[0], timeout=40)
+            finally:
+                with suppress(ProcessLookupError):
+                    signal.pidfd_send_signal(pending.fileno(), signal.SIGCONT)
+            final = platform.complete(accepted)
+            assert select.select([pending], [], [], 15)[0], "cancelled target VMM still alive"
+        assert final["effect"] == "partial" and final["result"]["capture_id"] == capture, final
+        assert final["children"][0] == first and final["children"][1]["error_code"] == "FORK_CHILD_CANCELLED", final
+        assert final["children"][1]["machine_id"] == accepted["children"][1]["machine_id"]
+        assert platform.change(path, "fork-to-cancel", body, view)["operation_id"] == op_id
+        assert db.execute("SELECT count(*) FROM managed_fork_batches WHERE capture_id=?", (capture,)).fetchone() == (1,)
+    _, child_ref = platform.context(first["machine_id"])
+    assert platform.guest(child_ref, ["/bin/cat", "/var/tmp/fork-cancel-marker"]).decode() == marker
+    assert platform.guest(ref, ["/bin/cat", "/var/tmp/fork-cancel-marker"]).decode() == marker
+    print(f"Public in-flight cancel retained committed child {first['machine_id']} and cut {capture}. "
+          f"The pending VMM exited, both keys replayed after platform restart, and source and child returned the captured marker.", flush=True)
+
+
 def stop_agent_for_capture(platform, ref):
     for action, seconds in (("start", 60), ("stop", 1)):
         platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
@@ -1187,6 +1244,9 @@ def test(args, root, stack, case):
     if case == "task-wake":
         task_wake_case(platform, source, ref)
         return
+    if case == "fork-cancel":
+        cancel_partial_fork(platform, source, ref)
+        return
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
                for device in inventory["inventory"]["devices"])
@@ -1237,7 +1297,7 @@ def main():
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
-                        "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-restore", "task-wake"), action="append")
+                        "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-restore", "task-wake", "fork-cancel"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

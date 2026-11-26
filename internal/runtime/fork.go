@@ -62,6 +62,10 @@ type ForkRetryControl interface {
 	RetryFork(context.Context, string, ForkControl) (OperationReceipt, error)
 }
 
+type ForkCancelControl interface {
+	CancelFork(context.Context, string, ForkControl) (OperationReceipt, error)
+}
+
 type NativeForkControl interface {
 	NativeControl
 	SubmitFork(context.Context, ForkSubmission) (OperationReceipt, error)
