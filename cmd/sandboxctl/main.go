@@ -145,8 +145,7 @@ func rootCommand() (*cobra.Command, *client) {
 		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
-	networks := api.list("networks", "networks", false)
-	networks.Short = "List registered Worker private networks"
+	networks := api.networks()
 	root.AddCommand(profiles, networks, sub("metrics", "Read system metrics for the reported runtime scope", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
 		return api.show(cmd, "system/metrics")
 	}))

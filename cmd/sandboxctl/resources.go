@@ -150,7 +150,8 @@ func (c *client) machineResize() *cobra.Command {
 }
 
 func (c *client) machines() *cobra.Command {
-	group := &cobra.Command{Use: "machines", Short: "Manage persistent workspaces"}
+	group := &cobra.Command{Use: "machines", Aliases: []string{"machine"}, Short: "Manage persistent workspaces"}
+	group.AddCommand(c.machineProductCommands()...)
 	group.AddCommand(c.list("list", "machines", false), c.showItem("machines"), c.update("patch MACHINE", "machines", "PATCH", true))
 	group.AddCommand(sub("dependencies MACHINE", "List lineage and native dependencies", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.showMachine(cmd, args[0], "/dependencies")
@@ -165,7 +166,7 @@ func (c *client) machines() *cobra.Command {
 		return c.showMachine(cmd, args[0], "/network")
 	}))
 
-	var template, bootMode, runtimeInstance, networkID, networkMode string
+	var template, bootMode, runtimeInstance, networkID, networkMode, lifecycleJSON string
 	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -199,11 +200,23 @@ func (c *client) machines() *cobra.Command {
 		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
-		if cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds") {
+		legacyIdle := cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds")
+		if cmd.Flags().Changed("lifecycle-policy") {
+			if legacyIdle {
+				return errors.New("--lifecycle-policy cannot be combined with --idle or --idle-seconds")
+			}
+			policy, err := jsonBody(strings.TrimSpace(lifecycleJSON))
+			if err != nil {
+				return err
+			}
+			body["lifecycle_policy"] = policy
+		}
+		if legacyIdle {
 			body["idle_policy"] = map[string]any{"enabled": idle, "timeout_seconds": idleSeconds}
 		}
 		return c.mutation(cmd, "POST", "machines", body, 0)
 	})
+	create.Aliases = []string{"new"}
 	create.Flags().StringVar(&template, "template", "", "Registered template ID")
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
@@ -218,6 +231,7 @@ func (c *client) machines() *cobra.Command {
 	create.Flags().BoolVar(&start, "start", true, "Start the workspace after creating it")
 	create.Flags().BoolVar(&idle, "idle", true, "Automatically pause on idle")
 	create.Flags().IntVar(&idleSeconds, "idle-seconds", 1800, "Automatic pause timeout")
+	create.Flags().StringVar(&lifecycleJSON, "lifecycle-policy", "", "Worker lifecycle policy JSON override")
 	group.AddCommand(create)
 
 	for _, act := range []string{"start", "stop", "pause", "resume", "wake", "delete"} {
@@ -664,6 +678,7 @@ func (c *client) files() *cobra.Command {
 
 func (c *client) services() *cobra.Command {
 	group := &cobra.Command{Use: "services", Short: "Manage stable service endpoints"}
+	group.AddCommand(c.serviceProductCommands()...)
 	group.AddCommand(c.list("list MACHINE", "services", true), c.showItem("services"),
 		c.update("patch SERVICE", "services", "PATCH", true), c.update("delete SERVICE", "services", "DELETE", true))
 	var protocol, body string
@@ -809,6 +824,7 @@ func (c *client) settings() *cobra.Command {
 
 func (c *client) lifecyclePolicy() *cobra.Command {
 	group := &cobra.Command{Use: "lifecycle", Short: "Manage Worker lifecycle policies"}
+	group.AddCommand(c.lifecycleDefaults())
 	group.AddCommand(sub("status MACHINE", "Show effective policy, revisions and activity blockers", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.showMachine(cmd, args[0], "/lifecycle")
 	}), c.update("apply-default", "lifecycle-policy-applications", http.MethodPost, false),
