@@ -94,7 +94,7 @@ def digest(path):
 
 
 class Platform:
-    def __init__(self, args, root, stack, networks=(), credential_proxies=(), state_tmpfs=False):
+    def __init__(self, args, root, stack, networks=(), credential_proxies=(), state_tmpfs=False, use_installation=False):
         self.args = args
         self.root = root
         self.stack = stack
@@ -107,6 +107,7 @@ class Platform:
         self.networks = networks
         self.credential_proxies = credential_proxies
         self.state_tmpfs = state_tmpfs
+        self.use_installation = use_installation
 
     def start(self):
         root = self.root
@@ -122,7 +123,14 @@ class Platform:
         runtime = Path("/run/smolvm-custom")
         runtime.mkdir(exist_ok=True)
         subprocess.run(["mount", "--bind", root / "runtime", runtime], check=True)
-        self.bundle = shutil.copytree(self.args.bundle, root / "bundle", symlinks=True)
+        self.bundle = root / "bundle"
+        if self.use_installation:
+            self.bundle.mkdir()
+            subprocess.run(["mount", "--bind", self.args.bundle, self.bundle], check=True)
+            self.stack.callback(subprocess.run, ["umount", "--lazy", self.bundle], check=True)
+            subprocess.run(["mount", "-o", "remount,bind,ro", self.bundle], check=True)
+        else:
+            shutil.copytree(self.args.bundle, self.bundle, symlinks=True)
         self.env = {
             **os.environ,
             "LD_LIBRARY_PATH": str(self.bundle / "lib"),
@@ -134,9 +142,9 @@ class Platform:
         secret.touch(mode=0o600)
         secret.write_text(password + "\n")
         self.env["SANDBOX_OWNER_PASSWORD_FILE"] = str(secret)
-        self.spawn([self.bundle / "smolvm-resourced", "serve", "--socket", self.worker,
-                    "--state-dir", root / "catalog", "--socket-gid", str(grp.getgrnam("kvm").gr_gid)],
-                   "worker.log")
+        self.broker = self.spawn([self.bundle / "smolvm-resourced", "serve", "--socket", self.worker,
+                                  "--state-dir", root / "catalog", "--socket-gid", str(grp.getgrnam("kvm").gr_gid)],
+                                 "worker.log")
         wait_for(lambda: worker(self.worker, "Health")["state"] == "ready")
 
         self.spawn([self.bundle / "smolvm-bin", "--state-dir", root / "state",
