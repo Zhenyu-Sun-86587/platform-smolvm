@@ -47,42 +47,107 @@ func WorkerExecution(b registry.Binding) workerclient.Execution {
 func (s WorkerLifecycleStatus) Execution() workerclient.Execution {
 	return workerclient.Execution{InstanceID: s.Instance, IncarnationID: s.Incarnation, Epoch: s.Epoch}
 }
-func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, client workerclient.Client) (registry.LifecycleSettings, error) {
+
+type policyWorker interface {
+	Lifecycle(context.Context, string, string, workerclient.Execution, any, any) error
+}
+
+type policyReceipt struct {
+	Applied   int64               `json:"applied_revision"`
+	Instance  string              `json:"instance_id"`
+	Effective *rt.LifecyclePolicy `json:"effective_policy"`
+}
+
+func deliverPolicy(ctx context.Context, client policyWorker, key string, scope workerclient.Execution, base, desired int64, raw json.RawMessage) error {
+	var policy rt.LifecyclePolicy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return err
+	}
+	apply := func(id string, prior, revision int64, initialize bool) error {
+		request := map[string]any{"new_revision": revision, "expected_applied_revision": prior, "effective_policy": raw}
+		if initialize {
+			request["initialize_replacement"] = true
+		}
+		var ack policyReceipt
+		if err := client.Lifecycle(ctx, "ApplyLifecyclePolicy", id, scope, request, &ack); err != nil {
+			return err
+		}
+		if ack.Applied != revision || ack.Instance != scope.InstanceID || ack.Effective != nil && *ack.Effective != policy {
+			return registry.ErrGeneration
+		}
+		return nil
+	}
+	initialize := base == 0 && desired > 1
+	err := apply(key, base, desired, initialize)
+	var fault *workerclient.Fault
+	if base != 0 || !errors.As(err, &fault) || !(fault.Code == "E_STALE_REVISION" || initialize && fault.Code == "E_INVALID_REQUEST") {
+		return err
+	}
+
+	// The binding can also be promoted again on an existing physical instance.
+	// Its own receipt establishes the revision from which it is safe to continue.
+	var current policyReceipt
+	if err := client.Lifecycle(ctx, "GetLifecycleStatus", "", scope, map[string]any{}, &current); err != nil {
+		if !errors.As(err, &fault) || fault.Code != "E_NOT_FOUND" {
+			return err
+		}
+	} else if current.Instance != scope.InstanceID || current.Applied <= 0 || current.Effective == nil {
+		return registry.ErrGeneration
+	}
+	if current.Applied >= desired {
+		if current.Applied == desired && *current.Effective == policy {
+			return nil
+		}
+		return registry.ErrRevision
+	}
+	// Historical Workers only advance by one. Install the desired protection on
+	// the first call and keep it in force while catching up the revision counter.
+	for prior := current.Applied; prior < desired; prior++ {
+		revision := prior + 1
+		if err := apply(fmt.Sprintf("%s-sync-%d", key, revision), prior, revision, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, client policyWorker) (registry.LifecycleSettings, error) {
 	p, err := e.DB.LifecyclePolicy(ctx, b.MachineID)
-	if err != nil || p.AppliedRevision == p.DesiredRevision {
+	if err != nil {
 		return p, err
 	}
-	key := fmt.Sprintf("policy-%s-%d", b.MachineID, p.DesiredRevision)
+	if p.BindingID == "" || p.BindingID != b.ID {
+		return p, registry.ErrGeneration
+	}
+	if p.AppliedRevision == p.DesiredRevision {
+		return p, nil
+	}
+	key := fmt.Sprintf("binding-policy-%s-%d", b.ID, p.DesiredRevision)
 	encoded := JSON(p.Desired)
 	ref := JSON(WorkerExecution(b))
-	_, err = e.DB.DB().ExecContext(ctx, `INSERT OR IGNORE INTO lifecycle_deliveries(id,machine_id,binding_id,desired_revision,policy_json,expected_json)VALUES(?,?,?,?,?,?)`,
-		key, b.MachineID, b.ID, p.DesiredRevision, string(encoded), string(ref))
+	_, err = e.DB.DB().ExecContext(ctx, `INSERT INTO lifecycle_deliveries(id,machine_id,binding_id,desired_revision,policy_json,expected_json,previous_revision)
+		SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=? AND deleted_at IS NULL)
+		ON CONFLICT(binding_id,desired_revision) DO NOTHING`, key, b.MachineID, b.ID, p.DesiredRevision, string(encoded), string(ref), p.AppliedRevision, b.MachineID, b.ID)
 	if err != nil {
 		return p, err
 	}
-	var binding, raw, expected string
-	err = e.DB.ReadDB().QueryRowContext(ctx, "SELECT binding_id,policy_json,expected_json FROM lifecycle_deliveries WHERE id=?", key).Scan(&binding, &raw, &expected)
+	var raw, expected string
+	var previous int64
+	// An in-flight delivery created before the binding-scoped journal upgrade
+	// keeps its original request ID and execution fingerprint across a retry.
+	err = e.DB.ReadDB().QueryRowContext(ctx, "SELECT id,policy_json,expected_json,previous_revision FROM lifecycle_deliveries WHERE machine_id=? AND binding_id=? AND desired_revision=?",
+		b.MachineID, b.ID, p.DesiredRevision).Scan(&key, &raw, &expected, &previous)
 	if err != nil {
 		return p, err
-	}
-	if b.ID != binding {
-		return p, registry.ErrGeneration
 	}
 	var scope workerclient.Execution
 	if err = json.Unmarshal([]byte(expected), &scope); err != nil {
 		return p, err
 	}
-	var ack struct {
-		Applied  int64  `json:"applied_revision"`
-		Instance string `json:"instance_id"`
-	}
-	err = client.Lifecycle(ctx, "ApplyLifecyclePolicy", key, scope, map[string]any{"new_revision": p.DesiredRevision, "expected_applied_revision": p.AppliedRevision, "effective_policy": json.RawMessage(raw)}, &ack)
-	if err != nil {
-		_, _ = e.DB.DB().ExecContext(ctx, "UPDATE machine_lifecycle_policies SET last_error=? WHERE machine_id=? AND desired_revision=?", err.Error(), b.MachineID, p.DesiredRevision)
+	if err = deliverPolicy(ctx, client, key, scope, previous, p.DesiredRevision, json.RawMessage(raw)); err != nil {
+		_, _ = e.DB.DB().ExecContext(ctx, `UPDATE machine_lifecycle_policies SET last_error=? WHERE machine_id=? AND desired_revision=? AND applied_revision<desired_revision
+			AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=?)`, err.Error(), b.MachineID, p.DesiredRevision, b.MachineID, b.ID)
 		return p, err
-	}
-	if ack.Applied != p.DesiredRevision || ack.Instance != scope.InstanceID {
-		return p, registry.ErrGeneration
 	}
 	tx, err := e.DB.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -90,7 +155,7 @@ func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, cli
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx, `UPDATE machine_lifecycle_policies SET applied_revision=?,applied_json=?,last_error=NULL WHERE machine_id=? AND desired_revision=?
-        AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=?)`, ack.Applied, raw, b.MachineID, ack.Applied, b.MachineID, b.ID)
+        AND EXISTS(SELECT 1 FROM machines WHERE id=? AND current_binding_id=?)`, p.DesiredRevision, raw, b.MachineID, p.DesiredRevision, b.MachineID, b.ID)
 	if err != nil {
 		return p, err
 	}
@@ -105,7 +170,7 @@ func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, cli
 		p.Desired.KeepRunning, fmt.Sprint(p.Desired.AutoHibernate), p.Desired.HibernateAfter, b.MachineID); err != nil {
 		return p, err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_policy_application_targets SET state='applied' WHERE state='pending' AND machine_id=? AND binding_id=? AND policy_revision=?", b.MachineID, b.ID, ack.Applied); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_policy_application_targets SET state='applied' WHERE state='pending' AND machine_id=? AND binding_id=? AND policy_revision=?", b.MachineID, b.ID, p.DesiredRevision); err != nil {
 		return p, err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE lifecycle_deliveries SET delivered_at=? WHERE id=?", time.Now().UnixMilli(), key); err != nil {
@@ -116,7 +181,7 @@ func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, cli
 	}
 	return e.DB.LifecyclePolicy(ctx, b.MachineID)
 }
-func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client workerclient.Client) (WorkerLifecycleStatus, error) {
+func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client policyWorker) (WorkerLifecycleStatus, error) {
 	var st WorkerLifecycleStatus
 	if _, err := e.ApplyMachinePolicy(ctx, b, client); err != nil {
 		return st, err
@@ -156,6 +221,13 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client w
 		return st, err
 	}
 	defer tx.Rollback()
+	var binding string
+	if err = tx.QueryRowContext(ctx, "SELECT coalesce(current_binding_id,'') FROM machines WHERE id=?", b.MachineID).Scan(&binding); err != nil {
+		return st, err
+	}
+	if binding != b.ID {
+		return st, registry.ErrGeneration
+	}
 	if _, err = tx.ExecContext(ctx, "UPDATE machine_lifecycle_policies SET worker_status=? WHERE machine_id=? AND applied_revision=?", string(raw), b.MachineID, st.Applied); err != nil {
 		return st, err
 	}

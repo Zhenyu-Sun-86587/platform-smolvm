@@ -16,7 +16,7 @@ from bundle import MANIFEST, sync_path, verify_installed_bundle
 from bundle_inputs import BundleError, digest, read_json, require
 
 
-PLATFORM_SCHEMAS = {1, 2, 1001, 1002, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016}
+PLATFORM_SCHEMAS = {1, 2, 1001, 1002, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017}
 WORKER_SCHEMAS = range(1, 23)
 SECURITY = ("active", "legacy-allowed", "quarantined", "revoked")
 

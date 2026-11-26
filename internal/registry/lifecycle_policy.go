@@ -9,6 +9,7 @@ import (
 )
 
 type LifecycleSettings struct {
+	BindingID       string              `json:"-"`
 	Supported       bool                `json:"supported"`
 	DesiredRevision int64               `json:"desired_revision"`
 	AppliedRevision int64               `json:"applied_revision"`
@@ -26,8 +27,8 @@ func readPolicy(ctx context.Context, q queryer, machine string) (LifecycleSettin
 	var p LifecycleSettings
 	var raw, overrides string
 	var applied, worker *string
-	err := q.QueryRowContext(ctx, `SELECT desired_revision,applied_revision,desired_json,overrides_json,applied_json,source,default_revision,last_operation,worker_status,last_error
-        FROM machine_lifecycle_policies WHERE machine_id=?`, machine).Scan(&p.DesiredRevision, &p.AppliedRevision, &raw, &overrides, &applied, &p.Source, &p.DefaultRevision, &p.LastOperation, &worker, &p.LastError)
+	err := q.QueryRowContext(ctx, `SELECT desired_revision,applied_revision,desired_json,overrides_json,applied_json,source,default_revision,last_operation,worker_status,last_error,coalesce(m.current_binding_id,'')
+        FROM machine_lifecycle_policies p JOIN machines m ON m.id=p.machine_id WHERE p.machine_id=?`, machine).Scan(&p.DesiredRevision, &p.AppliedRevision, &raw, &overrides, &applied, &p.Source, &p.DefaultRevision, &p.LastOperation, &worker, &p.LastError, &p.BindingID)
 	if err != nil {
 		return p, err
 	}

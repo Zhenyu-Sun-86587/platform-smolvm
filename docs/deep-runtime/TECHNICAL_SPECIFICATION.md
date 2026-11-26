@@ -967,6 +967,8 @@ create/start明确要求workload启动却收到workload_error：operation failed
 
 所有 custom Access/Exec/文件/服务/私网 wake 先向 resourced 注册受保护需求，再判状态/准入。Running/Standby 使用绑定当前`instance_id,incarnation_id,execution_epoch,request_id`的ActivityHold；Hibernated/Stopped没有活VMM时，或Hibernate已STOP_COMMIT且旧源尚待退出时，通过RequestWake按稳定`instance_id,request_id,expected_binding_revision`、保存的statepoint（若有）和调用方授权登记WakeDemand，不伪造新的incarnation/epoch。WakeDemand持续保护本次被准入的唤醒；CommitActivation按当前principal/grant/入口策略重新授权，将仍有效的demand在同一actor中接续为绑定新execution的ActivityHold，确认后才向Guest转发访问。仅允许接续到该wake operation创建的目标binding，不把旧请求应用到不相关的Rollback/替换；授权已撤销则取消该请求的demand，不能转发，旧Guest执行租约也不因此复活。现有平台进程内`e.holds`可保留作连接统计，但不是跨进程睡眠互斥的唯一依据。新活动和automatic transition在同一instance actor内排序；不存在“平台读到idle后另一进程刚好开始任务仍睡”的空窗。
 
+平台 schema 1017 将每次策略投递绑定到目标 binding、完整策略、原请求 ID、旧 revision 和执行引用。更换 binding 时保留机器的期望策略，清除旧 Worker 的 applied 回执、活动状态和事件游标，同时终结旧 binding 上未交付的租约请求。新 Worker 在全新的实例上可用 `initialize_replacement=true` 一次初始化到机器当前 revision。之后仍须逐版比较并确认。历史 Worker 逐版接收同一份当前策略，第一步起就执行当前的保护设置。响应丢失时，平台用原请求或该实例的实际策略回执继续核对。
+
 ### 15.2 LifecyclePolicy 与默认值/实例覆盖
 
 统一通过 `GET/PATCH /v1/system/settings` 的 `default_lifecycle_policy` 字段和机器对象的 `lifecycle_policy` 字段表达。示例是可采用的初始产品配置，不是性能实测结论：
