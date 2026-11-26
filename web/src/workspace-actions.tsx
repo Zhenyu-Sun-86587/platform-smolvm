@@ -166,6 +166,7 @@ export function ConnectDialog({ machine, actions, open, onOpenChange }: {
   }
   return <Modal open={open} onOpenChange={onOpenChange} busy={opening} size="md" title={`Connect to ${machine.name}`}
     description="Open a browser session or connect using your SSH client.">
+    <div className={consoleStyles.connectBody}>
       <div className={consoleStyles.connectionLinks}>
         <Button className={consoleStyles.connectionLink} onClick={() => void openTerminal()} disabled={opening}>
           <SquareTerminal size={18}/><span><strong>{opening ? "Opening…" : "Web terminal"}</strong><small>Interactive guest shell</small></span>
@@ -185,6 +186,7 @@ export function ConnectDialog({ machine, actions, open, onOpenChange }: {
         if (opening) { event.preventDefault(); return }
         onOpenChange(false)
       }}><Waypoints size={15} /> Browse existing sessions</a>
+    </div>
   </Modal>
 }
 
@@ -219,7 +221,7 @@ export function WorkspaceActions({
     { key: "state.fork_batch", name: "Fork batch", icon: GitFork, available: canCapture, act: () => forkBatchDialog(m, actions) },
   ]
   return (
-    <div className={consoleStyles.workspaceActions}>
+    <div className={consoleStyles.workspaceActions} data-surface={surface}>
       <Button ref={connectButton} variant={compact && !surface ? "ghost" : "default"} size={compact && !surface ? "icon-sm" : "sm"}
         aria-label={"Open " + m.name} onClick={() => changeConnect(true)}>
         <SquareTerminal />{(!compact || surface) && "Open"}
