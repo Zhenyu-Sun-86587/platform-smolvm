@@ -123,6 +123,7 @@ func (s *Server) artifactRoutes() {
 		return write(w, 202, op)
 	})
 	s.Extra["snapshot_delete"] = s.deleteSnapshot
+	s.Extra[rt.VMSnapshotDelete], s.Recover[rt.VMSnapshotDelete] = s.deleteVMSnapshot, s.deleteVMSnapshot
 	s.Extra["snapshot_verify"] = s.verifySnapshot
 	for _, action := range []string{"verify", "delete"} {
 		path := "POST /v1/snapshots/{snap}/verify"
@@ -138,8 +139,18 @@ func (s *Server) artifactRoutes() {
 			if err = p.Authorize("manage", snap.MachineID); err != nil {
 				return err
 			}
+			kind := "snapshot_" + action
+			job := map[string]any{"snapshot_id": snap.ID}
 			if snap.VM != nil {
-				return rt.ErrUnsupported
+				if action != "delete" {
+					return rt.ErrUnsupported
+				}
+				if _, err := s.vmSnapshotWorker(snap); err != nil {
+					return err
+				}
+				kind = rt.VMSnapshotDelete
+				job["runtime_instance_id"] = snap.VM.RuntimeInstanceID
+				job["runtime_bundle_id"] = snap.VM.RuntimeBundleID
 			}
 			rev, err := revision(r)
 			if err != nil {
@@ -155,7 +166,8 @@ func (s *Server) artifactRoutes() {
 				return registry.ErrInvalid
 			}
 			env := envelope(r, p, v)
-			op, _, err := s.DB.Accept(ctx, registry.AcceptRequest{Kind: "snapshot_" + action, Request: lifecycle.JSON(map[string]any{"snapshot_id": snap.ID, "revision": rev, "verification": v.Verification}), Scope: env.Scope, Epoch: env.Epoch, Key: env.Key, PrincipalID: p.ID, CredentialID: p.CredentialID, Heavy: action == "verify"})
+			job["revision"], job["verification"] = rev, v.Verification
+			op, _, err := s.DB.Accept(ctx, registry.AcceptRequest{Kind: kind, Request: lifecycle.JSON(job), Scope: env.Scope, Epoch: env.Epoch, Key: env.Key, PrincipalID: p.ID, CredentialID: p.CredentialID, Heavy: action == "verify"})
 			if err != nil {
 				return err
 			}

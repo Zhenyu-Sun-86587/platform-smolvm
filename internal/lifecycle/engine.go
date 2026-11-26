@@ -332,8 +332,11 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 			return err
 		}
 	}
-	if op.Kind == rt.VolumeOperation && op.BindingID == "" {
-		var route rt.VolumeRoute
+	if op.BindingID == "" && (op.Kind == rt.VolumeOperation || op.Kind == rt.VMSnapshotDelete) {
+		var route struct {
+			RuntimeInstanceID string `json:"runtime_instance_id"`
+			RuntimeBundleID   string `json:"runtime_bundle_id"`
+		}
 		if err := json.Unmarshal(op.Request, &route); err != nil {
 			return err
 		}

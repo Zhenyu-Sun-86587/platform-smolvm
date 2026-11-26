@@ -2,6 +2,8 @@ package runtime
 
 import "context"
 
+const VMSnapshotDelete = "vm_snapshot_delete"
+
 type VolumeRestorePolicy string
 
 const (

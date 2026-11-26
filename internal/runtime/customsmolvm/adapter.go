@@ -73,7 +73,7 @@ func (a *Adapter) Admit(kind string) error {
 	}
 	if a.WorkerSocket() != "" {
 		switch kind {
-		case "service_create", "service_update", "service_delete":
+		case "service_create", "service_update", "service_delete", rt.VMSnapshotDelete:
 			return nil
 		}
 	}
