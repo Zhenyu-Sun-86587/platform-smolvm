@@ -16,6 +16,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/customsmolvm"
+	"sandbox-platform/internal/runtime/workerclient"
 )
 
 const managedSSHCertificateRequestLimit = 8 << 10
@@ -110,8 +111,9 @@ func (s *Server) managedSSHRouterSource(ctx context.Context, binding registry.Bi
 	var address netip.Addr
 	switch binding.PowerState {
 	case registry.PowerRunning, registry.PowerStandby:
-		_, attachment, err := workerServiceAttachment(ctx, socket, binding)
-		if err != nil || attachment.Lease.Attachment.Mode != spec.Network.Mode {
+		client := workerclient.Client{Socket: socket, Bundle: binding.RuntimeBundleID}
+		attachment, err := client.LookupAttachment(ctx, lifecycle.WorkerExecution(binding))
+		if err != nil || !sshRouterLeaseVerified(attachment.Lease, spec.Network.Mode) {
 			return netip.Prefix{}, unverified
 		}
 		networkID, address = attachment.NetworkID, attachment.Lease.Attachment.Address
@@ -124,6 +126,10 @@ func (s *Server) managedSSHRouterSource(ctx context.Context, binding registry.Bi
 		}
 		networkID = saved.endpoint.NetworkID
 		address, _ = netip.ParseAddr(saved.endpoint.PrivateIPv4)
+		guest, _ := netip.ParseAddr(saved.endpoint.GuestIPv4)
+		if !sshNetworkAddressesMatch(spec.Network.Mode, address, guest) {
+			return netip.Prefix{}, unverified
+		}
 	default:
 		return netip.Prefix{}, unverified
 	}
@@ -132,6 +138,20 @@ func (s *Server) managedSSHRouterSource(ctx context.Context, binding registry.Bi
 		return netip.Prefix{}, unverified
 	}
 	return source, nil
+}
+
+func sshRouterLeaseVerified(lease workerclient.NetworkLease, mode string) bool {
+	// The certificate uses reserved network identity. The data path separately
+	// requires an open gate after access and wake authorization.
+	return lease.State == "attached" && (lease.Gate == "open" || lease.Gate == "closed") &&
+		lease.Attachment.Mode == mode && sshNetworkAddressesMatch(mode, lease.Attachment.Address, lease.Attachment.GuestAddress)
+}
+
+func sshNetworkAddressesMatch(mode string, privateIP, guestIP netip.Addr) bool {
+	if !privateIP.Is4() || !guestIP.Is4() || !privateIP.IsPrivate() || !guestIP.IsPrivate() {
+		return false
+	}
+	return mode == rt.NativeNetwork && privateIP == guestIP || mode == rt.FixedInternalNetwork && privateIP != guestIP
 }
 
 // The Worker reserves the first usable address for its router. Requiring its

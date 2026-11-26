@@ -22,6 +22,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/customsmolvm"
+	"sandbox-platform/internal/runtime/workerclient"
 	"sandbox-platform/internal/snapshots"
 )
 
@@ -238,5 +239,38 @@ func TestManagedSSHRouterPrefixUsesExactWorkerNetwork(t *testing.T) {
 	route.PrivateNetworks = []customsmolvm.PrivateNetwork{target, target}
 	if sshRouterPrefix([]customsmolvm.Route{route}, binding, socket, launch, target.ID, guest).IsValid() {
 		t.Fatal("accepted ambiguous network ID")
+	}
+}
+
+func TestManagedSSHRouterLeaseDuringStandby(t *testing.T) {
+	routed := netip.MustParseAddr("10.40.0.20")
+	guest := netip.MustParseAddr("192.168.100.2")
+	lease := workerclient.NetworkLease{State: "attached", Gate: "closed"}
+	lease.Attachment.Address = routed
+	lease.Attachment.GuestAddress = routed
+	lease.Attachment.Mode = rt.NativeNetwork
+	if !sshRouterLeaseVerified(lease, rt.NativeNetwork) {
+		t.Fatal("standby's attached closed gate lost its router evidence")
+	}
+	lease.Attachment.GuestAddress = guest
+	lease.Attachment.Mode = rt.FixedInternalNetwork
+	if !sshRouterLeaseVerified(lease, rt.FixedInternalNetwork) || sshRouterLeaseVerified(lease, rt.NativeNetwork) {
+		t.Fatal("fixed internal lease accepted under the wrong profile")
+	}
+	for _, transient := range []struct{ state, gate string }{
+		{"quarantined", "closed"}, {"offered", "closed"}, {"retired", "open"},
+		{"attached", "opening"}, {"attached", "unknown"},
+	} {
+		lease.State, lease.Gate = transient.state, transient.gate
+		if sshRouterLeaseVerified(lease, rt.FixedInternalNetwork) {
+			t.Fatalf("accepted unverified lease %s/%s", lease.State, lease.Gate)
+		}
+	}
+	if !sshNetworkAddressesMatch(rt.NativeNetwork, routed, routed) ||
+		!sshNetworkAddressesMatch(rt.FixedInternalNetwork, routed, guest) ||
+		sshNetworkAddressesMatch(rt.FixedInternalNetwork, routed, routed) ||
+		sshNetworkAddressesMatch(rt.NativeNetwork, routed, guest) ||
+		sshNetworkAddressesMatch(rt.FixedInternalNetwork, routed, netip.Addr{}) {
+		t.Fatal("invalid saved attachment address evidence")
 	}
 }
