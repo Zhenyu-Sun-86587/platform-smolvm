@@ -2,6 +2,18 @@
 
 独立候选分支为 `feat/kernel-cow-runtime`。当前候选把内核 CoW 接入 libkrun 的 held capture 和 VMM builder，完成了隔离环境里的双 VMM 验证。smolvm 候选固定了 libkrun 提交。Worker 生产请求、CLI 和 WebUI 尚无 kernel CoW 入口，产品 Native Live Fork 仍用既有路径。
 
+## 跨 UID 启动候选
+
+Linux 测试配置 `f68cfa91e953` 构建了 `6.18.65-smolvm-cow-worker`，新增 seccomp 过滤。libkrun `c13c9c5e13a8` 提供 Worker 私有入口，在同一目标进程里用持有的源 pidfd 导入，关闭 pidfd、清除能力并永久切换 UID/GID，然后由正常 VMM 构建读取已导入的内存。源侧的私有控制出口只传绑定到当前暂停会话的区域列表与 checkpoint，源在导入确认前保持 held。smolvm `e2b6066ddf63` 固定这个 libkrun 候选。
+
+使用真实 KVM 的跨 UID 用例通过。源 UID 为 20101，普通目标 UID 为 20102。普通目标的导入受内核权限拒绝，授权启动阶段导入成功，无效源描述符也会完成降权和关闭描述符。目标的有效、许可、可继承和 ambient 能力全部清零。之后 seccomp 拒绝私有 CoW syscall，目标仍能创建 KVM、完成身份激活和运行。源退出后首次冷读与写隔离通过，内核 taint 和测试退出码均为 0。日志在 `.build/kernel-cow-worker/kvm-worker-serial.log`，镜像与用例哈希在同目录的 `kvm-worker-inputs.sha256`。私有 ABI 已通过共享库构建、符号核对和错误输入描述符回收测试，记录在 `runtime-final-build.log`。
+
+复验使用 libkrun 的 `src/vmm/examples/boot_kernel_cow_worker.sh <bzImage> <kernel_cow_kvm> <serial-log>`。在专用 KVM 环境依次取得 `heavy.lock` 与 `worker-lab.lock`。测试 bundle 为 `.build/kernel-cow-worker/smolvm-kernel-worker-lab.tar.gz`，包内各项 SHA-256 已解包核对。
+
+同一个 `worker` 内核还通过了独立 KVM 套件 6/6，记录在 `k1-kvm-worker-serial.log`。常规内核上的候选回归为 VMM 176 项通过、7 项忽略，libkrun 27 项通过，记录在 `native-regression.log`。各日志路径相对于上面的 `.build/kernel-cow-worker`。
+
+## 初始 held VMM 候选
+
 | 层 | 固定版本 |
 | --- | --- |
 | 独立 Linux 测试内核 | `feat/kernel-cow-v1@8d181b563459`，`6.18.65-smolvm-cow-extended` |
@@ -27,9 +39,17 @@
 
 ## 产品接入剩余门槛
 
-1. Worker 和 resourced 需要通过当前执行身份授权同一次 held cut，交付 pidfd、固定布局与 checkpoint。当前 managed 路径在 smolvm 的 `src/runtime_ext/managed.rs::boot` 中先降权，随后才获取 Native RAM 和装配 libkrun。目标需要在该最终 VMM exec 后、降权前完成 import，然后关闭 pidfd，清除权限，安装最终 sandbox，在同一进程启动新 KVM。用两个实际隔离 UID 验证授权失败、导入成功后的权限清理，以及 seccomp 下的拒绝行为。
+1. resourced 需要通过当前执行身份授权同一次 held cut，交付 pidfd、固定布局与 checkpoint，并在目标确认后收尾。当前 managed 路径在 smolvm 的 `src/runtime_ext/managed.rs::boot` 中先降权，随后才获取 Native RAM 和装配 libkrun。私有 libkrun ABI 已能在最终 VMM 进程降权前完成导入，仍需由该启动路径消费绑定到源执行与目标操作的一次性授权。现有 Native 请求继续使用原来的路径。
 2. 用真实 managed 磁盘、卷和网络 Guest 验证相同捕获点的盘切层、活跃设备线程写入隔离、Guest 身份和网络入口。当前 VMM 实验带真实 VMM 设备与 Gate，Guest 是无磁盘与网络的最小程序。
 3. 在 resourced 注册可重连的只读 anchor，绑定捕获 ID、执行身份和引用计数，再验同点批次/重试、anchor 丢失、祖先删除、生命周期。持久导出、Hibernate/Restore 和 Standby 要跑原计划 C07–C10。
 4. 完成 C11–C12 的产品选择、正式 Worker capability、旧内核回退、Bundle 兼容和三组性能验证之后，再开放 `kernel_cow` 选择。实际合入产品候选还需要记录同一 Kernel/Runtime Bundle 的完整端到端验收。
 
-Linux 补丁仓库、现有 Worker 启动内核和部署版本均维持各自状态。本次测试只启动了隔离 L1，候选提交保存在本地。
+内核补丁基线与现有 Worker 启动内核没有改变。新测试配置、Runtime 和本报告均在本地候选分支。测试只启动了隔离 Worker。
+
+## Worker 安装和切换语义
+
+需要切换的是运行 KVM 的 Worker。Worker 跑在 PVE 虚拟机里时，通过这台虚拟机的引导器加载补丁内核。Worker 内的业务 Guest 继续使用各自的内核。启用 CoW 前，已有 Guest 需要通过配套 Runtime 内存配置重新启动或恢复。
+
+自托管阶段沿用 Boxd 的部署顺序。Boxd 对已有 KVM 主机通过 SSH 检查 sudo 和 `/dev/kvm`，验证发布包，由 Ansible 安装 Worker 内核、设置 GRUB 并重启，随后确认 Worker 注册。GKE 文档另提供 stock 内核选项，保留可用的 Fork 路径。[Boxd 安装流程](https://github.com/boxd-sh/self-host/blob/main/docs/INSTALL.md#install-on-bare-metal) · [Boxd 内核选项](https://github.com/boxd-sh/self-host/blob/main/docs/REFERENCE.md#host-kernel-and-secure-boot)
+
+smolvm 发布时应配对固定内核与 Runtime Bundle，保留旧启动项，先在专用 PVE Worker 上重启验 KVM、CoW ABI 和产品 Fork，然后再接收工作负载。常规内核继续提供 Native。当前 `worker` 构建配置用于串口和临时 initramfs 验收，发行版内核包、签名、GRUB 安装和实际回滚都还需要验证。
