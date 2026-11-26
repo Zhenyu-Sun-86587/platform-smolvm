@@ -9,7 +9,7 @@ import type { BootMode, Machine, MachineMetrics, Operation, Page, SystemMetrics 
 import { fixtureScene, metricAvailability, metricNumber } from "./api"
 import { Callout, label, machinePowerState, segment, time, useRemote } from "./common"
 import { terminalHref } from "./routes"
-import { ConnectDialog, WorkspaceActions } from "./workspace-actions"
+import { ConnectDialog, hasManagedSSH, WorkspaceActions } from "./workspace-actions"
 import { Button, EmptyState, PageHeader, StatusBadge } from "./ui"
 import { CreateMachineDialog } from "./features/machines/CreateMachineDialog"
 import { DocumentationLink } from "./features/catalog/DocumentationLink"
@@ -208,12 +208,14 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
   onSearch?: () => void; username?: string
 }) {
   const dialog = useCreate(create)
-  const [connect, setConnect] = useState(false)
+  const [connectID, setConnectID] = useState<string>()
   const ops = useRemote<Page<Operation>>("operations?limit=4", revision)
   const metrics = useRemote<SystemMetrics>("system/metrics", revision)
   const machines = rows ?? []
   const running = machines.find(machine => machinePowerState(machine) === "running" &&
     (machine.health?.guest_management ?? machine.guest_management_status) === "ready")
+  const sshMachine = fixtureScene === "45" ? running : machines.find(hasManagedSSH)
+  const connect = machines.find(machine => machine.machine_id === connectID)
   const allocation = machines.reduce((total, machine) => {
     const r = machine.resources ?? machine.spec?.resources
     if (!r) return total
@@ -239,7 +241,7 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
       {onSearch && <button type="button" className={dashboard.command} onClick={onSearch}><Search size={16} /><span>Search your workspace</span><kbd>Ctrl B</kbd></button>}
       <div className={dashboard.shortcuts}>
         <Button size="sm" variant="secondary" onClick={dialog.show}><Plus size={14} /> New machine</Button>
-        {running && fixtureScene === "45" && <Button size="sm" onClick={() => setConnect(true)}><Smartphone size={14} /> SSH app · {running.name}</Button>}
+        {sshMachine && <Button size="sm" onClick={() => setConnectID(sshMachine.machine_id)}><Smartphone size={14} /> {fixtureScene === "45" ? "SSH app" : "SSH"} · {sshMachine.name}</Button>}
         {running && <a href={terminalHref(running.machine_id)}><Terminal size={14} /> Web terminal · {running.name}</a>}
         <a href="#/machines"><Server size={14} /> All machines</a>
         <a href="#/snapshots"><Layers3 size={14} /> Snapshots</a>
@@ -288,6 +290,6 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
       </section>
     </div>}
     {dialog.open && <CreateMachineDialog actions={actions} revision={revision} defaultBoot={defaultBoot} close={dialog.close} />}
-    {running && connect && <ConnectDialog machine={running} actions={actions} open={connect} onOpenChange={setConnect} />}
+    {connect && <ConnectDialog machine={connect} actions={actions} open onOpenChange={open => { if (!open) setConnectID(undefined) }} />}
   </div>
 }

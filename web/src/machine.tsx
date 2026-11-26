@@ -5,6 +5,7 @@ import type { Actions } from "./main"
 import { api, argv, bundleBound, Callout, Details, download, fullStateBlock, label, machinePowerState, networkModes, num, Section, segment, State, str, time, useRemote } from "./common"
 import { Cpu, HardDrive, MemoryStick, Moon, Layers3, Ellipsis, Globe2, Pencil } from "lucide-react"
 import styles from "./features/machine/detail.module.css"
+import { MachineWebAddress, PreviewButton } from "./features/machine/MachineWebAddress"
 import { ResourceUsage } from "./features/machine/ResourceUsage"
 import { WorkspaceGuide } from "./features/machine/WorkspaceGuide"
 import { Files } from "./features/files/FileBrowser"
@@ -16,7 +17,7 @@ import { currentServiceObservation, fixtureScene, useCollection } from "./api"
 import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
 import { policyFields, policyOverrides } from "./lifecycle-policy"
-import { hasVerifiedSSHHostKey, powerDialog, WorkspaceActions } from "./workspace-actions"
+import { hasManagedSSH, hasVerifiedSSHHostKey, powerDialog, WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
 const Desktop = lazy(() => import("./Desktop"))
@@ -43,7 +44,7 @@ function FeatureStatus({ reason }: { reason?: string }) {
   return reason ? <p className="feature-status" role="status">{reason}</p> : null
 }
 
-export function MachineView({ tab, ...context }: Context & { tab: string }) {
+export function MachineView({ tab, openWeb, ...context }: Context & { tab: string; openWeb?: boolean }) {
   const { machine, actions } = context
   const base = machineHref(machine.machine_id)
   const current = aliases[tab] ?? tab
@@ -90,7 +91,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
         : selected === "terminal" ? <Execs {...context} />
         : selected === "automations" ? <><Tasks {...context} initialTask={location.hash.split("/")[4]} /><details className={styles.more}><summary>Automatic machine lifecycle</summary><Activity {...context} policyOnly /></details></>
         : selected === "files" ? <Files {...context} />
-        : selected === "networking" ? <Services {...context} />
+        : selected === "networking" ? <Services {...context} openWeb={openWeb} />
         : selected === "forks" ? <Branches {...context} />
         : selected === "checkpoints" ? <Snapshots {...context} />
         : selected === "backups" ? <Backups />
@@ -450,34 +451,11 @@ export function ServiceStatus({ item, machine }: { item: Service; machine?: Mach
   </div>
 }
 
-export function Services({ machine, actions, revision }: Context) {
+export function Services({ machine, actions, revision, openWeb }: Context & { openWeb?: boolean }) {
   const path = machinePath(machine.machine_id) + "/services"
   const list = useCollection<Service>(path, revision)
   const network = useRemote<MachineNetwork>(machine.network ? machinePath(machine.machine_id) + "/network" : "", revision)
   const [error, setError] = useState<unknown>()
-  const preview = async (item: Service) => {
-    try {
-      const response = await api.response(service(item.service_id) + "/preview-ticket", { method: "POST" })
-      const { action, ticket } = await response.json() as { action: string; ticket: string }
-      const target = new URL(action)
-      if (target.protocol !== "https:" || target.hostname !== item.public_host ||
-          target.pathname !== "/.sandbox/session" || target.username || target.password || target.search || target.hash || !ticket) {
-        throw new Error("The service preview returned an invalid destination.")
-      }
-      const form = document.createElement("form")
-      form.method = "POST"
-      form.action = action
-      form.target = "_blank"
-      form.rel = "noopener"
-      form.hidden = true
-      const input = document.createElement("input")
-      input.name = "ticket"
-      input.value = ticket
-      form.append(input)
-      document.body.append(form)
-      try { form.submit() } finally { form.remove() }
-    } catch (error) { setError(error) }
-  }
   const configure = (current?: Service, defaultProtocol: Service["protocol"] = "http") => actions.dialog({
     title: current ? "Edit service" : "Create service", submit: current ? "Save" : "Create",
     fields: [
@@ -519,8 +497,10 @@ export function Services({ machine, actions, revision }: Context) {
       </header>
       <p>{ssh ? <>Forwards SSH to Guest port <code>{ssh.guest_port}</code>.</>
         : list.items ? "No SSH service is published for this machine." : "SSH configuration is unavailable."}</p>
-      <p>Connect with sandboxctl and your configured SSH credentials.</p>
+      {hasManagedSSH(machine) ? <p>Managed SSH uses the private Worker network. Connect with <code>sandboxctl ssh {machine.machine_id}</code>.</p>
+        : ssh && <p>Connect using your enrolled Guest SSH key.</p>}
     </section>
+    <MachineWebAddress machine={machine} services={list.items} openWeb={openWeb} servicesError={list.error} />
     <section className={styles.networkGroup}>
       <header><h2 className={styles.sectionTitle}>Custom domains</h2><a href="#/domains">View service domains →</a></header>
       <p>{hosts?.length ? "Platform-managed hostnames are listed under Ports." :
@@ -533,7 +513,7 @@ export function Services({ machine, actions, revision }: Context) {
       const ssh = item.protocol === "ssh"
       const http = item.protocol === "http" || item.protocol === "https"
       const url = item.public_host && http ? `https://${item.public_host}${item.public_port ? ":" + item.public_port : ""}` : undefined
-      const connect = ssh ? `sandboxctl ${item.enabled !== false && hasVerifiedSSHHostKey(machine) ? "ssh" : "ssh-config"} ${machine.machine_id}` : url
+      const connect = ssh ? `sandboxctl ${item.enabled !== false && hasVerifiedSSHHostKey(machine) ? "ssh --legacy" : "ssh-config"} ${machine.machine_id}` : url
         ? `curl -H "Authorization: Bearer \$SANDBOX_TOKEN" "${url}"`
         : `sandboxctl port-forward ${item.service_id} --local-port 8080`
       return <div className={styles.port} key={item.service_id}>
@@ -543,7 +523,7 @@ export function Services({ machine, actions, revision }: Context) {
           <ServiceStatus item={item} machine={machine} />
         </div>
         <div className={styles.portActions}>
-          {url && <Button size="sm" variant="outline" disabled={item.enabled === false} onClick={() => void preview(item)}>Open preview ↗</Button>}
+          {url && <PreviewButton item={item} />}
           <Button size="sm" variant="outline" onClick={() => configure(item)}>Edit</Button>
           <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={"Actions for " + item.name}><Ellipsis /></Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">

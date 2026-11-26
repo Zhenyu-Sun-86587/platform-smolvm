@@ -311,7 +311,7 @@ function App() {
         <Callout error={match.error} />
         {!match.data && !match.error && <Skeleton className="h-24" />}
         {at.page === "machine" && match.data &&
-          <MachineView key={match.data.machine_id} machine={match.data} tab={at.tab} actions={actions} revision={revision} />}
+          <MachineView key={match.data.machine_id} machine={match.data} tab={at.tab} openWeb={at.openWeb} actions={actions} revision={revision} />}
       </DetailDrawer>
       {dialog}
     </>}
