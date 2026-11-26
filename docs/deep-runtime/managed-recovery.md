@@ -31,3 +31,11 @@ System 另行验证。带 Agent 的 System 镜像使用 vsock，开发 Bundle �
 | Task 唤醒 | 公开任务从 Hibernated 唤醒后在 epoch 2 运行，输出可读，取消获得终态回执。随后从 Standby 提交另一任务，仍在同一执行和 epoch 2 完成。 |
 
 复现入口为 `tests/integration/managed_system_vsock.py` 的 `task-adoption`、`task-restore` 与 `task-wake`。原始记录在 `.build/wp23/tracked-native-task-adoption-kvm.log` 和 `.build/wp23/tracked-public-task-wake-kvm.log`。这些测试验证了源 VMM 退出。公开 Delete 的结果在 A18 单列。
+
+## 同一批次内取消、重试与父机删除
+
+公开 Fork Batch 在已安装的 `86dae32` 上接受运行中取消。一个子机已经提交时，操作保留了该子机及其独立资源，只终止仍待发布的目标。平台重启后，原创建键与取消键均返回已记录的批次；源机和成功子机分别从根盘读回了捕获的标记。记录为 `.build/wp23/public-fork-cancel-kvm.log`。
+
+使用开发 Worker `1f7a35c` 的同一批次实验先启动真实持久任务，关闭普通 Guest Agent，随后让三个子机分别进入已提交、待发布和已失败状态。公开取消保留前一个成功子和原失败原因。父机经 Stop、Delete 确认退出并回收私有盘后，公开 retry 只重试失败子。重试保留 capture 与三个机器 ID，已取消的目标持续受围栏。新目标随后在自己的任务命名空间认领原 run，其 PID 627 返回捕获前的随机标记和子机收到的回复。夹具为 `tests/integration/managed_system_vsock.py --case task-fork-cancel-retry`，记录为 `.build/wp23/public-fork-cancel-retry-delete-kvm-v2.log`。
+
+Chromium 使用常规 Tasks 页，在原本没有 `/workspace` 的 Debian 镜像上从表单启动任务。页面显示了真实工作目录和随机输出。取消该任务时，输出窗口一直读到末尾。记录为 `.build/wp23/public-task-ui-kvm-v2.log`。

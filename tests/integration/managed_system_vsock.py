@@ -340,34 +340,52 @@ def agent_unavailable(platform, execution):
     return False
 
 
-def cancel_partial_fork(platform, source, ref):
+def hold_fork_targets(catalog, op_id, handles, include_failed):
+    actions = {1: signal.SIGSTOP}
+    if include_failed:
+        actions[2] = signal.SIGKILL
+    until = time.monotonic() + 45
+    pending = None
+    while actions and time.monotonic() < until:
+        targets = catalog.execute("""SELECT c.ordinal,e.pid,e.pid_start_time FROM managed_fork_children c
+            JOIN executions e ON e.last_operation_id=c.operation_id
+            WHERE c.batch_id=? AND c.ordinal IN (1,2) AND e.phase!='exited' AND NOT EXISTS (
+            SELECT 1 FROM target_activations a WHERE a.operation_id=c.operation_id AND a.decision='commit')""", (op_id,)).fetchall()
+        for ordinal, pid, start in targets:
+            if ordinal not in actions:
+                continue
+            subject = handles.enter_context(os.fdopen(os.pidfd_open(pid), "rb", buffering=0))
+            assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == start
+            signal.pidfd_send_signal(subject.fileno(), actions.pop(ordinal))
+            if ordinal == 1:
+                pending = subject
+        if actions:
+            time.sleep(0.005)
+    if actions:
+        raise TimeoutError(f"fork targets not observed before commit: {sorted(actions)}")
+    return pending
+
+
+def cancel_partial_fork(platform, source, ref, retry_after_parent_delete=False):
     marker = os.urandom(16).hex()
-    platform.guest(ref, ["/usr/bin/tee", "/var/tmp/fork-cancel-marker"], marker)
+    if not retry_after_parent_delete:
+        platform.guest(ref, ["/usr/bin/tee", "/var/tmp/fork-cancel-marker"], marker)
     view = platform.wait_capability(source, "state.fork_batch")
     path = source + "/fork-batches"
     body = dict(children=[dict(name="Keep committed child"), dict(name="Cancel pending child")], require_independent=True)
+    if retry_after_parent_delete:
+        body["children"].append(dict(name="Retry failed child"))
     accepted = platform.change(path, "fork-to-cancel", body, view)
     op_id = accepted["operation_id"]
     operation = "operations/" + op_id
     with sqlite3.connect(f"file:{platform.root}/catalog/catalog.sqlite?mode=ro", uri=True) as db:
-        until = time.monotonic() + 45
-        while time.monotonic() < until:
-            target = db.execute("""SELECT e.pid,e.pid_start_time FROM managed_fork_children c
-                JOIN executions e ON e.last_operation_id=c.operation_id
-                WHERE c.batch_id=? AND c.ordinal=1 AND e.phase!='exited' AND NOT EXISTS (
-                SELECT 1 FROM target_activations a WHERE a.operation_id=c.operation_id AND a.decision='commit')""", (op_id,)).fetchone()
-            if target:
-                break
-            time.sleep(0.005)
-        else:
-            raise TimeoutError("second fork target did not reach registration before its commit")
-        pid, start = target
-        with os.fdopen(os.pidfd_open(pid), "rb", buffering=0) as pending:
-            assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == start
-            signal.pidfd_send_signal(pending.fileno(), signal.SIGSTOP)
+        with ExitStack() as handles:
+            pending = hold_fork_targets(db, op_id, handles, retry_after_parent_delete)
             try:
                 def committed_child():
                     current = platform.app(operation)
+                    if retry_after_parent_delete and current["children"][2].get("error_code") != "NATIVE_CHILD_ABORTED":
+                        return None
                     return current if current["children"][0]["state"] == "ready" else None
                 partial = wait_for(committed_child, timeout=40)
                 assert partial["state"] == "observing" and partial["effect"] == "partial", partial
@@ -390,6 +408,23 @@ def cancel_partial_fork(platform, source, ref):
         assert final["children"][1]["machine_id"] == accepted["children"][1]["machine_id"]
         assert platform.change(path, "fork-to-cancel", body, view)["operation_id"] == op_id
         assert db.execute("SELECT count(*) FROM managed_fork_batches WHERE capture_id=?", (capture,)).fetchone() == (1,)
+    if retry_after_parent_delete:
+        assert final["children"][2]["error_code"] == "NATIVE_CHILD_ABORTED", final
+        assert agent_unavailable(platform, ref)
+        retire_task_parent(platform, source, ref)
+        headers = {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "retry-failed-fork", "If-Match": f'"{final["revision"]}"'}
+        retry = platform.app(operation + "/retry", "POST", {}, headers, 202)
+        assert platform.change(operation + "/cancel", "cancel-pending-fork", {}, status=200) == requested
+        recovered = platform.complete(retry)
+        assert recovered["result"]["capture_id"] == capture and recovered["effect"] == "partial", recovered
+        assert recovered["children"][:2] == final["children"][:2], recovered
+        third = recovered["children"][2]
+        assert third["state"] == "ready" and third["attempt"] == 1 and third["machine_id"] == final["children"][2]["machine_id"], third
+        assert platform.app(operation + "/retry", "POST", {}, headers, 202) == retry
+        print(f"In cut {capture}, public cancellation preserved one ready and one already failed target. "
+              f"After public parent deletion, the sole failed target {third['machine_id']} became ready on attempt 1; "
+              "the original cancelled target stayed fenced.", flush=True)
+        return third["machine_id"]
     _, child_ref = platform.context(first["machine_id"])
     assert platform.guest(child_ref, ["/bin/cat", "/var/tmp/fork-cancel-marker"]).decode() == marker
     assert platform.guest(ref, ["/bin/cat", "/var/tmp/fork-cancel-marker"]).decode() == marker
@@ -500,6 +535,10 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
         target = platform.complete(platform.change("restores", "restore-task", dict(snapshot_id=saved["result"]["snapshot_id"],
             name="Restored task", volume_restore_policy="clone_conflicts")))
         target_id = target["machine_id"]
+    elif case == "task-fork-cancel-retry":
+        platform.wait_capability(source, "state.fork_batch")
+        stop_agent_for_capture(platform, ref)
+        target_id = cancel_partial_fork(platform, source, ref, retry_after_parent_delete=True)
     else:
         wait_for(lambda: platform.app(source)["capabilities"]["state.fork_batch"]["status"] == "supported")
         stop_agent_for_capture(platform, ref)
@@ -524,7 +563,7 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
         assert platform.app("machines/" + target_id + "/tasks")["items"] == []
     if case == "task-adoption-delete":
         retire_task_parent(platform, source, ref)
-    else:
+    elif case != "task-fork-cancel-retry":
         vm = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
         with os.fdopen(os.pidfd_open(vm["pid"]), "rb", buffering=0) as original_vmm:
             assert int(Path(f"/proc/{vm['pid']}/stat").read_text().rsplit(")", 1)[1].split()[19]) == vm["pid_start_time"]
@@ -1296,7 +1335,7 @@ def policy_case(platform, source, machine_id, execution):
 
 def test(args, root, stack, case):
     retirement = case == "task-adoption-delete"
-    if case in ("task-adoption", "task-adoption-delete"):
+    if case in ("task-adoption", "task-adoption-delete", "task-fork-cancel-retry"):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
@@ -1306,6 +1345,8 @@ def test(args, root, stack, case):
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
     )
+    if case == "task-fork-cancel-retry":
+        intent["resources"] = dict(cpu_count=1, memory_mib=512)
     if case == "live-resources-hot":
         intent.update(live_compute_growth=True, resources=dict(cpu_count=1, memory_mib=512))
     if packet_case:
@@ -1331,7 +1372,7 @@ def test(args, root, stack, case):
         return
     if retirement:
         platform.guest(ref, ["/bin/sh", "-ec", "printf persistent-before-delete | dd of=/dev/vdb bs=1 status=none"])
-    if case in ("task-adoption", "task-adoption-delete", "task-restore"):
+    if case in ("task-adoption", "task-adoption-delete", "task-restore", "task-fork-cancel-retry"):
         native_task_case(platform, source, ref, case, volume)
         return
     if case == "task-wake":
@@ -1391,7 +1432,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "task-fork-cancel-retry"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
