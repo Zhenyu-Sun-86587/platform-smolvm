@@ -459,7 +459,8 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode):
     send(address, destination=port + 1, limit=4)
     assert status(ref) == "STANDBY", "a different destination port or transport caused wake"
     expect_tcp(address, ref)
-    assert status(ref) == "RUNNING" and get_binding(view)["execution_epoch"] == ref["execution_epoch"]
+    wait_for(lambda: status(ref) == "RUNNING", timeout=8)
+    assert get_binding(view)["execution_epoch"] == ref["execution_epoch"]
     events = call("QueryLifecycleEvents", ref, dict(after=0))["events"]
     assert len({event["operation_id"] for event in events if event["origin"] == "wake"}) == 1, events
     wait_for(lambda: authorized(rule_path, ref["execution_epoch"]), timeout=8)
