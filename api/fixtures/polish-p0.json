@@ -34,7 +34,7 @@
   },
   "capture": {
     "verified":{"capture_mode":"vm","configuration":{"status":"verified","schema_version":1,"source_machine_revision":9,"capture_id":"capture_1","manifest_digest":"sha256:fixture","template_id":"template_1","spec":{"boot_mode":"system","resources":{"cpu_count":2,"memory_mib":1024}}},"ram":"included","disks":[{"role":"root"},{"role":"data","volume_id":"vol_1","generation_id":"gen_1","read_only":false}],"restore_policies":["exact","clone_conflicts"]},
-    "historical":{"capture_mode":"vm","configuration":{"status":"unknown","reason_code":"CAPTURE_CONFIGURATION_UNRECORDED"},"ram":"unknown"},
+    "historical":{"capture_mode":"vm","configuration":{"status":"unknown","reason_code":"CAPTURE_CONFIGURATION_NOT_RECORDED"},"ram":"unknown"},
     "restore_result":{"volume_map":{"vol_1":"vol_clone_1"}}
   },
   "services": {
@@ -53,7 +53,7 @@
   "lifecycle": {
     "inherited":{"source":"default","desired_revision":1,"applied_revision":1,"default_revision":1,"effective_status":"applied"},
     "pending_override":{"source":"override","desired_revision":3,"applied_revision":2,"default_revision":1,"effective_status":"pending","overrides":{"auto_hibernate":true}},
-    "protected":{"supported":true,"effective_status":"blocked","effective_blockers":["lease:Waiting for model response"],"worker":{"power":"RUNNING","blockers":["lease:Waiting for model response"],"controlled_suspended":false,"collectors":{"connection":{"session":"collector_1","seq":2,"fresh":false}}}},
+    "protected":{"supported":true,"effective_status":"blocked","effective_blockers":["lease:Waiting for model response"],"worker":{"power":"RUNNING","blockers":["lease:Waiting for model response"],"controlled_suspended":false,"collectors":{"platform":{"session":"collector_1","seq":2,"fresh":false}}}},
     "lease":{"lease_id":"lease_1","machine_id":"machine_1","principal_id":"principal_1","binding_generation":4,"semantics_version":2,"execution_epoch":3,"state":"active","revision":1,"reason":"Waiting for model response","expires_at":"2026-11-26T00:05:00Z"}
   }
 }

@@ -288,6 +288,48 @@ export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_condition
     wake_conditions?: Partial<WakeConditions>;
     activity?: Partial<LifecyclePolicy["activity"]>;
 };
+export interface LifecycleWorkerStatus {
+    power: string;
+    blockers: string[];
+    controlled_suspended: boolean;
+    idle_ms?: number | null;
+    next_action?: {
+        kind: string;
+        origin: string;
+        eligible_after_ms: number;
+    } | null;
+    collectors: Record<string, {
+        fresh: boolean;
+        session: string;
+        seq: number;
+    }>;
+    last_decision?: {
+        operation_id: string;
+        kind: string;
+        origin: string;
+        stage: string;
+        error?: string | null;
+        start_worker_memory_bytes?: number | null;
+        end_worker_memory_bytes?: number | null;
+        created_at_ms?: number;
+        finished_at_ms?: number | null;
+    } | null;
+    pressure?: {
+        admission_throttled: boolean;
+        sample?: Record<string, unknown> | null;
+        last_balloon?: Record<string, unknown> | null;
+    } | null;
+    instance_id?: string;
+    incarnation_id?: string | null;
+    execution_epoch?: number;
+    statepoint?: string | null;
+    collector_generation?: string;
+    activity_seq?: number;
+    binding_revision?: number;
+    applied_revision?: number;
+    effective_policy?: LifecyclePolicy;
+    first_launch_supported?: boolean;
+}
 export interface LifecycleStatus {
     supported: boolean;
     operation_id?: string;
@@ -301,23 +343,7 @@ export interface LifecycleStatus {
     applied?: LifecyclePolicy;
     last_error?: string;
     overrides?: LifecyclePolicyPatch;
-    worker?: {
-        power: string;
-        blockers: string[];
-        idle_ms?: number;
-        controlled_suspended: boolean;
-        next_action?: {
-            kind: string;
-            origin: string;
-            eligible_after_ms: number;
-        } | null;
-        last_decision?: {
-            operation_id: string;
-            kind: string;
-            stage: string;
-        };
-        collectors: Record<string, unknown>;
-    };
+    worker?: LifecycleWorkerStatus;
 }
 export interface PolicyApplication {
     application_id: string;
@@ -486,12 +512,17 @@ export interface CaptureConfiguration {
     capture_id?: string;
     manifest_digest?: string;
     template_id?: string;
+    source?: string;
+    spec_digest?: string;
     spec?: {
+        template_id?: string;
         boot_mode?: BootMode;
-        resources?: Resources;
-        network?: NetworkSelection;
+        resources?: ResourcePatch;
         live_compute_growth?: boolean;
-        desktop_profile?: string;
+        network?: NetworkSelection & {
+            route_domain_id?: string;
+            cidr?: string;
+        };
     };
     reason_code?: string;
 }
@@ -499,12 +530,16 @@ export interface CaptureSummary {
     capture_mode: CaptureMode;
     configuration: CaptureConfiguration;
     ram: "included" | "excluded" | "unknown";
+    ram_bytes?: number;
     disks?: {
         role: string;
+        device_id?: string;
         volume_id?: string;
         generation_id?: string;
         read_only?: boolean;
+        capacity_bytes?: number;
     }[];
+    verified_at?: string;
     restore_policies?: VolumeRestorePolicy[];
     reason_code?: string;
 }
@@ -704,6 +739,11 @@ export declare class Client {
     socket<T>(path: string, protocol: string, connect: (url: URL, protocol: string, headers: Headers) => T): T;
     createMachine(spec: CreateMachine, options?: WriteOptions): Promise<Operation>;
     getMachine(id: string, signal?: AbortSignal): Promise<Machine>;
+    getMachineMetrics(id: string, signal?: AbortSignal): Promise<MachineMetrics>;
+    getSystemMetrics(signal?: AbortSignal): Promise<SystemMetrics>;
+    listFiles(id: string, path?: string, signal?: AbortSignal): AsyncGenerator<GuestFileEntry, any, any>;
+    downloadFile(id: string, path: string, signal?: AbortSignal): Promise<Response>;
+    uploadFile(id: string, path: string, data: Blob, options?: Omit<WriteOptions, "method">): Promise<GuestFileUpload>;
     getMachineResources(id: string, signal?: AbortSignal): Promise<MachineResourceStatus>;
     configureResources(id: string, resources: ResourcePatch, options?: MachineWriteOptions): Promise<Operation>;
     listPrivateNetworks(signal?: AbortSignal): AsyncGenerator<PrivateNetwork, any, any>;
@@ -724,6 +764,7 @@ export declare class Client {
         machine_id: string;
         expected_revision: number;
     }[], options?: WriteOptions): Promise<PolicyApplication>;
+    listRunningLeases(id: string, signal?: AbortSignal): AsyncGenerator<RunningLease, any, any>;
     acquireRunningLease(id: string, reason: string, ttlSeconds: number, options?: WriteOptions): Promise<RunningLease>;
     renewRunningLease(lease: RunningLease, ttlSeconds: number, options?: WriteOptions): Promise<{
         lease_token: string;
@@ -750,11 +791,13 @@ export declare class Client {
     runBackup(policy: string, options?: WriteOptions): Promise<BackupRun>;
     retryForkTargets(id: string, options?: WriteOptions): Promise<Operation>;
     cancelOperation(id: string, options?: WriteOptions): Promise<Operation>;
+    listServices(id: string, signal?: AbortSignal): AsyncGenerator<Service, any, any>;
     getService(id: string, signal?: AbortSignal): Promise<Service>;
     listDesktopSessions(id: string, signal?: AbortSignal): AsyncGenerator<DesktopSession, any, any>;
     createDesktopSession(id: string, serviceId: string, ttlSeconds?: number, options?: MachineWriteOptions): Promise<DesktopSession>;
     closeDesktopSession(id: string, options?: WriteOptions): Promise<DesktopSession>;
     desktopSocket(id: string, signal?: AbortSignal): Promise<WebSocket>;
+    listSnapshots(id?: string, signal?: AbortSignal): AsyncGenerator<Snapshot, any, any>;
     getSnapshot(id: string, signal?: AbortSignal): Promise<Snapshot>;
     listMachines(signal?: AbortSignal): AsyncGenerator<Machine, any, any>;
     listVolumes(signal?: AbortSignal): AsyncGenerator<Volume, any, any>;

@@ -166,6 +166,23 @@ export interface LifecyclePolicy {
 export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_conditions" | "activity">> & {
   wake_conditions?: Partial<WakeConditions>; activity?: Partial<LifecyclePolicy["activity"]>
 }
+export interface LifecycleWorkerStatus {
+  power: string
+  blockers: string[]
+  controlled_suspended: boolean
+  idle_ms?: number | null
+  next_action?: { kind: string; origin: string; eligible_after_ms: number } | null
+  collectors: Record<string, { fresh: boolean; session: string; seq: number }>
+  last_decision?: {
+    operation_id: string; kind: string; origin: string; stage: string; error?: string | null
+    start_worker_memory_bytes?: number | null; end_worker_memory_bytes?: number | null
+    created_at_ms?: number; finished_at_ms?: number | null
+  } | null
+  pressure?: { admission_throttled: boolean; sample?: Record<string, unknown> | null; last_balloon?: Record<string, unknown> | null } | null
+  instance_id?: string; incarnation_id?: string | null; execution_epoch?: number
+  statepoint?: string | null; collector_generation?: string; activity_seq?: number
+  binding_revision?: number; applied_revision?: number; effective_policy?: LifecyclePolicy; first_launch_supported?: boolean
+}
 export interface LifecycleStatus {
   supported: boolean
   operation_id?: string
@@ -173,9 +190,7 @@ export interface LifecycleStatus {
   effective_blockers?: string[]
   desired_revision: number; applied_revision: number; default_revision: number; source: string
   desired: LifecyclePolicy; applied?: LifecyclePolicy; last_error?: string; overrides?: LifecyclePolicyPatch
-  worker?: { power: string; blockers: string[]; idle_ms?: number; controlled_suspended: boolean;
-    next_action?: { kind: string; origin: string; eligible_after_ms: number } | null;
-    last_decision?: { operation_id: string; kind: string; stage: string }; collectors: Record<string, unknown> }
+  worker?: LifecycleWorkerStatus
 }
 export interface PolicyApplication {
   application_id: string; default_policy_revision: number; complete: boolean; policy: LifecyclePolicy
@@ -302,14 +317,21 @@ export interface CaptureConfiguration {
   capture_id?: string
   manifest_digest?: string
   template_id?: string
-  spec?: { boot_mode?: BootMode; resources?: Resources; network?: NetworkSelection; live_compute_growth?: boolean; desktop_profile?: string }
+  source?: string
+  spec_digest?: string
+  spec?: {
+    template_id?: string; boot_mode?: BootMode; resources?: ResourcePatch; live_compute_growth?: boolean
+    network?: NetworkSelection & { route_domain_id?: string; cidr?: string }
+  }
   reason_code?: string
 }
 export interface CaptureSummary {
   capture_mode: CaptureMode
   configuration: CaptureConfiguration
   ram: "included" | "excluded" | "unknown"
-  disks?: { role: string; volume_id?: string; generation_id?: string; read_only?: boolean }[]
+  ram_bytes?: number
+  disks?: { role: string; device_id?: string; volume_id?: string; generation_id?: string; read_only?: boolean; capacity_bytes?: number }[]
+  verified_at?: string
   restore_policies?: VolumeRestorePolicy[]
   reason_code?: string
 }
@@ -661,6 +683,18 @@ export class Client {
 
   createMachine(spec: CreateMachine, options?: WriteOptions) { return this.mutate("machines", spec, options) }
   getMachine(id: string, signal?: AbortSignal) { return this.get<Machine>(machine(id), signal) }
+  getMachineMetrics(id: string, signal?: AbortSignal) { return this.get<MachineMetrics>(machine(id) + "/metrics", signal) }
+  getSystemMetrics(signal?: AbortSignal) { return this.get<SystemMetrics>("system/metrics", signal) }
+  listFiles(id: string, path?: string, signal?: AbortSignal) {
+    const endpoint = machine(id) + "/files/list"
+    return this.pages<GuestFileEntry>(path === undefined ? endpoint : withQuery(endpoint, { path }), 100, signal)
+  }
+  downloadFile(id: string, path: string, signal?: AbortSignal) {
+    return this.response(withQuery(machine(id) + "/files", { path }), { signal })
+  }
+  uploadFile(id: string, path: string, data: Blob, options: Omit<WriteOptions, "method"> = {}) {
+    return this.upload<GuestFileUpload>(withQuery(machine(id) + "/files", { path }), data, options)
+  }
   getMachineResources(id: string, signal?: AbortSignal) { return this.get<MachineResourceStatus>(machine(id) + "/resources", signal) }
   async configureResources(id: string, resources: ResourcePatch, options: MachineWriteOptions = {}) {
     let { revision, generation } = options
@@ -696,6 +730,9 @@ export class Client {
   }
   applyDefaultLifecyclePolicy(revision: number, machines: { machine_id: string; expected_revision: number }[], options?: WriteOptions) {
     return this.mutate<PolicyApplication>("lifecycle-policy-applications", { default_policy_revision: revision, machines }, options)
+  }
+  listRunningLeases(id: string, signal?: AbortSignal) {
+    return this.pages<RunningLease>(machine(id) + "/leases", 100, signal)
   }
   async acquireRunningLease(id: string, reason: string, ttlSeconds: number, options: WriteOptions = {}) {
     const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision
@@ -765,6 +802,9 @@ export class Client {
   cancelOperation(id: string, options: WriteOptions = {}) {
     return this.mutate<Operation>(operation(id) + "/cancel", {}, options)
   }
+  listServices(id: string, signal?: AbortSignal) {
+    return this.pages<Service>(machine(id) + "/services", 100, signal)
+  }
   getService(id: string, signal?: AbortSignal) { return this.get<Service>(service(id), signal) }
   listDesktopSessions(id: string, signal?: AbortSignal) {
     return this.pages<DesktopSession>(machine(id) + "/desktop-sessions", 100, signal)
@@ -781,6 +821,9 @@ export class Client {
   desktopSocket(id: string, signal?: AbortSignal) {
     const path = "desktop-sessions/" + segment(id)
     return this.browserSocket(path + "/tunnel", path + "/tunnel-tickets", "sandbox.rfb.v1", signal)
+  }
+  listSnapshots(id?: string, signal?: AbortSignal) {
+    return this.pages<Snapshot>(id ? machine(id) + "/snapshots" : "snapshots", 100, signal)
   }
   getSnapshot(id: string, signal?: AbortSignal) { return this.get<Snapshot>(snapshot(id), signal) }
   listMachines(signal?: AbortSignal) { return this.pages<Machine>("machines", 100, signal) }
