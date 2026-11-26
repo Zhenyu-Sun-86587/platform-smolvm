@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 
-from authorized_services_kvm import NETWORK, Platform, create_service, identity, machine, prepare_openssh, stop, tls_setup, token, witness, worker_get
+from authorized_services_kvm import NETWORK, Platform, create_service, identity, machine, prepare_openssh, tls_setup, token, witness, worker_get
 from managed_system_vsock import digest, wait_for
 
 
@@ -198,7 +198,6 @@ def revision_case(platform, keys, protocol):
                 revisions=[before["revision"], after["revision"]], guest_ports=list(PORTS),
                 revision_close_ms=revision_close_ms, credential_close_ms=revoke_close_ms,
                 surviving_frames=[uninterrupted, unaffected.position], business_receipts=dict(observed))
-    stop(platform, mid)
 
 
 def ssh_case(platform, keys):
@@ -263,7 +262,6 @@ def ssh_case(platform, keys):
     witness(platform, "ssh-revision", original=identity(original), restored=identity(current), service_id=sid,
             revisions=[before["revision"], after["revision"]], revision_close_ms=revision_close_ms,
             retired_vmm=inventory["execution"]["pid"], capture_id=capture, wake_operation_id=wake, guest_marker=marker)
-    stop(platform, mid)
 
 
 def main():
