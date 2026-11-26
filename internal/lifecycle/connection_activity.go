@@ -29,7 +29,7 @@ func (e *Engine) registerConnection(ctx context.Context, b registry.Binding, id,
 	return connection, err
 }
 
-func (a connectionActivity) end(ctx context.Context, client workerclient.LifecycleControl) error {
+func (a connectionActivity) end(ctx context.Context, client workerclient.LifecycleControl) (protectionReceipt, error) {
 	args := map[string]any{"protection_id": a.id, "principal": a.principal}
 	var ack protectionReceipt
 	err := client.Lifecycle(ctx, "CloseAccessProtection", a.id+"-end", a.execution, args, &ack)
@@ -38,30 +38,30 @@ func (a connectionActivity) end(ctx context.Context, client workerclient.Lifecyc
 		// A historical Worker supports revision-checked release. An unknown
 		// receipt stays in the journal until the original request is resolved.
 		if err = client.Lifecycle(ctx, "QueryProtection", "", a.execution, args, &ack); err != nil {
-			return err
+			return ack, err
 		}
 		if ack.State != "released" {
 			method := "ReleaseActivityHold"
 			if ack.Kind == "wake" {
 				method = "CancelWakeDemand"
 			} else if ack.Kind != "hold" {
-				return registry.ErrConflict
+				return ack, registry.ErrConflict
 			}
 			var current WorkerLifecycleStatus
 			if err = client.Lifecycle(ctx, "GetLifecycleStatus", "", a.execution, map[string]any{}, &current); err != nil {
-				return err
+				return ack, err
 			}
 			if current.Instance != a.execution.InstanceID {
-				return registry.ErrGeneration
+				return ack, registry.ErrGeneration
 			}
 			args["expected_revision"] = ack.Revision
 			err = client.Lifecycle(ctx, method, fmt.Sprintf("%s-end-%d", a.id, ack.Revision), current.Execution(), args, &ack)
 		}
 	}
 	if err == nil && (ack.ID != a.id || ack.State != "released") {
-		return registry.ErrConflict
+		return ack, registry.ErrConflict
 	}
-	return err
+	return ack, err
 }
 
 func (e *Engine) closeConnection(ctx context.Context, a connectionActivity, client workerclient.LifecycleControl) {
@@ -69,23 +69,19 @@ func (e *Engine) closeConnection(ctx context.Context, a connectionActivity, clie
 	if err != nil {
 		return
 	}
-	// Recover the durable WakeDemand linkage before the protection is closed.
-	// A failed query leaves its resource hold Unknown.
-	known, err := e.DB.HasAccessWakeDemand(ctx, a.id)
+	// Closing a protection returns the durable Worker linkage, which can be
+	// recovered after a lost RequestWake reply or control-plane restart.
+	proof, err := a.end(ctx, client)
 	if err != nil {
 		return
 	}
-	if known {
-		var proof protectionReceipt
-		args := map[string]any{"protection_id": a.id, "principal": a.principal}
-		if err := client.Lifecycle(ctx, "QueryProtection", "", a.execution, args, &proof); err == nil &&
-			proof.ID == a.id && proof.Wake != "" {
-			if err := e.DB.ObserveAccessWakeDecision(ctx, a.id, proof.Wake); err != nil {
-				return
-			}
-		}
+	switch {
+	case proof.Wake != "":
+		err = e.DB.ObserveAccessWakeDecision(ctx, a.id, proof.Wake)
+	case proof.Reason == "connection closed before admission":
+		err = e.DB.RecordAccessWakeClosedBeforeAdmission(ctx, a.id, a.binding)
 	}
-	if a.end(ctx, client) == nil {
+	if err == nil {
 		_, _ = e.DB.DB().ExecContext(ctx, "DELETE FROM connection_activity WHERE id=? AND closing=1", a.id)
 	}
 }

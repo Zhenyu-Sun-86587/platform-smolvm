@@ -12,13 +12,13 @@ import (
 	rt "sandbox-platform/internal/runtime"
 )
 
-const reservationFields = `operation_id,attempt,worker_id,runtime_instance_id,bundle_id,control_epoch,request_digest,
+const reservationFields = `operation_id,attempt,native_attempt,worker_id,runtime_instance_id,bundle_id,control_epoch,request_digest,
 	COALESCE(native_digest,''),vcpus,memory_mib,storage_bytes,heavy_slots,phase,updated_at`
 
 func scanPlacementReservation(row scanner) (placement.Reservation, error) {
 	var out placement.Reservation
 	var updatedAt int64
-	err := row.Scan(&out.OperationID, &out.Attempt, &out.WorkerID, &out.RuntimeInstanceID, &out.BundleID, &out.ControlEpoch,
+	err := row.Scan(&out.OperationID, &out.Attempt, &out.NativeAttempt, &out.WorkerID, &out.RuntimeInstanceID, &out.BundleID, &out.ControlEpoch,
 		&out.RequestDigest, &out.NativeDigest, &out.Resources.VCPUs, &out.Resources.MemoryMiB, &out.Resources.StorageBytes,
 		&out.Resources.HeavySlots, &out.Phase, &updatedAt)
 	out.UpdatedAt = time.UnixMilli(updatedAt).UTC()
@@ -151,7 +151,7 @@ func (s *Store) RecordPlacementAdmission(ctx context.Context, proof placement.Ad
 		return err
 	}
 	want := placement.AdmissionOperation
-	if kind == rt.Wake && (r.Resources.VCPUs != 0 || r.Resources.MemoryMiB != 0 || r.Resources.StorageBytes != 0) {
+	if kind == rt.VMRestore || kind == rt.Wake && (r.Resources.VCPUs != 0 || r.Resources.MemoryMiB != 0 || r.Resources.StorageBytes != 0) {
 		want = placement.AdmissionRestore
 	}
 	if proof.Kind != want {
@@ -263,6 +263,9 @@ func transitionPlacement(ctx context.Context, tx *sql.Tx, op Operation, change T
 	}
 	if op.Terminal() {
 		switch {
+		case change.PlacementNotAdmitted && rt.IsNativeFork(op.Kind) && r.Attempt > 1 &&
+			oneOf(r.Phase, placement.Reserved, placement.DispatchStarted, placement.Unknown):
+			return setReservationPhase(ctx, tx, r, placement.Rejected)
 		case op.Effect == EffectNone && r.Phase == placement.Reserved:
 			return setReservationPhase(ctx, tx, r, placement.Released)
 		case op.Effect == EffectNone && oneOf(r.Phase, placement.DispatchStarted, placement.Unknown):

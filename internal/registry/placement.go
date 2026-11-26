@@ -206,7 +206,13 @@ func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string,
 				})
 				continue
 			}
-			score := placement.Score(sample.Budget.Capacity, available.Subtract(req.Resources))
+			capacity := sample.Budget.Capacity
+			budgetFree := capacity.Subtract(sample.Budget.Allocated)
+			pressurePenalty := placement.Score(capacity, placement.Resources{
+				MemoryMiB:    max(0, budgetFree.MemoryMiB-sample.Pressure.AvailableMemoryMiB),
+				StorageBytes: max(0, budgetFree.StorageBytes-sample.Pressure.DiskFreeBytes),
+			})
+			score := placement.Score(capacity, available.Subtract(req.Resources)) + 2*pressurePenalty
 			cached := req.ArtifactDigest != "" && slices.Contains(profile.CachedArtifacts, req.ArtifactDigest)
 			if chosen.InstanceID == "" || score < chosenScore || score == chosenScore && cached && !chosenCached {
 				chosen, chosenScore, chosenCached = candidate.route, score, cached
@@ -219,7 +225,7 @@ func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string,
 	return chosen, nil
 }
 
-func insertPlacementReservation(ctx context.Context, tx *sql.Tx, op Operation, route rt.BundleRoute, req placement.Request, attempt int64) error {
+func insertPlacementReservation(ctx context.Context, tx *sql.Tx, op Operation, route rt.BundleRoute, req placement.Request, attempt, nativeAttempt int64) error {
 	// This digest identifies the central acceptance intent. The native wire
 	// digest is added independently when the outgoing mutation is journaled.
 	intent, err := json.Marshal(struct {
@@ -232,10 +238,10 @@ func insertPlacementReservation(ctx context.Context, tx *sql.Tx, op Operation, r
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO placement_reservations
-		(operation_id,attempt,worker_id,runtime_instance_id,bundle_id,control_epoch,request_digest,
+		(operation_id,attempt,native_attempt,worker_id,runtime_instance_id,bundle_id,control_epoch,request_digest,
 		 vcpus,memory_mib,storage_bytes,heavy_slots,phase,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,'reserved_not_sent',?)`,
-		op.ID, attempt, route.WorkerID, route.InstanceID, route.BundleID, op.ControlEpoch, fmt.Sprintf("sha256:%x", sha256.Sum256(intent)),
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'reserved_not_sent',?)`,
+		op.ID, attempt, nativeAttempt, route.WorkerID, route.InstanceID, route.BundleID, op.ControlEpoch, fmt.Sprintf("sha256:%x", sha256.Sum256(intent)),
 		req.Resources.VCPUs, req.Resources.MemoryMiB, req.Resources.StorageBytes, req.Resources.HeavySlots, time.Now().UnixMilli())
 	return err
 }
@@ -377,10 +383,11 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 	if route.WorkerID != last.WorkerID || route.BundleID != last.BundleID {
 		return ErrGeneration
 	}
-	var count int64
+	var count, nativeAttempt int64
 	for _, child := range op.Children {
 		if child.State == "quarantined" && child.ErrorCode == "NATIVE_CHILD_ABORTED" {
 			count++
+			nativeAttempt = max(nativeAttempt, child.Attempt+1)
 		}
 	}
 	req, err := ownerPlacement(source.Spec, route, route.WorkerID, rt.FullStateOperationCapability(op.Kind), count, op.Heavy)
@@ -391,7 +398,7 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 	if err != nil {
 		return err
 	}
-	return insertPlacementReservation(ctx, tx, op, route, *req, last.Attempt+1)
+	return insertPlacementReservation(ctx, tx, op, route, *req, last.Attempt+1, nativeAttempt)
 }
 
 func placementWorkerManaged(ctx context.Context, q queryer, worker string) (bool, error) {

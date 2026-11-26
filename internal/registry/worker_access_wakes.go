@@ -83,7 +83,7 @@ func (s *Store) BeginAccessWake(ctx context.Context, demand string, b Binding, e
 		}
 	}
 	err = tx.QueryRowContext(ctx, `SELECT id FROM worker_access_wake_holds
-		WHERE binding_id=? AND execution_epoch=? AND native_kind=? AND capture_id=?`,
+		WHERE binding_id=? AND execution_epoch=? AND native_kind=? AND capture_id=? AND phase<>'released'`,
 		b.ID, expectedEpoch, kind, capture).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		capability := rt.SystemBootCapability
@@ -110,7 +110,7 @@ func (s *Store) BeginAccessWake(ctx context.Context, demand string, b Binding, e
 	} else if err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO worker_access_wake_demands VALUES(?,?)`, demand, found); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO worker_access_wake_demands(demand_id,hold_id) VALUES(?,?)`, demand, found); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -123,7 +123,7 @@ func (s *Store) ObserveAccessWakeDecision(ctx context.Context, demand, operation
 		return ErrInvalid
 	}
 	_, err := s.writer.ExecContext(ctx, `INSERT OR IGNORE INTO worker_access_wake_candidates(demand_id,native_operation_id)
-		SELECT demand_id,? FROM worker_access_wake_demands WHERE demand_id=?`, operation, demand)
+		SELECT demand_id,? FROM worker_access_wake_demands WHERE demand_id=? AND closed_before_admission=0`, operation, demand)
 	return err
 }
 
@@ -230,8 +230,27 @@ func (s *Store) RecordAccessWakeAdmission(ctx context.Context, check AccessWakeC
 	return tx.Commit()
 }
 
-func (s *Store) HasAccessWakeDemand(ctx context.Context, demand string) (bool, error) {
-	var known bool
-	err := s.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_access_wake_demands WHERE demand_id=?)`, demand).Scan(&known)
-	return known, err
+// RecordAccessWakeClosedBeforeAdmission requires the broker's exact
+// CloseAccessProtection tombstone receipt, which fences any delayed RequestWake
+// for this protection ID. One closed demand cannot release another's hold.
+func (s *Store) RecordAccessWakeClosedBeforeAdmission(ctx context.Context, demand, binding string) error {
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE worker_access_wake_demands SET closed_before_admission=1
+		WHERE demand_id=? AND EXISTS(SELECT 1 FROM worker_access_wake_holds h
+			WHERE h.id=hold_id AND h.binding_id=? AND h.phase='unknown')
+		AND NOT EXISTS(SELECT 1 FROM worker_access_wake_candidates c WHERE c.demand_id=?)`, demand, binding, demand); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE worker_access_wake_holds SET phase='released'
+		WHERE binding_id=? AND phase='unknown' AND native_operation_id IS NULL
+		AND id=(SELECT hold_id FROM worker_access_wake_demands WHERE demand_id=? AND closed_before_admission=1)
+		AND NOT EXISTS(SELECT 1 FROM worker_access_wake_demands d WHERE d.hold_id=worker_access_wake_holds.id AND d.closed_before_admission=0)`,
+		binding, demand); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

@@ -277,3 +277,130 @@ func TestKnownOnlyDrainBlocksAndRecoveryRequiresRebind(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func (f placementFixture) hibernatedBinding(t *testing.T, worker string) registry.Binding {
+	t.Helper()
+	ctx := context.Background()
+	req := f.request("source")
+	req.Placement = nil
+	req.RuntimeInstanceID = "global-" + worker
+	req.Request = []byte(`{"resources":{"cpu_count":2,"memory_mib":6144}}`)
+	op, _, err := f.db.Accept(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.DB().ExecContext(ctx, `UPDATE runtime_bindings SET status='current',
+		runtime_instance_object_id='source', execution_epoch=1, incarnation_id='saved', power_state='hibernated',last_capture_id='capture'
+		WHERE id=?`, op.BindingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.DB().ExecContext(ctx, `UPDATE machines SET current_binding_id=?,binding_generation=1 WHERE id=?`, op.BindingID, op.MachineID); err != nil {
+		t.Fatal(err)
+	}
+	b, err := f.db.GetBinding(ctx, op.BindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestIngressWakeDemandOnlyFoldsAfterPinnedRestoreAndNewBudget(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	a := f.worker(t, "a")
+	a.Profiles[0].Capabilities = append(a.Profiles[0].Capabilities, rt.FullStateOperationCapability(rt.VMRestore))
+	savePlacementSample(t, f.db, a)
+	b := f.hibernatedBinding(t, "a")
+	for _, id := range []string{"demand-a", "demand-b"} {
+		if held, err := f.db.BeginAccessWake(ctx, id, b, 1, rt.VMRestore); !held || err != nil {
+			t.Fatalf("wake ingress held=%t err=%v", held, err)
+		}
+		if err := f.db.ObserveAccessWakeDecision(ctx, id, "actual-restore"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checks, err := f.db.ListAccessWakeChecks(ctx, "a")
+	if err != nil || len(checks) != 2 || checks[0].HoldID != checks[1].HoldID {
+		t.Fatalf("same execution wake holds: %+v, %v", checks, err)
+	}
+	check := checks[0]
+	req := f.request("another-large-request")
+	if _, _, err := f.db.Accept(ctx, req); !errors.Is(err, placement.ErrNoCandidate) {
+		t.Fatalf("WakeDemand acknowledgement dropped its hold: %v", err)
+	}
+	have := rt.OperationReceipt{OperationID: "actual-restore", Kind: rt.VMRestore,
+		RequestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RouteID: "deep",
+		InstanceID: "source", BundleDigest: "bundle", ExpectedExecutionEpoch: 1, Phase: "COMPLETED", Revision: 12,
+		Execution:  &rt.ExecutionRef{InstanceID: "source", ExecutionEpoch: 2, IncarnationID: "fresh"},
+		StatePoint: &rt.StatePointProgress{CaptureID: "capture", ActivationDecision: "commit", Stage: "released"}}
+	if err := f.db.RecordAccessWakeAdmission(ctx, check, have, a, a.Sequence); !errors.Is(err, registry.ErrInvalid) {
+		t.Fatalf("same sequence folded Restore hold: %v", err)
+	}
+	a.Sequence, a.QueryNonce = 2, "budget_after_admission"
+	a.Budget.Allocated.MemoryMiB = 6 * 1024
+	savePlacementSample(t, f.db, a)
+	wrong := have
+	wrong.Kind = "launch"
+	if err := f.db.RecordAccessWakeAdmission(ctx, check, wrong, a, 1); !errors.Is(err, registry.ErrInvalid) {
+		t.Fatalf("cold launch folded Hibernate wake hold: %v", err)
+	}
+	if err := f.db.RecordAccessWakeAdmission(ctx, check, have, a, 1); err != nil {
+		t.Fatal(err)
+	}
+	checks, err = f.db.ListAccessWakeChecks(ctx, "a")
+	if err != nil || len(checks) != 0 {
+		t.Fatalf("covered WakeDemand still pending: %+v, %v", checks, err)
+	}
+	req.Placement.Resources.MemoryMiB = 1024
+	if _, _, err := f.db.Accept(ctx, req); err != nil {
+		t.Fatalf("same-session covered Restore charged twice: %v", err)
+	}
+}
+
+func TestWorkerPolicyOverlayUsesCurrentDesiredRevisionOnReactivation(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	a := f.worker(t, "a")
+	savePlacementSample(t, f.db, a)
+	b := f.hibernatedBinding(t, "a")
+	w, err := f.db.GetWorker(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cordon, err := f.db.SetWorkerMaintenance(ctx, "a", w.Revision, "cordoned", "maintenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain, err := f.db.SetWorkerMaintenance(ctx, "a", cordon.Revision, "draining", "maintenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay, managed, err := f.db.WorkerPolicyPlan(ctx, b)
+	if err != nil || !managed || overlay.Effective.Wake != (rt.WakeConditions{}) ||
+		!overlay.Effective.Activity.Leases || !overlay.Effective.Activity.Tasks {
+		t.Fatalf("drain overlay = %+v, managed=%t, err=%v", overlay, managed, err)
+	}
+	if _, err := f.db.RecordWorkerPolicyOverlay(ctx, overlay, 5); err != nil {
+		t.Fatal(err)
+	}
+	patch := []byte(`{"keep_running":true,"wake_conditions":{"allow_cold_start":true,"api_access":false}}`)
+	if _, err := f.db.SetLifecycleDesired(ctx, b.MachineID, "user-policy", "override", overlay.DesiredRevision, 1, patch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.RecordWorkerPolicyOverlay(ctx, overlay, 5); !errors.Is(err, registry.ErrRevision) {
+		t.Fatalf("late overlay superseded current desired policy: %v", err)
+	}
+	active, err := f.db.SetWorkerMaintenance(ctx, "a", drain.Revision, "active", "maintenance complete")
+	if err != nil || active.Phase != "activating" {
+		t.Fatalf("desired active = %+v, %v", active, err)
+	}
+	activePlan, managed, err := f.db.WorkerPolicyPlan(ctx, b)
+	if err != nil || !managed || activePlan.DesiredRevision != overlay.DesiredRevision+1 ||
+		!activePlan.Effective.KeepRunning || !activePlan.Effective.Wake.ColdStart || activePlan.Effective.Wake.API {
+		t.Fatalf("reactivation plan = %+v, %v", activePlan, err)
+	}
+	result, err := f.db.RecordWorkerPolicyOverlay(ctx, activePlan, 6)
+	if err != nil || result.Applied == nil || *result.Applied != result.Desired {
+		t.Fatalf("reactivated policy = %+v, %v", result, err)
+	}
+}

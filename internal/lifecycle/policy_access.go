@@ -184,6 +184,15 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 					args["first_launch"] = plan
 				}
 			}
+			// A stable wake demand also covers an observed Running source that may
+			// cross a hibernate decision between status and admission.
+			if release == nil {
+				a, err := e.registerConnection(ctx, b, id, p.ID, scope)
+				if err != nil {
+					return none, nil, err
+				}
+				release = e.connectionRelease(a, client)
+			}
 			if st.Power == "HIBERNATED" || st.Power == "STOPPED" {
 				kind := rt.VMRestore
 				if st.Power == "STOPPED" {
@@ -193,15 +202,6 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				if err != nil {
 					return none, nil, err
 				}
-			}
-			// A stable wake demand also covers an observed Running source that may
-			// cross a hibernate decision between status and admission.
-			if release == nil {
-				a, err := e.registerConnection(ctx, b, id, p.ID, scope)
-				if err != nil {
-					return none, nil, err
-				}
-				release = e.connectionRelease(a, client)
 			}
 			err = request(ctx, "RequestWake", id+"-admit", args, &ack)
 			if err != nil {

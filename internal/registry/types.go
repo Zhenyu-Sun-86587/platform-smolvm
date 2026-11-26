@@ -305,6 +305,9 @@ type TransitionRequest struct {
 	// FencedActivationFailure settles an unpublished native target whose Worker
 	// recorded commit before proving its exit. The guest-side effect is unknown.
 	FencedActivationFailure bool
+	// PlacementNotAdmitted attests that a retry's original native receipt
+	// still has the same settled revision after a definite refusal.
+	PlacementNotAdmitted bool
 }
 
 type ForkChildTransition struct {

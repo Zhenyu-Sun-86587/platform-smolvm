@@ -12,7 +12,6 @@ import (
 	"sort"
 	"time"
 
-	"sandbox-platform/internal/placement"
 	rt "sandbox-platform/internal/runtime"
 )
 
@@ -184,17 +183,24 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, ErrNotFound
 		}
 	}
+	type placementIntent struct {
+		Mode, WorkerID, RuntimeInstanceID string
+	}
+	var intent *placementIntent
+	if r.Placement != nil {
+		intent = &placementIntent{r.Placement.Mode, r.Placement.WorkerID, r.Placement.RuntimeInstanceID}
+	}
 	target := struct {
 		Kind, MachineID, Name, TemplateID, DesiredPower string
 		IdlePolicy                                      json.RawMessage
 		KeepRunning, Heavy, Allocate                    bool
 		Locks                                           []Lock
-		RuntimeInstanceID                               string             `json:",omitempty"`
-		ForkChildren                                    []string           `json:",omitempty"`
-		WorkerID                                        string             `json:",omitempty"`
-		Placement                                       *placement.Request `json:",omitempty"`
+		RuntimeInstanceID                               string           `json:",omitempty"`
+		ForkChildren                                    []string         `json:",omitempty"`
+		WorkerID                                        string           `json:",omitempty"`
+		Placement                                       *placementIntent `json:",omitempty"`
 	}{r.Kind, r.MachineID, r.Name, r.TemplateID, r.DesiredPower, idleCanonical,
-		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.WorkerID, r.Placement}
+		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.WorkerID, intent}
 	fingerprint, err := mutationFingerprint(ctx, tx, envelope, target)
 	if err != nil {
 		return Operation{}, false, err
@@ -455,7 +461,7 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		return Operation{}, false, err
 	}
 	if reservation != nil {
-		if err := insertPlacementReservation(ctx, tx, op, route, *reservation, 1); err != nil {
+		if err := insertPlacementReservation(ctx, tx, op, route, *reservation, 1, 0); err != nil {
 			return Operation{}, false, err
 		}
 	}

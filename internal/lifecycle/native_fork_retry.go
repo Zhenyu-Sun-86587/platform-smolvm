@@ -163,7 +163,8 @@ func (j *Job) rejectForkRetry(ctx context.Context, reason error) error {
 	intent := j.Intent.Fork
 	intent.Receipt, intent.RetryRequested, intent.RetryFrom = intent.RetryFrom, false, nil
 	step := registry.TransitionRequest{Effect: j.Op.Effect, Result: j.Op.Result, Dispatch: JSON(j.Intent),
-		Error: JSON(map[string]string{"code": "NATIVE_FORK_RETRY_REFUSED", "message": reason.Error()})}
+		Error:                JSON(map[string]string{"code": "NATIVE_FORK_RETRY_REFUSED", "message": reason.Error()}),
+		PlacementNotAdmitted: true}
 	state := registry.Failed
 	if j.Op.Effect == registry.EffectPartial {
 		state = registry.Succeeded

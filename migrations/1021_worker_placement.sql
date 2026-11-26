@@ -29,6 +29,7 @@ CREATE TABLE worker_samples (
 CREATE TABLE placement_reservations (
     operation_id TEXT NOT NULL REFERENCES operations(id),
     attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt > 0),
+    native_attempt INTEGER NOT NULL DEFAULT 0 CHECK (native_attempt >= 0),
     worker_id TEXT NOT NULL REFERENCES workers(id),
     runtime_instance_id TEXT NOT NULL REFERENCES runtime_instances(id),
     bundle_id TEXT NOT NULL REFERENCES runtime_bundles(id),
@@ -102,17 +103,19 @@ CREATE TABLE worker_access_wake_holds (
     native_kind TEXT NOT NULL CHECK(native_kind IN ('launch','vm_restore')),
     vcpus INTEGER NOT NULL CHECK(vcpus >= 0),
     memory_mib INTEGER NOT NULL CHECK(memory_mib >= 0),
-    phase TEXT NOT NULL CHECK(phase IN ('unknown','covered')),
+    phase TEXT NOT NULL CHECK(phase IN ('unknown','covered','released')),
     native_operation_id TEXT,
     native_digest TEXT,
     covered_sequence INTEGER
 );
-CREATE UNIQUE INDEX worker_wake_active_execution ON worker_access_wake_holds(binding_id,execution_epoch,native_kind,capture_id);
+CREATE UNIQUE INDEX worker_wake_active_execution ON worker_access_wake_holds(binding_id,execution_epoch,native_kind,capture_id)
+    WHERE phase<>'released';
 CREATE INDEX worker_wake_active_worker ON worker_access_wake_holds(worker_id,phase);
 
 CREATE TABLE worker_access_wake_demands (
     demand_id TEXT NOT NULL PRIMARY KEY,
-    hold_id TEXT NOT NULL REFERENCES worker_access_wake_holds(id)
+    hold_id TEXT NOT NULL REFERENCES worker_access_wake_holds(id),
+    closed_before_admission INTEGER NOT NULL DEFAULT 0 CHECK(closed_before_admission IN (0,1))
 );
 
 CREATE TABLE worker_access_wake_candidates (

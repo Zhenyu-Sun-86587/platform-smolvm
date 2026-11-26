@@ -103,14 +103,15 @@ type Query struct {
 
 func (s Sample) Validate(q Query, now time.Time) error {
 	roundTrip := q.CompletedAt.Sub(q.StartedAt)
-	if q.Nonce == "" || s.QueryNonce != q.Nonce || q.StartedAt.IsZero() ||
+	if q.Nonce == "" || s.QueryNonce != q.Nonce || q.StartedAt.IsZero() || q.CompletedAt.IsZero() ||
 		roundTrip < 0 || roundTrip > MaxQueryDuration || q.CompletedAt.After(now) ||
 		s.SampleAge < 0 || s.SampleAge > DefaultSampleAge ||
 		now.Sub(q.CompletedAt)+roundTrip+s.SampleAge > DefaultSampleAge {
 		return errors.New("missing or stale Worker budget query evidence")
 	}
 	if s.WorkerID == "" || s.ControlEpoch == "" || !s.Session.Valid() || s.Sequence <= 0 ||
-		s.Source != SourceWorkerBudget || !s.Budget.Capacity.Valid() || !s.Budget.Allocated.Valid() {
+		s.Source != SourceWorkerBudget || !s.Budget.Capacity.Valid() || !s.Budget.Allocated.Valid() ||
+		s.Budget.Capacity.VCPUs == 0 || s.Budget.Capacity.MemoryMiB == 0 {
 		return errors.New("invalid Worker budget sample")
 	}
 	if s.Pressure != nil && (s.Pressure.AvailableMemoryMiB < 0 || s.Pressure.DiskFreeBytes < 0) {
@@ -176,6 +177,7 @@ type Reservation struct {
 	Resources         Resources `json:"resources"`
 	Phase             string    `json:"phase"`
 	Attempt           int64     `json:"attempt"`
+	NativeAttempt     int64     `json:"native_attempt"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
