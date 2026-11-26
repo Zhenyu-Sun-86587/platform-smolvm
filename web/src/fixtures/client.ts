@@ -1,7 +1,7 @@
 import { Client, PlatformError } from "../../../sdk/typescript/src/index"
 import type {
   Capability, Control, CreateMachine, GuestFileEntry, Machine, MachineMetrics, Operation, PowerState,
-  PrivateNetwork, RuntimeProfile, SystemMetrics,
+  PrivateNetwork, RuntimeProfile, Service, SystemMetrics,
 } from "../../../sdk/typescript/src/index"
 
 const epoch = "fixture-console"
@@ -47,10 +47,11 @@ const emptyPaths = new Set([
   "backups", "backups/policies", "client-certificates", "operations", "restores", "snapshots", "ssh-keys", "tokens", "volumes",
 ])
 const emptyMachinePaths = new Set([
-  "backups", "dependencies", "desktop-sessions", "execs", "leases", "services", "snapshots", "tasks", "volume-attachments",
+  "backups", "dependencies", "desktop-sessions", "execs", "leases", "snapshots", "tasks", "volume-attachments",
 ])
 const stoppedScenes = new Set(["04", "15", "19", "21", "22", "23", "24", "25", "26", "27", "28", "29"])
-const mobileListScenes = new Set(["41", "42", "43", "44", "46"])
+const desktopRegionalScenes = new Set(["02", "03", "04", "15", "19", "36"])
+const mobileRegionalScenes = new Set(["41", "42", "43", "44", "45"])
 const namedPowers: Record<string, PowerState> = { standby: "standby", hibernated: "hibernated", unknown: "unknown" }
 const fixtureFiles: GuestFileEntry[] = [
   { name: "projects", type: "directory", size: 4096 },
@@ -96,9 +97,26 @@ export class FixtureClient extends Client {
   constructor(private readonly scene: string) {
     super(location.origin)
     const state = namedPowers[scene] ?? (stoppedScenes.has(scene) ? "stopped" : "running")
-    const ids = scene === "empty" ? [] : scene === "01" ? [atlas, cedar] : scene === "45" ? [atlas, fork, cedar]
-      : mobileListScenes.has(scene) ? [atlas, fork] : [atlas]
+    const ids = scene === "empty" ? []
+      : mobileRegionalScenes.has(scene) ? [atlas, fork, cedar]
+        : scene === "46" ? [atlas, fork]
+          : scene === "01" || desktopRegionalScenes.has(scene) ? [atlas, cedar]
+            : [atlas]
     this.machines = ids.map(id => fixtureMachine(id, state, undefined, scene === "guest-unavailable" || scene === "files-unavailable"))
+  }
+
+  private services(machine: Machine): Service[] {
+    const shared = { machine_id: machine.machine_id, revision: 1, enabled: true }
+    if (this.scene === "22") return [{
+      ...shared, service_id: "fixture-http", name: "Application", protocol: "https", guest_port: 8000,
+      public_host: "atlas-dev.sandbox.example",
+      observation: { status: "unknown", scope: "configuration", stage: "configuration", service_revision: 1 },
+    }]
+    if (this.scene === "30") return [
+      { ...shared, service_id: "fixture-ssh", name: "SSH", protocol: "ssh", guest_port: 22 },
+      { ...shared, service_id: "fixture-vnc", name: "Desktop", protocol: "vnc", guest_port: 5900 },
+    ]
+    return []
   }
 
   private create(init: RequestInit) {
@@ -142,6 +160,9 @@ export class FixtureClient extends Client {
     if (key === "events") return delay(init.signal)
     if (key === "auth/logout") return new Response(null, { status: 204 })
     if (method === "POST" && key === "machines") return this.create(init)
+    if (method === "POST" && this.scene === "30" && key === "machines/" + atlas + "/execs") {
+      return json({ exec_id: "fixture-exec", machine_id: atlas, state: "running" }, 201)
+    }
     if (method !== "GET") throw new PlatformError(501, { code: "FIXTURE_ACTION_UNAVAILABLE", message: "This action requires a connected platform." })
     if (key === "control") return json(control)
     if (key === "machines") {
@@ -165,6 +186,7 @@ export class FixtureClient extends Client {
       const machine = this.machines.find(machine => machine.machine_id === decodeURIComponent(id))
       if (!machine) throw new PlatformError(404, { code: "MACHINE_NOT_FOUND", message: "The fixture machine is unavailable." })
       if (!resource) return json(machine)
+      if (resource === "services") return page(this.services(machine))
       if (emptyMachinePaths.has(resource)) return page([])
       if (resource === "resources") return json({
         machine_id: machine.machine_id, binding_generation: machine.binding_generation,
@@ -179,6 +201,10 @@ export class FixtureClient extends Client {
           availability, source: "worker", scope: "machine", platform,
           ...(sampled ? {
             observed_at: observed, cpu_millis: value, memory_mb: availability === "partial" ? null : 746, disk_used_mb: 1880,
+            execution: {
+              binding_id: machine.machine_id + "-binding", binding_generation: machine.binding_generation,
+              incarnation_id: machine.machine_id + "-execution", execution_epoch: availability === "stale" ? 0 : 1,
+            },
           } : { issues: { runtime: { code: "METRICS_UNAVAILABLE", message: "No sample for this execution." } } }),
         } satisfies MachineMetrics)
       }
