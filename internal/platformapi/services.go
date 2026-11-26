@@ -345,7 +345,7 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	if !v.Enabled {
 		return empty, nil, nil, registry.ErrConflict
 	}
-	b, end, err := s.AccessAt(ctx, p, v.MachineID, lifecycle.AccessEndpoint{Trigger: "service_access", Revision: v.Revision, ServiceID: v.ID, Reauthorize: func(ctx context.Context) error {
+	reauthorize := func(ctx context.Context) error {
 		current, err := s.getService(ctx, v.ID)
 		if err != nil {
 			return err
@@ -354,7 +354,16 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 			return registry.ErrRevision
 		}
 		return nil
-	}})
+	}
+	admission := ctx
+	if v.Protocol == "ssh" {
+		var cancel context.CancelFunc
+		admission, cancel = context.WithTimeout(ctx, time.Duration(s.Config.Gateway.WaitSeconds)*time.Second)
+		defer cancel()
+	}
+	b, end, err := s.AccessAt(admission, p, v.MachineID, lifecycle.AccessEndpoint{
+		Trigger: "service_access", Revision: v.Revision, ServiceID: v.ID, Reauthorize: reauthorize,
+	})
 	if err != nil {
 		return empty, nil, nil, err
 	}
@@ -364,9 +373,9 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 		return empty, nil, nil, err
 	}
 	if v.Protocol == "ssh" {
-		if err := s.serviceIdentity(ctx, &v); err != nil || v.SSHKey == "" {
+		if v.SSHKey, err = s.awaitSSHKey(admission, p, b, v, reauthorize); err != nil {
 			end()
-			return empty, nil, nil, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
+			return empty, nil, nil, err
 		}
 	}
 	checkBinding := func(ctx context.Context) error {
@@ -455,6 +464,49 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	}
 	return backend, check, end, nil
 }
+
+// Keep the Wake hold while the System observer verifies the new execution's
+// host key. The gateway has not opened a Guest stream during this wait.
+func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.Binding, v service, reauthorize func(context.Context) error) (string, error) {
+	notReady := &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
+	if b.RuntimeBundleID == "" {
+		if err := s.serviceIdentity(ctx, &v); err == nil && v.SSHKey != "" {
+			return v.SSHKey, nil
+		}
+		return "", notReady
+	}
+	if v.GuestPort != lifecycle.SystemSSHPort {
+		return "", notReady
+	}
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		if err := s.CheckAccessPrincipal(ctx, p, b.MachineID); err != nil {
+			return "", err
+		}
+		if err := reauthorize(ctx); err != nil {
+			return "", err
+		}
+		m, err := s.DB.GetMachine(ctx, b.MachineID)
+		if err != nil {
+			return "", err
+		}
+		if m.DeletedAt != nil || m.CurrentBinding == nil || m.CurrentBinding.ID != b.ID ||
+			m.CurrentBinding.ExecutionRef() != b.ExecutionRef() {
+			return "", registry.ErrGeneration
+		}
+		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		if err != nil || key != "" {
+			return key, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", notReady
+		case <-poll.C:
+		}
+	}
+}
+
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
 	v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE public_host=? AND kind IN ('http','https') AND enabled=1", host))
 	if err != nil {

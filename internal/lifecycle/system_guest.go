@@ -109,11 +109,12 @@ func (e *Engine) queueNativeSSH(ctx context.Context, binding registry.Binding, d
 	if err != nil {
 		return
 	}
-	key := fmt.Sprintf("ssh-%s-%s-%d", binding.ID, digest, time.Now().Unix()/60)
+	request := JSON(nativeSSHRequest{KeysetDigest: digest, Execution: binding.ExecutionRef()})
+	key := fmt.Sprintf("ssh-%s-%x-%d", binding.ID, sha256.Sum256(request), time.Now().Unix()/60)
 	_, _, _ = e.DB.Accept(ctx, registry.AcceptRequest{
 		PrincipalID: owner, Epoch: ctl.ControlEpoch, Key: key, Scope: "POST /internal/ssh/" + binding.MachineID,
 		MachineID: binding.MachineID, ExpectedGeneration: binding.Generation, Kind: "sync_keys",
-		Request: JSON(nativeSSHRequest{KeysetDigest: digest, Execution: binding.ExecutionRef()}),
+		Request: request,
 		AdmitRuntime: func(route rt.BundleRoute, _ string) error {
 			if route != bindingRuntime(binding).BundleRoute {
 				return rt.ErrUnsupported
