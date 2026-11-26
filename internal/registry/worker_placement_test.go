@@ -371,7 +371,7 @@ func TestIngressWakeDemandOnlyFoldsAfterPinnedRestoreAndNewBudget(t *testing.T) 
 	if _, _, err := f.db.Accept(ctx, req); !errors.Is(err, placement.ErrNoCandidate) {
 		t.Fatalf("WakeDemand acknowledgement dropped its hold: %v", err)
 	}
-	have := rt.OperationReceipt{OperationID: "actual-restore", Kind: rt.VMRestore,
+	have := rt.OperationReceipt{OperationID: "actual-restore", Kind: "restore_target",
 		RequestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RouteID: "deep",
 		InstanceID: "source", BundleDigest: "bundle", ExpectedExecutionEpoch: 1, Phase: "COMPLETED", Revision: 12,
 		Execution:  &rt.ExecutionRef{InstanceID: "source", ExecutionEpoch: 2, IncarnationID: "fresh"},

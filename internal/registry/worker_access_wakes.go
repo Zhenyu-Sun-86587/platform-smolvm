@@ -169,9 +169,13 @@ func (s *Store) ListAccessWakeChecks(ctx context.Context, worker string) ([]Acce
 }
 
 func validAccessWakeReceipt(check AccessWakeCheck, r rt.OperationReceipt) bool {
+	wantKind := check.Kind
+	if wantKind == rt.VMRestore {
+		wantKind = "restore_target"
+	}
 	digest, err := hex.DecodeString(strings.TrimPrefix(r.RequestDigest, "sha256:"))
 	if err != nil || len(digest) != 32 || !strings.HasPrefix(r.RequestDigest, "sha256:") ||
-		r.OperationID != check.OperationID || r.Kind != check.Kind || r.InstanceID != check.InstanceID || r.RouteID != "deep" ||
+		r.OperationID != check.OperationID || r.Kind != wantKind || r.InstanceID != check.InstanceID || r.RouteID != "deep" ||
 		r.BundleDigest != check.BundleID || r.ExpectedExecutionEpoch != check.ExecutionEpoch || r.Revision <= 0 ||
 		r.Phase != "COMPLETED" || r.Execution == nil || r.Execution.InstanceID != check.InstanceID ||
 		r.Execution.ExecutionEpoch <= check.ExecutionEpoch {
