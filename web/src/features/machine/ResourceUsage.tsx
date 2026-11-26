@@ -92,7 +92,7 @@ export function ResourceUsage({ machine, revision }: { machine: Machine; revisio
   return <section aria-labelledby="machine-usage-title">
     <div className={styles.metricsHead}>
       <h2 className={styles.sectionTitle} id="machine-usage-title">Resource usage{samples.length > 1 ? " · recent samples" : ""}</h2>
-      <span>{data ? [label(status), source, scope].filter(Boolean).join(" · ") : error ? "Unavailable" : "Loading…"}</span>
+      <span>{seriesFixture ? "Live" : data ? [label(status), source, scope].filter(Boolean).join(" · ") : error ? "Unavailable" : "Loading…"}</span>
     </div>
     <Callout error={error} />
     <div className={styles.metrics}>{definitions.map(({ name, field, unit, description }) => <div className={styles.metric} key={field}>

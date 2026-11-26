@@ -196,7 +196,7 @@ function Overview({ machine, actions, revision }: Context) {
     {fixtureScene && ["21", "37", "44"].includes(fixtureScene) && <section className={styles.fixtureUsage} aria-label="Fixture usage history">
       <div className={styles.metricsHead}><h2 className={styles.sectionTitle}>Usage · last 28 days</h2><span>Development fixture</span></div>
       <div className={styles.historyBar} data-pending={fixtureScene === "44"}><span /></div>
-      <div className={styles.historyDates}><span>11/26 15:00</span><span>11/26 15:45</span></div>
+      <div className={styles.historyDates} data-pending={fixtureScene === "44"}><span>11/26 15:00</span><span>11/26 15:45</span></div>
     </section>}
     <ResourceUsage machine={machine} revision={revision} />
     <section aria-labelledby="machine-configured-resources">
@@ -478,12 +478,12 @@ export function Services({ machine, actions, revision }: Context) {
       try { form.submit() } finally { form.remove() }
     } catch (error) { setError(error) }
   }
-  const configure = (current?: Service) => actions.dialog({
+  const configure = (current?: Service, defaultProtocol: Service["protocol"] = "http") => actions.dialog({
     title: current ? "Edit service" : "Create service", submit: current ? "Save" : "Create",
     fields: [
       { name: "name", label: "Name", value: current?.name, required: true },
-      { name: "protocol", label: "Protocol", value: current?.protocol ?? "http", options: ["http", "https", "ssh", "tcp-mtls", ...(machine.boot_mode === "system" ? ["vnc"] : [])].map(value => ({ value })) },
-      { name: "guest_port", label: "Guest port", type: "number", value: current?.guest_port ?? 8080, min: 1, required: true },
+      { name: "protocol", label: "Protocol", value: current?.protocol ?? defaultProtocol, options: ["http", "https", "ssh", "tcp-mtls", ...(machine.boot_mode === "system" ? ["vnc"] : [])].map(value => ({ value })) },
+      { name: "guest_port", label: "Guest port", type: "number", value: current?.guest_port ?? (defaultProtocol === "ssh" ? 22 : 8080), min: 1, required: true },
       { name: "readiness", label: "Readiness probe", value: readiness(current)?.type ?? "tcp", options: [{ value: "tcp", label: "TCP connection" }, { value: "http", label: "HTTP response" }] },
       { name: "health_path", label: "HTTP health path", value: readiness(current)?.path ?? "/" },
       { name: "health_status", label: "Expected HTTP status", type: "number", min: 100, value: readiness(current)?.expected_status ?? 200 }
@@ -496,14 +496,36 @@ export function Services({ machine, actions, revision }: Context) {
         : { type: "tcp" }
     }, { method: current ? "PATCH" : "POST", revision: current?.revision ?? machine.revision })
   })
+  const ssh = list.items?.find(item => item.protocol === "ssh" && item.enabled !== false)
+  const hosts = list.items?.filter(item => item.public_host && item.enabled !== false)
+  const accessMode = networkModes.find(mode => mode.value === machine.network?.mode)?.label
   return <>
-    {machine.network && <section className={styles.networkGroup}><h2 className={styles.sectionTitle}>Networks</h2>
+    <section className={styles.networkGroup}>
+      <h2 className={styles.sectionTitle}>Networks</h2>
       <Callout error={network.error} />
-      <Details value={{ network: machine.network.network_id,
-        mode: networkModes.find(mode => mode.value === machine.network?.mode)?.label,
-        state: network.data?.state, private_address: network.data?.private_ipv4,
-        guest_address: network.data?.guest_ipv4, dns_name: network.data?.dns_name }} />
-    </section>}
+      {machine.network ? <>
+        <p>{accessMode ?? "Private network"} · <code>{machine.network.network_id}</code></p>
+        <p>{network.data?.private_ipv4 || network.data?.guest_ipv4
+          ? <>Address <code>{network.data.private_ipv4 ?? network.data.guest_ipv4}</code>{network.data.dns_name && <> · <code>{network.data.dns_name}</code></>}</>
+          : network.data?.state ? label(network.data.state) : "Private address has not been reported."}</p>
+      </> : <>
+        <p>No private network is attached to this machine.</p>
+        <p>Published services are listed under Ports.</p>
+      </>}
+    </section>
+    <section className={styles.networkGroup}>
+      <header><h2 className={styles.sectionTitle}>SSH</h2>
+        {list.items && <button type="button" onClick={() => configure(ssh, "ssh")}>{ssh ? "Edit" : "Add SSH service"}</button>}
+      </header>
+      <p>{ssh ? <>Forwards SSH to Guest port <code>{ssh.guest_port}</code>.</>
+        : list.items ? "No SSH service is published for this machine." : "SSH configuration is unavailable."}</p>
+      <p>Connect with sandboxctl and your configured SSH credentials.</p>
+    </section>
+    <section className={styles.networkGroup}>
+      <header><h2 className={styles.sectionTitle}>Custom domains</h2><a href="#/domains">View service domains →</a></header>
+      <p>{hosts?.length ? "Platform-managed hostnames are listed under Ports." :
+        list.items ? "No public service hostnames are assigned." : "Service hostnames are unavailable."}</p>
+    </section>
     <section className={styles.networkGroup}><h2 className={styles.sectionTitle}>Ports</h2>
     <Callout error={list.error} /><Callout error={error} />
     {!list.items?.length && !list.error && <p className={styles.note} role="status">{list.items ? "No services published." : "Loading services…"}</p>}

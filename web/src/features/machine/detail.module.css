@@ -1,6 +1,9 @@
 .detail { --detail-border: var(--border, #3f3f46); --detail-muted: var(--muted-foreground, #a1a1aa); display: grid; min-width: 0; padding-bottom: 28px; }
-.header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 0 0 12px; }
-.identity { min-width: 0; display: grid; gap: 11px; padding-top: 5px; }
+.header { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 7px; align-items: start; padding: 0 0 12px; }
+.identity { display: contents; }
+.header > :not(.identity) { grid-area: 1 / 2; }
+.headline { grid-area: 1 / 1; align-self: center; }
+.machineMeta { grid-area: 2 / 1 / 3 / -1; }
 .headline, .machineMeta, .guest { display: flex; align-items: center; min-width: 0; gap: 8px; flex-wrap: wrap; }
 .headline h1 { margin: 0; color: #f7f7f8; font: 500 21px/1.2 var(--mono, monospace); overflow-wrap: anywhere; }
 .rename { border: 0; background: transparent; min-height: 24px; height: 24px; padding: 0 2px; color: var(--detail-muted); }
@@ -32,6 +35,7 @@
 .historyBar[data-pending="true"] { background: #25262b; border-color: #25262b; }
 .historyBar[data-pending="true"] span { display: none; }
 .historyDates { display: flex; justify-content: space-between; margin-top: 5px; color: var(--detail-muted); font: 10px var(--mono, monospace); }
+.historyDates[data-pending="true"] span { min-width: 94px; height: 9px; color: transparent; background: #27272b; border-radius: 6px; }
 
 .specs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 440px; }
 .spec { display: flex; min-width: 0; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 6px; border: 1px solid var(--detail-border); border-radius: 8px; font: 12px var(--mono, monospace); }
@@ -91,8 +95,12 @@
 .more :global(.panel) { margin: 8px 0; }
 .policyStatus { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; margin-block-end: 8px; }
 
-.networkGroup { display: grid; gap: 8px; }
+.networkGroup { display: grid; gap: 8px; margin-bottom: 4px; }
 .networkGroup .sectionTitle { margin-bottom: 2px; }
+.networkGroup p { color: var(--detail-muted); font-size: 12px; margin: 2px 0; }
+.networkGroup > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.networkGroup > header a, .networkGroup > header button { color: var(--detail-muted); font-size: 11px; padding: 0; height: auto; min-height: 22px; border: 0; background: transparent; }
+.networkGroup > header button:hover, .networkGroup > header a:hover { color: #f4f4f5; }
 .networkGroup > :global(.rows) { gap: 8px; }
 .port { justify-content: start; flex-wrap: wrap; padding: 11px 14px; }
 .portInfo { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -107,8 +115,11 @@
 .observation time, .observation > span:not(:first-child) { color: var(--detail-muted); }
 
 @media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
-  .header { flex-direction: column; gap: 14px; padding-bottom: 12px; }
-  .identity { gap: 7px; padding-top: 0; }
+  .header { display: flex; flex-direction: column; gap: 14px; padding: 22px 0 12px; }
+  .identity { display: grid; gap: 7px; }
+  .headline, .machineMeta, .header > :not(.identity) { grid-area: auto; }
+  .headline { align-self: start; }
+  .fixtureUsage { margin-bottom: 12px; }
   .tabs { gap: 4px; }
   .tabs a { height: 40px; padding-inline: 10px; }
   .content { gap: 18px; }
