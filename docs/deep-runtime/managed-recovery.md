@@ -39,3 +39,20 @@ System 另行验证。带 Agent 的 System 镜像使用 vsock，开发 Bundle �
 使用开发 Worker `1f7a35c` 的同一批次实验先启动真实持久任务，关闭普通 Guest Agent，随后让三个子机分别进入已提交、待发布和已失败状态。公开取消保留前一个成功子和原失败原因。父机经 Stop、Delete 确认退出并回收私有盘后，公开 retry 只重试失败子。重试保留 capture 与三个机器 ID，已取消的目标持续受围栏。新目标随后在自己的任务命名空间认领原 run，其 PID 627 返回捕获前的随机标记和子机收到的回复。夹具为 `tests/integration/managed_system_vsock.py --case task-fork-cancel-retry`，记录为 `.build/wp23/public-fork-cancel-retry-delete-kvm-v2.log`。
 
 Chromium 使用常规 Tasks 页，在原本没有 `/workspace` 的 Debian 镜像上从表单启动任务。页面显示了真实工作目录和随机输出。取消该任务时，输出窗口一直读到末尾。记录为 `.build/wp23/public-task-ui-kvm-v2.log`。
+
+## StatePoint 引用与实物回收
+
+2026-11-26 在隔离 x86_64 KVM Worker 上用真实 Debian 根盘运行。公开 VM checkpoint 与随后 Hibernate 共用一块 qcow2 代际。Worker 同时保留两个 StatePoint 根、原生备份导出和未完成的操作引用。公开 checkpoint 删除的同键重放返回原操作。删除期间并发 GC 被拒，已获得的导出仍经 Unix 文件描述符读取同一 inode。第一次导出释放后，休眠点经公开 `start` 恢复到 epoch 2，Guest 读回原 tmpfs 和根盘的同一随机标记。
+
+还能恢复休眠机时，Worker 拒绝释放该休眠根。成功恢复、Stop 和 Delete 后才释放旧休眠根。未决操作与独立块导出依次单独持有同一代际，各自都阻止回收。最后导出释放后，夹具在精确块文件的 unlink 前暂停 Worker。磁盘仍为原 inode，目录中保留 `deleting` 修订与出边。用 pidfd 终止 Worker 后，同一二进制以新会话启动。恢复围栏生效时显式 `CollectResource` 被拒。围栏解除后，自动回收确认文件已移除再提交 `deleted`，清除依赖边并保留导入模板原字节。
+
+最终开发 Bundle 为 `sha256:fce5eef7a49ffdf7256c193963dd261f743a0e27e12526f95b9c94c1b699d3d5`，reader 为 `development-resource-gc-v2`，Worker 为 `sha256:2458d27a6e430500522704263a9cc753802b38c2eaf8a0f34c18b0450fd572da`。该次共享块 inode 318792 实占 2,760,704 字节，并发围栏拒绝 60 次。删除 checkpoint 回收了 55 个只被它引用的 chunk，休眠根继续保留 57 个共享 chunk，直至旧休眠根释放。Worker 将原 tombstone 的修订 3 推进到删除后的修订 4。原始记录在 `.build/release-d8cc5d5/worker-gc-a05-kvm-v6.log`（SHA-256 `f8f42ecd16d589c0e050facbac106f9994d423d1168db7d44382d2300ddfbc05`）。
+
+复现使用开发 Worker 与匹配的 platformd。独立网络和挂载命名空间、临时存储目录及专用 systemd slice 由夹具创建。测试库只装入此次 Worker，依据块文件的精确路径设置崩溃切点。
+
+```sh
+cc -Wall -Wextra -Werror -shared -fPIC tests/fixtures/worker-gc-cut.c -o "$CUT_LIBRARY" -ldl
+sudo env PYTHONDONTWRITEBYTECODE=1 python3 -B tests/integration/worker_gc_kvm.py \
+  --bundle "$BUNDLE" --platformd "$PLATFORMD" --system-image "$SYSTEM_IMAGE" \
+  --cut-library "$CUT_LIBRARY"
+```
