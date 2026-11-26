@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,12 +42,9 @@ func (c *client) ssh() *cobra.Command {
 			base += " --ca-file " + openSSHCommandWord(c.caFile)
 		}
 		proxy := base + " ssh-proxy --machine " + id
-		managed := identity == "" && !legacy
+		managed := identity == "" && !legacy && user == "root"
 		var credentials sshCredentialPaths
 		if managed {
-			if user != "root" {
-				return errors.New("managed SSH uses the root principal; select --legacy or --identity for other users")
-			}
 			dir, err := os.MkdirTemp("", "sandboxctl-managed-ssh-")
 			if err != nil {
 				return err
@@ -54,11 +52,17 @@ func (c *client) ssh() *cobra.Command {
 			defer os.RemoveAll(dir)
 			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 			credentials, err = c.prepareSSHCredential(ctx, dir, id)
-			cancel()
 			if err != nil {
-				return err
+				managed = false
+				if !c.canUseLegacySSH(ctx, id, err) {
+					cancel()
+					return err
+				}
 			}
-			proxy += " --managed"
+			cancel()
+			if managed {
+				proxy += " --managed"
+			}
 		}
 		options := []string{
 			"-F", os.DevNull,
@@ -76,7 +80,7 @@ func (c *client) ssh() *cobra.Command {
 		}
 		if managed {
 			options = append(options, "-i", credentials.identity,
-				"-o", "CertificateFile="+credentials.certificate, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+				"-o", "CertificateFile="+sshConfigArg(strings.ReplaceAll(credentials.certificate, "%", "%%")), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
 				"-o", "ConnectTimeout=90", "-o", "PreferredAuthentications=publickey")
 		}
 		if identity != "" {
@@ -104,6 +108,23 @@ func (c *client) ssh() *cobra.Command {
 	command.Flags().BoolVar(&legacy, "legacy", false, "Use enrolled keys or an SSH agent on the published SSH service")
 	command.Flags().BoolVar(&batch, "batch-mode", false, "Disable OpenSSH password and confirmation prompts")
 	return command
+}
+
+func (c *client) canUseLegacySSH(ctx context.Context, id string, err error) bool {
+	var upstream *apiError
+	if !errors.As(err, &upstream) {
+		return false
+	}
+	if upstream.Status == http.StatusConflict && upstream.Detail.Code == "NOT_SUPPORTED" {
+		return upstream.Detail.Effect == "none"
+	}
+	if (upstream.Status != http.StatusNotFound && upstream.Status != http.StatusMethodNotAllowed) || upstream.Detail.Code != "" {
+		return false
+	}
+	// Old Go muxes return plain 404/405 for the missing certificate method.
+	// Independently verify that the same authenticated machine is visible.
+	var current machine
+	return c.get(ctx, res("machines", id), &current) == nil && current.ID == id
 }
 
 func openSSHCommandWord(value string) string {

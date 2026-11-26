@@ -62,13 +62,21 @@ current Guest host key. The generated configuration contains static IDs and
 paths. The token remains in the private profile.
 
 Aliases come from unique visible workspaces whose names are ASCII DNS
-labels. Run `sandboxctl ssh-config sync` after a creation or rename to
-refresh aliases from the selected profile. An older mapping rejects a
-changed, deleted or ambiguous target. The command prints the generated
-config path for use with `ssh -F PATH` or an OpenSSH Include.
+labels. With the OpenSSH Include installed, successful local machine
+creation, fork, restore, rename, and deletion refresh aliases. After
+`--no-wait`, use `sandboxctl operations wait OPERATION` or
+`sandboxctl machines list` to refresh once changes are visible. Use
+`sandboxctl ssh-config sync` to refresh aliases after changes from other
+clients. An older mapping rejects a changed, deleted or ambiguous target.
+The sync command prints the generated config path for use with
+`ssh -F PATH` or an OpenSSH Include.
+
 `sandboxctl ssh myapp` resolves the display name directly and uses an
-ephemeral managed key. Pass `--legacy` to use the published SSH service
-with your SSH agent, or `--identity FILE` to use a registered private key.
+ephemeral managed key. The direct command uses the published SSH service
+for non-root users or when the Platform confirms managed certificates
+are unsupported. Pass `--legacy` to select the published service with an
+SSH agent, or `--identity FILE` to use a registered private key. An
+explicit token uses the explicit URL or the usual localhost default.
 
 The SSH shortcut uses OpenSSH with `KnownHostsCommand` support. The host-key
 callback requires read access. Opening the managed tunnel requires manage
