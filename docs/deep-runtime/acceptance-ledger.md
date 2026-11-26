@@ -103,7 +103,7 @@
 | A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
 | A25 | 开发实机，部分 | 两路 Serve 共用实际 cgroup slice 和 Worker 预算，六路并发启动被拒，受保护 VM 保持。混合 Bundle 另核对两个真实 VMM scope 与共用 writer/IPAM。 `.build/worker-pressure-kvm-v5.log`、`.build/wp23/tracked-coexistence-kvm.log` | 反向启动顺序、并发 Fork/Restore 风暴和各 Bundle 的共享/私有内存统计。 |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
-| A27 | 开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。记录 p50/p95、首任务、源心跳空档、PSS、双盘正确性，默认保持 16 条通道。 [WP-22 测量与原始样本路径](performance-wp22.md) | 精确 vCPU 停顿、dirty 集合闭包、rebase、预取/共享缓存的独立对照，以及网络存储和更高并发。 |
+| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | dirty 集合闭包、rebase、预取/共享缓存的独立对照，以及网络存储和更高并发。 |
 
 ### A23 备份发布与保留中断
 
