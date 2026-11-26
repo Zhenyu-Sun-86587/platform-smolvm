@@ -254,6 +254,10 @@
   flex-basis: calc(100% - 52px);
 }
 
+.snapshotHeading :global(.page-heading-copy p) {
+  max-width: 640px;
+}
+
 .stackedHeading :global(.page-heading-actions) {
   flex-basis: 100%;
 }

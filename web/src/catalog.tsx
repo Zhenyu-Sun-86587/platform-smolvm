@@ -63,7 +63,7 @@ function SnapshotCatalog({ machines, actions, revision }: CatalogContext) {
   const demo = fixtureScene === "05" || fixtureScene === "16"
   const statuses = Array.from(new Set(["all", "ready", "pending", "failed", "archived", ...(snapshots.items ?? []).map(item => item.state)]))
   return <>
-    <PageHeader title="Snapshots" icon={<Layers3 />} description={demo ? "Versioned, reusable images captured from your machines. Launch new machines from one in seconds." : "Capture machine state and restore workspaces from saved snapshots."} className={styles.stackedHeading}
+    <PageHeader title="Snapshots" icon={<Layers3 />} description={demo ? "Versioned, reusable images captured from your machines. Launch new machines from one in seconds." : "Capture machine state and restore workspaces from saved snapshots."} className={`${styles.stackedHeading} ${styles.snapshotHeading}`}
       actions={<><Button className={styles.neutralPrimary} variant="primary" onClick={() => setCreate(true)} disabled={!machines?.length}><Plus size={15} /> New snapshot</Button>
         {!demo && <Button onClick={showImport}><Upload size={15} /> Import</Button>}<DocumentationLink /></>} />
     <div className={styles.toolbar}>

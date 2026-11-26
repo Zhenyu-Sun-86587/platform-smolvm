@@ -40,6 +40,8 @@
 }
 
 .previewSection h2 {
+  margin: 0 0 10px;
+  line-height: 16px;
   color: var(--muted-foreground);
   font-family: var(--mono);
   font-size: 10px;
@@ -53,6 +55,9 @@
 }
 
 .previewSection p {
+  margin: 0 0 14px;
+  max-width: 80ch;
+  line-height: 20px;
   color: var(--muted-foreground);
 }
 
