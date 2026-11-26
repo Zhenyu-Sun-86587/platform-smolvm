@@ -18,7 +18,7 @@
 | A01 | 86dae32 冻结安装，真实双子批次通过 | 两个子机在同一个 capture ID 下取得各自的活 reader lease。源在捕获前已持有四个共同 backing。共享范围的 inode 和文件偏移通过两子 FD、内核 VMA 与 Worker 逐项核对。每子逻辑 1,107,689,472 字节，其中 125,964,288 字节使用共享 backing 的私有映射。五个相关进程从提交到发布后采样共写入 3,325,952 字节，批次未发布持久 StatePoint。[同批共享与写入记录](candidate-86dae32.md#a01-同一批次的共享-ram-和宿主写入) | — |
 | A02 | 86dae32 冻结安装，同批三代冷读通过 | 源和中间祖先经 Worker 围栏退出，专属目录和控制 socket 均已移除。叶子首次读取前，六个实测映射页均未驻留于目标。完整校验 64 MiB 的根代和差量后六页均已驻留。两盘根代和中间代数据一致，两个原打开的块 FD 按 8229→8246 和 8230→8247 前移。叶子继续 Fork，下一执行验证原进程、数据和两个新 FD 偏移。[同批冷读和祖先移除记录](candidate-86dae32.md#a02-删除祖先后的冷页盘与-fd-偏移) | — |
 | A03 | 86dae32 冻结安装，分支隔离、精确恢复及末引用回收通过 | 根与左右兄弟并行读写 1024 个私有页和两个盘扇区，三代递归树逐个围栏根、左和中间祖先并清理运行路径。叶子独立 Hibernate/Restore 时右兄弟持续写入。恢复后的叶子保留 Guest PID 和三卷身份，从原保存点精确推进一个 tick。最后一支退出后，三份 volatile 资源和传输均回收，旧 backing 无 FD 或映射，逻辑谱系与 durable StatePoint 仍可查。[同树 KVM 验收](candidate-86dae32.md#a03-递归分支独立写入休眠和末引用回收) | — |
-| A04 | 开发实机、Rust 测试，部分 | broker 重启后由仍活着的原 child VMM 提供 sealed RAM 原 inode 和两块可写头，随后公开 Fork 继续原 PID。Rust 测试确认宿主启动身份变化时 volatile 被标为 lost，意图保留。 `.build/wp23/tracked-provider-kvm.log`、`.build/wp23/close-workers-tests.log` 中 `catalog::tests::boot_change_marks_volatile_resources_lost_and_preserves_intents` | 独立真机矩阵覆盖仅 broker 持有、唯一 provider 同时退出且没有 durable 根，以及各情形的 GC/错误回执。 |
+| A04 | fb69434 安装件，三种 provider 场景通过 | 活源和活子分别给重启的 broker 交还原 sealed RAM。仅 broker 持有，以及 broker 与唯一源 VMM 同时退出时，恢复均报告 `lost`，保留 capture 引用，拒绝 GC，新 reader 的不可用回执携带零个 FD。开发平台另验证原 child 提供两块可写头后公开 Fork 继续原 PID。[资源身份和日志](#a04-broker-与最后一个-ram-provider)、`.build/wp23/tracked-provider-kvm.log` | — |
 | A05 | 开发实机、本地测试 | 同一 Debian 块代际同时受 checkpoint、休眠根、未决操作和备份导出保护。公开删除 checkpoint 后，导出仍持有原 inode，休眠仍可恢复原 RAM 和根盘数据。单独持有操作或块导出都阻止回收。最后引用释放后 Worker 在 unlink 前被终止，恢复围栏解除后重放原 tombstone，删掉磁盘文件并清除依赖边。 [实测与复现](managed-recovery.md#statepoint-引用与实物回收) | 用下一次冻结安装复跑。 |
 | A06 | 冻结测量、开发实机，部分 | 冻结 OCI 在 child 激活前失败，重试保留已成功 child 和原 capture。开发 Worker 记录 STOP_COMMIT 重启后的原执行退出，并拒绝错误 lineage、OFD 或 epoch。 `managed/oci-capture.log`、`.build/wp10/durable-statepoint.log`、`.build/wp10/parked-block.log` | 逐阶段断连、丢 ACK、Worker/进程崩溃与源并发变化的矩阵，逐案核对原 decision、导出身份与失败 held 归宿。 |
 | A07 | 冻结测量、开发实机，部分 | 冻结 OCI 从停驻点到旧 VMM 退出期间计数未推进。exact 恢复保留原 PID、紧接下一 tick 和原两个卷。开发实机核对 STOP_COMMIT 重启围栏、缺 chunk 及改盘拒绝。 `managed/oci-capture.log`、`.build/wp10/durable-statepoint.log` | 有活后代与无后代两组比较，关联外部 I/O、STOP 前回原态和 STOP 后仅退出，核对冗余 pin 释放、后代冷页及实际节省。 |
@@ -33,6 +33,18 @@
 | A16 | 冻结测量、开发实机、本地测试，部分 | 冻结 relay 经 Worker 同执行验证并执行一次授权命令，撤销后被拒。开发真实 Guest 创建与 Fork 后，克隆体和 public API 拒绝复制的 Guest bearer。 `managed/system-relay.log`、`.build/wp23/transactional-delegate-kvm.log`、`TestGuestGrantRequiresAttestedCurrentExecution` | 回滚同一源到撤销前的快照，再从新执行和实际克隆用旧 bearer 重放。 |
 | A17 | 冻结测量、历史冻结、开发实机，部分 | 冻结 System Fork/Restore 通过。历史 `dbe526e` 的配套 Debian 盘证明 systemd PID 1、Docker/Compose 任务成功及 K3s 受测节点和 Pod，CoreDNS 有 Unknown。开发 System 停 Agent 时 VM 与 SSH 保持，Agent 重启后重接。 `managed/system-fork.log`、`managed/system-captures.log`、[历史候选记录](candidate-dbe526e.md)、`.build/platform-system-gateway-v3.log` | 在当前 `86dae32` 安装上重复容器矩阵，验证 K3s DNS，并做 OCI Agent 重启后原任务在同一执行继续的观测。 |
 | A18 | 冻结运行时、开发平台实机，部分 | 普通 Agent 离线时，真实 Debian 的 best_effort 批次交付一个独立子机并拒绝超预算子机。同键重放保留 capture 与子机，晚取消返回 409。公开 Stop 和 Delete 退休父 binding。平台重启后重放返回原回执，旧 Worker wake 受围栏。子机通过公开 Task API 认领原 run，继续原 PID 和随机标记并返回独立回复。Worker 回收父私有写盘，子分支继续读取共享闭包。父持久卷转挂新 VM 后保持原字节。 [持久任务实测](managed-recovery.md#完整分叉与独立恢复后的任务索引)、`.build/platform-system-retire-kvm-v3.log`、`managed/oci-capture.log`、`.build/platform-oci-fork-retry-kvm.log`。同一开发批次还验证了运行中取消、删除父机后只重试原失败子和原 PID 任务认领。 [同批取消与重试](managed-recovery.md#同一批次内取消重试与父机删除) | 在下一次冻结安装上复跑这一组合。 |
+
+### A04 broker 与最后一个 RAM provider
+
+探针从冻结安装 `fb69434` 加载 Worker 和 libkrun，走 WorkerResource 的真实 Unix socket 与 FD 传输。探针登记其加载 libkrun 的测试进程作为 VMM。活源重交三个原 backing 后退出，子机从 tick 4 继续，到 tick 9 读到原冷页的 `0xa7`。再重启 broker，存活子机重交三个 backing，孙机拿到六个 backing，从 tick 11 继续，三代 Guest PID 均为 419。
+
+两个丢失实验各在独立 PID 命名空间运行，保留逻辑 capture 并移除落盘的 capture 目录。第一组围栏退出原源机，只有 broker 持有三个已封存 inode，再终止 broker。第二组确认唯一源 VMM 收到 SIGSTOP 后终止 broker 和源机。重启期间回收请求均得到 `E_RECOVERING`。恢复后两个 catalog 均保留原描述符摘要和 capture 引用，状态为 `lost`。GC 得到 `E_RESOURCE_PINNED`，新执行的只读租约得到 `E_RESOURCE_UNAVAILABLE`，内核返回零个 FD。夹具为 smolvm 提交 `69c4564` 的 `crates/smolvm-resourced/tests/kvm-generation.py`。
+
+| `.build/wp23/` 实机记录 | SHA-256 |
+| --- | --- |
+| `a04-live-provider-fb69434-v1.log` | `b633f5fc91424918a941648f39010b96ba8963dbfdf43bb4145d3c7d538f3ff6` |
+| `a04-broker-only-fb69434-v2.log` | `5da3b69f5f77dce711fccb6a54364b4dc1e36f40ab06c666c582b064e47849b2` |
+| `a04-last-provider-fb69434-v2.log` | `9b3a1805864f5aeec95ec241d80da16b472c14f9c999cb30f4ca78a1c3913ec2` |
 
 ### 卷恢复与停机存储实测
 
@@ -66,7 +78,7 @@
 | A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
 | A22 | 冻结安装、开发实机、本地测试，部分 | 桌面单次票据交付真实 framebuffer。Worker 确认原生运行租约后 API 才返回会话；延迟确认、丢失确认、授权撤回、到期和平台进程重启均实测。休眠后旧会话受围栏，新授权请求经现有服务唤醒策略连接原 Xvfb，Chromium noVNC 显示原画面。Guest grant 撤销立即截断进行中的 SSE。 `.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log`、`TestDesktopSessionFencesCredentialsAndExpiresLease` | 服务 revision 和证书撤销与活流进展同时发生时，分别核对新旧 HTTP、mTLS、SSH 后端以及旧 epoch。 |
 | A23 | 开发实机，发布与保留中断通过，Native 并发待验 | Native 与 FixedInternal 的真实 StatePoint 备份均在暂存时持有实际根 pin。错误密钥、缺块和等长篡改被拒。隔离的新 Worker 加载原 reader，恢复 RAM、所有盘、服务 PID 与 tmpfs 标记。旧源保持原执行。缺少、未知或重叠的目标私网均返回 `E_NETWORK_RECOVERY_UNAVAILABLE`。实际非管理员 UID 注册路由时被拒。回执区分新旧路由域和地址，Guest 确认 Native 的新 `/32` 和 Fixed 的原内部地址。平台备份在六种 ext4 故障场景中按同一运行 ID 恢复，损坏的新归档保住了上一份可恢复备份。[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | Native 备份选定对象与建立 Worker 引用期间的并发 GC、Worker 重启、缺 Bundle 与隔离恢复组合。 |
-| A24 | 历史 0.1.6 到 schema 1017、1018，迁移中断与回退通过 | 两个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器从 0.1.6 升到 1018，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
+| A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
 | A25 | 开发实机，部分 | 两路 Serve 共用实际 cgroup slice 和 Worker 预算，六路并发启动被拒，受保护 VM 保持。混合 Bundle 另核对两个真实 VMM scope 与共用 writer/IPAM。 `.build/worker-pressure-kvm-v5.log`、`.build/wp23/tracked-coexistence-kvm.log` | 反向启动顺序、并发 Fork/Restore 风暴和各 Bundle 的共享/私有内存统计。 |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
 | A27 | 开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。记录 p50/p95、首任务、源心跳空档、PSS、双盘正确性，默认保持 16 条通道。 [WP-22 测量与原始样本路径](performance-wp22.md) | 精确 vCPU 停顿、dirty 集合闭包、rebase、预取/共享缓存的独立对照，以及网络存储和更高并发。 |
@@ -88,6 +100,8 @@
 候选 `0.3.0-dev.1452d53` 的发行清单 SHA-256 为 `35392e8523ac61ba551b9cefa18cd522002877cc1e01b92b46b04167921e3d0a`。同一 WAL 切点重测 schema 2 到 1018，19 张表、旧 owner、原 pause ID、两端恢复和旧代次围栏全部通过。记录为 `.build/wp23/a24-schema1018-registry-ext4.log`（SHA-256 `c74b6338ea44fdcb2292f6f2d777c49de1f00ce84f0d9c5ce5c6df84e4001bb6`）。
 
 整机使用 QEMU 8.2.2、嵌套 KVM 和 Ubuntu 24.04，候选与旧包从只读数据盘提供。旧安装器启用官方 Serve 1.37.1、状态 socket 和独立非 root 平台服务。旧 CLI 进入维护、生成备份并用公开升级命令切换到新程序。官方 Serve PID 422 跨平台升级保持，跨 schema 的二进制回退被安装器拒绝。退出维护并核验之后同步 Guest 文件系统，随后终止该 QEMU 进程。同一虚拟磁盘再次启动，宿主 boot ID 由 `829a9994-6969-4e93-b531-af7d8c1fd431` 变为 `f917746d-ff2a-44cd-a1b2-92182af29c16`。systemd 自动拉起两个服务，原数据库 inode、安装标识、control epoch 和 owner 均匹配，两份备份的校验结果逐字节一致。此切点覆盖已确认并同步的升级。原始记录为 `.build/wp23/a24-systemd-powercycle-1018-v4.log`（SHA-256 `4cf526a956feecf213fb786c4a6594d5cf59cf71baccae05d7c6bb5471f5325a`）。[整机夹具与所需输入](../../tests/integration/release_host_reboot.py)
+
+升级到 `0.3.0-dev.5c4d060` 的 schema 1019 时，独立复跑了两组测试。候选发行清单 SHA-256 为 `c49ff28f52b40098bbb4a61d33cf981bd9445c9ec0a9823ef1990afa4618baf5`。迁移中断及新旧发行件分别恢复的记录为 `.build/wp23/a24-schema1019-registry-ext4.log`（SHA-256 `3cc82df393194944e24a173b32cb36b229464c7d695929839063e928b775e3f0`）。整机的官方 Serve PID 421 跨平台升级保持。同步后终止整机，新 boot ID 从 `0b4f0997-c02a-43fa-84ae-b3e3c07f5b91` 变为 `c224be91-ffae-4401-815f-eb4e797be616`，原 owner 和两份备份仍通过。记录为 `.build/wp23/a24-systemd-powercycle-1019.log`（SHA-256 `b7df463cb2640c6ce9fc86ed4f62a73c23a80a882bb8e178f1999c671577b7ef`）。
 
 ### A26 同平台的双运行时
 
