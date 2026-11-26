@@ -16,6 +16,8 @@
 
 若冻结夹具混合这两类操作，单独记录实际执行的子项及所用夹具版本。完整发行资格仍以该冻结版本原有的验收规则为准。
 
+## 测试版本
+
 | 证据名称 | 构建与运行范围 |
 | --- | --- |
 | fb69434 冻结安装 | 九组 KVM 日志随包发布，安装前后双 OCI 证据一致，原目录 Serve 和 root Worker 握手确认网络、System 恢复、待机与 live-compute。公开批次取消后的失败子重试与 Task 认领、手动 Stop、停机卷与首桌面通过。保存唤醒故障正确拒绝冷启，围栏后显式 exact 重试触发盘代际冲突。[安装输入、实测结果和失败边界](candidate-fb69434.md) |
@@ -44,7 +46,7 @@
 | A12 | fb69434 冻结公开停机卷通过，存储故障在开发实机通过 | Running 挂接、解挂与增长被拒。公开 Stop 确认原 VMM 退出，停机增长后 Guest 可独立从 16 MiB 文件系统扩到 32 MiB，解挂的持久卷可在另一实例读取。真实 ENOSPC 使 Create/Grow 无效果结束。旧盘进入只读阶段后的定点 fsync EIO 进入待恢复，Worker 重启后原操作完成，32 MiB 新盘保留原字节并可写。[开发存储故障](#卷恢复与停机存储实测) · [同包停机卷](candidate-fb69434.md#安装后公开操作) | 其他盘角色组合、在线热插拔 profile，及其他磁盘故障时序。 |
 | A13 | 开发实机、Rust 测试，部分 | Native 实测 Guest /32 与 Worker 路由。FixedInternal 实测稳定 Guest 内部 IP、独立 Worker 地址与 SSH。备份恢复拒绝重叠目标网段。Worker 测试核对 route domain IPAM 及旧 attachment fence。 `.build/managed-network-native-v2.log`、`.build/managed-network-platform-fixed-v3.log`、`.build/platform-networked-backup-native-v3.log`、`.build/wp23/close-workers-tests.log` | 同内部 IP 的多个 A 实例双向通信，跨私网 ACL、hairpin、MTU、实际 guest 冒用和未受管 IPv6 的组合。 |
 | A14 | 冻结测量、开发实机，部分 | 冻结 OCI 目标在激活前被终止，成功兄弟与 capture 保留。开发 TAP 在 park 和身份应用期间对 ICMP 沉默，失败身份保持隔离，父子保持独立；目标探针另检查早到 commit、错误 context 和后来一次 standby 上的旧 BEGIN。 `managed/oci-capture.log`、`.build/network-gate-libs/hostroute-kvm.log`、`smolvm/libkrun/tests/guest_gate/target_probe.py` | 各身份阶段的真实 Guest ACK 重放及断连，合并普通进程、容器、loopback 与外部 I/O 计数，验证每次坏 child 都未发布。 |
-| A15 | 冻结安装、开发实机、PoC，部分 | 冻结 `d8cc5d5` 从公开 Fork Batch 创建独立子机。捕获前源机的普通 Agent、提交后两机的普通 Agent 均返回 503。服务恢复后，原 System PID 787 与嵌套 PID 1 的计数从 4 分别推进到源 554、子 527。生产 freezer 的两次 helper SIGKILL 均在 1.26–1.28 s 恢复三个计数器，回执 `failed_thawed/EPIPE`。2 vCPU PoC 另覆盖取消、超时、D 态及未应答 FUSE。[PoC 记录](checkout.md#guest-用户态冻结实验)、`.build/gate-acceptance/helper-exit-kvm.log`、`.build/gate-acceptance/installed-agent-stopped-kvm.log` | 生产路径的 D 态、FUSE 和取消边界。 |
+| A15 | 冻结安装、生产内核与 helper | `fb69434` 两轮实测 ext4 写进程处于 D 态时，三个计数器随 gate 冻结，取消后继续。未应答的 FUSE LOOKUP 在 465–479 ms 返回 `failed_thawed/EBUSY`，取消竞争也有终态和解冻证据。生产 helper 退出与普通 Agent 停止分别通过。[实测与日志](#a15-阻塞-io-取消与实际解冻) | — |
 | A16 | 冻结测量、开发实机、本地测试，部分 | 冻结 relay 经 Worker 同执行验证并执行一次授权命令，撤销后被拒。开发真实 Guest 创建与 Fork 后，克隆体和 public API 拒绝复制的 Guest bearer。 `managed/system-relay.log`、`.build/wp23/transactional-delegate-kvm.log`、`TestGuestGrantRequiresAttestedCurrentExecution` | 回滚同一源到撤销前的快照，再从新执行和实际克隆用旧 bearer 重放。 |
 | A17 | `fb69434` 冻结 System 实机与 OCI 对照，修复后 OCI 开发实机通过 | 真实 PID 1 为 systemd。Docker Compose 新构建镜像并运行容器，System Agent 重启后仍读取原进程。K3s 新节点和 CoreDNS Ready，真实 Pod 从两条 Service DNS 记录找到原 HTTP 标记。冻结 OCI Agent 退出会结束 VMM。修复后管理 Agent 的 SIGTERM 和 SIGKILL 均保持原任务、日志和显式/自动停机合同，子机保留 Guest tmpfs 工作负载登记。[版本、PID、DNS、回执与复现](guest-runtime-a17.md) | 用包含 OCI 修复的冻结安装复跑管理服务重启。 |
 | A18 | fb69434 冻结安装，批次取消、父删除后重试和任务认领通过 | 公开批次保留原 capture 和已就绪 child。取消目标继续围栏，父机 Stop、Delete 和平台重启后，仅原失败 child 以原 ID 成功重试。公开 Task 认领返回同一 run、原 Guest PID 与原标记。首次公开提交的 HTTP 回执整体丢弃后，重启平台并以原键、原修订重试，只保留一个操作、一个 capture 和一个原子机；该子机读回原 RAM 标记。再次重放返回相同操作，改变请求返回 409。同键取消、重试和删除重放稳定。另有开发实机记录父私有写盘回收、子继续读共享闭包及父持久卷转挂后读回原字节。[首次回执丢失](candidate-fb69434.md#首次-fork-回执丢失) · [同包任务复测](candidate-fb69434.md#安装后公开操作) · [持久任务实测](managed-recovery.md#完整分叉与独立恢复后的任务索引) | — |
@@ -104,6 +106,16 @@
 | `managed-volume-deleted-checkpoint-kvm-v3.log` | `5201aa66e612916c0aee08af39cf8725daa8048230110d6f0d0ac6aeef4d4443` |
 | `managed-volume-growth-fault-kvm-v4.log` | `02886381fe5d1cf0e8de5c6af3bf244832c1fa380a6a2f32d9838398dd55adbe` |
 | `managed-volume-growth-fault-kvm-v8.log` | `9d6cabe34a019decf8d355b01e0a4b8d158792e32b22cb50f7cbfa58f4db4d56` |
+
+### A15 阻塞 I/O、取消与实际解冻
+
+两次启动均校验 `fb69434` 安装清单中的 libkrun、固件和 identity-helper。每次在两颗 vCPU 上观察三个独立计数器，包含嵌套 PID 命名空间。Guest 对专用 16 MiB ext4 发起文件系统冻结，另一个进程写入并进入内核报告的 D 态。这种等待允许用户态 freezer 进入 armed。三个计数器在 armed 时全部静止，ABORT 后全部恢复。解除文件系统冻结后，原写进程完成写入、fsync 和读回。
+
+两轮都让真实 FUSE 服务收到 LOOKUP 并暂扣回复。未应答的请求分别在 478.48 和 464.67 ms 返回 `failed_thawed/EBUSY`，此时内核仍报告 FUSE 客户为 D 态。另一轮次在准备中发送 ABORT，分别观察到原失败先提交（464.18 ms）和取消先提交（16.33 ms）。查询保留同一终态，三个计数器均已恢复，原 FUSE 请求随后完成。实测记录 `.build/gate-acceptance/fb69434-blocked-io-v4.log` 的 SHA-256 为 `d9e6bb6d8999c062731399848ef871509828382c66ca56187d8b50d79079d05d`，`fb69434-blocked-io-v5.log` 为 `257122ba1ead92b0d2e41e15040ab77298d6966def60172e56116c8ea6854846`。
+
+另两次生产 helper 被终止后均返回 `failed_thawed/EPIPE`，三个计数器在 1.26–1.28 s 内恢复。`d8cc5d5` 的公开 Fork Batch 在普通 Agent 已停止时创建独立子机。两机的服务恢复后，原 System PID 787 和嵌套 PID 1 的计数均从 4 继续，源达 554、子达 527。原始记录为 `.build/gate-acceptance/helper-exit-kvm.log` 和 `.build/gate-acceptance/installed-agent-stopped-kvm.log`。
+
+复现时，静态编译 smolvm 的 `tests/fixtures/freezer-blocked-io.c` 与 libkrunfw 的 `tests/guest-gate/fuse.c`，包含目录为后者所在目录。另将 libkrun 的 `tests/guest_gate/counters.c` 静态编译为计数器。在有 KVM 的 Linux 上执行 `python3 tests/freezer_blocked_io_kvm.py --bundle INSTALL --blocker BLOCKER --counters COUNTERS`。
 
 ## 兼容、运维、备份与性能
 
