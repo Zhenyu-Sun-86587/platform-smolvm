@@ -511,3 +511,54 @@
   .machineCard { transition: none; }
   .skeleton, .spinning { animation: none; }
 }
+
+.pageHeading {
+  padding-bottom: 32px;
+}
+
+.toolbar {
+  margin-top: 24px;
+}
+
+.machineCard {
+  min-height: 72px;
+}
+
+.machineActions :global(button[data-slot=button][data-variant=default]) {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.machineActions :global(button[data-slot=button][data-variant=default]:hover) {
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  border-color: var(--primary);
+}
+
+.filterButton, .filterMenu {
+  background: var(--popover);
+}
+
+.nameField, .field textarea {
+  background: var(--background);
+}
+
+.field select {
+  background: var(--popover);
+}
+
+@media (max-width: 899px) {
+  .docsLink { order: 1; }
+}
+
+@media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
+  .pageHeading {
+    padding-bottom: 20px;
+  }
+  .pageHeading :global(.page-heading-copy p) {
+    max-width: 320px;
+  }
+  .machineCard {
+    min-height: 140px;
+  }
+}

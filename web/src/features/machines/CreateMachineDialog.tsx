@@ -102,8 +102,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
     (machine.data.health?.guest_management ?? machine.data.guest_management_status) === "ready"
   const lostReceipt = issue instanceof PlatformError ? issue.detail : undefined
   const nameIssue = nameError(name)
-  const loading = !templates.items && !templates.error || system && !networks.items && !networks.error
-  const valid = !nameIssue && !suggesting && (reference || (!loading && Boolean(selected && (!system || runtime)))) &&
+  const loading = (!templates.items && !templates.error) || (system && !networks.items && !networks.error)
+  const valid = !nameIssue && !suggesting && !loading && Boolean(selected && (!system || runtime)) &&
     positiveInteger(cpu) && positiveInteger(memory) &&
     (system || (positiveInteger(storage) && positiveInteger(overlay) && (idlePolicy !== "enabled" || idleTimeout >= 60)))
   const formId = "new-machine-form"
@@ -204,7 +204,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
           aria-pressed={cpu === preset.cpu && memory === preset.memory} onClick={() => { setCPU(preset.cpu); setMemory(preset.memory) }}>
           <strong>{preset.cpu}</strong> vCPU · <strong>{preset.memory / 1024}</strong> GiB
         </button>)}</div>
-        {!preview && <button type="button" className={styles.textButton} aria-expanded={custom} onClick={() => setCustom(!custom)}>Custom size</button>}
+        <button type="button" className={styles.textButton} aria-expanded={custom} onClick={() => setCustom(!custom)}>Custom size</button>
         {!preview && !custom && !presets.some(preset => preset.cpu === cpu && preset.memory === memory) &&
           <small>{cpu} vCPU · {memory} MiB selected</small>}
       </fieldset>
