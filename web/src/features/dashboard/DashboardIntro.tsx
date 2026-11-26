@@ -1,13 +1,14 @@
 import { useState } from "react"
-import { Asterisk, ChevronLeft, ChevronRight, Orbit, Sparkles, X } from "lucide-react"
+import { ChevronLeft, ChevronRight, X } from "lucide-react"
 import { Button, Modal } from "../../ui"
+import { PreviewBrandLogo } from "../catalog/PreviewBrandLogo"
 import styles from "./dashboard.module.css"
 
 const agents = [
-  { name: "Claude Code", Icon: Asterisk, color: "#d18a70" },
-  { name: "Codex", Icon: Orbit, color: "currentColor" },
-  { name: "Antigravity", Icon: Sparkles, color: "currentColor" },
-]
+  { name: "Claude Code", logo: "claude" },
+  { name: "Codex", logo: "codex" },
+  { name: "Antigravity", logo: "antigravity" },
+] as const
 const tips = [
   { category: "Coding agents", title: "Connect your coding agent",
     description: "Sign in once and Claude Code, Codex or Antigravity is signed in on all your private machines." },
@@ -36,9 +37,9 @@ export function DashboardIntro() {
       <span className={styles.tipCategory}>{tip.category}</span>
       <h2>{tip.title}</h2>
       <p>{tip.description}</p>
-      {position === 0 && <div className={styles.agentCards}>{agents.map(({ name, Icon, color }) =>
+      {position === 0 && <div className={styles.agentCards}>{agents.map(({ name, logo }) =>
         <div className={styles.example} key={name}>
-          <Icon size={18} color={color} /><strong>{name}</strong>
+          <PreviewBrandLogo logo={logo} size={18} /><strong>{name}</strong>
           <Button size="sm" onClick={() => setAgent(name)} aria-label={`Connect ${name}`}>Connect</Button>
         </div>)}</div>}
       {tip.href && <a href={tip.href}>View {tip.category.toLowerCase()} <span aria-hidden="true">→</span></a>}
