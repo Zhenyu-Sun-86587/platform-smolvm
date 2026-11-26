@@ -24,3 +24,37 @@ sudo python3 -B tests/integration/owned_gate_cut_kvm.py \
 传入已安装 Bundle 时使用 `--use-installation`，夹具通过只读 bind 挂载原件。
 
 在代表切点传入 `--container` 可同时检查 OCI 容器。夹具取同一 Bundle 的 OCI 模板内 crun、musl 和依赖，为 System 源启动一个新的 PID 和 mount namespace。容器进程持续写本地计数，并在自有工作负载提交正常请求后向同一个接收器发送数据。夹具核对源和成功子机的容器 PID 1、继承的 namespace 与计数，以及成功子机第一次业务发送的真实来源地址、hostname 和 machine ID。
+
+## 1eb5104 安装结果
+
+正式安装 Bundle `sha256:b00c0f05bc54d69bbef854ea16c3cac42d36ddc9f8413a1cedd5e5e290434f97`，平台 `c095c4f625c85000bee6de656c582a63ff0e8db7`，Debian System 盘 `sha256:f7b0611ebb21af630addeddf95717aae284f7aa44b4abe2ee7c3933919570b02`。以下用例均从安装目录只读挂载该 Bundle。
+
+| 切点 | 观察 |
+| --- | --- |
+| `authority_prepared` | PID 退出时 revision 仍为 1，父机继续，自有接收器从失败目标收到 0 条。源 OCI 容器保持 PID 1 和同一 PID namespace，正常业务计数由 2 增至 15。另一批成功子机的继承计数在现场推进到 20，首条容器外发为 21，带新 IP、hostname 和 machine ID。独立 slice 峰值为 379871232 字节。`installed-a14-authority-prepared-oci-loop.log`，SHA-256 `556ee0361ce9b4bb80870638574bcc6f1166e22ece924a147764ff33754de8bc`。 |
+| `offered` | PID 退出时 revision 仍为 2，原进程和租约回收。失败实例未发布，父机和另一批成功子机完成回环和私网业务。独立 slice 峰值为 370728960 字节。`installed-a14-offered.log`，SHA-256 `125f9e64626c367e1eef5917ca79ba3ab81e2d84a93b7d93e8c3fb14b9ee6afb`。 |
+| `applying` | 退出前后均为 revision 3，公开 operation 等待 120 s 超时。`installed-a14-applying.log`，SHA-256 `046a9c2905434f0dea83888a3b81e2ae21dca93bd38bcef7614b0241bf23b538`。 |
+| `identity_ready` | 退出前后均为 revision 4，公开 operation 等待 120 s 超时。`installed-a14-identity_ready.log`，SHA-256 `fe3e2810150373132093d3b7012a9e54ee6da9dedbd027aeed3af64ddeb25ef3`。 |
+| `committing` | 退出前后均为 revision 5，公开 operation 等待 120 s 超时。另一次只读现场观察证明已退出的目标仍为 Worker 登记的 `NEW/registered`，其遗留控制路径仍是 Unix socket。`installed-a14-committing.log`，SHA-256 `77fa45ad81da8fbda77ccf9d88b2f59bec3ac557b2c88c002cdb1ac27861e95c`。只读现场记录 `installed-a14-committing-inflight-proven.log`，SHA-256 `53007be8c4b327f0f2eb6ae67be9ce17f2183c9038cdf9374bf960f9f2be9995`。 |
+| `policy_armed` | 退出前后均为 revision 6，公开 operation 等待 120 s 超时。`installed-a14-policy_armed.log`，SHA-256 `6f767f0fc1be074b46d653bf1a8b118a3ad2c74c3aa2d1c73fb7c6ba22071eed`。 |
+
+原始记录位于 `.build/release-1eb5104/`。首次容器试验在成功子机的容器 FIFO 请求等待超时，保留 `installed-a14-authority-prepared-oci.log`。改用正常的本机 UDP 请求并核对容器实时计数后，从同一个安装重试通过。一次 `policy_armed` 运行连续观察到前五个阶段，读取下界依次为 36、183、156、190 和 21 ms。目标在第一次看到 `policy_armed` 时已经被选中退出，只有一次该阶段读数。全程使用正常的 Fork 进程，时序由只读目录采样。
+
+## 目标退出的开发回归
+
+Serve 修复 `695dd571d45b0f3bb403775da8ac04c8298e6475` 在控制路径存在但无法重新绑定时，请 Worker 核验原执行的退出。开发 Bundle `sha256:e76b07d2291545e29ec0ee50ad095d5c3c2f1fd795cc4ae424043edb264d7e48` 使用已安装组合的 Worker、libkrun 和 Guest 工具。`applying` 命中后成功收敛，源和另一批目标均完成业务。原始记录 `dev-owned-target-exit-applying.log`，SHA-256 `eea20496f0a05f6af6c2e170b0ac4c5ce9b0fd9d4bb554ee5bff9ce77af05b7f`。`identity_ready` 失败目标已收敛，其后另一批成功目标的一笔 UDP 正常收据未在 8 s 内观察到。该次记录为 `dev-owned-target-exit-identity_ready.log`。
+
+在同一开发包中，`committing` 和 `policy_armed` 均再次命中。Worker 已将原执行写为 `exited`，回收 TAP 和 writer，身份记录保留 `failed_held/commit`。终态检查仍拒绝失败收敛，分别见 `dev-owned-target-exit-committing.log` 和 `dev-owned-target-exit-policy_armed.log`。Worker 修复 `010c38ef91f835c1649606c5e4ac5382cc2cea89` 在同一代际的退出与资源围栏已成立、没有已记录的 TAP 发布时允许该 operation 写为 `ABORTED`。已经记录的激活 commit 或完成的发布仍保留原记录。
+
+使用上述两个修复的开发 Bundle 为 `sha256:b76ce971ad42ca2865e32978162ce657f762283280c0f2eeb7adf054552992de`。Serve SHA-256 为 `7daff9c26298f9409bd5cdf5c1d444130fbc5773dca1c051d0b102a3d8e9d2cf`，Worker 为 `c6dcccb773c2bac1a82d847a42d383f058944fa103dd298e26badbbb94055034`，与已装包字节一致的 libkrun 为 `1e8015e433a7baeb70dd8823d53b9c0a73529ecf08d450a92ae82c79eec8abdc`。平台和 Debian 盘沿用安装试验的输入，夹具为 `e6440f811efc87713a98a54351962ef8df23e625`。带 `v2` 的记录在握手即退出，其 Serve 构建缺少 `deep-runtime`。以下为使用已验证 Serve 的 `v3` 重试。
+
+| 切点 | 开发组合观察 | 原始日志 SHA-256 |
+| --- | --- | --- |
+| `authority_prepared` | revision 1。目标 `ABORTED/failed_held`，父机普通进程和容器持续运行。容器业务计数由 2 增至 13。另一批成功子机容器仍在原 PID namespace，判定计数实时推进到 18，首条容器外发的计数为 19，携带新 IP、hostname 和 machine ID。 | `dev-owned-target-exit-v3-authority_prepared.log` `ddccc0377a0cf7f7b9f2f223e66129a71248f7ba4088c7e96a278ab03c229311` |
+| `offered` | revision 2。目标 `ABORTED/failed_held`，父机继续。另一批成功子机首条新身份私网数据的计数为 16。随后本机回环业务与接收端均记录同一请求 ID。 | `dev-owned-target-exit-v3-offered.log` `8a142925cc4c429436b636a984c044bb80588dcea4847b8542224cccf518e472` |
+| `applying` | revision 3。目标 `ABORTED/failed_held`，父机继续。另一批成功子机首条新身份私网数据的计数为 17。随后本机回环业务与接收端均记录同一请求 ID。 | `dev-owned-target-exit-v3-applying.log` `97a7374b2820056e90095118b1f9b36c3d26e85b14a0c15b5f05096a21ceaa89` |
+| `identity_ready` | revision 4。目标 `ABORTED/failed_held`，父机继续。另一批成功子机首条新身份私网数据的计数为 19。随后本机回环业务与接收端均记录同一请求 ID。 | `dev-owned-target-exit-v3-identity_ready.log` `a4f62ffd03f297b1b4fe4e4f9a23618776e217b150b5a0143230a45b483a995f` |
+| `committing` | revision 5。目标 `ABORTED/failed_held`，保留 `commit`，writer 已释放、TAP 已退休且无已记录发布。父机继续。另一批成功子机的私网接收端有新身份心跳 18–21，本机回环得到计数 22。该笔 UDP 对应的外部收据等待 8 s 超时。 | `dev-owned-target-exit-v3-committing.log` `5676c6b5d00dc6e588771c47d24e7962bb7af4ca214e71db5576c583d0b3f3da` |
+| `policy_armed` | revision 6。目标 `ABORTED/failed_held`，保留 `commit`，writer 已释放、TAP 已退休且无已记录发布。父机继续。另一批成功子机的私网接收端有新身份心跳 18–21，本机回环得到计数 23。该笔 UDP 对应的外部收据等待 8 s 超时。 | `dev-owned-target-exit-v3-policy_armed.log` `b2271e32f15c55105a02f8cd911550acd6d17f7a2e837f2d470ab4b516303ecd` |
+
+接收端在 `committing` 和 `policy_armed` 退出观察期间都未收到失败目标地址的数据。`commit` 已持久化的目标可能在退出前收到放行，因此这些接收端观测仅证明本次业务收件结果。Worker 后续提交 `b75b1b743e9fcd6c06cc241a9211cf0f44a97ca2` 将当次执行已记录的 `activation_decision` 带入 Fork 回执，使平台可以独立判断业务结果的不确定性。Worker 的 7 项 Catalog 单测通过。
