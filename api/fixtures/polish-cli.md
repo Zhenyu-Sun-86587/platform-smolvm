@@ -22,6 +22,9 @@ and the following opt-in guards.
   `volume_policy.default:"clone"`. The original compatibility choices
   remain available on the original commands.
 
+[Fixed script examples](polish-cli.json) show structured conflicts, timeouts,
+mutation uncertainty and partial fork receipts.
+
 The existing operation states and effects retain their wire meaning.
 Use `--strict-result` to make partial or unknown effects return nonzero.
 JSON mutation errors report the original intent in `error.intent`, while

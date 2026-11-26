@@ -41,3 +41,7 @@ are sent to the bound Guest execution. `exec --follow` copies stdout and
 stderr independently and exits with the Guest status on a confirmed exit.
 With `--json --follow`, exec emits one JSON result per observed output page.
 An interrupted stream may have given the recipient a prefix of the output.
+
+The SSH shortcut needs an OpenSSH version that supports `KnownHostsCommand`.
+It performs a read for the verified host key and opens an authorized tunnel.
+A manage token scoped to the machine can satisfy both checks.

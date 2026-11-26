@@ -46,10 +46,10 @@ func TestMutationDoesNotReplayAfterAReusedConnectionLosesTheResponse(t *testing.
 	for _, body := range []string{"", "canary"} {
 		t.Run("body length "+strconv.Itoa(len(body)), func(t *testing.T) {
 			var calls atomic.Int32
-			var primedAddress string
+			var primedAddress atomic.Value
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodGet && r.URL.Path == "/v1/control" {
-					primedAddress = r.RemoteAddr
+					primedAddress.Store(r.RemoteAddr)
 					_, _ = io.WriteString(w, `{"control_epoch":"test"}`)
 					return
 				}
@@ -60,8 +60,9 @@ func TestMutationDoesNotReplayAfterAReusedConnectionLosesTheResponse(t *testing.
 				if err != nil || string(payload) != body {
 					t.Errorf("unexpected mutation body: %q %v", payload, err)
 				}
-				if calls.Add(1) == 1 && r.RemoteAddr != primedAddress {
-					t.Errorf("mutation used %s, wanted the reused connection %s", r.RemoteAddr, primedAddress)
+				address, _ := primedAddress.Load().(string)
+				if calls.Add(1) == 1 && r.RemoteAddr != address {
+					t.Errorf("mutation used %s, wanted the reused connection %s", r.RemoteAddr, address)
 				}
 				conn, _, err := w.(http.Hijacker).Hijack()
 				if err != nil {
