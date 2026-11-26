@@ -29,7 +29,7 @@ static unsigned port_number(const char *port)
     return number >= 1 && number <= 65535 && !*end ? (unsigned)number : 0;
 }
 
-static int serve(const char *port)
+static int serve(const char *port, int event_stream)
 {
     unsigned number = port_number(port);
     if (!number) return 1;
@@ -45,7 +45,18 @@ static int serve(const char *port)
         int client = accept(listener, NULL, NULL);
         if (client < 0 && errno == EINTR) continue;
         if (client < 0) return 1;
-        (void)write_all(client, "private wake\n", sizeof("private wake\n") - 1);
+        if (event_stream) {
+            static const char headers[] = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            static const char event[] = "data: finished\n\n";
+            char request[512];
+            if (read(client, request, sizeof(request)) > 0 &&
+                write_all(client, headers, sizeof(headers) - 1) == 0) {
+                sleep(20);
+                (void)write_all(client, event, sizeof(event) - 1);
+            }
+        } else {
+            (void)write_all(client, "private wake\n", sizeof("private wake\n") - 1);
+        }
         close(client);
     }
 }
@@ -91,7 +102,8 @@ static int udp_exchange(const char *peer, const char *port, const char *size)
 
 int main(int argc, char **argv)
 {
-    if (argc == 3 && strcmp(argv[1], "--serve") == 0) return serve(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "--serve") == 0) return serve(argv[2], 0);
+    if (argc == 3 && strcmp(argv[1], "--serve-sse") == 0) return serve(argv[2], 1);
     if (argc == 3 && strcmp(argv[1], "--serve-udp") == 0) return udp_server(argv[2]);
     if (argc == 5 && strcmp(argv[1], "--exchange-udp") == 0) return udp_exchange(argv[2], argv[3], argv[4]);
     if (argc == 2 && strcmp(argv[1], "--cid") == 0) {

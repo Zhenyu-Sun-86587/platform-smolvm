@@ -362,7 +362,7 @@ def hibernate_case(platform, source, ref, probe, seen_cids):
     print("System hibernate fenced the old VMM and restored the Agent on a new CID.")
 
 
-def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, boundaries=False):
+def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, boundaries=False, activity=False):
     serial = 0
     port = 45713
     source_attachment = platform.app(f"machines/{source_id}/network")
@@ -527,6 +527,33 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, bo
 
     if boundaries:
         hibernate_boundary_case()
+        return
+
+    if activity:
+        source = "machines/" + source_id
+        policy(source, source_ref, True, 0)
+        _, _, peer, endpoint = target("activity-peer")
+        sse_port = port + 1
+        path = "/run/private-activity-response"
+        platform.guest(peer, ["/usr/bin/systemd-run", "--unit=private-activity-listener",
+                              "/tmp/managed-vsock-probe", "--serve-sse", str(sse_port)])
+        wait_for(lambda: f":{sse_port:04X}".encode() in platform.guest(peer, ["/bin/cat", "/proc/net/tcp"]))
+        assert call("QueryHostActivity", source_ref)["outbound"] == 0
+        assert call("QueryHostActivity", peer)["inbound"] == 0
+        platform.guest(source_ref, ["/usr/bin/systemd-run", "--unit=private-activity-client", "/bin/bash", "-c",
+            r"""exec 8<>"/dev/tcp/$1/$2"; printf 'GET /stream HTTP/1.1\r\nHost: peer\r\n\r\n' >&8; cat <&8 > "$3" """,
+            "activity", endpoint["private_ipv4"], str(sse_port), path])
+        wait_for(lambda: call("QueryHostActivity", source_ref)["outbound"] > 0
+                 and call("QueryHostActivity", peer)["inbound"] > 0, timeout=8)
+        wait_for(lambda: "host:outbound" in call("GetLifecycleStatus", source_ref)["blockers"], timeout=12)
+        response = platform.guest(source_ref, ["/bin/cat", path])
+        assert b"Content-Type: text/event-stream" in response and b"data: " not in response, response
+        assert status(source_ref) == "RUNNING"
+        wait_for(lambda: b"data: finished" in platform.guest(source_ref, ["/bin/cat", path]), timeout=25)
+        wait_for(lambda: call("QueryHostActivity", source_ref)["outbound"] == 0
+                 and call("QueryHostActivity", peer)["inbound"] == 0, timeout=7)
+        wait_for(lambda: "host:outbound" not in call("GetLifecycleStatus", source_ref)["blockers"], timeout=12)
+        print("A Guest-initiated private SSE registered real outbound and inbound activity during the silent wait. The idle listener and the closed stream had zero active connections.", flush=True)
         return
 
     machine, view, ref, endpoint = target("standby")
@@ -854,7 +881,7 @@ def test(args, root, stack, case):
         subprocess.run([args.cc, "-static", "-Os", "-s", "-o", binary, source_file], check=True)
     if packet_case:
         packet_wake_case(platform, machine_id, ref, binary, "native" if case.endswith("-native") else "fixed_internal",
-                         boundaries=case.startswith("packet-cut-"))
+                         boundaries=case.startswith("packet-cut-"), activity=case == "packet-activity")
         return
     probe = platform.place_probe(ref, binary)
     seen = {int(platform.guest(ref, [probe, "--cid"]))}
@@ -888,7 +915,7 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed",
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
@@ -914,7 +941,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
-        if selection[0].startswith("packet-cut-"):
+        if selection[0].startswith("packet-cut-") or selection[0] == "packet-activity":
             slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
             subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                             "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
