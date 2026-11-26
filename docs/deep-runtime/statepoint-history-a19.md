@@ -23,6 +23,20 @@ sudo python3 -B tests/integration/statepoint_history_kvm.py \
 
 开发 Worker `sha256:d81a5b2f5ad8d322bacc641a1a330b54db77085bd691d2bf317e0cac91c515cd` 按登记的原 reader 合同导出两个完整点的只读描述符。其 `recover-backup-closure` 校验 manifest `sha256:413bd9b412a1b0838270ad790052eda5f99223063b646ccc1940206c2a265feb`，再验证独立副本缺失一个普通 StatePoint chunk，以及该副本内同一 chunk 截断一字节。两次副本校验均失败，完整归档再次通过。旧 Serve 随后恢复两个点，Guest 任务 PID 610、启动时间 492，分别从 16 到 17 和 69 到 70。`.build/a19-history-copied-archive-v1.log` 的 SHA-256 为 `9447f727979112009318d5b757e28495529f42c89d7aefe80ebcc1fc1f1bebac`。由前述夹具增加 `--worker <binary> --verify-backup-copy` 复跑。
 
+## 公开备份与独立 Worker 恢复
+
+含 reader 修复的开发 Worker 来自 `1eb5104`，二进制摘要 `sha256:024d00af15399915a5ae399a495fae9448c99af73f846f625a59451ee9f52e0a`。开发 Bundle `sha256:0b9e399f082e7b021a4cd078711b5bcd46843bdbb8c08b1f6f4bae923e4232b5` 使用 `f2df146` 的 Serve、Agent、库和固件，夹具单独复制后只读绑定。使用平台 `sha256:7a1c13411b276606a17c1564c4279f4117fd5f403f45f30d8d6582458bc36725`、CLI `sha256:462a66b2b53d14553c607b378d6ef6f328300621e021cef4eead780a20f11ca7` 及 System 盘 `sha256:4b5ba5301eac04a398f50fb5be2f969c6e793845d249303783dc2f69a3a3c23f`。
+
+所有者使用公开 `sandboxctl snapshots capture` 保存运行中的 Debian System，再用 `backups run` 创建归档。运行达到 `verified`，管理员的 `backup verify` 核对原登记 reader `managed-acceptance:sha256:c41d1ef5a0e49afd56b8ef272e8355c588030ebcb68041e6d62d1942945cf01c` 和闭包 manifest `sha256:59e924e4de0a1a4bc8c9a8184340ce1841a34036955be991ecdc2e1dc7a13d50`。
+
+`backup recover-native --worker-catalog` 从空目标目录生成独立 catalog，初始没有活执行。相同 Worker 与 Serve 在新目录从原 StatePoint manifest `sha256:3cf136c9f7af0b64f290a67dcadfbd430aa47bb5f7cf658d0105a9a25ef3cf44` 启动新的 KVM 实例，目标为 epoch 1，原 `/run` RAM 标记与根盘 `/var/tmp` 标记均读回。源执行在全流程中继续使用原引用和 epoch。`.build/a19-development-public-backup-v2.log` 的 SHA-256 为 `3fbaeec076e289d1b83067b11fd272ddebccef49b64ba8ff1185a3762ffbfc51`。[公开备份夹具](../../tests/integration/authorized_statepoint_backup_kvm.py)
+
+```sh
+sudo python3 -B tests/integration/authorized_statepoint_backup_kvm.py \
+  --bundle "$reader_bundle" --platformd "$platformd" \
+  --sandboxctl "$sandboxctl" --system-image "$system_disk"
+```
+
 ## 便携增量与恢复资源
 
 冻结 `fb69434` 的库、固件和 OCI 根文件系统配合 A17 的开发 CLI `2f39d93`、Guest Agent `b09a5c0`。公开 `machine checkpoint --store` 创建两代，第二次写入 7 MiB 并复用 127 MiB。`--export-from --history 1` 发行携带两代的普通归档 `sha256:ef4c4c39047dd21db1e8f0e9fedda342cad2183b7ebf8364275896c223bcbca4`。用 `--at '~1'` 和 `--at '~0'` 分别启动两个目标，读回各自 RAM 标记、原 crun PID 480 与启动时间 97，计数分别为 14 和 27。显式请求 2 vCPU 或 768 MiB 时，CLI 分别指出原值为 1 vCPU、384 MiB，并拒绝创建。`.build/a19-portable-history-v2.log` 的 SHA-256 为 `0e36d9492d7ca05bf2f1efb41313dd9eb4136162b66f314d742438a691874f83`。[OCI 夹具](../../tests/integration/oci_agent_restart_kvm.py)
