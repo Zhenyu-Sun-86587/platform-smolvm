@@ -4,6 +4,7 @@ import {
 } from "lucide-react"
 import { fixtureScene } from "../../api"
 import { Button, EmptyState, Modal, PageHeader } from "../../ui"
+import { DocumentationLink } from "../catalog/DocumentationLink"
 import catalog from "../catalog/catalog.module.css"
 import styles from "./settings.module.css"
 
@@ -38,7 +39,8 @@ export function PreviewPage({ page }: { page: PreviewPage }) {
   </>
   return <>
     <PageHeader title={title} icon={<Icon />} description={description}
-      actions={page === "domains" || page === "environment" ? <Button variant="primary" onClick={() => setOpen(true)}><Plus size={15} /> {addLabel}</Button> : undefined} />
+      actions={page !== "agents" && <><DocumentationLink />
+        {(page === "domains" || page === "environment") && <Button variant="primary" onClick={() => setOpen(true)}><Plus size={15} /> {addLabel}</Button>}</>} />
     {page === "integrations" ? <IntegrationGrid /> : page === "agents" ? <>
       <select className={catalog.scope} aria-label="Machine scope"><option>All machines</option><option>atlas-dev</option></select>
       <section className={catalog.featurePanel} data-split="true">
@@ -97,7 +99,7 @@ const sections = [["", "General"], ["members", "Members"], ["teams", "Teams"], [
 export function OrganizationPreview({ tab }: { tab?: string }) {
   const [create, setCreate] = useState(false)
   return <>
-    <PageHeader title="Organization settings" icon={<Building2 />} description="Organization identity and workspace access." />
+    <PageHeader title="Organization settings" icon={<Building2 />} description="Organization identity and workspace access." actions={<DocumentationLink />} />
     <nav className={styles.tabs} aria-label="Settings sections">{sections.map(([id, title]) => <a key={title} href={"#/settings" + (id ? "/" + id : "")}
       aria-current={(tab ?? "") === id ? "page" : undefined}>{title}</a>)}</nav>
     {tab === "teams" ? <>

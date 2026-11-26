@@ -216,3 +216,28 @@
   .featurePanel[data-split=true] { grid-template-columns: 1fr; }
   .featurePanel > div + div { border-left: 0; border-top: 1px solid var(--border); }
 }
+
+.stackedHeading :global(.page-heading-copy) {
+  flex-basis: calc(100% - 52px);
+}
+
+.stackedHeading :global(.page-heading-actions) {
+  flex-basis: 100%;
+}
+
+.toolbar {
+  margin-top: 24px;
+}
+
+.table td > small {
+  display: block;
+  color: var(--muted-foreground);
+}
+
+.form :is(input, textarea) {
+  background: var(--background);
+}
+
+.form select, .region, .segments {
+  background: var(--popover);
+}

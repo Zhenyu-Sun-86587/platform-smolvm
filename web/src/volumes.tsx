@@ -4,6 +4,7 @@ import { HardDrive, Plus } from "lucide-react"
 import type { Machine, RuntimeProfile, Volume, VolumeAttachment } from "../../sdk/typescript/src/index"
 import { fixtureScene, segment, useCollection } from "./api"
 import { api, Callout, machinePowerState, num, Section, State, str, useRemote } from "./common"
+import { DocumentationLink } from "./features/catalog/DocumentationLink"
 import { Button, Modal, PageHeader } from "./ui"
 import styles from "./features/catalog/catalog.module.css"
 import type { Actions } from "./main"
@@ -61,8 +62,8 @@ export function VolumeCatalog({ machines, actions, revision }: {
   }
 
   return <>
-    <PageHeader title="Disks" icon={<HardDrive />} description="Standalone storage that can be attached to a machine and moved to another machine later."
-      actions={<Button variant="primary" onClick={() => setCreating(true)} disabled={!runtimeProfiles.length && !demo}><Plus size={15} /> New disk</Button>} />
+    <PageHeader title="Disks" icon={<HardDrive />} description="Standalone storage you can attach to a machine and move later." className={styles.stackedHeading}
+      actions={<><Button variant="primary" onClick={() => setCreating(true)} disabled={!runtimeProfiles.length && !demo}><Plus size={15} /> New disk</Button><DocumentationLink /></>} />
     <Callout error={profiles.error} />
     <Callout error={catalog.error} />
     {!demo && profiles.items && !runtimeProfiles.length && <p role="status">Creating disks requires a registered worker.</p>}

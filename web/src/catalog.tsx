@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import type { Machine, Service, Snapshot, Task } from "../../sdk/typescript/src/index"
 import { ArrowUpRight, Globe2, Layers3, MapPin, Plus, Search, Upload, Zap } from "lucide-react"
@@ -6,6 +6,7 @@ import { api, collection, fixtureScene, segment, useCollection } from "./api"
 import { bundleBound, Callout, fullStateBlock, label, time } from "./common"
 import { capabilityReason, fileDigest, Services, ServiceStatus, Snapshots, Tasks } from "./machine"
 import { machineHref } from "./routes"
+import { DocumentationLink } from "./features/catalog/DocumentationLink"
 import { Button, Modal, PageHeader, StatusBadge } from "./ui"
 import styles from "./features/catalog/catalog.module.css"
 import type { Actions } from "./main"
@@ -60,9 +61,9 @@ function SnapshotCatalog({ machines, actions, revision }: CatalogContext) {
   const demo = fixtureScene === "05" || fixtureScene === "16"
   const statuses = Array.from(new Set(["all", "ready", "pending", "failed", "archived", ...(snapshots.items ?? []).map(item => item.state)]))
   return <>
-    <PageHeader title="Snapshots" icon={<Layers3 />} description="Capture machine state and restore workspaces from saved snapshots."
+    <PageHeader title="Snapshots" icon={<Layers3 />} description="Capture machine state and restore workspaces from saved snapshots." className={styles.stackedHeading}
       actions={<><Button variant="primary" onClick={() => setCreate(true)} disabled={!machines?.length}><Plus size={15} /> New snapshot</Button>
-        {!demo && <Button onClick={showImport}><Upload size={15} /> Import</Button>}</>} />
+        {!demo && <Button onClick={showImport}><Upload size={15} /> Import</Button>}<DocumentationLink /></>} />
     <div className={styles.toolbar}>
       <div className={styles.segments} aria-label="Snapshot status">
         {statuses.map(value => <button type="button" key={value} aria-pressed={value === state} onClick={() => setState(value)}>{label(value)}</button>)}
@@ -91,6 +92,7 @@ function NewSnapshot({ machines, actions, close }: { machines: Machine[]; action
   const [name, setName] = useState("")
   const [mode, setMode] = useState("")
   const [busy, setBusy] = useState(false)
+  const inFlight = useRef(false)
   const [error, setError] = useState<unknown>()
   const machine = machines.find(machine => machine.machine_id === source)
   const can = {
@@ -108,7 +110,8 @@ function NewSnapshot({ machines, actions, close }: { machines: Machine[]; action
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (busy || !capture || !machine) return
+    if (inFlight.current || !capture || !machine) return
+    inFlight.current = true
     setBusy(true)
     setError(undefined)
     try {
@@ -121,6 +124,7 @@ function NewSnapshot({ machines, actions, close }: { machines: Machine[]; action
     } catch (reason) {
       setError(reason)
     } finally {
+      inFlight.current = false
       setBusy(false)
     }
   }
@@ -180,10 +184,10 @@ function MachineCatalog({ page, machines, actions, revision }: CatalogContext & 
   return <>
     <PageHeader title={taskPage ? "Automations" : "Services"} icon={taskPage ? <Zap /> : <Globe2 />}
       description={taskPage ? "View persistent guest tasks and their execution status." : "Manage published guest ports and connection details."}
-      actions={machines?.length ? <select className={styles.scope} aria-label="Machine scope" value={machine?.machine_id ?? ""} onChange={event => setSelected(event.target.value)}>
+      actions={<>{machines?.length ? <select className={styles.scope} aria-label="Machine scope" value={machine?.machine_id ?? ""} onChange={event => setSelected(event.target.value)}>
         <option value="">All machines</option>
         {machines.map(item => <option key={item.machine_id} value={item.machine_id}>{item.name}</option>)}
-      </select> : undefined} />
+      </select> : null}<DocumentationLink /></>} />
     {machine ? taskPage ? <Tasks key={machine.machine_id} machine={machine} actions={actions} revision={revision} />
       : <Services key={machine.machine_id} machine={machine} actions={actions} revision={revision} />
       : <>

@@ -139,3 +139,7 @@
   margin: 0;
   color: var(--muted-foreground);
 }
+
+.tabs, .integrationToolbar {
+  margin-top: 24px;
+}
