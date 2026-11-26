@@ -59,3 +59,14 @@ sudo python3 -B tests/integration/authorized_private_network_kvm.py \
   --bundle "$peering_bundle" --platformd "$platformd" \
   --system-image "$system_disk" --case peering
 ```
+
+## 正式安装的四组复测
+
+四组使用同一个只读安装 Bundle `sha256:b00c0f05bc54d69bbef854ea16c3cac42d36ddc9f8413a1cedd5e5e290434f97`（`1eb5104`）、平台锁 `c095c4f` 和实际 Worker `sha256:f9a0812af46952abdd86cb99f596862e8f9f097c3e84dbebbe92cac50ad23448`，每组各自启动两个 KVM Guest。完工后再次核对安装清单的 50 个文件，其字节数和 SHA-256 均相符，文件均为单链接。[同一夹具](../../tests/integration/authorized_private_network_kvm.py)
+
+| 夹具参数 | 正向观测 | 日志与 SHA-256 |
+| --- | --- | --- |
+| `same-domain` | 两个 FixedInternal Guest 内部均为 `10.0.2.15`。两端经对方的 DNS 名完成 TCP，目标分别读到源 VIP `10.44.62.2` 与 `10.44.62.3`，自身 DNS 和 VIP hairpin 均通过。 | `.build/a13-1eb5104-installed-same-domain-v1.log` `45f8df9a13104be02b46ab85f9a43702c7989c3754c83cd95fec52e7c7ab03b3` |
+| `mixed` | Native 的 Guest 和私网地址均为 `10.44.62.3`，FixedInternal 的 VIP 为 `10.44.62.2`，实际 TCP 保留两端源地址。前两组均实测 MTU 1500，IPv4 DF UDP 双向交付 1472 字节，1473 字节在源端返回 `EMSGSIZE`。 | `.build/a13-1eb5104-installed-mixed-v1.log` `428c71db8b6a4e92eab04844b7893620798cb9594c63bb8b912711123da41ea1` |
+| `overlap` | 两个独立路由域各分配同一个 `10.44.62.2`。两端的自身 DNS 和 VIP hairpin 返回各自 Guest 的应用标记。 | `.build/a13-1eb5104-installed-overlap-v1.log` `094985db987d27b3e4f7d73bb9c46293d6249089196b87f502384ed6a5d38f8e` |
+| `peering` | 空策略时两端没有对端路由。施加授权后 `10.44.62.2` 与 `10.44.63.2` 实际双向 TCP，Worker 重启后的新连接仍看到原源地址。两台 Guest 各自保持原 incarnation 和 epoch 1，主动撤销后两侧 Linux 路由表均撤除对端路由。 | `.build/a13-1eb5104-installed-peering-v1.log` `863c374ad1fed08c503ee1d3db9349ae423424d1b55a0aaf222cf51976fb8bb5` |
