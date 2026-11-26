@@ -164,7 +164,7 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client w
 		if event.Seq <= latest {
 			continue
 		}
-		if err = registry.AppendEvent(ctx, tx, "lifecycle", b.MachineID, "", event, false); err != nil {
+		if err = registry.AppendEvent(ctx, tx, "machine", b.MachineID, "", event, false); err != nil {
 			return st, err
 		}
 		latest = event.Seq
