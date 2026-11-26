@@ -142,7 +142,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().Int64Var(&api.generation, "generation", 0, "Original machine generation for a replay")
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
 		api.files(), api.leases(), api.desktops(), api.credentials(), api.templates(), api.settings(), api.lifecyclePolicy(), api.events(),
-		api.exec(), api.execs(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
+		api.exec(), api.execs(), api.ssh(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
 	networks := api.networks()
@@ -255,9 +255,11 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 type apiErrorDetail = struct {
+	RequestID   string          `json:"request_id,omitempty"`
 	Code        string          `json:"code"`
 	Message     string          `json:"message"`
 	OperationID string          `json:"operation_id"`
+	ExecID      string          `json:"exec_id,omitempty"`
 	Effect      string          `json:"effect"`
 	Retry       string          `json:"retry"`
 	Capability  string          `json:"capability,omitempty"`

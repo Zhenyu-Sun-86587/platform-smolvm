@@ -27,7 +27,10 @@ var safeSSHUser = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 func (c *client) sshConfig() *cobra.Command {
 	var user string
 	cmd := sub("ssh-config MACHINE", "Print an OpenSSH Host entry", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		id, err := c.machineID(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
 		if !safeMachineID.MatchString(id) || !safeSSHUser.MatchString(user) {
 			return errors.New("invalid machine ID or SSH user")
 		}
@@ -44,7 +47,7 @@ func (c *client) sshConfig() *cobra.Command {
 		if c.caFile != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), " --ca-file %s", quote(c.caFile))
 		}
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), " ssh-proxy --machine %s\n", id)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), " ssh-proxy --machine %s\n", id)
 		return err
 	})
 	cmd.Flags().StringVar(&user, "user", "root", "Guest SSH user")
@@ -52,8 +55,13 @@ func (c *client) sshConfig() *cobra.Command {
 }
 
 func (c *client) sshHostKey() *cobra.Command {
-	return sub("ssh-host-key MACHINE", "Print the verified Guest SSH host key for known_hosts", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		if !safeMachineID.MatchString(args[0]) {
+	var ifReady bool
+	hostKey := sub("ssh-host-key MACHINE", "Print the verified Guest SSH host key for known_hosts", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		id, err := c.machineID(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		if !safeMachineID.MatchString(id) {
 			return errors.New("invalid machine ID")
 		}
 		var details struct {
@@ -64,24 +72,29 @@ func (c *client) sshHostKey() *cobra.Command {
 				} `json:"guest_management_evidence"`
 			} `json:"binding"`
 		}
-		if err := c.get(cmd.Context(), res("machines", args[0]), &details); err != nil {
+		if err := c.get(cmd.Context(), res("machines", id), &details); err != nil {
 			return err
 		}
 		host := details.Binding.Identity
 		if !host.Ready || host.Key == "" {
+			if ifReady {
+				return nil
+			}
 			return errors.New("Guest SSH host key is not verified")
 		}
 		key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(host.Key))
 		if err != nil || len(options) != 0 || len(rest) != 0 {
 			return errors.New("platform returned an invalid Guest SSH host key")
 		}
-		line := "sandbox-" + args[0] + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+		line := "sandbox-" + id + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 		if c.jsonOutput {
 			return c.print(cmd, map[string]string{"known_hosts": line, "fingerprint": ssh.FingerprintSHA256(key)})
 		}
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), line)
 		return err
 	})
+	hostKey.Flags().BoolVar(&ifReady, "if-ready", false, "Return no entry if the Guest SSH identity is still unavailable")
+	return hostKey
 }
 
 func (c *client) sshProxy() *cobra.Command {

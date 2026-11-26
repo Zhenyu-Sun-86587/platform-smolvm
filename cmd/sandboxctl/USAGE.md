@@ -10,7 +10,7 @@ machine ID.
 | Workflow | Commands and defaults |
 | --- | --- |
 | Workspace | `machines create NAME --template TEMPLATE` starts the new workspace by default. Use `--start=false` to leave it stopped. `machines show MACHINE`, `machines rename MACHINE NAME`, `machines config get MACHINE`, `machines config set MACHINE --body JSON`, and `machines resources MACHINE` expose requested and applied settings. Existing `machines patch` and `machines resize` remain available. |
-| Guest | `exec MACHINE -- COMMAND ...` retains its bounded initial wait. `exec --follow MACHINE -- COMMAND ...` follows stdout and stderr through the Guest exit. `exec --tty MACHINE -- COMMAND ...` attaches a raw terminal. `ssh MACHINE` opens OpenSSH using the platform tunnel and a verified Guest host key. The existing `ssh-config`, `ssh-host-key`, `execs output`, and `files list/get/put` remain available. `files get MACHINE PATH -` writes raw file bytes. |
+| Guest | `exec MACHINE -- COMMAND ...` retains its bounded initial wait. `exec --follow MACHINE -- COMMAND ...` follows stdout and stderr through the Guest exit. `exec --tty MACHINE -- COMMAND ...` attaches a raw terminal. `ssh MACHINE [--identity FILE] [--batch-mode] [-- COMMAND ...]` opens OpenSSH using the platform tunnel and a verified Guest host key. It uses standard SSH remote shell semantics. The existing `ssh-config`, `ssh-host-key`, `execs output`, and `files list/get/put` remain available. `files get MACHINE PATH -` writes raw file bytes. |
 | Live Fork | `machines live-fork MACHINE CHILD_NAME` requires native resource independence. `machines fork-batch MACHINE CHILD... [--admission all_or_reject\|best_effort] [--volume-policy clone]` requires native independent children and defaults to all-or-reject admission. `operations retry OPERATION` retries eligible failed targets from the original fork cut. |
 | VM state | `snapshots capture-vm MACHINE [--label LABEL]`, `snapshots restore-vm SNAPSHOT NAME`, and `snapshots rollback-vm MACHINE SNAPSHOT` require a full VM state point. Restore and rollback accept `--volume-restore-policy exact\|clone_conflicts` and default to `clone_conflicts`. Use `snapshots get SNAPSHOT` for capture evidence and `operations get OPERATION` for the restore result and volume map. |
 | Power | `machines standby` and `machines hibernate` preserve a qualified live execution. `machines wake-full MACHINE --from standby\|hibernated` restores the specified kind of preserved state. `machines cold-start MACHINE` requires a stopped source. Existing `start`, `stop`, `pause`, `resume`, and `wake` retain their prior dispatch rules. |
@@ -35,7 +35,8 @@ effect before deciding what to do next.
 
 `--json` emits compact JSON for management results. API errors and wait
 timeouts retain structured fields on stderr. Guest binary downloads,
-PTY output and SSH remain raw streams. `exec --follow` copies stdout and
+PTY output and SSH remain raw streams. PTY input and window-size changes
+are sent to the bound Guest execution. `exec --follow` copies stdout and
 stderr independently and exits with the Guest status on a confirmed exit.
 With `--json --follow`, exec emits one JSON result per observed output page.
 An interrupted stream may have given the recipient a prefix of the output.

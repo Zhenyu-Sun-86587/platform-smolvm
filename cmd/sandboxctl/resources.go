@@ -899,79 +899,6 @@ type execOutput struct {
 	} `json:"output"`
 }
 
-func (c *client) exec() *cobra.Command {
-	var cwd, user string
-	var timeout, wait int
-	exec := sub("exec MACHINE -- COMMAND [ARG...]", "Run a native Guest command", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
-		m, err := c.machine(cmd.Context(), args[0])
-		if err != nil {
-			return err
-		}
-		body := commandArgs(args[1:], cwd, user)
-		body["timeout_seconds"], body["wait_seconds"] = timeout, wait
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		headers, err := c.intent(cmd.Context(), m.Revision)
-		if err != nil {
-			return err
-		}
-		headers.Set("Content-Type", "application/json")
-		resp, err := c.request(cmd.Context(), "POST", res("machines", m.ID)+"/exec", strings.NewReader(string(raw)), headers)
-		if err != nil {
-			var api *apiError
-			if !errors.As(err, &api) || api.Status >= 500 || api.Detail.Code == "OUTCOME_UNKNOWN" {
-				c.printIntent(cmd, headers, 0)
-			}
-			return err
-		}
-		defer resp.Body.Close()
-		var result json.RawMessage
-		if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			c.printIntent(cmd, headers, 0)
-			return err
-		}
-		var output execOutput
-		if err = json.Unmarshal(result, &output); err != nil {
-			return err
-		}
-		if c.jsonOutput {
-			if err = c.print(cmd, result); err != nil {
-				return err
-			}
-			return execExit(output)
-		}
-		if err = c.writeExecOutput(cmd, output); err != nil {
-			return err
-		}
-		if !output.Done {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Native exec %s at byte %d\n", output.ID, output.Next)
-			return nil
-		}
-		id := output.ID
-		for output.Next < output.End {
-			cursor := output.Next
-			output = execOutput{}
-			if err = c.get(cmd.Context(), res("execs", id)+"/output?cursor="+strconv.FormatUint(cursor, 10), &output); err != nil {
-				return err
-			}
-			if output.Next <= cursor && output.End > cursor {
-				return errors.New("server did not advance native output cursor")
-			}
-			if err = c.writeExecOutput(cmd, output); err != nil {
-				return err
-			}
-		}
-		return execExit(output)
-	})
-	exec.Flags().StringVar(&cwd, "cwd", "/workspace", "Guest working directory")
-	exec.Flags().StringVar(&user, "user", "root", "Guest user")
-	exec.Flags().IntVar(&timeout, "timeout-seconds", 300, "Native command timeout")
-	exec.Flags().IntVar(&wait, "wait-seconds", 10, "Wait for a short command before returning its native session ID")
-	return exec
-}
-
 func execExit(output execOutput) error {
 	if output.Error != "" {
 		return errors.New(output.Error)
@@ -983,7 +910,7 @@ func execExit(output execOutput) error {
 }
 
 func (c *client) writeExecOutput(cmd *cobra.Command, output execOutput) error {
-	if output.Gap != nil {
+	if output.Gap != nil && !c.jsonOutput {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Native output gap from byte %d to %d\n", output.Gap.From, output.Gap.To)
 	}
 	for _, entry := range output.Output {
