@@ -669,9 +669,15 @@ def native_roles_case(platform):
 class FaultPlatform(Platform):
     """Load the precise fsync fault only in this fixture's Worker process."""
 
+    objects = None
+
     def spawn(self, command, log):
         if Path(command[0]).name != "smolvm-resourced":
             return super().spawn(command, log)
+        if self.objects is None:
+            # Platform.start binds the catalog before it spawns the Worker.
+            # Mount the object filesystem afterwards so that bind cannot hide it.
+            self.objects = isolate_objects(self.root, self.stack)
         prior = self.env
         self.env = {**prior, "LD_PRELOAD": str(self.args.fsync_shim),
                     "VOLUME_TEST_SEAL_FAULT": str(self.root / "seal-fault")}
@@ -687,12 +693,12 @@ def isolate_objects(root, stack):
         target.truncate(1350 * MIB)
     subprocess.run(["mkfs.ext4", "-q", "-F", "-m", "0", image], check=True)
     objects = root / "catalog/objects"
-    objects.parent.mkdir(mode=0o700)
     objects.mkdir(mode=0o700)
     subprocess.run(["mount", "-o", "loop", image, objects], check=True)
     stack.callback(lambda: wait_for(lambda: subprocess.run(
         ["umount", objects], capture_output=True).returncode == 0, timeout=10))
     objects.chmod(0o700)
+    assert objects.stat().st_dev != objects.parent.stat().st_dev, "object filesystem shares the catalog device"
     return objects
 
 
@@ -773,6 +779,13 @@ def growth_fault_case(platform, objects):
     assert old_file.stat().st_mode & 0o777 == 0o600 and old_file.stat().st_ino == old_inode
     assert digest(old_file) == "sha256:" + expected
     fill(objects)
+    object_space, catalog_space = (os.statvfs(path) for path in (objects, objects.parent))
+    object_available = object_space.f_bavail * object_space.f_frsize
+    catalog_available = catalog_space.f_bavail * catalog_space.f_frsize
+    assert objects.stat().st_dev != objects.parent.stat().st_dev and catalog_available > 0
+    assert platform.broker.poll() is None and worker(platform.worker, "Health")["state"] == "ready"
+    print(f"Object ext4 has {object_available} available bytes. The separate catalog filesystem has "
+          f"{catalog_available} available bytes and Worker is ready.", flush=True)
     refused_create = product.failure("VOLUME_STORAGE_NOT_APPLIED", "volumes", {
         "name": "unapplied head", "capacity_bytes": 4 * MIB, "runtime_instance_id": platform.serve_id,
     })
@@ -881,7 +894,6 @@ def main():
                 args.fsync_shim = root / "volume-fsync-fault.so"
                 source = Path(__file__).resolve().parents[1] / "fixtures/volume-fsync-fault.c"
                 subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-o", args.fsync_shim, source, "-ldl"], check=True)
-            objects = isolate_objects(root, stack)
             platform = FaultPlatform(args, root, stack, state_tmpfs=args.state_tmpfs, use_installation=args.use_installation)
         else:
             platform = Platform(args, root, stack, state_tmpfs=args.state_tmpfs, use_installation=args.use_installation)
@@ -905,7 +917,7 @@ def main():
             elif args.case == "native-roles":
                 native_roles_case(platform)
             else:
-                growth_fault_case(platform, objects)
+                growth_fault_case(platform, platform.objects)
         except BaseException:
             for log in [root / "platform.log", root / "worker.log", root / "serve.log",
                         *(root / "state/managed").glob("*.log")]:
