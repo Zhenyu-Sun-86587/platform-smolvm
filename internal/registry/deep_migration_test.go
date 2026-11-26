@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"sandbox-platform/internal/auth"
@@ -21,15 +23,20 @@ func legacyRegistry(t *testing.T, path string, version int) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := []string{"001_registry.sql", "002_product.sql"}
-	if version >= 1001 {
-		files = append(files, "1001_deep_runtime.sql")
+	files, err := migrations.Files.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if version >= 1002 {
-		files = append(files, "1002_deep_full_state.sql")
-	}
-	for _, name := range files {
-		body, err := migrations.Files.ReadFile(name)
+	for _, file := range files {
+		prefix, _, _ := strings.Cut(file.Name(), "_")
+		revision, err := strconv.Atoi(prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revision > version {
+			continue
+		}
+		body, err := migrations.Files.ReadFile(file.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -61,7 +68,8 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 		INSERT INTO events (control_epoch,type,payload_json,created_at,audit)
 		VALUES ('control','auth','{"action":"owner_created","principal_id":"owner-id"}',2,1);
 		INSERT INTO templates(id,name,version,image_digest,spec_json,capabilities_json) VALUES('t','base',1,'image','{}','{}');
-		INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running) VALUES('m','vm','t',1,1,'paused','{}','{}',0);
+		INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
+		VALUES('m','vm','t',1,1,'paused','{}','{"enabled":true,"timeout_seconds":17}',0);
 		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,observed_state,runtime_pause_id,pause_status)
 		VALUES('b','m',1,'vm','current','tasks','digest','paused','pause-v1','active')`, version)
 	if err != nil {
@@ -77,7 +85,7 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 	}
 	defer store.Close()
 	control, err := store.Control(ctx)
-	if err != nil || control.SchemaVersion != 1018 || control.ControlEpoch != "control" {
+	if err != nil || control.SchemaVersion != 1019 || control.ControlEpoch != "control" {
 		t.Fatal(control, err)
 	}
 	owner, err := auth.New(store).Bootstrap(ctx, "owner", "existing-password")
@@ -91,6 +99,63 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 	if err != nil || b.PowerState != "unknown" || b.RuntimeBundleID != "" ||
 		b.RuntimePauseID != "pause-v1" || b.PauseStatus != "active" || b.ObservedState != "paused" {
 		t.Fatal(b, err)
+	}
+	idle, err := store.LifecyclePolicy(ctx, "m")
+	if err != nil || idle.Source != "legacy" || idle.Desired.AutoStandby || !idle.Desired.AutoHibernate ||
+		idle.Desired.HibernateAfter != 17 || idle.Desired.PressureReclaim != "disabled" || idle.AppliedRevision != 0 {
+		t.Fatalf("legacy idle policy %+v, %v", idle, err)
+	}
+}
+
+func TestMigrationReconfirmsOnlyImplicitLegacyPressurePolicies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	db := legacyRegistry(t, path, 1017)
+	_, err := db.Exec(`INSERT INTO meta(id,schema_version,installation_id,control_epoch) VALUES(1,1017,'install','control');
+		INSERT INTO templates(id,name,version,image_digest,spec_json,capabilities_json) VALUES('tpl','base',1,'image','{}','{}')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		id, source, desired, overrides, expectedPressure  string
+		previousApplied, expectedDesired, expectedApplied int64
+	}{
+		{"applied", "legacy", `{"pressure_reclaim":"idle_only"}`, "{}", "disabled", 5, 6, 0},
+		{"pending", "legacy", `{"pressure_reclaim":"idle_only"}`, "{}", "disabled", 4, 6, 0},
+		{"explicit", "legacy", `{"pressure_reclaim":"idle_only"}`, `{"pressure_reclaim":"idle_only"}`, "idle_only", 5, 5, 5},
+		{"disabled", "legacy", `{"pressure_reclaim":"disabled"}`, "{}", "disabled", 5, 5, 5},
+		{"modern", "override", `{"pressure_reclaim":"idle_only"}`, "{}", "idle_only", 5, 5, 5},
+	}
+	for _, row := range tests {
+		_, err = db.Exec(`INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
+			VALUES(?,?,'tpl',1,1,'running','{}','{"enabled":true,"timeout_seconds":17}',0)`, row.id, row.id)
+		if err == nil {
+			_, err = db.Exec(`INSERT INTO machine_lifecycle_policies(
+				machine_id,source,desired_revision,applied_revision,desired_json,overrides_json,applied_json,last_operation,worker_status)
+				VALUES(?,?,5,?,?,?,?, 'original-op','{"power":"RUNNING"}')`,
+				row.id, row.source, row.previousApplied, row.desired, row.overrides, row.desired)
+		}
+		if err != nil {
+			t.Fatal(row.id, err)
+		}
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store, err := registry.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, row := range tests {
+		p, err := store.LifecyclePolicy(ctx, row.id)
+		if err != nil || p.Source != row.source || p.LastOperation != "original-op" || p.DesiredRevision != row.expectedDesired ||
+			p.AppliedRevision != row.expectedApplied || p.Desired.PressureReclaim != row.expectedPressure {
+			t.Fatalf("%s: policy %+v, %v", row.id, p, err)
+		}
+		if row.expectedApplied == 0 && (p.Applied != nil || p.Worker != nil) {
+			t.Fatalf("%s retained an acknowledgement for replaced policy: %+v", row.id, p)
+		}
 	}
 }
 

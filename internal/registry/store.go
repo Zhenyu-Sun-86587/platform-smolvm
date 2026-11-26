@@ -197,6 +197,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1016, "1016_guest_delegation.sql"},
 		{1017, "1017_lifecycle_binding.sql"},
 		{1018, "1018_native_backup_selection.sql"},
+		{1019, "1019_legacy_idle_pressure.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0
