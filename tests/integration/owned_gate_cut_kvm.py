@@ -99,7 +99,12 @@ def child_state(db, operation, ordinal):
 
 def interrupt_target(db, operation, phase, ref, source_pid, bundle):
     current_boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-    seen = set()
+    samples = {}
+
+    def observations():
+        return {name: {"observed_ms": (last - first) / 1_000_000, "samples": count}
+                for name, (first, last, count) in samples.items()}
+
     deadline = time.monotonic() + 45
     with ExitStack() as stack:
         process = None
@@ -109,8 +114,10 @@ def interrupt_target(db, operation, phase, ref, source_pid, bundle):
             if row is None or row["pid"] is None:
                 time.sleep(0.004)
                 continue
-            if row["phase"]:
-                seen.add(row["phase"])
+            if position := row["phase"]:
+                tick = time.monotonic_ns()
+                first, _, count = samples.get(position, (tick, tick, 0))
+                samples[position] = (first, tick, count + 1)
             if row["operation_phase"] != "NEW" or row["phase"] == "released":
                 break
             if process is None:
@@ -138,8 +145,9 @@ def interrupt_target(db, operation, phase, ref, source_pid, bundle):
                 verified = (after["phase"] == phase and after["revision"] == row["revision"]) or (
                     after["phase"] in ("failed_held", "unknown") and after["prior_revision"] == row["revision"]
                 )
-                return dict(observed=sorted(seen), exited=True, hit=verified, before=dict(row), after=dict(after))
-    return dict(observed=sorted(seen), exited=False, hit=False)
+                return dict(observed=sorted(samples), phase_observations=observations(), exited=True,
+                            hit=verified, before=dict(row), after=dict(after))
+    return dict(observed=sorted(samples), phase_observations=observations(), exited=False, hit=False)
 
 
 def run_program(platform, ref, unit, *args):
