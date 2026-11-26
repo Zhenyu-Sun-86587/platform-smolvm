@@ -37,3 +37,15 @@ sudo python3 -B tests/integration/release_host_reboot.py \
   --old-release "$old_release" --new-release "$new_release" \
   --runtime-archive "$official_runtime_archive"
 ```
+
+## 平台发行包 b66f5d9
+
+`0.3.0-dev.b66f5d9` 使用 platform 提交 `b66f5d9c6b59d804c71442a6354325454610c3df`。发行清单的 13 个文件均逐一核对，`platformd` 与 `sandboxctl` 均来自该目录。发行清单 SHA-256 为 `9dfeb3bd367c6390d03e96537213d05b622effc9e43738313e536f2493fc981c`。下表的记录位于 `.build/release-b122bbf/`。
+
+| 使用场景 | 结果 | 日志和 SHA-256 |
+| --- | --- | --- |
+| 新平台与上一版定制运行时 | 在只读安装的 `1eb5104` 上从运行中的 Debian 父机一次 Fork 出两个独立子机。三者有不同执行身份并读到原 RAM 标记，父机继续运行。 | `platform-previous-runtime-fork-v2.log` · `a5f195bc73b7a5421f906e275bec4bf4f299bbe3be97b49f3e83c4a39ff2a57f` |
+| 从 0.1.6 迁移注册库和恢复备份 | 两个未提交 WAL 帧中断后，重新打开旧库并核对全部 19 张表和数据。新版迁移至 1019，原 owner 分别登录新旧版本的恢复库，成功读取暂停记录与各自的新控制代次。 | `platform-registry-previous-readback.log` · `1ccbfac6f843773fb5cf18430e8c7675fac59fae60d744ad7d06d67f40c16ee4` |
+| 在独立 Ubuntu 虚拟宿主上升级并切断电源 | 官方 Serve 在升级期间保持 PID 421。虚拟宿主的 boot ID 从 `99ac49d1-34b8-4e0f-9d0c-fd4c95ef445a` 变为 `e0aa309c-87c6-49de-a295-5996bc2fc127`。systemd 自动拉起平台和运行时，原数据库 inode、安装 ID、控制代次、owner 和两份备份校验一致。 | `platform-upgrade-powercut.log` · `519f33eb56ad1ead98e0539d8dc0add60739276fc27d9da8a0c153800db0c005` |
+
+首次跨版本 Fork 使用额外一层临时工作目录，源启动返回 `NATIVE_OPERATION_ABORTED`。沿用夹具自身的独立挂载和短工作路径后，表中的完整 Fork 通过。首次记录保存在 `platform-previous-runtime-fork.log`。
