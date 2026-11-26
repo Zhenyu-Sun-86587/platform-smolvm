@@ -326,7 +326,7 @@ func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, 
 	resp, err := c.request(cmd.Context(), method, path, body, headers)
 	if err != nil {
 		var api *apiError
-		if !errors.As(err, &api) || api.Status >= 500 && api.Detail.Effect != "none" {
+		if !errors.As(err, &api) || api.Detail.Effect == "unknown" || api.Status >= 500 && api.Detail.Effect != "none" {
 			c.printIntent(cmd, headers)
 		}
 		return err
