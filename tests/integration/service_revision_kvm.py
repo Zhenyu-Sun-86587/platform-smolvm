@@ -132,8 +132,14 @@ def connect(platform, clients, service, credential, protocol, backend, *, admiss
         connection.request("GET", "/timeline/" + request_id, headers={
             "Host": service["public_host"], "Authorization": "Bearer " + credential,
         })
+        started = time.monotonic()
         reply = connection.getresponse()
         assert reply.status == 200, (reply.status, reply.headers)
+        # Admission may involve a Worker wake and dial. Stream reads, including
+        # revision retirement and token revocation, retain the five-second bound.
+        reply.fp.raw._sock.settimeout(5)
+        if admission_timeout != 5:
+            print("HTTP upstream headers", request_id, round(time.monotonic() - started, 3), flush=True)
         stream = clients.enter_context(reply)
     else:
         raw = clients.enter_context(socket.create_connection(("127.0.0.1", service["public_port"]), timeout=5))
@@ -218,8 +224,8 @@ def revision_case(platform, keys, protocol, observe=False):
         if observe:
             assert after["observation"]["status"] == "stale" and after["observation"]["service_revision"] == before["revision"], after
         revision_close_ms = old.close_after(changed)
-        selected = connect(platform, clients, after, original, protocol, "after")
-        unaffected = connect(platform, clients, after, survivor, protocol, "after")
+        selected = connect(platform, clients, after, original, protocol, "after", admission_timeout=30 if observe else 5)
+        unaffected = connect(platform, clients, after, survivor, protocol, "after", admission_timeout=30 if observe else 5)
         selected.advance()
         revoked = time.monotonic()
         receipt = mutate(platform, "DELETE", revoked_path, "a22-revoke", revocation_revision, {}, 200)
