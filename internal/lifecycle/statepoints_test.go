@@ -75,6 +75,16 @@ func TestAbortedStatePointTargetSettlesWithoutResubmission(t *testing.T) {
 			} else {
 				request.Name, request.TemplateID, request.RuntimeInstanceID = "restored-child", "t1", worker.route.InstanceID
 				request.AllocateBinding = true
+				request.Request = JSON(map[string]string{"snapshot_id": "prior-snapshot"})
+				if _, err := db.DB().ExecContext(ctx, `UPDATE runtime_bundles SET manifest_json='{"contracts":{"state_reader_id":"reader"}}' WHERE id='managed';
+					INSERT INTO operations(id,control_epoch,machine_id,binding_id,binding_generation,runtime_name,kind,state,stage,request_json,effect,
+						created_at,updated_at,heavy,runtime_instance_id,runtime_bundle_id)
+					VALUES('prior-capture',?,'source','source-bind',1,'source','vm_snapshot','succeeded','complete','{}','applied',1,1,0,'serve','managed');
+					INSERT INTO snapshots(id,source_machine_id,source_generation,purpose,task_content,state,relative_path,provenance,created_at)
+					VALUES('prior-snapshot','source',1,'recovery','unknown','ready','prior-snapshot','local_record',1);
+					INSERT INTO vm_snapshot_provenance VALUES('prior-snapshot','prior-capture','serve','managed','reader',?);`, fork.Epoch, capture); err != nil {
+					t.Fatal(err)
+				}
 			}
 			accepted, _, err := db.Accept(ctx, request)
 			if err != nil {
