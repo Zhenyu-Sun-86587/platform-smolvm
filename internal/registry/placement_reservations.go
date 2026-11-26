@@ -146,12 +146,13 @@ func (s *Store) RecordPlacementAdmission(ctx context.Context, proof placement.Ad
 		r.NativeDigest != proof.NativeDigest {
 		return fmt.Errorf("%w: proof refers to a different placement", ErrConflict)
 	}
-	var kind string
-	if err := tx.QueryRowContext(ctx, "SELECT kind FROM operations WHERE id=?", r.OperationID).Scan(&kind); err != nil {
+	var kind, nativeStatePointKind string
+	if err := tx.QueryRowContext(ctx, `SELECT kind, COALESCE(json_extract(dispatch_json,'$.statepoint.kind'),'')
+		FROM operations WHERE id=?`, r.OperationID).Scan(&kind, &nativeStatePointKind); err != nil {
 		return err
 	}
 	want := placement.AdmissionOperation
-	if kind == rt.VMRestore || kind == rt.Wake && (r.Resources.VCPUs != 0 || r.Resources.MemoryMiB != 0 || r.Resources.StorageBytes != 0) {
+	if kind == rt.VMRestore || nativeStatePointKind == rt.VMRestore || kind == rt.Wake && (r.Resources.VCPUs != 0 || r.Resources.MemoryMiB != 0 || r.Resources.StorageBytes != 0) {
 		want = placement.AdmissionRestore
 	}
 	if proof.Kind != want {
@@ -258,7 +259,7 @@ func transitionPlacement(ctx context.Context, tx *sql.Tx, op Operation, change T
 	if err != nil {
 		return err
 	}
-	if op.State == RecoveryRequired && r.Phase == placement.DispatchStarted {
+	if (op.State == RecoveryRequired || op.State == Observing && op.Effect == EffectUnknown) && r.Phase == placement.DispatchStarted {
 		return setReservationPhase(ctx, tx, r, placement.Unknown)
 	}
 	if op.Terminal() {

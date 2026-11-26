@@ -149,7 +149,7 @@ func TestPlacementUnknownRechecksOriginalAndRequiresCausalBudget(t *testing.T) {
 	if _, err := f.db.Transition(ctx, op.ID, dispatch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Transition(ctx, op.ID, registry.TransitionRequest{State: registry.RecoveryRequired, Stage: "verify", Effect: registry.EffectUnknown}); err != nil {
+	if _, err := f.db.Transition(ctx, op.ID, registry.TransitionRequest{State: registry.Observing, Stage: "worker_launch", Effect: registry.EffectUnknown}); err != nil {
 		t.Fatal(err)
 	}
 	assertPhase := func(want string) {
@@ -158,6 +158,19 @@ func TestPlacementUnknownRechecksOriginalAndRequiresCausalBudget(t *testing.T) {
 		if err != nil || r.WorkerID != "a" || r.Phase != want {
 			t.Fatalf("reservation = %+v, want %s, err=%v", r, want, err)
 		}
+	}
+	assertPhase(placement.Unknown)
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.db, err = registry.Open(ctx, f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.db.Close() })
+	control, err := f.db.Control(ctx)
+	if err != nil || control.ControlEpoch != f.epoch {
+		t.Fatalf("ordinary platform restart changed its control epoch: %+v, %v", control, err)
 	}
 	assertPhase(placement.Unknown)
 	replay, replayed, err := f.db.Accept(ctx, req)
@@ -208,6 +221,35 @@ func TestPlacementUnknownRechecksOriginalAndRequiresCausalBudget(t *testing.T) {
 	if err := f.db.RecordPlacementAdmission(ctx, proof); !errors.Is(err, registry.ErrStaleObservation) {
 		t.Fatalf("accepted admission from retired broker session: %v", err)
 	}
+}
+
+func TestPinnedPlacementCannotOverrideOwnerOrReader(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	savePlacementSample(t, f.db, f.worker(t, "a"))
+	savePlacementSample(t, f.db, f.worker(t, "b"))
+	req := f.request("owner-conflict")
+	req.Placement.Mode, req.Placement.WorkerID = placement.Pinned, "b"
+	req.Placement.OwnerWorkerID = "a"
+	assertExclusion := func(worker, reason string) {
+		t.Helper()
+		_, _, err := f.db.Accept(ctx, req)
+		var rejected *placement.Rejections
+		if !errors.As(err, &rejected) {
+			t.Fatalf("placement should reject %s: %v", reason, err)
+		}
+		for _, candidate := range rejected.Candidates {
+			if candidate.WorkerID == worker && candidate.Reason == reason {
+				return
+			}
+		}
+		t.Fatalf("missing %s exclusion: %+v", reason, rejected.Candidates)
+	}
+	assertExclusion("b", "owner_mismatch")
+	req.Placement.WorkerID, req.Placement.Reader = "a", "another-reader"
+	assertExclusion("a", "reader_incompatible")
+	req.Placement.Reader, req.Placement.BundleID = "reader", "another-bundle"
+	assertExclusion("a", "bundle_incompatible")
 }
 
 func TestKnownOnlyDrainBlocksAndRecoveryRequiresRebind(t *testing.T) {

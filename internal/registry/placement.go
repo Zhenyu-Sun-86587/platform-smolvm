@@ -302,6 +302,8 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 		capability = rt.FullStateOperationCapability(r.Kind)
 	} else if r.Kind == rt.Wake {
 		capability = rt.NativePowerCapability(r.Kind)
+	} else if r.Kind == "start" && prior.CurrentBinding.PowerState == PowerHibernated {
+		capability = rt.FullStateOperationCapability(rt.VMRestore)
 	}
 	req, err := ownerPlacement(prior.Spec, route, worker, capability, count, r.Heavy)
 	if err != nil {
