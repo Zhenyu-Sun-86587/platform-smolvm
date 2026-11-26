@@ -9,8 +9,8 @@ const (
 	FilePreviewCapability = "files.preview"
 	FileEditCapability    = "files.edit"
 
-	PublicFileUploadLimit = 64 << 20
-	FileTextPreviewLimit  = 256 << 10
+	PublicFileUploadLimit   = 64 << 20
+	FileTextPreviewLimit    = 256 << 10
 	PrivateGuestUploadLimit = 512 << 10
 )
 
