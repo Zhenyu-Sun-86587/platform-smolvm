@@ -16,6 +16,62 @@ assert.equal(files.length, 46)
 await mkdir(output, { recursive: true })
 const results = []
 
+async function checkPalette(page) {
+  const trigger = page.getByRole("button", { name: "Open command palette" }).first()
+  await trigger.focus()
+  await page.keyboard.press("Control+b")
+  const field = page.getByRole("combobox", { name: "Search workspace" })
+  await field.waitFor()
+  assert.ok(await field.evaluate(el => el === document.activeElement), "Palette did not focus its input")
+  const options = page.getByRole("option")
+  const first = await options.first().getAttribute("id")
+  const last = await options.last().getAttribute("id")
+  for (const [key, expected] of [["End", last], ["ArrowDown", first], ["ArrowUp", last], ["Home", first]]) {
+    await field.press(key)
+    assert.equal(await field.getAttribute("aria-activedescendant"), expected, key)
+  }
+  await field.fill("zero-results-qzx818")
+  assert.equal(await options.count(), 0)
+  assert.equal(await field.getAttribute("aria-activedescendant"), null)
+  await field.press("Enter")
+  assert.ok(await field.isVisible(), "No-results Enter executed an old command")
+  await field.press("Escape")
+  await trigger.waitFor()
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Open command palette")
+  await trigger.click()
+  await field.fill("Snapshots")
+  assert.ok(await options.count() > 0)
+  await field.press("Enter")
+  await page.waitForURL(/#\/snapshots$/)
+}
+
+async function checkDrawer(page) {
+  await page.getByRole("button", { name: "Search machines", exact: true }).click()
+  const search = page.getByRole("textbox", { name: "Search by name, ID, or template" })
+  await search.fill("atlas-dev")
+  const link = page.getByRole("link", { name: /atlas-dev.*vCPU/i }).first()
+  await link.click()
+  const drawer = page.getByRole("dialog").first()
+  await drawer.waitFor()
+  const view = page.viewportSize()
+  assert.ok(Math.abs((await drawer.boundingBox()).width - view.width * .75) < 2, "Desktop detail drawer width")
+  await drawer.getByRole("button", { name: /^Open atlas-dev$/ }).click()
+  await page.getByRole("dialog", { name: "Open atlas-dev", exact: true }).waitFor()
+  await page.keyboard.press("Escape")
+  await page.getByRole("dialog", { name: "Open atlas-dev", exact: true }).waitFor({ state: "hidden" })
+  await drawer.waitFor({ state: "visible" })
+  assert.match(new URL(page.url()).hash, /^#\/machines\/.+/, "Esc dismissed the underlying machine")
+  await page.keyboard.press("Escape")
+  await drawer.waitFor({ state: "hidden" })
+  assert.equal(await search.inputValue(), "atlas-dev")
+  await link.click()
+  await page.getByRole("navigation", { name: "Machine sections" }).getByRole("link", { name: "Networking" }).click()
+  await page.reload()
+  const tab = page.getByRole("navigation", { name: "Machine sections" }).getByRole("link", { name: "Networking" })
+  await tab.waitFor()
+  assert.equal(await tab.getAttribute("aria-current"), "page")
+}
+
 async function capture(file, forceTouch = false) {
   const id = file.slice(0, 2)
   const info = execFileSync("file", ["-b", path.join(references, file)], { encoding: "utf8" })
@@ -36,6 +92,7 @@ async function capture(file, forceTouch = false) {
     return route.continue()
   })
   const page = await context.newPage()
+  page.setDefaultTimeout(7000)
   page.on("pageerror", error => errors.push(error.message))
   const key = id + (forceTouch ? "-coarse" : "")
   const record = { scene: key, reference: file, viewport, touch, errors }
@@ -63,6 +120,23 @@ async function capture(file, forceTouch = false) {
     assert.doesNotMatch(rendered.text, /Connecting to platform|Username\s+Password\s+Sign in/)
     await page.screenshot({ path: path.join(output, key + ".png"), animations: "disabled" })
     if (rendered.pageWidth > viewport.width + 1) errors.push("Horizontal overflow: " + rendered.pageWidth)
+    if (id === "02") {
+      await checkDrawer(page)
+      await page.goto(new URL("/?fixture=02", origin).href)
+      await checkPalette(page)
+      record.checked = ["drawer width, nested Esc, list filter, tab deep link", "palette focus, navigation, no results and activation"]
+    }
+    if (id === "36") {
+      const dialog = page.getByRole("dialog", { name: "New machine" })
+      assert.equal(await dialog.locator('[aria-invalid="true"]').count(), 1)
+      assert.ok(await dialog.getByRole("button", { name: "Create", exact: true }).isDisabled())
+      record.checked = ["invalid name blocks submission"]
+    }
+    if (id === "46") {
+      assert.equal(await page.getByRole("button", { name: "Open navigation" }).isVisible(), touch)
+      assert.equal(await page.locator("aside.sidebar").isVisible(), !touch)
+      record.checked = [touch ? "touch navigation" : "desktop navigation"]
+    }
   } catch (error) {
     errors.push(error.message)
   } finally {

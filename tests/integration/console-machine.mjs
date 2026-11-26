@@ -13,20 +13,52 @@ const page = await browser.newPage({ viewport: { width: 1117, height: 897 } })
 // B owns the platformd candidate. Serve A's built UI at its origin while all API, event
 // streams and WebSockets use the running binary, including its normal session/CSRF checks.
 const dist = process.env.CONSOLE_DIST
-assert.ok(dist)
-await page.route(origin + "/**", route => {
-  const url = new URL(route.request().url())
-  if (url.pathname === "/") return route.fulfill({ path: join(dist, "index.html") })
-  if (/^\/assets\/[\w.-]+$/.test(url.pathname))
-    return route.fulfill({ path: join(dist, "assets", basename(url.pathname)) })
-  return route.continue()
-})
+if (dist) {
+  await page.route(origin + "/", route => route.fulfill({ path: join(dist, "index.html") }))
+  await page.route(origin + "/assets/*", route => {
+    const name = basename(new URL(route.request().url()).pathname)
+    return /^[\w.-]+$/.test(name) ? route.fulfill({ path: join(dist, "assets", name) }) : route.abort()
+  })
+}
 page.setDefaultTimeout(25000)
 const errors = []
 page.on("pageerror", e => errors.push(e.message))
+const networkStatus = []
+const debug = await page.context().newCDPSession(page)
+await debug.send("Network.enable")
+debug.on("Network.webSocketWillSendHandshakeRequest", ({ request }) => {
+  const names = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k.toLowerCase(), v]))
+  const protocols = (names["sec-websocket-protocol"] || "").split(",").map(value => value.trim())
+  networkStatus.push(["handshake", names.origin === origin, protocols[0], protocols.some(p => p.startsWith("ticket."))])
+})
+debug.on("Network.webSocketHandshakeResponseReceived", ({ response }) => networkStatus.push(["upgrade", response.status]))
+page.on("response", r => {
+  const url = new URL(r.url())
+  if (r.status() >= 400 || url.pathname.includes("tunnel-ticket"))
+    networkStatus.push([r.request().method(), url.pathname, r.status()])
+})
+page.on("websocket", ws => {
+  const route = new URL(ws.url()).pathname
+  networkStatus.push(["websocket", route])
+  ws.on("close", () => networkStatus.push(["closed", route]))
+  ws.on("socketerror", message => {
+    // The server never places credentials in the socket URL. Remove any subprotocol ticket or query in browser diagnostics.
+    const summary = String(message).replace(/ticket\.[^\s,'"]+/g, "[ticket]").replace(/\?[^\s'"]+/g, "").slice(0, 250)
+    networkStatus.push(["socketError", route, summary])
+  })
+})
 const path = "/v1/machines/" + encodeURIComponent(machineOrRuntime)
 const machineHash = "#/machines/" + encodeURIComponent(machineOrRuntime)
 const keyName = "Console verification"
+
+async function screenshot(name) {
+  if (process.env.CONSOLE_EVIDENCE)
+    await page.screenshot({ path: join(process.env.CONSOLE_EVIDENCE, name + ".png"), animations: "disabled" })
+}
+
+async function visitSection(name) {
+  await page.getByRole("navigation", { name: "Machine sections" }).getByRole("link", { name, exact: true }).click()
+}
 
 async function get(pathname) {
   const response = await page.request.get(origin + pathname)
@@ -38,14 +70,14 @@ async function createMachine() {
   await page.getByRole("button", { name: /new machine/i }).first().click()
   const dialog = page.getByRole("dialog")
   await dialog.getByPlaceholder("my-machine").fill(keyName)
-  await dialog.getByLabel("Template", { exact: true }).selectOption("t_console_desktop")
-  await dialog.getByLabel("Runtime", { exact: true }).selectOption(machineOrRuntime)
+  await dialog.getByRole("combobox", { name: /^Template\b/ }).selectOption("t_console_desktop")
+  await dialog.getByRole("combobox", { name: /^Runtime\b/ }).selectOption(machineOrRuntime)
   await dialog.getByRole("button", { name: "Custom size" }).click()
   await dialog.getByLabel("vCPUs", { exact: true }).fill("1")
   await dialog.getByLabel("Memory (MiB)", { exact: true }).fill("512")
   await dialog.getByText("Advanced options", { exact: true }).click()
-  await dialog.getByLabel("Private network", { exact: true }).selectOption(network)
-  await dialog.getByLabel("Network mode", { exact: true }).selectOption("native")
+  await dialog.getByRole("combobox", { name: /^Private network\b/ }).selectOption(network)
+  await dialog.getByRole("combobox", { name: /^Network mode\b/ }).selectOption("native")
   const accepted = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/machines")
   await dialog.getByRole("button", { name: "Create", exact: true }).click()
   const response = await accepted
@@ -89,6 +121,7 @@ async function terminal() {
   for (let i = 0; i < 60 && !output.includes("console-verified"); i++) await delay(150)
   assert.ok(output.includes("console-verified"), "Missing shell output")
   assert.ok(resize, "Missing PTY resize")
+  await screenshot("live-terminal")
   await page.reload()
   await page.getByText("Connected", { exact: true }).first().waitFor()
   assert.ok(new URL(page.url()).hash.endsWith("/" + exec_id))
@@ -140,10 +173,17 @@ async function files() {
   const read = await page.request.get(origin + path + "/files?path=" + encodeURIComponent("/tmp/" + textFile))
   assert.equal(read.status(), 200)
   assert.equal(await read.text(), edited)
+  await screenshot("live-files")
   return { binaryBytes: contents.length, binarySha256: createHash("sha256").update(contents).digest("hex"), utf8Edit: true }
 }
 
 async function desktop() {
+  await visitSection("Networking")
+  const service = (await get(path + "/services")).items.find(item => item.protocol === "vnc")
+  assert.ok(service && !service.public_port)
+  await page.getByText(service.name, { exact: true }).first().waitFor()
+  await screenshot("live-networking")
+  await visitSection("Overview")
   await page.getByRole("dialog").last().getByRole("button", { name: "Open " + keyName, exact: true }).click()
   await page.getByRole("link", { name: /Desktop.*Guest display/i }).click()
   const opened = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === path + "/desktop-sessions")
@@ -159,6 +199,7 @@ async function desktop() {
     return canvas?.width === 800 && canvas.height === 480
   })
   const vm = await get(path)
+  await screenshot("live-desktop")
   assert.equal(session.execution_epoch, vm.binding.execution_epoch)
   assert.equal(session.binding_id, vm.binding.binding_id)
   await page.setViewportSize({ width: 390, height: 844 })
@@ -173,15 +214,75 @@ async function desktop() {
   return { width: 800, height: 480, reusedSession: true, closed: true, execution_epoch: session.execution_epoch }
 }
 
+async function observations() {
+  // Re-enter Overview so this assertion compares the rendered sample to that exact response.
+  await visitSection("Networking")
+  const samples = new Map()
+  page.on("response", async response => {
+    if (new URL(response.url()).pathname !== path + "/metrics" || !response.ok()) return
+    const data = await response.json().catch(() => null)
+    if (data?.observed_at) samples.set(data.observed_at, data)
+  })
+  await visitSection("Overview")
+  const metrics = page.getByRole("region", { name: /Resource usage/ })
+  // The retained list can also sample this machine. Match the displayed observation time.
+  await metrics.locator("time[datetime]").first().waitFor()
+  let rendered, sample
+  for (let index = 0; index < 100; index++) {
+    rendered = await metrics.evaluate(el => ({
+      at: el.querySelector("time")?.getAttribute("datetime"),
+      values: [...el.querySelectorAll("h3")].map(heading => heading.parentElement.querySelector("strong")?.textContent),
+    }))
+    sample = samples.get(rendered.at)
+    if (sample) break
+    await delay(50)
+  }
+  assert.ok(sample, "No response matched the visible metrics sample " + JSON.stringify(rendered))
+  assert.ok(["available", "partial"].includes(sample.availability))
+  const vm = await get(path)
+  assert.equal(sample.execution.binding_id, vm.binding.binding_id)
+  const values = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 })
+  const expected = [["cpu_millis", "ms"], ["memory_mb", "MB"], ["disk_used_mb", "MB"]].map(([field, unit]) =>
+    sample[field] == null || sample.issues?.[field] ? "Unavailable" : values.format(sample[field]) + " " + unit)
+  assert.deepEqual(rendered.values, expected, "Metric tiles disagree with the displayed observation")
+  await screenshot("live-metrics")
+  await visitSection("Checkpoints")
+  await page.getByRole("button", { name: "Checkpoint", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "Capture VM checkpoint" })
+  const label = "Console capture"
+  await dialog.getByLabel("Label", { exact: true }).fill(label)
+  const receipt = page.waitForResponse(r => new URL(r.url()).pathname === path + "/snapshots" && r.request().method() === "POST")
+  await dialog.getByRole("button", { name: "Capture", exact: true }).click()
+  const response = await receipt
+  assert.equal(response.status(), 202)
+  const operation = await response.json()
+  await page.getByText(label, { exact: true }).first().waitFor({ timeout: 120000 })
+  const { items } = await get(path + "/snapshots")
+  const snapshot = items.find(item => item.label === label)
+  assert.equal(snapshot?.capture_summary?.configuration?.status, "verified")
+  assert.equal((await get("/v1/operations/" + operation.operation_id)).state, "succeeded")
+  const captured = snapshot.capture_summary.configuration.spec.resources
+  await page.getByText("Captured configuration", { exact: true }).click()
+  const detail = page.locator("details[open]").filter({ hasText: "Captured configuration" })
+  for (const [title, value] of [["CPU", captured.cpu_count], ["Memory MiB", captured.memory_mib]]) {
+    const row = detail.getByText(title, { exact: true }).locator("..")
+    assert.equal(await row.locator("dd").textContent(), String(value))
+  }
+  await screenshot("live-checkpoint")
+  return { availability: sample.availability, scope: sample.scope, source: sample.source, execution_epoch: sample.execution.execution_epoch,
+    snapshot: snapshot.snapshot_id, cpu_count: captured.cpu_count, memory_mib: captured.memory_mib, capture: "verified" }
+}
+
 try {
   await page.goto(origin + "/" + (scenario === "create" ? "#/machines" : machineHash))
   await page.getByLabel("Username").fill("owner")
   await page.getByLabel("Password").fill(readFileSync(0, "utf8"))
   await page.getByRole("button", { name: "Sign in" }).click()
-  assert.ok(["create", "guest", "desktop"].includes(scenario))
+  assert.ok(["create", "guest", "desktop", "observe"].includes(scenario))
   let result
   if (scenario === "create") result = await createMachine()
   else if (scenario === "desktop") result = await desktop()
+  else if (scenario === "observe") result = await observations()
   else {
     const fileResult = await files()
     await page.getByRole("navigation", { name: "Machine sections" }).getByRole("link", { name: "Overview" }).click()
@@ -189,6 +290,23 @@ try {
   }
   assert.deepEqual(errors, [])
   console.log(JSON.stringify(result))
+} catch (error) {
+  if (scenario === "create") {
+    console.error("Create form at failure:", (await page.getByRole("dialog").first().innerText({ timeout: 1000 }).catch(() => "")).slice(0, 2000))
+    console.error("Visible alerts:", (await page.getByRole("alert").allTextContents()).slice(0, 3))
+  }
+  if (scenario !== "create") {
+    console.error("Route:", new URL(page.url()).hash, "Status:", await page.getByRole("status").allTextContents(),
+      "Alerts:", await page.getByRole("alert").allTextContents(), "Errors:", errors, "Network:", networkStatus.slice(-15))
+    if (scenario === "desktop") {
+      const vm = await get(path)
+      const { items } = await get(path + "/desktop-sessions")
+      console.error("Desktop bindings:", items.map(s => [s.state, s.binding_id, s.binding_generation, s.execution_epoch]),
+        "Machine binding:", [vm.binding?.binding_id, vm.binding_generation, vm.binding?.execution_epoch])
+    }
+    if (scenario === "observe") console.error("Metric region:", await page.getByRole("region", { name: /Resource usage/ }).allTextContents())
+  }
+  throw error
 } finally {
   await browser.close()
 }
