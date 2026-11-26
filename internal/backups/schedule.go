@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"sandbox-platform/internal/config"
@@ -20,12 +21,17 @@ func Run(ctx context.Context, db *registry.Store, cfg config.Config, configPath 
 	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	var nextRetention time.Time
 	for {
+		checkRetention := !time.Now().Before(nextRetention)
+		if checkRetention {
+			nextRetention = time.Now().Add(time.Minute)
+		}
 		for _, policy := range cfg.Backups {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := runPolicy(ctx, db, cfg, configPath, policy); err != nil && ctx.Err() == nil {
+			if err := runPolicy(ctx, db, cfg, configPath, policy, checkRetention); err != nil && ctx.Err() == nil {
 				slog.Warn("backup policy awaits reconciliation", "policy_id", policy.ID, "error", err)
 			}
 		}
@@ -37,10 +43,16 @@ func Run(ctx context.Context, db *registry.Store, cfg config.Config, configPath 
 	}
 }
 
-func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, configPath string, policy config.BackupPolicy) error {
+func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, configPath string, policy config.BackupPolicy, checkRetention bool) error {
 	run, err := db.ClaimScheduledBackup(ctx, policy.ID, policy.Scope, time.Now().Add(-time.Duration(policy.IntervalSeconds)*time.Second))
-	if err != nil || run.ID == "" {
+	if err != nil {
 		return err
+	}
+	if run.ID == "" {
+		if checkRetention {
+			return retireOld(ctx, db, cfg, policy, "")
+		}
+		return nil
 	}
 	control, err := db.Control(ctx)
 	if err != nil {
@@ -66,6 +78,12 @@ func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, confi
 		if err == nil && (archive.RunID != run.ID || archive.Scope != run.Scope || archive.ControlEpoch != run.ControlEpoch || archive.InstallationID != control.InstallationID) {
 			err = registry.ErrConflict
 		}
+		if err == nil {
+			err = maintenance.CommitPublishedBackup(output)
+		}
+	}
+	if errors.Is(err, maintenance.ErrBackupPublicationPending) {
+		return err
 	}
 	if ctx.Err() == nil && run.Scope == config.BackupNative {
 		if releaseErr := maintenance.ReleaseNativeBackup(ctx, cfg, run.ID); releaseErr != nil {
@@ -78,7 +96,7 @@ func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, confi
 	if err := db.FinishBackup(ctx, run, "verified", ""); err != nil {
 		return err
 	}
-	return retireOld(ctx, db, cfg, policy)
+	return retireOld(ctx, db, cfg, policy, run.ID)
 }
 
 func failRun(ctx context.Context, db *registry.Store, run registry.BackupRun, failure error) error {
@@ -98,26 +116,43 @@ func failRun(ctx context.Context, db *registry.Store, run registry.BackupRun, fa
 	return db.FinishBackup(ctx, run, "failed", code)
 }
 
-func retireOld(ctx context.Context, db *registry.Store, cfg config.Config, policy config.BackupPolicy) error {
+func retireOld(ctx context.Context, db *registry.Store, cfg config.Config, policy config.BackupPolicy, justVerified string) error {
+	control, err := db.Control(ctx)
+	if err != nil || control.Maintenance {
+		return err
+	}
 	runs, err := db.Backups(ctx, policy.ID)
 	if err != nil {
 		return err
 	}
+	runs = slices.DeleteFunc(runs, func(run registry.BackupRun) bool {
+		return run.Scope != policy.Scope || run.State != "verified" && run.State != "retiring"
+	})
+	if len(runs) <= policy.Retain {
+		return nil
+	}
+	verified := func(run registry.BackupRun) bool {
+		if run.ID == justVerified {
+			return true
+		}
+		metadata, err := maintenance.VerifyPlannedBackup(ctx, cfg, filepath.Join(policy.Directory, run.ID), policy.RecoveryKeyFile)
+		return err == nil && metadata.RunID == run.ID && metadata.Scope == run.Scope &&
+			metadata.ControlEpoch == run.ControlEpoch && metadata.InstallationID == control.InstallationID
+	}
 	kept := 0
 	for _, run := range runs {
-		if run.Scope != policy.Scope || (run.State != "verified" && run.State != "retiring") {
-			continue
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if run.State == "verified" {
-			kept++
-			if kept <= policy.Retain {
-				continue
+		if kept < policy.Retain {
+			if run.State == "verified" && verified(run) {
+				kept++
 			}
+			continue
 		}
 		path := filepath.Join(policy.Directory, run.ID)
 		if run.State == "verified" {
-			metadata, err := maintenance.VerifyPlannedBackup(ctx, cfg, path, policy.RecoveryKeyFile)
-			if err != nil || metadata.RunID != run.ID || metadata.ControlEpoch != run.ControlEpoch {
+			if !verified(run) {
 				continue
 			}
 			if err := db.FinishBackup(ctx, run, "retiring", ""); err != nil {

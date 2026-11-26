@@ -34,7 +34,7 @@ func TestFailedRunKeepsLastGoodArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := runPolicy(ctx, db, cfg, configFile, policy); err != nil {
+	if err := runPolicy(ctx, db, cfg, configFile, policy, true); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := db.Backups(ctx, policy.ID)
@@ -49,7 +49,7 @@ func TestFailedRunKeepsLastGoodArchive(t *testing.T) {
 	if _, err := db.DB().ExecContext(ctx, "UPDATE backup_runs SET started_at=? WHERE id=?", time.Now().Add(-2*time.Hour).UnixMilli(), runs[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := runPolicy(ctx, db, cfg, configFile, policy); err != nil {
+	if err := runPolicy(ctx, db, cfg, configFile, policy, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(policy.RecoveryKeyFile+".fixture", policy.RecoveryKeyFile); err != nil {

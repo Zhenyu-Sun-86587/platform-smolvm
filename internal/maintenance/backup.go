@@ -60,6 +60,7 @@ type BackupPlan struct {
 }
 
 var ErrNativeClosure = errors.New("native backup closure is unavailable")
+var ErrBackupPublicationPending = errors.New("published backup directory is awaiting a durable commit")
 
 func CreatePlannedBackup(ctx context.Context, cfg config.Config, configPath, output string, plan BackupPlan) (Backup, error) {
 	return createBackup(ctx, cfg, configPath, output, &plan)
@@ -192,7 +193,24 @@ func createBackup(ctx context.Context, cfg config.Config, configPath, output str
 	if err := unix.Renameat2(unix.AT_FDCWD, work, unix.AT_FDCWD, output, unix.RENAME_NOREPLACE); err != nil {
 		return result, fmt.Errorf("publish backup directory: %w", err)
 	}
+	if plan != nil {
+		return result, CommitPublishedBackup(output)
+	}
 	return result, syncPath(filepath.Dir(output))
+}
+
+// CommitPublishedBackup completes the directory rename and removes the staging
+// marker. It can run again after the daemon exits between rename and receipt.
+func CommitPublishedBackup(output string) error {
+	parent := filepath.Dir(output)
+	marker := filepath.Join(parent, ".sandbox-"+filepath.Base(output)+".catalog-ready")
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(ErrBackupPublicationPending, err)
+	}
+	if err := syncPath(parent); err != nil {
+		return errors.Join(ErrBackupPublicationPending, err)
+	}
+	return nil
 }
 
 func backupStage(output string, plan *BackupPlan) (string, bool, func(), error) {
