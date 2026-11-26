@@ -19,7 +19,6 @@ import (
 )
 
 const guestFrameLimit = 1 << 20
-const guestExecCapability = "system-exec-stream-v1"
 
 var ErrGuestStart = errors.New("Guest Agent could not start the command")
 var ErrGuestCapacity = errors.New("too many active System Agent exec sessions")
@@ -62,6 +61,14 @@ type GuestSession struct {
 }
 
 func StartGuest(ctx context.Context, socket net.Conn, output *Stream, req rt.ExecSessionRequest) (*GuestSession, error) {
+	if err := startGuestCommand(ctx, socket, req); err != nil {
+		return nil, err
+	}
+	output.Observe(rt.ExecSession{State: "running"})
+	return &GuestSession{socket: socket, output: output, interactive: req.Interactive || req.TTY, tty: req.TTY}, nil
+}
+
+func startGuestCommand(ctx context.Context, socket net.Conn, req rt.ExecSessionRequest) error {
 	ready := false
 	defer func() {
 		if !ready {
@@ -72,21 +79,21 @@ func StartGuest(ctx context.Context, socket net.Conn, output *Stream, req rt.Exe
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	if err := socket.SetDeadline(deadline); err != nil {
-		return nil, err
+		return err
 	}
 	stop := context.AfterFunc(ctx, func() { _ = socket.Close() })
 	defer stop()
 	if err := writeGuestFrame(socket, struct {
 		Method string `json:"method"`
 	}{"ping"}); err != nil {
-		return nil, err
+		return err
 	}
 	pong, err := readGuestFrame(socket)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if pong.Status != "pong" || pong.Version != 1 || !slices.Contains(pong.Capabilities, guestExecCapability) {
-		return nil, fmt.Errorf("%w: the System Guest Agent does not advertise %s", rt.ErrUnsupported, guestExecCapability)
+	if pong.Status != "pong" || pong.Version != 1 || !slices.Contains(pong.Capabilities, rt.SystemExecStreamCapability) {
+		return fmt.Errorf("%w: the System Guest Agent does not advertise %s", rt.ErrUnsupported, rt.SystemExecStreamCapability)
 	}
 	command := guestCommand{
 		ID: strings.TrimPrefix(req.ID, "exec_"), Command: req.Command,
@@ -107,39 +114,38 @@ func StartGuest(ctx context.Context, socket net.Conn, output *Stream, req rt.Exe
 		Method  string       `json:"method"`
 		Session guestCommand `json:"session"`
 	}{"vm_exec_controlled", command}); err != nil {
-		return nil, err
+		return err
 	}
 	response, err := readGuestFrame(socket)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if response.Status == "error" {
 		if response.Code == "RESOURCE_LIMIT" {
-			return nil, ErrGuestCapacity
+			return ErrGuestCapacity
 		}
-		return nil, fmt.Errorf("%w: %s", ErrGuestStart, response.Message)
+		return fmt.Errorf("%w: %s", ErrGuestStart, response.Message)
 	}
 	if response.Status != "started" {
-		return nil, fmt.Errorf("%w: Guest Agent did not acknowledge the command", rt.ErrUnsupported)
+		return fmt.Errorf("%w: Guest Agent did not acknowledge the command", rt.ErrUnsupported)
 	}
 	interactive := req.Interactive || req.TTY
 	if !interactive {
 		// The Agent streams output in either mode. For a non-interactive
 		// command the stdin pipe should see EOF without a client attached.
 		if err := guestStdin(socket, []byte{}); err != nil && !errors.Is(err, syscall.EPIPE) {
-			return nil, err
+			return err
 		}
 	}
 	stop()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	if err := socket.SetDeadline(time.Time{}); err != nil {
-		return nil, err
+		return err
 	}
-	output.Observe(rt.ExecSession{State: "running"})
 	ready = true
-	return &GuestSession{socket: socket, output: output, interactive: interactive, tty: req.TTY}, nil
+	return nil
 }
 
 func (s *GuestSession) Run() {

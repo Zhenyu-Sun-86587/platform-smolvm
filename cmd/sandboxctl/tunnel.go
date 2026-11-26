@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -109,28 +110,46 @@ func (c *client) printSSHHostKey(cmd *cobra.Command, id string, ifReady bool) er
 }
 
 func (c *client) sshProxy() *cobra.Command {
-	var machineID string
+	var machineID, managedKey string
 	var managed bool
 	cmd := sub("ssh-proxy", "Proxy OpenSSH over the authenticated platform tunnel", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
-		return c.proxySSH(cmd, machineID, managed)
+		if managed && managedKey == "" {
+			dir, err := c.profileDirectory()
+			if err != nil {
+				return err
+			}
+			managedKey = managedSSHIdentity(filepath.Join(dir, "ssh"))
+		}
+		if !managed && managedKey != "" {
+			return errors.New("--managed-key-file requires --managed")
+		}
+		return c.proxySSH(cmd, machineID, managedKey)
 	})
 	cmd.Flags().StringVar(&machineID, "machine", "", "Platform machine ID")
 	cmd.Flags().BoolVar(&managed, "managed", false, "Use the managed SSH tunnel for a System Guest")
+	cmd.Flags().StringVar(&managedKey, "managed-key-file", "", "Managed key path; defaults to the profile identity")
+	_ = cmd.Flags().MarkHidden("managed-key-file")
 	_ = cmd.MarkFlagRequired("machine")
 	return cmd
 }
 
-func (c *client) proxySSH(cmd *cobra.Command, machineID string, managed bool) error {
+func (c *client) proxySSH(cmd *cobra.Command, machineID, managedKey string) error {
 	if !safeMachineID.MatchString(machineID) {
 		return errors.New("invalid machine ID")
 	}
 	path := res("machines", machineID) + "/ssh-tunnel"
 	budget := 15 * time.Second
-	if managed {
+	var headers http.Header
+	if managedKey != "" {
+		publicKey, err := managedSSHPublicKey(managedKey)
+		if err != nil {
+			return err
+		}
+		headers = http.Header{managedSSHKeyHeader: {publicKey}}
 		path += "?managed=1"
 		budget = 75 * time.Second
 	}
-	return c.tunnelWithDialBudget(cmd.Context(), path, cmd.InOrStdin(), cmd.OutOrStdout(), func() error { return nil }, budget)
+	return c.tunnelWithDialBudget(cmd.Context(), path, headers, cmd.InOrStdin(), cmd.OutOrStdout(), func() error { return nil }, budget)
 }
 
 func (c *client) portForward() *cobra.Command {
@@ -187,10 +206,10 @@ type tunnelControl struct {
 }
 
 func (c *client) tunnel(ctx context.Context, path string, source io.Reader, sink io.Writer, closeWrite func() error) error {
-	return c.tunnelWithDialBudget(ctx, path, source, sink, closeWrite, 15*time.Second)
+	return c.tunnelWithDialBudget(ctx, path, nil, source, sink, closeWrite, 15*time.Second)
 }
 
-func (c *client) tunnelWithDialBudget(ctx context.Context, path string, source io.Reader, sink io.Writer, closeWrite func() error, dialBudget time.Duration) error {
+func (c *client) tunnelWithDialBudget(ctx context.Context, path string, extraHeaders http.Header, source io.Reader, sink io.Writer, closeWrite func() error, dialBudget time.Duration) error {
 	endpoint, err := c.endpoint(path)
 	if err != nil {
 		return err
@@ -200,7 +219,11 @@ func (c *client) tunnelWithDialBudget(ctx context.Context, path string, source i
 	} else {
 		endpoint.Scheme = "ws"
 	}
-	headers := http.Header{"Authorization": {"Bearer " + c.token}}
+	headers := extraHeaders.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Authorization", "Bearer "+c.token)
 	connect, cancelConnect := context.WithTimeout(ctx, dialBudget)
 	ws, response, err := websocket.Dial(connect, endpoint.String(), &websocket.DialOptions{
 		HTTPClient: c.http, HTTPHeader: headers, Subprotocols: []string{tunnelProtocol}, CompressionMode: websocket.CompressionDisabled,

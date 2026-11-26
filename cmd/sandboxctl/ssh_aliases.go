@@ -36,15 +36,10 @@ func (c *client) visibleSSHAliases(ctx context.Context) ([]sshAlias, error) {
 	for cursor := ""; ; {
 		var page struct {
 			Items []struct {
-				ID           string `json:"machine_id"`
-				Name         string `json:"name"`
-				BootMode     string `json:"boot_mode"`
-				Capabilities map[string]struct {
-					Status      string `json:"status"`
-					Constraints struct {
-						ManageAllowed bool `json:"manage_allowed"`
-					} `json:"constraints"`
-				} `json:"capabilities"`
+				ID           string                          `json:"machine_id"`
+				Name         string                          `json:"name"`
+				BootMode     string                          `json:"boot_mode"`
+				Capabilities map[string]managedSSHCapability `json:"capabilities"`
 			} `json:"items"`
 			Next string `json:"next_cursor"`
 		}
@@ -63,8 +58,8 @@ func (c *client) visibleSSHAliases(ctx context.Context) ([]sshAlias, error) {
 				ambiguous[host] = true
 			}
 			machines[host] = item.ID
-			managed, published := item.Capabilities["access.managed_ssh"]
-			if item.BootMode == "system" && (!published || managed.Status == "supported" && managed.Constraints.ManageAllowed) {
+			managed := item.Capabilities[managedSSHCapabilityName]
+			if item.BootMode == "system" && managed.Status == "supported" && managed.Constraints.ManageAllowed != nil && *managed.Constraints.ManageAllowed {
 				aliases[host] = item.ID
 			}
 		}
@@ -213,7 +208,11 @@ func (c *client) writeSSHAliases(ctx context.Context, pinned *client, dir, gener
 	if err != nil {
 		return 0, err
 	}
-	config, err := managedSSHConfig(binary, dir, c.profileName, filepath.Join(profile, "ssh"), aliases)
+	identity, err := ensureManagedSSHIdentity(ctx, filepath.Join(profile, "ssh"))
+	if err != nil {
+		return 0, err
+	}
+	config, err := managedSSHConfig(binary, dir, c.profileName, identity, aliases)
 	if err != nil {
 		return 0, err
 	}
@@ -275,8 +274,8 @@ func (c *client) refreshInstalledSSH(ctx context.Context) error {
 	return err
 }
 
-func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (string, error) {
-	for _, value := range []string{binary, dir, keyDir} {
+func managedSSHConfig(binary, dir, profile, identity string, aliases []sshAlias) (string, error) {
+	for _, value := range []string{binary, dir, identity} {
 		if !filepath.IsAbs(value) || strings.ContainsAny(value, "\r\n\x00") || strings.Contains(value, "${") {
 			return "", errors.New("OpenSSH integration requires absolute paths without newlines or environment substitutions")
 		}
@@ -292,10 +291,8 @@ func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (
 		if !ok || !sshAliasLabel.MatchString(label) || !safeMachineID.MatchString(alias.machine) {
 			return "", errors.New("unsafe OpenSSH alias")
 		}
-		identity := credentialPaths(keyDir, alias.machine)
 		proxy := exec + " managed-ssh-proxy " + alias.machine + " " + alias.name
 		hostKey := exec + " managed-ssh-host-key " + alias.machine
-		prepare := exec + " managed-ssh-prepare " + alias.machine + " " + alias.name
 		fmt.Fprintf(&config, `Host %s
     HostName %s
     User root
@@ -308,7 +305,6 @@ func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (
     IdentityAgent none
     IdentitiesOnly yes
     IdentityFile %s
-    CertificateFile %s
     PreferredAuthentications publickey
     StrictHostKeyChecking yes
     CheckHostIP no
@@ -318,19 +314,14 @@ func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (
     HostKeyAlias sandbox-%s
     ProxyCommand %s
     KnownHostsCommand %s
-Match originalhost %s exec %s
 
-`, alias.name, alias.name, sshConfigArg(strings.ReplaceAll(identity.identity, "%", "%%")),
-			sshConfigArg(strings.ReplaceAll(identity.certificate, "%", "%%")), alias.machine,
-			proxy, hostKey, alias.name, sshConfigArg(prepare))
+`, alias.name, alias.name, sshConfigArg(strings.ReplaceAll(identity, "%", "%%")), alias.machine,
+			proxy, hostKey)
 	}
 	fmt.Fprintf(&config, "Host *.sandbox\n    ProxyCommand %s managed-ssh-missing-alias\nHost *\n", exec)
 	return config.String(), nil
 }
 
-// SSH config argv parsing precedes shell parsing of Match exec. Quote the
-// entire expression for the config parser; the command's arguments are
-// already safely quoted for the shell and use only static host literals.
 func sshConfigArg(value string) string {
 	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value) + "\""
 }
@@ -409,28 +400,6 @@ func readSSHConfig(path string) ([]byte, error) {
 	return raw, err
 }
 
-func (c *client) managedSSHPrepare() *cobra.Command {
-	cmd := sub("managed-ssh-prepare MACHINE ALIAS", "Prepare an installed OpenSSH alias", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-		pinned, err := c.pinnedClient()
-		if err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-		defer cancel()
-		if err := pinned.requireSSHAlias(ctx, args[1], args[0]); err != nil {
-			return err
-		}
-		dir, err := c.profileDirectory()
-		if err != nil {
-			return err
-		}
-		_, err = pinned.prepareSSHCredential(ctx, filepath.Join(dir, "ssh"), args[0])
-		return err
-	})
-	cmd.Hidden = true
-	return cmd
-}
-
 func (c *client) managedSSHProxy() *cobra.Command {
 	cmd := sub("managed-ssh-proxy MACHINE ALIAS", "Proxy an installed OpenSSH alias", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 		pinned, err := c.pinnedClient()
@@ -442,7 +411,11 @@ func (c *client) managedSSHProxy() *cobra.Command {
 		if err := pinned.requireSSHAlias(verify, args[1], args[0]); err != nil {
 			return err
 		}
-		return pinned.proxySSH(cmd, args[0], true)
+		profile, err := c.profileDirectory()
+		if err != nil {
+			return err
+		}
+		return pinned.proxySSH(cmd, args[0], managedSSHIdentity(filepath.Join(profile, "ssh")))
 	})
 	cmd.Hidden = true
 	return cmd

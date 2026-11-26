@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"time"
 
@@ -19,11 +18,12 @@ const systemSSHCommand = "/usr/local/sbin/sandbox-system-ssh-sync"
 const SystemSSHPort = 2222
 
 type nativeSSHEvidence struct {
-	Ready        bool                  `json:"ssh_ready"`
-	Key          string                `json:"ssh_host_key,omitempty"`
-	KeysetDigest string                `json:"ssh_keyset_digest,omitempty"`
-	Execution    rt.ExecutionRef       `json:"ssh_execution"`
-	FileTransfer *rt.GuestFileEvidence `json:"file_transfer,omitempty"`
+	Ready        bool                        `json:"ssh_ready"`
+	Key          string                      `json:"ssh_host_key,omitempty"`
+	KeysetDigest string                      `json:"ssh_keyset_digest,omitempty"`
+	Execution    rt.ExecutionRef             `json:"ssh_execution"`
+	FileTransfer *rt.GuestFileEvidence       `json:"file_transfer,omitempty"`
+	ExecStream   *rt.GuestExecStreamEvidence `json:"exec_stream,omitempty"`
 }
 
 type nativeSSHRequest struct {
@@ -56,10 +56,7 @@ func (e *Engine) VerifiedNativeSSHKey(ctx context.Context, b registry.Binding, p
 	if !evidence.Ready || evidence.Key == "" || evidence.Execution != b.ExecutionRef() {
 		return "", nil
 	}
-	keys, err := e.systemAuthorizedSSHKeys(ctx, b.MachineID, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
+	keys, err := e.authorizedSSHKeys(ctx)
 	if err != nil || evidence.KeysetDigest != keysetDigest(keys) {
 		return "", err
 	}
@@ -96,14 +93,16 @@ func (e *Engine) observeSystemGuest(ctx context.Context, binding registry.Bindin
 		evidence = nativeSSHEvidence{Execution: ref}
 	}
 	evidence.FileTransfer = nil
+	evidence.ExecStream = nil
 	if _, ok := PolicyClient(adapter, binding); ok && capabilities != nil {
 		evidence.FileTransfer = &rt.GuestFileEvidence{Execution: ref, Supported: slices.Contains(capabilities, rt.SystemFileTransferCapability)}
+		evidence.ExecStream = &rt.GuestExecStreamEvidence{Execution: ref, Supported: slices.Contains(capabilities, rt.SystemExecStreamCapability)}
 	}
 	x.GuestManagementEvidence = JSON(evidence)
 	if !profile.ManagedSSH {
 		return ""
 	}
-	keys, err := e.systemAuthorizedSSHKeys(ctx, binding.MachineID, true)
+	keys, err := e.authorizedSSHKeys(ctx)
 	if err != nil {
 		return ""
 	}
@@ -177,7 +176,7 @@ func (j *Job) driveNativeSSH(ctx context.Context, routeError error) error {
 	if err != nil || inventory.Inventory.SourceDisposition != "RUNNING" {
 		return j.fail(ctx, &Failure{"STATE_CONFLICT", "managed SSH requires the current running execution"})
 	}
-	keys, err := j.systemAuthorizedSSHKeys(ctx, j.Binding.MachineID, true)
+	keys, err := j.authorizedSSHKeys(ctx)
 	if err != nil {
 		return j.fail(ctx, err)
 	}
@@ -203,6 +202,7 @@ func (j *Job) driveNativeSSH(ctx context.Context, routeError error) error {
 	x.GuestManagementStatus = "ready"
 	var previous nativeSSHEvidence
 	_ = json.Unmarshal(j.Binding.GuestManagementEvidence, &previous)
-	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref, FileTransfer: previous.FileTransfer})
+	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref,
+		FileTransfer: previous.FileTransfer, ExecStream: previous.ExecStream})
 	return j.Done(ctx, registry.TransitionRequest{Effect: registry.EffectApplied, Observation: &x})
 }

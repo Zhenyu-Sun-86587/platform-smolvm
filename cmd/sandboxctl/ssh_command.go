@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"errors"
-	"net/http"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,26 +44,32 @@ func (c *client) ssh() *cobra.Command {
 		}
 		proxy := base + " ssh-proxy --machine " + id
 		managed := identity == "" && !legacy && user == "root"
-		var credentials sshCredentialPaths
+		var managedKey string
 		if managed {
-			dir, err := os.MkdirTemp("", "sandboxctl-managed-ssh-")
+			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+			managed, err = c.machineManagedSSH(ctx, id)
+			cancel()
 			if err != nil {
 				return err
 			}
-			defer os.RemoveAll(dir)
-			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-			credentials, err = c.prepareSSHCredential(ctx, dir, id)
+		}
+		if managed {
+			dir, err := c.persistentSSHKeyDirectory()
 			if err != nil {
-				managed = false
-				if !c.canUseLegacySSH(ctx, id, err) {
-					cancel()
+				return err
+			}
+			if dir == "" {
+				dir, err = os.MkdirTemp("", "sandboxctl-managed-ssh-")
+				if err != nil {
 					return err
 				}
+				defer os.RemoveAll(dir)
 			}
-			cancel()
-			if managed {
-				proxy += " --managed"
+			managedKey, err = ensureManagedSSHIdentity(cmd.Context(), dir)
+			if err != nil {
+				return err
 			}
+			proxy += " --managed --managed-key-file " + openSSHCommandWord(managedKey)
 		}
 		options := []string{
 			"-F", os.DevNull,
@@ -79,8 +86,8 @@ func (c *client) ssh() *cobra.Command {
 			"-l", user,
 		}
 		if managed {
-			options = append(options, "-i", credentials.identity,
-				"-o", "CertificateFile="+sshConfigArg(strings.ReplaceAll(credentials.certificate, "%", "%%")), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
+			options = append(options, "-i", strings.ReplaceAll(managedKey, "%", "%%"),
+				"-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
 				"-o", "ConnectTimeout=90", "-o", "PreferredAuthentications=publickey")
 		}
 		if identity != "" {
@@ -110,21 +117,63 @@ func (c *client) ssh() *cobra.Command {
 	return command
 }
 
-func (c *client) canUseLegacySSH(ctx context.Context, id string, err error) bool {
-	var upstream *apiError
-	if !errors.As(err, &upstream) {
-		return false
+const managedSSHCapabilityName = "access.managed_ssh"
+
+type managedSSHCapability struct {
+	Status      string `json:"status"`
+	Constraints struct {
+		ManageAllowed *bool `json:"manage_allowed"`
+	} `json:"constraints"`
+}
+
+func (c *client) machineManagedSSH(ctx context.Context, id string) (bool, error) {
+	var current struct {
+		ID           string                          `json:"machine_id"`
+		Capabilities map[string]managedSSHCapability `json:"capabilities"`
 	}
-	if upstream.Status == http.StatusConflict && upstream.Detail.Code == "NOT_SUPPORTED" {
-		return upstream.Detail.Effect == "none"
+	if err := c.get(ctx, res("machines", id), &current); err != nil {
+		return false, err
 	}
-	if (upstream.Status != http.StatusNotFound && upstream.Status != http.StatusMethodNotAllowed) || upstream.Detail.Code != "" {
-		return false
+	if current.ID != id {
+		return false, errors.New("platform returned a different machine ID")
 	}
-	// Old Go muxes return plain 404/405 for the missing certificate method.
-	// Independently verify that the same authenticated machine is visible.
-	var current machine
-	return c.get(ctx, res("machines", id), &current) == nil && current.ID == id
+	capability, present := current.Capabilities[managedSSHCapabilityName]
+	if !present {
+		// Older servers omit this capability from the authenticated machine view.
+		return false, nil
+	}
+	if capability.Constraints.ManageAllowed == nil {
+		return false, errors.New("platform did not confirm manage permission for SSH")
+	}
+	if !*capability.Constraints.ManageAllowed {
+		return false, errors.New("managed SSH requires manage permission for this machine")
+	}
+	switch capability.Status {
+	case "supported":
+		return true, nil
+	case "unsupported":
+		return false, nil
+	default:
+		return false, fmt.Errorf("managed SSH support is unverified for %s; use --legacy to select a published SSH service", id)
+	}
+}
+
+func (c *client) persistentSSHKeyDirectory() (string, error) {
+	profile, err := c.readProfile()
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if profile.Origin != c.origin {
+		return "", nil
+	}
+	dir, err := c.profileDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ssh"), nil
 }
 
 func openSSHCommandWord(value string) string {
