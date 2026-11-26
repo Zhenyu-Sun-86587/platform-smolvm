@@ -9,9 +9,11 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlencode
 
 from authorized_services_kvm import NETWORK, PROGRAM, RECEIPTS, SERVICE_PORT, tls_setup
 from managed_system_vsock import Platform, digest, wait_for
@@ -20,6 +22,7 @@ from managed_system_vsock import Platform, digest, wait_for
 RAM_PATH = "/run/j11-state"
 DISK_PATH = "/root/j11-state"
 FILE_PATH = "/root/j11-file.bin"
+UNCERTAIN_PATH = "/root/j11-upload-unknown.bin"
 NAMESPACE_ORIGIN = "POLISH_CLI_PARENT_NAMESPACES"
 
 
@@ -42,9 +45,11 @@ class CLI:
             stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=330,
         )
         if result.returncode != expected:
+            token = self.env["SANDBOX_TOKEN"].encode()
             raise AssertionError({
                 "command": args, "expected_exit": expected, "exit": result.returncode,
-                "stdout": result.stdout[:3000], "stderr": result.stderr[:3000],
+                "stdout": result.stdout.replace(token, b"[redacted]")[:3000],
+                "stderr": result.stderr.replace(token, b"[redacted]")[:3000],
             })
         return result
 
@@ -139,7 +144,58 @@ def check_exec_and_files(cli, machine):
     assert cli.guest(machine, "sha256sum", FILE_PATH).split()[0].decode() == expected
     downloaded = cli.run("files", "get", machine, FILE_PATH, "-").stdout
     assert downloaded == contents and len(downloaded) > 512 << 10
-    return {"size": len(contents), "sha256": expected, "upload_id": result["upload_id"], "exec_exit": 17}
+    return {
+        "size": len(contents), "sha256": expected, "upload_id": result["upload_id"], "exec_exit": 17,
+        "uncertain_upload": check_uncertain_upload(cli, machine),
+    }
+
+
+def check_uncertain_upload(cli, machine):
+    key = "j11-lost-receipt"
+    local = cli.platform.root / "j11-uncertain-upload"
+    local.write_bytes(b"committed")
+    revision = cli.json("machines", "show", machine)["revision"]
+    original = (
+        "--json", "--control-epoch", cli.platform.epoch, "--idempotency-key", key, "--revision", str(revision),
+        "files", "put", machine, str(local), UNCERTAIN_PATH,
+    )
+
+    def unknown():
+        reply = cli.run(*original, expected=1)
+        token = cli.env["SANDBOX_TOKEN"].encode()
+        assert not reply.stdout and token not in reply.stderr
+        assert len(reply.stderr.splitlines()) == 1
+        failure = json.loads(reply.stderr)
+        error = failure["error"]
+        assert (failure["status"], error["code"], error["effect"], error["retry"]) == (
+            409, "OUTCOME_UNKNOWN", "unknown", "verify_original_intent",
+        ), failure
+        assert error["intent"] == {
+            "control_epoch": cli.platform.epoch, "idempotency_key": key, "revision": revision, "method": "PUT",
+            "path": f"machines/{machine}/files?" + urlencode({"path": UNCERTAIN_PATH}),
+        }, failure
+        return error
+
+    # Fail only the post-rename receipt update in this fixture's private Platform DB.
+    with closing(sqlite3.connect(cli.platform.root / "platform/platform.db", timeout=5)) as db:
+        db.execute("""CREATE TRIGGER j11_receipt_fault BEFORE UPDATE OF response_json ON idempotency
+                   WHEN OLD.key = 'j11-lost-receipt'
+                   BEGIN SELECT RAISE(ABORT, 'injected receipt loss'); END""")
+        try:
+            error = unknown()
+            assert cli.guest(machine, "/bin/cat", UNCERTAIN_PATH) == b"committed"
+        finally:
+            db.execute("DROP TRIGGER j11_receipt_fault")
+    later = cli.platform.root / "j11-later-upload"
+    later.write_bytes(b"later")
+    receipt = cli.json("files", "put", machine, str(later), UNCERTAIN_PATH)
+    assert receipt["state"] == "uploaded" and receipt["sha256"] == hashlib.sha256(b"later").hexdigest(), receipt
+    assert unknown() == error
+    assert cli.run("files", "get", machine, UNCERTAIN_PATH, "-").stdout == b"later"
+    return {
+        "effect": error["effect"], "retry": error["retry"], "idempotency_key": key,
+        "guest_commit_verified": True, "replay_preserved_later_sha256": receipt["sha256"],
+    }
 
 
 def markers(cli, machine, ram, disk):
@@ -185,7 +241,10 @@ def check_snapshots(cli, machine, source):
     description = cli.json("snapshots", "get", snapshot)
     provenance = description["vm_provenance"]
     summary = description["capture_summary"]
-    assert description["capture_mode"] == "vm" and description["state"] == "ready", description
+    manifest = saved["result"]["statepoint"]["manifest_digest"]
+    assert (description["capture_mode"], description["state"], description["sha256"]) == ("vm", "ready", manifest)
+    assert manifest.startswith("sha256:") and len(bytes.fromhex(manifest.removeprefix("sha256:"))) == 32
+    assert provenance["runtime_capture_id"] == saved["result"]["capture_id"], provenance
     assert provenance["operation_id"] == saved["operation_id"], provenance
     assert provenance["runtime_bundle_id"] == cli.platform.bundle_id and provenance["state_reader_id"], provenance
     assert summary["ram"] == "included" and summary["configuration"]["status"] == "verified", summary
@@ -197,9 +256,12 @@ def check_snapshots(cli, machine, source):
     rolled = cli.operation("snapshots", "rollback-vm", machine, snapshot)
     result = rolled["result"]
     assert rolled["source_disposition"] == "EXITED" and result["rescue_capture_id"], rolled
-    assert result["statepoint"]["capture_id"] == provenance["runtime_capture_id"], result
+    rescue = result["rescue_capture_id"]
     previous = cli.execution(machine)
+    assert previous["instance_id"] == source["instance_id"]
     assert previous["incarnation_id"] != source["incarnation_id"]
+    assert previous["execution_epoch"] == source["execution_epoch"] + 1
+    check_restored_snapshot(result, machine, previous, provenance["runtime_capture_id"], manifest)
     markers(cli, machine, "snapshot-ram:", "snapshot-disk")
 
     restored = cli.operation("snapshots", "restore-vm", snapshot, "J11 restored workspace")
@@ -207,17 +269,53 @@ def check_snapshots(cli, machine, source):
     restored_id = result["machine_id"]
     restored_execution = cli.execution(restored_id)
     assert restored_id != machine and restored_execution["incarnation_id"] != previous["incarnation_id"]
-    assert result["statepoint"]["capture_id"] == provenance["runtime_capture_id"], result
+    check_restored_snapshot(result, restored_id, restored_execution, provenance["runtime_capture_id"], manifest)
     markers(cli, restored_id, "snapshot-ram:", "snapshot-disk")
     write_markers(cli, restored_id, "restore-only-ram:", "restore-only-disk")
     markers(cli, machine, "snapshot-ram:", "snapshot-disk")
     restored_deleted = cli.delete(restored_id)
     return previous, {
-        "snapshot_id": snapshot, "capture_id": provenance["runtime_capture_id"],
+        "snapshot_id": snapshot, "capture_id": provenance["runtime_capture_id"], "manifest_sha256": manifest,
         "capture_operation_id": saved["operation_id"], "rollback_operation_id": rolled["operation_id"],
+        "rescue_capture_id": rescue, "rollback_execution": previous,
         "restore_operation_id": restored["operation_id"], "restored_execution": restored_execution,
         "restored_delete_operation_id": restored_deleted,
     }
+
+
+def check_restored_snapshot(result, machine, execution, capture, manifest):
+    assert (result["machine_id"], result["execution_epoch"], result["capture_configuration_status"]) == (
+        machine, execution["execution_epoch"], "verified",
+    ), result
+    point = result["statepoint"]
+    assert (point["capture_id"], point["manifest_digest"], point["activation_decision"], point["stage"]) == (
+        capture, manifest, "commit", "released",
+    ), point
+
+
+def delete_saved_points(cli, machine, fork, snapshots, hibernate):
+    ids = {
+        "live_fork": fork["capture_id"], "checkpoint": snapshots["capture_id"],
+        "rollback_rescue": snapshots["rescue_capture_id"], "hibernate": hibernate["capture_id"],
+    }
+    visible = {
+        item.get("vm_provenance", {}).get("runtime_capture_id"): item
+        for item in cli.json("snapshots", "list", machine)["items"]
+    }
+    assert visible[ids["checkpoint"]]["snapshot_id"] == snapshots["snapshot_id"], visible
+    details = {}
+    for purpose, capture in ids.items():
+        item = visible.get(capture)
+        if item is None:
+            details[purpose] = {"capture_id": capture, "listed": False}
+            continue
+        snapshot = item["snapshot_id"]
+        deleted = cli.operation("snapshots", "delete", snapshot)
+        assert deleted["result"]["snapshot_id"] == snapshot, deleted
+        assert cli.json("snapshots", "get", snapshot)["state"] == "deleted"
+        details[purpose] = {"capture_id": capture, "snapshot_id": snapshot, "delete_operation_id": deleted["operation_id"]}
+    assert cli.json("snapshots", "list", machine)["items"] == []
+    return details
 
 
 class LocalHTTPS(HTTPSConnection):
@@ -302,6 +400,7 @@ def check_hibernate(cli, machine, source):
     markers(cli, machine, "hibernate-ram:", "hibernate-disk")
     return {
         "capture_id": capture, "hibernate_operation_id": sleeping["operation_id"],
+        "manifest_sha256": sleeping["result"]["statepoint"]["manifest_digest"],
         "wake_operation_id": wake["operation_id"], "successor": successor,
     }
 
@@ -320,15 +419,23 @@ def check_workflow(platform, ca):
     assert resources["cpu_count"] == 1 and resources["memory_mib"] == 512, resources
     cli.operation("lifecycle", "set", machine, "--policy", '{"auto_standby":false,"auto_hibernate":false}')
     facts = {"exec_and_files": check_exec_and_files(cli, machine), "live_fork": check_fork(cli, machine, source)}
+    from polish_cli_batch import check_partial_batch
+    facts["batch"] = check_partial_batch(cli, machine)
     previous, facts["snapshots"] = check_snapshots(cli, machine, source)
     facts["service"] = check_service(cli, machine)
     facts["hibernate"] = check_hibernate(cli, machine, previous)
-    facts["delete_operation_id"] = cli.delete(machine)
+    delete_operation = cli.delete(machine)
     assert cli.json("machines", "list")["items"] == []
+    cleanup = delete_saved_points(cli, machine, facts["live_fork"], facts["snapshots"], facts["hibernate"])
     print(json.dumps({
         "case": "J11-cli", "bundle": platform.bundle_id, "sandboxctl_sha256": digest(platform.args.sandboxctl),
-        "platformd_sha256": digest(platform.args.platformd), "source": source, "machine_id": machine,
+        "platformd_sha256": digest(platform.args.platformd), "system_image_sha256": digest(platform.args.system_image),
+        "source": source, "machine_id": machine,
         "create_operation_id": created["operation_id"], **facts,
+    }, sort_keys=True), flush=True)
+    print(json.dumps({
+        "case": "J11-cli-cleanup", "machine_delete_operation_id": delete_operation,
+        "remaining_machines": 0, "remaining_listed_snapshots": 0, "saved_points": cleanup,
     }, sort_keys=True), flush=True)
 
 
@@ -366,6 +473,7 @@ def main():
         ], check=True, stdout=subprocess.DEVNULL)
         stack.callback(subprocess.run, ["systemctl", "stop", unit], check=True)
         os.environ["SMOLVM_WORKER_SLICE_NAME"] = unit
+        os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "2"
         keys, tls, gateway = tls_setup(root)
         platform = Platform(args, root, stack, (NETWORK,), state_tmpfs=True, use_installation=True,
                             tls=tls, gateway=gateway)
