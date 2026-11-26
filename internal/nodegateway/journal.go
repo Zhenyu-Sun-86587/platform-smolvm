@@ -60,13 +60,17 @@ func OpenJournal(stateDir string, authority nodeproto.Authority) (*Journal, erro
 	return openJournal(stateDir, authority, false)
 }
 
-// RebindJournal requires the daemon to be stopped and a locally supplied prior
-// authority. It keeps command history and places the new authority in Drain.
+// RebindJournal compares the locally supplied prior authority while the daemon
+// is stopped. Rotation preserves the gate. Recovery accounts for a changed
+// platform installation or control epoch and enters Drain with the journal intact.
 func RebindJournal(stateDir string, previous, next nodeproto.Authority) error {
-	if !next.Valid() || next == previous || next.WorkerID != previous.WorkerID ||
-		next.EnrollmentGeneration < previous.EnrollmentGeneration || next.ControlEpoch == previous.ControlEpoch ||
-		(next.ControllerID != previous.ControllerID && next.EnrollmentGeneration == previous.EnrollmentGeneration) {
-		return errors.New("rebind requires a new epoch for the same Worker and a valid enrollment generation")
+	if !previous.Valid() || !next.Valid() || next.WorkerID != previous.WorkerID ||
+		next.EnrollmentGeneration <= previous.EnrollmentGeneration {
+		return errors.New("rebind requires a newer enrollment generation for the same Worker")
+	}
+	recovering := next.ControllerID != previous.ControllerID || next.ControlEpoch != previous.ControlEpoch
+	if !recovering && next.EnrollmentGeneration != previous.EnrollmentGeneration+1 {
+		return errors.New("certificate rotation must advance enrollment by exactly one generation")
 	}
 	j, err := openJournal(stateDir, previous, true)
 	if err != nil {
@@ -85,8 +89,10 @@ func RebindJournal(stateDir string, previous, next nodeproto.Authority) error {
 	if _, err = tx.Exec("UPDATE authority SET value=? WHERE id=1", string(raw)); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("UPDATE entrance SET mode='draining', revision=revision+1 WHERE id=1"); err != nil {
-		return err
+	if recovering {
+		if _, err = tx.Exec("UPDATE entrance SET mode='draining', revision=revision+1 WHERE id=1"); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

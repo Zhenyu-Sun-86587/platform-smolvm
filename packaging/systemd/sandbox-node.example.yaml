@@ -1,7 +1,16 @@
+# Offline certificate rotation or authority recovery
+# Stage the next YAML and certificate/key separately and retain the prior YAML.
+# Issue the Node certificate with the next generation in its URI SAN.
+# Stop sandbox-node, then run this as the service account:
+#   /opt/sandbox-platform/current/sandbox-node -config /etc/sandbox-node/config.next.yaml -rebind-from /etc/sandbox-node/config.previous.yaml
+# Activate the next YAML, align the platformd enrollment generation and Node
+# SPKI pin, then start sandbox-node. Retain the same state directory.
+# An unchanged controller/epoch advances one generation and preserves the gate.
+# A changed controller or control epoch requires a greater generation and enters Drain.
 authority:
   worker_id: worker-a
   enrollment_generation: 1
-  controller_id: platformd
+  controller_id: replace-with-platform-installation-id
   control_epoch: replace-with-platform-control-epoch
 listen: "10.0.10.20:9443"
 state_dir: /var/lib/sandbox-node
@@ -11,7 +20,7 @@ tls:
   certificate: /etc/sandbox-node/tls/node.pem
   key: /etc/sandbox-node/tls/node-key.pem
   client_ca: /etc/sandbox-node/tls/controller-ca.pem
-  # The pinned client cert must have URI SAN spiffe://sandbox-platform/controller/platformd.
+  # The pinned client cert must have URI SAN spiffe://sandbox-platform/controller/<controller_id>.
   controller_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 routes:
   - runtime_instance_id: worker-a-runtime

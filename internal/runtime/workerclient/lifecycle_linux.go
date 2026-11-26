@@ -29,6 +29,17 @@ func lifecycleMethod(name string) bool {
 	}
 	return false
 }
+
+// LifecycleReadOnly distinguishes scoped observations from effectful commands.
+func LifecycleReadOnly(method string) bool {
+	switch method {
+	case "GetLifecycleStatus", "QueryLifecycleEvents", "QueryHostActivity", "QueryProtection":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c Client) Lifecycle(ctx context.Context, method, key string, expected Execution, payload, into any) error {
 	if !lifecycleMethod(method) {
 		return fmt.Errorf("unsupported Worker lifecycle method %q", method)
@@ -49,7 +60,7 @@ func (c Client) Lifecycle(ctx context.Context, method, key string, expected Exec
 	if into == nil {
 		return nil
 	}
-	return json.Unmarshal(raw, into)
+	return workerReplyError(method, json.Unmarshal(raw, into))
 }
 
 func LifecycleDigest(method, key string, expected Execution, payload any) (string, error) {
@@ -63,6 +74,9 @@ func LifecycleDigest(method, key string, expected Execution, payload any) (strin
 // RetryDelivery reports failures for which the same durable request may still
 // have a receipt. A rejected revision or execution requires a new caller decision.
 func RetryDelivery(err error) bool {
+	if errors.Is(err, rt.ErrUncertain) || errors.Is(err, rt.ErrUnavailable) {
+		return true
+	}
 	var fault *Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {

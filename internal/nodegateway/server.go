@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -109,15 +108,14 @@ func (s *Server) TLSConfig(certificate tls.Certificate, roots *x509.CertPool, co
 	if roots == nil || certificate.Leaf == nil || !nodeproto.ValidDigest(controllerPin) {
 		return nil, errors.New("Node TLS requires certificate, controller trust roots and a public key pin")
 	}
-	uri := nodeproto.WorkerURI(s.authority)
-	if !slices.ContainsFunc(certificate.Leaf.URIs, func(certURI *url.URL) bool { return certURI.String() == uri }) {
-		return nil, errors.New("Node TLS certificate is missing its enrolled Worker URI")
+	if err := nodeproto.VerifyCertificateURI(certificate.Leaf, nodeproto.WorkerURI(s.authority)); err != nil {
+		return nil, err
 	}
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: roots,
 		Certificates: []tls.Certificate{certificate},
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.VerifiedChains) == 0 || len(cs.PeerCertificates) == 0 {
+			if nodeproto.PeerDeadline(cs.VerifiedChains).IsZero() || len(cs.PeerCertificates) == 0 {
 				return errors.New("controller certificate must be verified")
 			}
 			return nodeproto.VerifyPeer(cs.PeerCertificates[0], controllerPin, nodeproto.ControllerURI(s.authority))
@@ -142,13 +140,20 @@ func (s *Server) Handler(controllerPin string) http.Handler {
 	s.registerVolumeRPC(mux)
 	s.registerStreams(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 ||
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 ||
 			nodeproto.VerifyPeer(r.TLS.PeerCertificates[0], controllerPin, nodeproto.ControllerURI(s.authority)) != nil {
 			writeFailure(w, nodeproto.CodeAuthority)
 			return
 		}
+		expiry := nodeproto.PeerDeadline(r.TLS.VerifiedChains)
+		if expiry.IsZero() {
+			writeFailure(w, nodeproto.CodeAuthority)
+			return
+		}
+		ctx, cancel := context.WithDeadline(r.Context(), expiry)
+		defer cancel()
 		w.Header().Set("Cache-Control", "no-store")
-		mux.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -281,7 +286,11 @@ func serverRPC[In, Out any](s *Server, mux *http.ServeMux, path string, slots ch
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
+		deadline := time.Now().Add(10 * time.Second)
+		if expiry, ok := r.Context().Deadline(); ok && expiry.Before(deadline) {
+			deadline = expiry
+		}
+		_ = http.NewResponseController(w).SetWriteDeadline(deadline)
 		_, _ = w.Write(raw)
 	})
 }

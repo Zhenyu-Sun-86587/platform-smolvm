@@ -329,6 +329,7 @@ func TestCrashWindowRebindAndKnownOnly(t *testing.T) {
 	}
 	newAuthority := testAuthority
 	newAuthority.ControlEpoch = "recovered-epoch"
+	newAuthority.EnrollmentGeneration++
 	if err := RebindJournal(dir, testAuthority, newAuthority); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,7 @@ func TestCrashWindowRebindAndKnownOnly(t *testing.T) {
 	j = testJournal(t, dir, newAuthority)
 	rebound := testNode(t, ca, newAuthority, testRoute, backend, j, controller, pin, nil)
 	stale := rebound.config
-	stale.Authority = testAuthority
+	stale.Authority.ControlEpoch = testAuthority.ControlEpoch
 	old := testClient(t, stale)
 	if _, err := old.Adapter(testRoute).SubmitNative(ctx, request("stale-controller")); nodeproto.FailureCode(err) != nodeproto.CodeAuthority {
 		t.Fatalf("old epoch could submit after rebind: %v", err)

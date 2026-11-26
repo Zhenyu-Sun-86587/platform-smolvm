@@ -73,7 +73,7 @@ func (s *Server) registerWorkerRPC(mux *http.ServeMux) {
 				if !ok || local.LifecycleWorkerSocket() == "" || local.LifecycleWorkerSocket() != r.Worker.Socket {
 					return nil, rt.ErrUnsupported
 				}
-				read := method == "GetLifecycleStatus" || method == "QueryLifecycleEvents" || method == "QueryHostActivity" || method == "QueryProtection"
+				read := wc.LifecycleReadOnly(method)
 				if !read && !nodeproto.ValidID(in.OperationID) || len(in.Payload) == 0 || in.Payload[0] != '{' {
 					return nil, rt.ErrInvalid
 				}

@@ -19,7 +19,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "/etc/sandbox-node/config.yaml", "Node gateway configuration")
-	from := flag.String("rebind-from", "", "offline recovery using a copy of the previous configuration")
+	from := flag.String("rebind-from", "", "offline authority rebind or certificate rotation using the previous configuration")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -42,7 +42,11 @@ func run(ctx context.Context, configPath, rebindFrom string) error {
 		if previous.StateDir != c.StateDir {
 			return errors.New("authority rebind requires the same Node state directory")
 		}
-		if _, _, err := nodeproto.LoadTLS(c.TLS.Certificate, c.TLS.Key, c.TLS.ClientCA); err != nil {
+		certificate, _, err := nodeproto.LoadTLS(c.TLS.Certificate, c.TLS.Key, c.TLS.ClientCA)
+		if err != nil {
+			return err
+		}
+		if err := nodeproto.VerifyCertificateURI(certificate.Leaf, nodeproto.WorkerURI(c.Authority)); err != nil {
 			return err
 		}
 		return nodegateway.RebindJournal(c.StateDir, previous.Authority, c.Authority)

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 const protocol = "WorkerResource/1"
@@ -117,14 +119,37 @@ func (c Client) call(ctx context.Context, q request, pass *os.File, expect *desc
 	}
 	n, sent, err := conn.WriteMsgUnix(wire, rights, nil)
 	if err != nil || n != len(wire) || sent != len(rights) {
-		return nil, nil, errors.Join(errors.New("cannot send complete Worker request"), err)
+		writeErr := errors.Join(errors.New("cannot send complete Worker request"), err)
+		if n > 0 || sent > 0 {
+			writeErr = workerReplyError(q.Method, writeErr)
+		}
+		return nil, nil, writeErr
 	}
 	body, file, err := readReply(raw, q.RequestID, expect)
 	var transport net.Error
 	if errors.As(err, &transport) {
 		err = fmt.Errorf("read Worker %s response: %w", q.Method, err)
 	}
-	return body, file, err
+	return body, file, workerReplyError(q.Method, err)
+}
+
+func workerReplyError(method string, err error) error {
+	var fault *Fault
+	if err == nil || errors.As(err, &fault) {
+		return err
+	}
+	mutates := false
+	switch method {
+	case "SubmitNativeResize", "SetManagedCPULimit", "ApplyPrivatePacketWakeRule", "ReleaseStatePoint",
+		"PrepareBackupClosure", "ReleaseBackupClosure":
+		mutates = true
+	default:
+		mutates = lifecycleMethod(method) && !LifecycleReadOnly(method)
+	}
+	if mutates {
+		return fmt.Errorf("%w: %w", rt.ErrUncertain, err)
+	}
+	return err
 }
 
 func readReply(raw syscall.RawConn, requestID string, expect *descriptor) (json.RawMessage, *os.File, error) {

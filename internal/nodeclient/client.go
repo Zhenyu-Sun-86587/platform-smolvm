@@ -9,11 +9,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"sandbox-platform/internal/nodeproto"
+	"sandbox-platform/internal/runtime/workerclient"
 )
 
 type Config struct {
@@ -51,7 +55,7 @@ func New(config Config) (*Client, error) {
 	tlsConfig.NextProtos = []string{"http/1.1"}
 	verify := tlsConfig.VerifyConnection
 	tlsConfig.VerifyConnection = func(cs tls.ConnectionState) error {
-		if len(cs.VerifiedChains) == 0 || len(cs.PeerCertificates) == 0 {
+		if nodeproto.PeerDeadline(cs.VerifiedChains).IsZero() || len(cs.PeerCertificates) == 0 {
 			return errors.New("Node certificate must be verified")
 		}
 		if err := nodeproto.VerifyPeer(cs.PeerCertificates[0], config.NodeSPKIPin, nodeproto.WorkerURI(config.Authority)); err != nil {
@@ -132,6 +136,8 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 		timeout = 35 * time.Second
 	case nodeproto.GuestPingPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
 		timeout = 135 * time.Second
+	case nodeproto.WorkerPath + "resize", nodeproto.WorkerPath + "resources":
+		timeout = 25 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -139,47 +145,114 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 		if err := c.authorizeRequest(ctx); err != nil {
 			return out, err
 		}
+		if c.authorize != nil {
+			go c.watchAuthority(ctx.Done(), time.Time{}, cancel)
+		}
 	}
 	envelope := nodeproto.Envelope[In]{Protocol: nodeproto.Version, Authority: c.authority, Route: scope, Request: in}
 	raw, err := json.Marshal(envelope)
 	if err != nil || len(raw) > nodeproto.ControlRequestLimit {
 		return out, &nodeproto.Failure{Code: nodeproto.CodeInvalid}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+path, bytes.NewReader(raw))
+	var sending atomic.Bool
+	req, err := http.NewRequestWithContext(tracePeer(ctx, cancel, &sending), http.MethodPost, c.endpoint+path, bytes.NewReader(raw))
 	if err != nil {
 		return out, err
 	}
 	// A POST never provides a replayable body or an HTTP idempotency header.
 	req.GetBody = nil
 	req.Header.Set("Content-Type", "application/json")
+	mutation := requestMutates(path, in)
 	res, err := c.control.Do(req)
 	if err != nil {
-		return out, transportError(path)
+		return out, transportError(mutation && sending.Load())
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(res.Body, nodeproto.ControlReplyLimit+1))
-	if err != nil || len(data) > nodeproto.ControlReplyLimit {
-		return out, transportError(path)
+	if err != nil || len(data) > nodeproto.ControlReplyLimit ||
+		res.TLS == nil || nodeproto.PeerDeadline(res.TLS.VerifiedChains).IsZero() {
+		return out, transportError(mutation)
 	}
 	if res.StatusCode != http.StatusOK {
 		var failure nodeproto.Failure
 		if json.Unmarshal(data, &failure) != nil || failure.Code == "" {
-			return out, transportError(path)
+			return out, transportError(mutation)
 		}
 		return out, &failure
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return out, transportError(path)
+		return out, transportError(mutation)
 	}
 	return out, nil
 }
 
-func transportError(path string) error {
+func tracePeer(ctx context.Context, cancel context.CancelFunc, sending *atomic.Bool) context.Context {
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			conn, ok := info.Conn.(*tls.Conn)
+			if !ok || nodeproto.PeerDeadline(conn.ConnectionState().VerifiedChains).IsZero() {
+				cancel()
+				return
+			}
+			// Once a verified connection is available a partial write may
+			// have happened, even if net/http cannot confirm delivery.
+			sending.Store(true)
+		},
+	})
+}
+
+func (c *Client) watchAuthority(done <-chan struct{}, expiry time.Time, revoke func()) {
+	var checkAt, expires <-chan time.Time
+	if c.authorize != nil {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		checkAt = ticker.C
+	}
+	if !expiry.IsZero() {
+		timer := time.NewTimer(time.Until(expiry))
+		defer timer.Stop()
+		expires = timer.C
+	}
+	for {
+		select {
+		case <-done:
+			return
+		case <-expires:
+			revoke()
+			return
+		case <-checkAt:
+			ctx, stop := context.WithTimeout(context.Background(), time.Second)
+			err := c.authorizeRequest(ctx)
+			stop()
+			if err != nil {
+				revoke()
+				return
+			}
+		}
+	}
+}
+
+func requestMutates(path string, in any) bool {
+	if method, ok := strings.CutPrefix(path, nodeproto.WorkerPath+"policy/"); ok {
+		return !workerclient.LifecycleReadOnly(method)
+	}
 	switch path {
 	case nodeproto.SubmitPowerPath, nodeproto.SubmitLaunchPath, nodeproto.SubmitForkPath, nodeproto.SubmitStatePointPath,
-		nodeproto.RetryForkPath, nodeproto.CancelForkPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
-		return &nodeproto.Failure{Code: nodeproto.CodeUnknown}
+		nodeproto.RetryForkPath, nodeproto.CancelForkPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath,
+		nodeproto.VolumeApplyPath, nodeproto.SetGatePath, nodeproto.BackupReleasePath,
+		nodeproto.WorkerPath + "resize", nodeproto.WorkerPath + "set-cpu-limit", nodeproto.WorkerPath + "release-statepoint":
+		return true
+	case nodeproto.WorkerPath + "packet-rule":
+		rule, ok := in.(nodeproto.PacketRule)
+		return ok && rule.Rule.Enabled != nil
 	default:
-		return &nodeproto.Failure{Code: nodeproto.CodeUnavailable}
+		return false
 	}
+}
+
+func transportError(uncertain bool) error {
+	if uncertain {
+		return &nodeproto.Failure{Code: nodeproto.CodeUnknown}
+	}
+	return &nodeproto.Failure{Code: nodeproto.CodeUnavailable}
 }

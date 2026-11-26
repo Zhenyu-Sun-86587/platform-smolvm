@@ -50,6 +50,9 @@ func NewFramedConn(ctx context.Context, ws *websocket.Conn, local, remote string
 func (c *FramedConn) Read(p []byte) (int, error) {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
+	if c.ctx.Err() != nil {
+		return 0, net.ErrClosed
+	}
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -62,6 +65,7 @@ func (c *FramedConn) Read(p []byte) (int, error) {
 		cause := context.Cause(ctx)
 		done()
 		if err != nil {
+			c.cancel()
 			if errors.Is(cause, os.ErrDeadlineExceeded) {
 				return 0, cause
 			}
@@ -90,6 +94,9 @@ func (c *FramedConn) Read(p []byte) (int, error) {
 func (c *FramedConn) Write(p []byte) (int, error) {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if c.ctx.Err() != nil {
+		return 0, net.ErrClosed
+	}
 	if c.fin {
 		return 0, io.ErrClosedPipe
 	}
@@ -124,11 +131,16 @@ func (c *FramedConn) writeFrame(frame []byte) error {
 	ctx, done := c.write.begin(c.ctx)
 	defer done()
 	err := c.ws.Write(ctx, websocket.MessageBinary, frame)
+	if err != nil {
+		c.cancel()
+	}
 	if errors.Is(context.Cause(ctx), os.ErrDeadlineExceeded) {
 		return os.ErrDeadlineExceeded
 	}
 	return err
 }
+
+func (c *FramedConn) Done() <-chan struct{} { return c.ctx.Done() }
 
 func (c *FramedConn) Close() error {
 	c.cancel()

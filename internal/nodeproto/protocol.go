@@ -281,6 +281,8 @@ func FailureCode(err error) string {
 	switch {
 	case errors.As(err, &failure):
 		return failure.Code
+	case errors.Is(err, rt.ErrUncertain):
+		return CodeUnknown
 	case errors.Is(err, rt.ErrInvalid):
 		return CodeInvalid
 	case errors.Is(err, rt.ErrNotFound):

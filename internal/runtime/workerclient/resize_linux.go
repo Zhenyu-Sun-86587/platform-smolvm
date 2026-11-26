@@ -85,17 +85,17 @@ func (c Client) Resize(ctx context.Context, id string, ref Execution, change Res
 		return reply.ResizeReceipt, err
 	}
 	if err = json.Unmarshal(raw, &reply); err != nil {
-		return reply.ResizeReceipt, err
+		return reply.ResizeReceipt, workerReplyError("SubmitNativeResize", err)
 	}
 	if reply.ID != id || reply.Digest != digest || reply.Route != "deep" || reply.Kind != "resize_resources" ||
 		reply.Bundle != c.Bundle || reply.Instance != ref.InstanceID || reply.Incarnation != ref.IncarnationID || reply.Epoch != ref.Epoch {
-		return reply.ResizeReceipt, errors.New("Worker resource operation receipt does not match the dispatched change")
+		return reply.ResizeReceipt, workerReplyError("SubmitNativeResize", errors.New("Worker resource operation receipt does not match the dispatched change"))
 	}
 	if reply.Resize != nil {
 		seen := reply.Resize.Change
 		if reply.Resize.OperationID != id || seen.Kind != change.Kind || seen.CPUs != change.CPUs || seen.MemoryMiB != change.MemoryMiB ||
 			(seen.TargetMiB == nil) != (change.TargetMiB == nil) || seen.TargetMiB != nil && *seen.TargetMiB != *change.TargetMiB {
-			return reply.ResizeReceipt, errors.New("Worker returned progress for a different resource change")
+			return reply.ResizeReceipt, workerReplyError("SubmitNativeResize", errors.New("Worker returned progress for a different resource change"))
 		}
 	}
 	return reply.ResizeReceipt, nil

@@ -59,6 +59,13 @@ func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ 
 			_ = ws.CloseNow()
 		}
 	}()
+	if res == nil || res.TLS == nil {
+		return nil, &nodeproto.Failure{Code: nodeproto.CodeAuthority}
+	}
+	expiry := nodeproto.PeerDeadline(res.TLS.VerifiedChains)
+	if expiry.IsZero() {
+		return nil, &nodeproto.Failure{Code: nodeproto.CodeAuthority}
+	}
 	if ws.Subprotocol() != nodeproto.StreamProtocol {
 		return nil, &nodeproto.Failure{Code: nodeproto.CodeUnsupported}
 	}
@@ -74,5 +81,7 @@ func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ 
 	if reply.Code != "" {
 		return nil, &nodeproto.Failure{Code: reply.Code}
 	}
-	return nodeproto.NewFramedConn(context.Background(), ws, a.client.authority.ControllerID, a.client.authority.WorkerID), nil
+	conn := nodeproto.NewFramedConn(context.Background(), ws, a.client.authority.ControllerID, a.client.authority.WorkerID)
+	go a.client.watchAuthority(conn.Done(), expiry, func() { _ = conn.Close() })
+	return conn, nil
 }

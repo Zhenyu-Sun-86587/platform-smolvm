@@ -56,6 +56,16 @@ func backupRPC[T any](s *Server, mux *http.ServeMux, slots chan struct{}, path s
 		w.Header().Set("Trailer", nodeproto.BackupDigestTrailer)
 		w.WriteHeader(http.StatusOK)
 		controller := http.NewResponseController(w)
+		deadline := func() time.Time {
+			limit := time.Now().Add(30 * time.Second)
+			if expiry, ok := r.Context().Deadline(); ok && expiry.Before(limit) {
+				return expiry
+			}
+			return limit
+		}
+		if err := controller.SetWriteDeadline(deadline()); err != nil {
+			return
+		}
 		if err := controller.Flush(); err != nil {
 			return
 		}
@@ -68,7 +78,7 @@ func backupRPC[T any](s *Server, mux *http.ServeMux, slots chan struct{}, path s
 				if int64(n) > source.size-sent {
 					return
 				}
-				if err := controller.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+				if err := controller.SetWriteDeadline(deadline()); err != nil {
 					return
 				}
 				if _, err = io.MultiWriter(w, digest).Write(buf[:n]); err != nil {
