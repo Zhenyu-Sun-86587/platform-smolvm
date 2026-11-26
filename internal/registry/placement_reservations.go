@@ -158,6 +158,9 @@ func (s *Store) RecordPlacementAdmission(ctx context.Context, proof placement.Ad
 	if proof.Kind != want {
 		return fmt.Errorf("%w: local admission evidence lacks required receipt kind", ErrInvalid)
 	}
+	if err := checkWorkerEntrance(ctx, tx, r.WorkerID, "admission"); err != nil {
+		return err
+	}
 	sample, err := readWorkerSample(ctx, tx, r.WorkerID)
 	if err != nil {
 		return err

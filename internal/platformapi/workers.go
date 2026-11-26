@@ -38,9 +38,13 @@ func (s *Server) preparePlacement(input *lifecycle.Create, accept *registry.Acce
 		choice = &lifecycle.Placement{Mode: placement.Auto}
 		input.Placement = choice
 	}
-	req := placement.Request{Mode: choice.Mode, WorkerID: choice.WorkerID, RuntimeInstanceID: input.RuntimeInstanceID, Architecture: "x86_64", Hypervisor: "kvm", Capabilities: []string{rt.SystemBootCapability}, ArtifactDigest: digest,
-		Resources: placement.Resources{VCPUs: int64(input.Resources.CPUs), MemoryMiB: int64(input.Resources.Memory), HeavySlots: 1},
-		Headroom:  placement.Resources{MemoryMiB: 128, StorageBytes: 64 << 20}}
+	req := placement.Request{Mode: choice.Mode, WorkerID: choice.WorkerID, RuntimeInstanceID: input.RuntimeInstanceID,
+		Architecture: "x86_64", Hypervisor: "kvm", Capabilities: []string{rt.SystemBootCapability}, ArtifactDigest: digest}
+	start := input.Start
+	if start {
+		req.Resources = placement.Resources{VCPUs: int64(input.Resources.CPUs), MemoryMiB: int64(input.Resources.Memory), HeavySlots: 1}
+		req.Headroom = placement.Resources{MemoryMiB: 128, StorageBytes: 64 << 20}
+	}
 	if input.LiveComputeGrowth {
 		req.Capabilities = append(req.Capabilities, rt.LiveComputeGrowthCapability)
 	}
@@ -53,13 +57,19 @@ func (s *Server) preparePlacement(input *lifecycle.Create, accept *registry.Acce
 	accept.ResolvePlacement = func(ctx context.Context, tx *sql.Tx, _ json.RawMessage) (*placement.Request, error) {
 		resolved := req
 		resolved.EligibleRuntimeIDs = []string{}
+		if start {
+			resolved.StorageByRuntimeID = map[string]int64{}
+		}
 		for _, n := range s.Config.Nodes {
 			for _, r := range n.Routes {
 				if _, ok := r.Artifacts[digest]; !ok {
 					continue
 				}
 				var size int64
-				err := tx.QueryRowContext(ctx, `SELECT capacity_bytes FROM artifact_placements WHERE runtime_instance_id=? AND content_digest=? AND local_generation_id=?`, r.RuntimeInstanceID, digest, r.Artifacts[digest]).Scan(&size)
+				err := tx.QueryRowContext(ctx, `SELECT a.capacity_bytes FROM artifact_placements a
+					JOIN runtime_instances i ON i.id=a.runtime_instance_id WHERE a.runtime_instance_id=? AND a.content_digest=?
+					AND a.local_generation_id=? AND i.worker_id=? AND i.runtime_bundle_id=?`,
+					r.RuntimeInstanceID, digest, r.Artifacts[digest], n.ID, r.BundleDigest).Scan(&size)
 				if errors.Is(err, sql.ErrNoRows) {
 					continue
 				}
@@ -67,7 +77,9 @@ func (s *Server) preparePlacement(input *lifecycle.Create, accept *registry.Acce
 					return nil, err
 				}
 				resolved.EligibleRuntimeIDs = append(resolved.EligibleRuntimeIDs, r.RuntimeInstanceID)
-				resolved.Resources.StorageBytes = max(resolved.Resources.StorageBytes, size)
+				if start {
+					resolved.StorageByRuntimeID[r.RuntimeInstanceID] = size
+				}
 			}
 		}
 		return &resolved, nil

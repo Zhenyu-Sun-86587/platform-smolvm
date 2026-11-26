@@ -94,8 +94,14 @@ func (s *Store) BeginAccessWake(ctx context.Context, demand string, b Binding, e
 		if err != nil {
 			return false, err
 		}
-		// The root and StatePoint already reside on this pinned route.
-		req.Resources.StorageBytes = 0
+		if kind == "launch" {
+			digest, bytes, err := pinnedLaunchStorage(ctx, tx, m, b.BundleRoute())
+			if err != nil {
+				return false, err
+			}
+			req.ArtifactDigest, req.Resources.StorageBytes = digest, bytes
+			req.Headroom = placement.Resources{MemoryMiB: 128, StorageBytes: 64 << 20}
+		}
 		route, err := selectPlacement(ctx, tx, control.ControlEpoch, rt.Wake, *req, time.Now())
 		if err != nil {
 			return false, err
@@ -103,8 +109,8 @@ func (s *Store) BeginAccessWake(ctx context.Context, demand string, b Binding, e
 		found = demand
 		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_access_wake_holds
 			(id,binding_id,worker_id,runtime_instance_id,bundle_id,control_epoch,instance_id,execution_epoch,capture_id,native_kind,
-			 vcpus,memory_mib,phase) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'unknown')`, found, b.ID, worker, route.InstanceID, route.BundleID,
-			control.ControlEpoch, b.RuntimeInstanceObjectID, expectedEpoch, capture, kind, req.Resources.VCPUs, req.Resources.MemoryMiB); err != nil {
+			 vcpus,memory_mib,storage_bytes,phase) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'unknown')`, found, b.ID, worker, route.InstanceID, route.BundleID,
+			control.ControlEpoch, b.RuntimeInstanceObjectID, expectedEpoch, capture, kind, req.Resources.VCPUs, req.Resources.MemoryMiB, req.Resources.StorageBytes); err != nil {
 			return false, err
 		}
 	} else if err != nil {
@@ -198,6 +204,9 @@ func (s *Store) RecordAccessWakeAdmission(ctx context.Context, check AccessWakeC
 	}
 	if check != stored || sample.WorkerID != check.WorkerID {
 		return ErrConflict
+	}
+	if err := checkWorkerEntrance(ctx, tx, check.WorkerID, "admission"); err != nil {
+		return err
 	}
 	latest, err := readWorkerSample(ctx, tx, check.WorkerID)
 	if err != nil {

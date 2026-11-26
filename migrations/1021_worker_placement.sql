@@ -103,6 +103,7 @@ CREATE TABLE worker_access_wake_holds (
     native_kind TEXT NOT NULL CHECK(native_kind IN ('launch','vm_restore')),
     vcpus INTEGER NOT NULL CHECK(vcpus >= 0),
     memory_mib INTEGER NOT NULL CHECK(memory_mib >= 0),
+    storage_bytes INTEGER NOT NULL CHECK(storage_bytes >= 0),
     phase TEXT NOT NULL CHECK(phase IN ('unknown','covered','released')),
     native_operation_id TEXT,
     native_digest TEXT,

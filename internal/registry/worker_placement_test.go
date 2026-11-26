@@ -215,7 +215,8 @@ func TestPlacementUnknownRechecksOriginalAndRequiresCausalBudget(t *testing.T) {
 	savePlacementSample(t, f.db, a)
 	assertPhase(placement.Unknown)
 	old.Sequence, old.QueryNonce = 4, "query-retired"
-	if err := f.db.RecordWorkerSample(ctx, old, queryFor(old)); !errors.Is(err, registry.ErrStaleObservation) {
+	outOfOrder := placement.Query{Nonce: old.QueryNonce, StartedAt: time.Now().Add(-time.Second), CompletedAt: time.Now()}
+	if err := f.db.RecordWorkerSample(ctx, old, outOfOrder); !errors.Is(err, registry.ErrStaleObservation) {
 		t.Fatalf("accepted replay of retired broker sample: %v", err)
 	}
 	if err := f.db.RecordPlacementAdmission(ctx, proof); !errors.Is(err, registry.ErrStaleObservation) {
@@ -444,5 +445,154 @@ func TestWorkerPolicyOverlayUsesCurrentDesiredRevisionOnReactivation(t *testing.
 	result, err := f.db.RecordWorkerPolicyOverlay(ctx, activePlan, 6)
 	if err != nil || result.Applied == nil || *result.Applied != result.Desired {
 		t.Fatalf("reactivated policy = %+v, %v", result, err)
+	}
+}
+
+func TestFreshRetiredWorkerQuarantinesButOverlappingQueryDoesNot(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	first := f.worker(t, "a")
+	start := time.Now().Add(-time.Second)
+	q := func(report placement.Sample, began, ended time.Duration) placement.Query {
+		return placement.Query{Nonce: report.QueryNonce, StartedAt: start.Add(began), CompletedAt: start.Add(ended)}
+	}
+	if err := f.db.RecordWorkerSample(ctx, first, q(first, 0, 10*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	next := first
+	next.Session.NodeSessionID = "replacement"
+	next.QueryNonce = "successor"
+	if err := f.db.RecordWorkerSample(ctx, next, q(next, 20*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	first.QueryNonce = "overlapping"
+	first.Sequence = 2
+	first.Reconciled = false
+	if err := f.db.CheckWorkerSampleSession(ctx, first, q(first, 30*time.Millisecond, 60*time.Millisecond)); !errors.Is(err, registry.ErrStaleObservation) {
+		t.Fatalf("in-flight old query did not resolve as stale: %v", err)
+	}
+	badNonce := q(first, 80*time.Millisecond, 100*time.Millisecond)
+	badNonce.Nonce = "different-challenge"
+	if err := f.db.CheckWorkerSampleSession(ctx, first, badNonce); !errors.Is(err, registry.ErrInvalid) {
+		t.Fatalf("unrelated query is not proof: %v", err)
+	}
+	w, err := f.db.GetWorker(ctx, "a")
+	if err != nil || w.ObservedStatus != "ready" {
+		t.Fatalf("ambiguous old response quarantined Worker: %+v, %v", w, err)
+	}
+	first.QueryNonce = "fresh-for-retired"
+	if err := f.db.CheckWorkerSampleSession(ctx, first, q(first, 80*time.Millisecond, 100*time.Millisecond)); !errors.Is(err, registry.ErrWorkerIdentityConflict) {
+		t.Fatalf("fresh authenticated old response did not quarantine: %v", err)
+	}
+	w, err = f.db.GetWorker(ctx, "a")
+	if err != nil || w.ObservedStatus != "identity_conflict" {
+		t.Fatalf("Worker identity isolation was not durable: %+v, %v", w, err)
+	}
+	next.QueryNonce = "new-answer"
+	next.Sequence = 2
+	if err := f.db.RecordWorkerSample(ctx, next, q(next, 110*time.Millisecond, 120*time.Millisecond)); !errors.Is(err, registry.ErrWorkerIdentityConflict) {
+		t.Fatalf("sampling silently lifted identity isolation: %v", err)
+	}
+	if err := f.db.CheckWorkerEntrance(ctx, "a", "start"); !errors.Is(err, registry.ErrWorkerIdentityConflict) {
+		t.Fatalf("identity conflict did not gate new action: %v", err)
+	}
+}
+
+func TestStoppedCreateClearsZeroHoldAndStartRequiresPinnedWritableStorage(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	a := f.worker(t, "a")
+	a.Profiles[0].Artifacts = []string{"example@sha256:test"}
+	a.Budget.Allocated.MemoryMiB = a.Budget.Capacity.MemoryMiB
+	a.Budget.Capacity.StorageBytes = 4 << 30
+	if err := f.db.RecordArtifactPlacement(ctx, "a", "global-a", "bundle", "example@sha256:test", "root", 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	savePlacementSample(t, f.db, a)
+	req := f.request("offline")
+	req.DesiredPower = "stopped"
+	req.Request = []byte(`{"start":false,"resources":{"cpu_count":2,"memory_mib":6144}}`)
+	req.Placement.Resources = placement.Resources{}
+	req.Placement.Headroom = placement.Resources{}
+	req.Placement.ArtifactDigest = "example@sha256:test"
+	op, _, err := f.db.Accept(ctx, req)
+	if err != nil || op.WorkerID != "a" {
+		t.Fatalf("stopped create requires no resource hold: %+v, %v", op, err)
+	}
+	if _, err := f.db.Transition(ctx, op.ID, registry.TransitionRequest{State: registry.Dispatching, Stage: "preflight", Dispatch: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Transition(ctx, op.ID, registry.TransitionRequest{State: registry.Observing, Stage: "verify"}); err != nil {
+		t.Fatal(err)
+	}
+	var epoch int64
+	observation := registry.Observation{ObservedState: "stopped", NativeState: "stopped", Availability: "blocked",
+		ExpectedExecutionEpoch: &epoch, Native: &registry.NativeObservation{
+			Execution: rt.ExecutionRef{InstanceID: "source"}, PowerState: registry.PowerStopped, VerifiedLaunch: true}}
+	done := registry.TransitionRequest{State: registry.Succeeded, Stage: "completed", Effect: registry.EffectApplied, Observation: &observation,
+		PromoteBinding: true, DesiredPower: "stopped"}
+	if _, err := f.db.Transition(ctx, op.ID, done); err != nil {
+		t.Fatal(err)
+	}
+	held, err := f.db.GetPlacementReservation(ctx, op.ID)
+	if err != nil || held.Phase != placement.Released || held.Resources != (placement.Resources{}) {
+		t.Fatalf("stopped create reservation = %+v, %v", held, err)
+	}
+	start := registry.AcceptRequest{PrincipalID: f.actor, PrincipalScope: req.PrincipalScope, Epoch: f.epoch,
+		Key: "start", Scope: "POST /v1/machines/" + op.MachineID + "/start", Kind: "start", MachineID: op.MachineID,
+		Heavy: true, ExpectedGeneration: 1, Request: []byte(`{}`), AdmitRuntime: req.AdmitRuntime}
+	if _, _, err := f.db.Accept(ctx, start); !errors.Is(err, placement.ErrNoCandidate) {
+		t.Fatalf("independent start accepted with no memory: %v", err)
+	}
+	for _, volume := range []struct {
+		id, mode string
+		capacity int64
+	}{{"write", "rw", 2 << 30}, {"read", "ro", 7 << 30}} {
+		attachmentID := "attach-" + volume.id
+		raw, err := json.Marshal(rt.VolumeObservation{ID: volume.id, CapacityBytes: volume.capacity,
+			Attachments: []rt.VolumeAttachment{{ID: attachmentID, Mode: volume.mode}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.DB().ExecContext(ctx, `INSERT INTO volumes
+			(id,owner_id,name,runtime_instance_id,runtime_bundle_id,revision,state,worker_receipt_json,created_at,worker_id)
+			VALUES(?,?,?,'global-a','bundle',1,'available',?,0,'a')`, volume.id, f.actor, volume.id, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.DB().ExecContext(ctx, `INSERT INTO volume_attachments
+			(id,volume_id,machine_id,binding_id,state,revision) VALUES(?,?,?,?,'reserved',1)`, attachmentID, volume.id, op.MachineID, op.BindingID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Sequence, a.QueryNonce = 2, "compute-free"
+	a.Budget.Allocated.MemoryMiB = 0
+	savePlacementSample(t, f.db, a)
+	started, _, err := f.db.Accept(ctx, start)
+	if err != nil || started.WorkerID != "a" {
+		t.Fatalf("start after budget released = %+v, %v", started, err)
+	}
+	held, err = f.db.GetPlacementReservation(ctx, started.ID)
+	if err != nil || held.Resources.StorageBytes != 3<<30 || held.Resources.MemoryMiB != 6144 {
+		t.Fatalf("start charged resources %+v, %v", held, err)
+	}
+}
+
+func TestPlacementUsesEachRuntimeExactStorageCapacity(t *testing.T) {
+	f := placementDB(t)
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		report := f.worker(t, id)
+		report.Budget.Capacity.StorageBytes = 2 << 30
+		savePlacementSample(t, f.db, report)
+	}
+	req := f.request("per-route-disk")
+	req.Placement.StorageByRuntimeID = map[string]int64{"global-a": 1 << 30, "global-b": 3 << 30}
+	op, _, err := f.db.Accept(ctx, req)
+	if err != nil || op.WorkerID != "a" {
+		t.Fatalf("exact per-route capacity placement = %+v, %v", op, err)
+	}
+	reserve, err := f.db.GetPlacementReservation(ctx, op.ID)
+	if err != nil || reserve.Resources.StorageBytes != 1<<30 {
+		t.Fatalf("stored selected route capacity = %+v, %v", reserve, err)
 	}
 }

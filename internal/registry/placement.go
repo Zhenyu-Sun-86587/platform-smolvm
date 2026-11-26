@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -67,6 +68,8 @@ func workerPlacementRejection(ctx context.Context, tx *sql.Tx, worker workerPlac
 		return workerSample{}, "owner_mismatch", nil
 	case worker.maintenancePhase == "activating" || !workerModeAllows(worker.mode, kind):
 		return workerSample{}, "maintenance", nil
+	case worker.workerStatus == "identity_conflict":
+		return workerSample{}, "identity_conflict", nil
 	case worker.workerStatus != "ready":
 		return workerSample{}, "worker_not_ready", nil
 	}
@@ -110,6 +113,11 @@ func candidateRejection(req placement.Request, candidate placementCandidate, sam
 	if !candidate.registered {
 		return placement.RuntimeProfile{}, "runtime_unavailable"
 	}
+	if req.StorageByRuntimeID != nil {
+		if _, verified := req.StorageByRuntimeID[route.InstanceID]; !verified {
+			return placement.RuntimeProfile{}, "storage_capacity_unverified"
+		}
+	}
 	for _, profile := range sample.Profiles {
 		if profile.RuntimeInstanceID != route.InstanceID {
 			continue
@@ -125,7 +133,7 @@ func candidateRejection(req placement.Request, candidate placementCandidate, sam
 	return placement.RuntimeProfile{}, "runtime_unobserved"
 }
 
-func placementAvailability(ctx context.Context, tx *sql.Tx, worker string, sample workerSample, req placement.Request) (placement.Resources, string, error) {
+func placementAvailability(ctx context.Context, tx *sql.Tx, worker string, sample workerSample) (placement.Resources, error) {
 	available := sample.Budget.Capacity.Subtract(sample.Budget.Allocated)
 	// Physical pressure limits are independent of the admission budget, so a
 	// host reporting free physical resources cannot enlarge that budget.
@@ -133,32 +141,36 @@ func placementAvailability(ctx context.Context, tx *sql.Tx, worker string, sampl
 	available.StorageBytes = min(available.StorageBytes, sample.Pressure.DiskFreeBytes)
 	rows, err := tx.QueryContext(ctx, `SELECT vcpus,memory_mib,storage_bytes,heavy_slots
 		FROM placement_reservations WHERE worker_id=? AND phase IN ('reserved_not_sent','dispatch_started','unknown','admitted')
-		UNION ALL SELECT vcpus,memory_mib,0,0 FROM worker_access_wake_holds WHERE worker_id=? AND phase='unknown'`, worker, worker)
+		UNION ALL SELECT vcpus,memory_mib,storage_bytes,0 FROM worker_access_wake_holds WHERE worker_id=? AND phase='unknown'`, worker, worker)
 	if err != nil {
-		return available, "", err
+		return available, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var held placement.Resources
 		if err := rows.Scan(&held.VCPUs, &held.MemoryMiB, &held.StorageBytes, &held.HeavySlots); err != nil {
-			return available, "", err
+			return available, err
 		}
 		available = available.Subtract(held)
 	}
 	if err := rows.Err(); err != nil {
-		return available, "", err
+		return available, err
 	}
-	if !req.Headroom.Fits(available) {
-		return available, "budget_headroom", nil
+	return available, nil
+}
+
+func afterPlacement(available, resources, headroom placement.Resources) (placement.Resources, string) {
+	if !headroom.Fits(available) {
+		return available, "budget_headroom"
 	}
-	available = available.Subtract(req.Headroom)
-	if req.Resources.HeavySlots > available.HeavySlots {
-		return available, "heavy_slots_busy", nil
+	available = available.Subtract(headroom)
+	if resources.HeavySlots > available.HeavySlots {
+		return available, "heavy_slots_busy"
 	}
-	if !req.Resources.Fits(available) {
-		return available, "budget_insufficient", nil
+	if !resources.Fits(available) {
+		return available, "budget_insufficient"
 	}
-	return available, "", nil
+	return available.Subtract(resources), ""
 }
 
 func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string, req placement.Request, now time.Time) (rt.BundleRoute, error) {
@@ -186,19 +198,19 @@ func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string,
 			continue
 		}
 		var available placement.Resources
-		var resourceReason string
 		var readAvailable bool
 		for _, candidate := range worker.routes {
 			profile, reason := candidateRejection(req, candidate, sample)
+			var remaining placement.Resources
 			if reason == "" {
 				if !readAvailable {
-					available, resourceReason, err = placementAvailability(ctx, tx, worker.id, sample, req)
+					available, err = placementAvailability(ctx, tx, worker.id, sample)
 					if err != nil {
 						return rt.BundleRoute{}, err
 					}
 					readAvailable = true
 				}
-				reason = resourceReason
+				remaining, reason = afterPlacement(available, req.ResourcesFor(candidate.route.InstanceID), req.Headroom)
 			}
 			if reason != "" {
 				rejected.Candidates = append(rejected.Candidates, placement.Rejection{
@@ -212,7 +224,7 @@ func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string,
 				MemoryMiB:    max(0, budgetFree.MemoryMiB-sample.Pressure.AvailableMemoryMiB),
 				StorageBytes: max(0, budgetFree.StorageBytes-sample.Pressure.DiskFreeBytes),
 			})
-			score := placement.Score(capacity, available.Subtract(req.Resources)) + 2*pressurePenalty
+			score := placement.Score(capacity, remaining) + 2*pressurePenalty
 			cached := req.ArtifactDigest != "" && slices.Contains(profile.CachedArtifacts, req.ArtifactDigest)
 			if chosen.InstanceID == "" || score < chosenScore || score == chosenScore && cached && !chosenCached {
 				chosen, chosenScore, chosenCached = candidate.route, score, cached
@@ -228,6 +240,7 @@ func selectPlacement(ctx context.Context, tx *sql.Tx, controlEpoch, kind string,
 func insertPlacementReservation(ctx context.Context, tx *sql.Tx, op Operation, route rt.BundleRoute, req placement.Request, attempt, nativeAttempt int64) error {
 	// This digest identifies the central acceptance intent. The native wire
 	// digest is added independently when the outgoing mutation is journaled.
+	req.Resources = req.ResourcesFor(route.InstanceID)
 	intent, err := json.Marshal(struct {
 		Operation, Kind, Epoch string
 		Route                  rt.BundleRoute
@@ -308,6 +321,14 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 	req, err := ownerPlacement(prior.Spec, route, worker, capability, count, r.Heavy)
 	if err != nil {
 		return nil, err
+	}
+	if r.Kind == "start" && prior.CurrentBinding.PowerState == PowerStopped {
+		digest, bytes, err := pinnedLaunchStorage(ctx, tx, prior, route)
+		if err != nil {
+			return nil, err
+		}
+		req.ArtifactDigest, req.Resources.StorageBytes = digest, bytes
+		req.Headroom = placement.Resources{MemoryMiB: 128, StorageBytes: 64 << 20}
 	}
 	if r.Kind == rt.Wake {
 		// Explicit standby wake retains the same resident execution. The
@@ -408,4 +429,57 @@ func placementWorkerManaged(ctx context.Context, q queryer, worker string) (bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
 		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&managed)
 	return managed, err
+}
+
+// pinnedLaunchStorage uses the same units as native managed launch. The
+// Worker reserves the nominal capacity of each writable device, even when
+// its backing data is already imported or attached.
+func pinnedLaunchStorage(ctx context.Context, q queryer, m Machine, route rt.BundleRoute) (string, int64, error) {
+	var digest string
+	var bytes int64
+	err := q.QueryRowContext(ctx, `SELECT t.image_digest, a.capacity_bytes FROM templates t JOIN artifact_placements a ON a.content_digest=t.image_digest
+		JOIN runtime_instances i ON i.id=a.runtime_instance_id
+		WHERE t.id=? AND i.id=? AND i.worker_id=? AND i.runtime_bundle_id=?`,
+		m.TemplateID, route.InstanceID, route.Owner(), route.BundleID).Scan(&digest, &bytes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, fmt.Errorf("%w: template root capacity is unavailable on the pinned Worker", ErrConflict)
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT a.id, v.worker_id, v.runtime_instance_id, v.runtime_bundle_id, v.worker_receipt_json
+		FROM volume_attachments a JOIN volumes v ON v.id=a.volume_id
+		WHERE a.machine_id=? AND a.state='reserved'`, m.ID)
+	if err != nil {
+		return "", 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, worker, instance, bundle, raw string
+		if err := rows.Scan(&id, &worker, &instance, &bundle, &raw); err != nil {
+			return "", 0, err
+		}
+		if worker != route.Owner() || instance != route.InstanceID || bundle != route.BundleID {
+			return "", 0, fmt.Errorf("%w: writable device must belong to the pinned Worker route", ErrConflict)
+		}
+		var volume rt.VolumeObservation
+		if err := json.Unmarshal([]byte(raw), &volume); err != nil {
+			return "", 0, err
+		}
+		index := slices.IndexFunc(volume.Attachments, func(a rt.VolumeAttachment) bool { return a.ID == id })
+		if index < 0 {
+			return "", 0, fmt.Errorf("%w: volume has no current attachment receipt", ErrConflict)
+		}
+		switch volume.Attachments[index].Mode {
+		case "ro":
+		case "rw":
+			if volume.CapacityBytes <= 0 || bytes > math.MaxInt64-volume.CapacityBytes {
+				return "", 0, fmt.Errorf("%w: invalid writable volume capacity", ErrConflict)
+			}
+			bytes += volume.CapacityBytes
+		default:
+			return "", 0, fmt.Errorf("%w: invalid volume attachment mode", ErrConflict)
+		}
+	}
+	return digest, bytes, rows.Err()
 }

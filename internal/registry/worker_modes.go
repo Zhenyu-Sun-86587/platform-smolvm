@@ -8,7 +8,10 @@ import (
 	rt "sandbox-platform/internal/runtime"
 )
 
-var ErrWorkerMaintenance = errors.New("Worker entrance closed for maintenance")
+var (
+	ErrWorkerMaintenance      = errors.New("Worker entrance closed for maintenance")
+	ErrWorkerIdentityConflict = fmt.Errorf("%w: Worker identity is quarantined", ErrConflict)
+)
 
 func workerModeAllows(mode, entrance string) bool {
 	switch mode {
@@ -31,11 +34,14 @@ func checkWorkerEntrance(ctx context.Context, q queryer, worker, entrance string
 	if worker == "" {
 		worker = "local-worker"
 	}
-	var mode, phase string
-	err := q.QueryRowContext(ctx, `SELECT w.desired_mode,COALESCE(m.phase,'') FROM workers w
-		LEFT JOIN worker_maintenance m ON m.worker_id=w.id WHERE w.id=?`, worker).Scan(&mode, &phase)
+	var mode, phase, observed string
+	err := q.QueryRowContext(ctx, `SELECT w.desired_mode,COALESCE(m.phase,''),w.observed_status FROM workers w
+		LEFT JOIN worker_maintenance m ON m.worker_id=w.id WHERE w.id=?`, worker).Scan(&mode, &phase, &observed)
 	if err != nil {
 		return notFound(err)
+	}
+	if observed == "identity_conflict" {
+		return ErrWorkerIdentityConflict
 	}
 	if phase == "activating" && !workerModeAllows("draining", entrance) || !workerModeAllows(mode, entrance) {
 		return fmt.Errorf("%w: Worker %s is %s", ErrWorkerMaintenance, worker, mode)

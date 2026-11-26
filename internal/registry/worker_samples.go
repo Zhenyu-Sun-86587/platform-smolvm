@@ -15,19 +15,23 @@ type workerSample struct {
 	placement.Sample
 	oldestAt       time.Time
 	queryStartedAt time.Time
+	receivedAt     time.Time
 }
 
 func readWorkerSample(ctx context.Context, q queryer, id string) (workerSample, error) {
 	var out workerSample
 	var raw string
-	var oldest, started int64
-	err := q.QueryRowContext(ctx, `SELECT report_json, oldest_sample_at, query_started_at
-		FROM worker_samples WHERE worker_id = ?`, id).Scan(&raw, &oldest, &started)
+	var oldest, started, received int64
+	err := q.QueryRowContext(ctx, `SELECT report_json, oldest_sample_at, query_started_at, received_at
+		FROM worker_samples WHERE worker_id = ?`, id).Scan(&raw, &oldest, &started, &received)
 	if err != nil {
 		return out, notFound(err)
 	}
 	out.oldestAt = time.UnixMilli(oldest)
 	out.queryStartedAt = time.Unix(0, started)
+	// Treat the observed millisecond as a whole interval when comparing
+	// request overlap. Rounding down could quarantine an in-flight reply.
+	out.receivedAt = time.UnixMilli(received).Add(time.Millisecond)
 	return out, json.Unmarshal([]byte(raw), &out.Sample)
 }
 
@@ -81,7 +85,10 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 		Scan(&mode, &observed); err != nil {
 		return notFound(err)
 	}
-	if mode == "decommissioned" || observed == "identity_conflict" {
+	if observed == "identity_conflict" {
+		return ErrWorkerIdentityConflict
+	}
+	if mode == "decommissioned" {
 		return fmt.Errorf("%w: Worker is outside the current authority", ErrConflict)
 	}
 	prior, err := readWorkerSample(ctx, tx, sample.WorkerID)
@@ -90,12 +97,12 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 	}
 	same := err == nil && prior.ControlEpoch == sample.ControlEpoch &&
 		prior.EnrollmentGeneration == generation && prior.Session == sample.Session
-	if err == nil && !query.StartedAt.After(prior.queryStartedAt) {
-		return fmt.Errorf("%w: older Worker budget query", ErrStaleObservation)
+	if err == nil && (!query.StartedAt.After(prior.queryStartedAt) || sample.QueryNonce == prior.QueryNonce) {
+		return fmt.Errorf("%w: older or replayed Worker budget query", ErrStaleObservation)
 	}
 	key := []any{sample.WorkerID, sample.ControlEpoch, generation, sample.Session.HostBootID, sample.Session.BrokerSessionID, sample.Session.NodeSessionID}
 	if same {
-		if sample.Sequence <= prior.Sequence || sample.QueryNonce == prior.QueryNonce {
+		if sample.Sequence <= prior.Sequence {
 			return fmt.Errorf("%w: replayed Worker budget", ErrStaleObservation)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE worker_sample_sessions SET latest_sequence=?
@@ -104,16 +111,20 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 			return err
 		}
 	} else {
-		if !sample.Reconciled {
-			return fmt.Errorf("%w: new Worker session requires reconciliation", ErrStaleObservation)
-		}
 		result, err := tx.ExecContext(ctx, `INSERT INTO worker_sample_sessions VALUES (?,?,?,?,?,?,?)
 			ON CONFLICT DO NOTHING`, append(key, sample.Sequence)...)
 		if err != nil {
 			return err
 		}
-		if count, err := result.RowsAffected(); err != nil || count != 1 {
-			return fmt.Errorf("%w: retired Worker budget session", ErrStaleObservation)
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return rejectRetiredWorkerSample(ctx, tx, sample, query, prior)
+		}
+		if !sample.Reconciled {
+			return fmt.Errorf("%w: new Worker session requires reconciliation", ErrStaleObservation)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE worker_access_wake_holds SET phase='unknown',covered_sequence=NULL
 			WHERE worker_id=? AND phase='covered'`, sample.WorkerID); err != nil {
@@ -152,6 +163,78 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 		return err
 	}
 	return tx.Commit()
+}
+
+// CheckWorkerSampleSession can fence a retired, responding Node before
+// reading its known inventory. No new session becomes ready through this
+// check; a reconciled sample still has to be recorded separately.
+func (s *Store) CheckWorkerSampleSession(ctx context.Context, sample placement.Sample, query placement.Query) error {
+	if err := sample.Validate(query, time.Now()); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	control, err := readControl(ctx, tx)
+	if err != nil {
+		return err
+	}
+	generation, err := workerGeneration(ctx, tx, sample.WorkerID, control.ControlEpoch)
+	if err != nil {
+		return err
+	}
+	if sample.ControlEpoch != control.ControlEpoch || sample.EnrollmentGeneration != generation {
+		return fmt.Errorf("%w: budget authority is stale", ErrConflict)
+	}
+	if err := checkWorkerEntrance(ctx, tx, sample.WorkerID, "admission"); err != nil {
+		return err
+	}
+	prior, err := readWorkerSample(ctx, tx, sample.WorkerID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if prior.ControlEpoch == sample.ControlEpoch && prior.EnrollmentGeneration == generation && prior.Session == sample.Session {
+		return nil
+	}
+	var retired bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_sample_sessions
+		WHERE worker_id=? AND control_epoch=? AND enrollment_generation=?
+		AND host_boot_id=? AND broker_session_id=? AND node_session_id=?)`,
+		sample.WorkerID, sample.ControlEpoch, generation, sample.Session.HostBootID,
+		sample.Session.BrokerSessionID, sample.Session.NodeSessionID).Scan(&retired); err != nil {
+		return err
+	}
+	if !retired {
+		return nil
+	}
+	return rejectRetiredWorkerSample(ctx, tx, sample, query, prior)
+}
+
+func rejectRetiredWorkerSample(ctx context.Context, tx *sql.Tx, sample placement.Sample, query placement.Query, prior workerSample) error {
+	// An overlapping query may have reached a Worker before its restart. A
+	// fresh challenge sent after observing the successor proves that a retired
+	// authority is still answering.
+	if !query.StartedAt.After(prior.receivedAt) || sample.QueryNonce == prior.QueryNonce {
+		return fmt.Errorf("%w: reply from a retired Worker session", ErrStaleObservation)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workers SET observed_status='identity_conflict',revision=revision+1 WHERE id=?`,
+		sample.WorkerID); err != nil {
+		return err
+	}
+	if err := AppendEvent(ctx, tx, "maintenance", "", "", map[string]any{
+		"action": "worker_identity_conflict", "worker_id": sample.WorkerID,
+	}, true); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: retired session answered a fresh budget query", ErrWorkerIdentityConflict)
 }
 
 func coverReservations(ctx context.Context, tx *sql.Tx, sample placement.Sample) error {

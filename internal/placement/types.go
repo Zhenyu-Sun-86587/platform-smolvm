@@ -146,6 +146,9 @@ type Request struct {
 	Headroom           Resources     `json:"headroom"`
 	MaxSampleAge       time.Duration `json:"-"`
 	EligibleRuntimeIDs []string      `json:"-"`
+	// StorageByRuntimeID holds verified writable capacities for runtime routes
+	// that can report different local disk sizes for the same artifact.
+	StorageByRuntimeID map[string]int64 `json:"-"`
 }
 
 func (r Request) Validate() error {
@@ -153,7 +156,20 @@ func (r Request) Validate() error {
 		!r.Resources.Valid() || !r.Headroom.Valid() || r.MaxSampleAge < 0 || r.MaxSampleAge > DefaultSampleAge {
 		return errors.New("invalid placement requirements")
 	}
+	for id, bytes := range r.StorageByRuntimeID {
+		if id == "" || bytes <= 0 {
+			return errors.New("invalid runtime storage requirement")
+		}
+	}
 	return nil
+}
+
+func (r Request) ResourcesFor(runtimeID string) Resources {
+	resources := r.Resources
+	if bytes, present := r.StorageByRuntimeID[runtimeID]; present {
+		resources.StorageBytes = bytes
+	}
+	return resources
 }
 
 const (
