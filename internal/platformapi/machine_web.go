@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -38,6 +39,21 @@ func (s *Server) webMachine(host string) string {
 		return ""
 	}
 	return id
+}
+
+// A link opened in a browser can use the existing console login to get a
+// single-use preview ticket. API clients and request bodies never follow this path.
+func (s *Server) machineWebNavigation(w http.ResponseWriter, r *http.Request, host string) bool {
+	mid := s.webMachine(host)
+	if mid == "" || r.Method != http.MethodGet || r.URL.Path != "/" || r.URL.RawQuery != "" ||
+		r.Header.Get("Authorization") != "" || r.Header.Get("Sec-Fetch-Mode") != "navigate" ||
+		r.Header.Get("Sec-Fetch-Dest") != "document" || !strings.Contains(r.Header.Get("Accept"), "text/html") {
+		return false
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.Redirect(w, r, s.Config.API.PublicOrigin+"/#/machines/"+mid+"/networking?open=web", http.StatusFound)
+	return true
 }
 
 func (s *Server) httpServiceForHost(ctx context.Context, host string) (service, error) {

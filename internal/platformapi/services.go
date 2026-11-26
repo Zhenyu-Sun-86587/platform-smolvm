@@ -572,6 +572,9 @@ func (s *Server) awaitNativeSSHKey(ctx context.Context, p auth.Principal, b regi
 }
 
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
+	if _, err := r.Cookie(previewCookie); err == http.ErrNoCookie && s.machineWebNavigation(w, r, host) {
+		return
+	}
 	v, err := s.httpServiceForHost(r.Context(), host)
 	if err != nil {
 		w.Header().Set(gateway.ForwardingHeader, "not_started")
@@ -587,6 +590,9 @@ func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string
 		return
 	}
 	p, handled, err := s.previewAuth(w, r, v)
+	if errors.Is(err, auth.ErrUnauthenticated) && s.machineWebNavigation(w, r, host) {
+		return
+	}
 	if handled {
 		return
 	}

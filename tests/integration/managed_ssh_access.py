@@ -62,6 +62,10 @@ def check(platform, args, keys):
         assert downloaded.read_bytes() == blob
         bearer = {"Authorization": "Bearer " + credential}
         assert web(authority, "GET", "/", bearer)[0] == 404
+        navigation = {"Accept": "text/html", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+        status, _, redirect = web(authority, "GET", "/", navigation)
+        assert status == 302 and dict(redirect)["Location"] == platform.origin + "/#/machines/" + mid + "/networking?open=web"
+        assert web(authority, "POST", "/", navigation)[0] == 401
         write_service(platform, ref)
         platform.guest(ref, ["systemd-run", "--unit=managed-http", "/usr/bin/perl", PROGRAM, "http", str(SERVICE_PORT)])
         wait_for(lambda: f":{SERVICE_PORT:04X}".encode() in platform.guest(ref, ["cat", "/proc/net/tcp"]))
@@ -92,7 +96,8 @@ def check(platform, args, keys):
         parked = platform.wait_capability(path, "lifecycle.standby")
         platform.complete(platform.change(path + "/standby", "managed-ssh-standby", {}, parked))
         assert platform.app(path)["power_state"] == "standby"
-        assert run("ssh", "-oBatchMode=yes", alias, "id -u") == b"0\n"
+        after = run("ssh", "-oBatchMode=yes", alias, 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
+        assert after[0] == "0" and after[1] == connection[0] and after[-1] == "2222", after
         assert platform.app(path)["power_state"] == "running"
         print(json.dumps(dict(case="managed-ssh-and-web", machine_id=mid, ssh_source=connection[0],
                               guest_port=connection[-1], new_user_exit=23, agent=False, published_ssh=False,
