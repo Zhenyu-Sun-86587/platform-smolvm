@@ -159,7 +159,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, status = "UNAUTHENTICATED", 401
 	case errors.Is(err, auth.ErrForbidden):
 		code, status = "PERMISSION_DENIED", 403
-	case errors.Is(err, auth.ErrGuestQuota):
+	case errors.Is(err, auth.ErrGuestQuota), errors.Is(err, errEnrollmentBusy):
 		code, status = "RESOURCE_LIMIT", http.StatusTooManyRequests
 	case errors.As(err, &upstream) && upstream.Code == "UPSTREAM_UNAVAILABLE" && upstream.Status == http.StatusBadGateway:
 		code, status = upstream.Code, upstream.Status

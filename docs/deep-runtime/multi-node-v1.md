@@ -17,7 +17,9 @@
 ## 登记、下线与恢复
 
 1. 为每台 Worker 分配不同的 `worker_id`、Node 密钥和全局 `runtime_instance_id`。Node 的 `instance_id` 写本地 Serve 名。平台配置的 `local_instance_id` 与它对应。为两端配置同一 Bundle manifest 和 reader。用已认证的 `GET /v1/control` 取得 `installation_id` 和 `control_epoch`。
-2. 配置双向 TLS。Node 证书的 SAN 包含端点 DNS/IP 以及 `spiffe://sandbox-platform/node/<worker_id>/<generation>`。控制端证书包含 `spiffe://sandbox-platform/controller/<installation_id>`。两端分别配置对方 CA 和公钥 SPKI 的 SHA-256 pin。Node 的私有状态目录、Serve socket、Worker socket 和可选 Guest relay 目录位于 Worker 上。发布包内附服务单元和样例；在 Worker 上使用与其实际 deep Serve 配套的系统服务账户和 socket 权限。
+2. 登记可使用管理员签发的五分钟一次性凭证。Worker 在本地生成密钥和 CSR，经管理 HTTPS 端点领取新的公钥证书。平台只为配置中的 Worker、代际、公钥 pin 与主机名签发，精确重试同一 CSR 可取回原证书。也可使用带外预签发证书。 [登记与换证命令](WORKER-ENROLLMENT.md)
+
+   配置双向 TLS。Node 证书的 SAN 包含端点 DNS/IP 以及 `spiffe://sandbox-platform/node/<worker_id>/<generation>`。控制端证书包含 `spiffe://sandbox-platform/controller/<installation_id>`。两端分别配置对方 CA 和公钥 SPKI 的 SHA-256 pin。Node 的私有状态目录、Serve socket、Worker socket 和可选 Guest relay 目录位于 Worker 上。发布包内附服务单元和样例；在 Worker 上使用与其实际 deep Serve 配套的系统服务账户和 socket 权限。
 3. 启动配置好的 Node 后，平台校验握手、路由、会话和已知对象，取得新鲜预算才开放调度。恢复旧 DB 会更换 control epoch 并进入 maintenance。普通重启保留 epoch。
 4. `sandboxctl workers set-mode WORKER cordoned --revision N --reason REASON` 关闭新 Create/Fork。转入 `draining` 后，控制端和 Node 执行入口门禁、有效策略 overlay、逐项停用已登记 packet-wake 规则，并收敛 WakeDemand。collector 保留运行。恢复 `active` 时重新读取当前用户 desired revision。
 5. 同一控制端换证时，停 Node，用旧配置和下一代证书执行下面的离线命令。相同安装 ID 和 epoch 的 generation 须恰好加一，保留原 gate。跨控制端或恢复后的 epoch 要求更高 generation，重绑后进入 Drain。随后同步控制面 pin、generation 及 Node 配置，启动 Node，并核对已知对象、恢复阻塞和预算。撤销某一代可使用 `sandboxctl workers revoke-enrollment`。
@@ -40,7 +42,7 @@ sandbox-node -config /etc/sandbox-node/config.next.yaml \
 | N03 | Worker 已受理后丢回包。只查原操作，保留 Unknown 和 hold，另一 Worker 的提交计数为零。 `TestLostResponseQueriesOnlyOriginalWorker`、`TestPlacementUnknownRechecksOriginalAndRequiresCausalBudget` |
 | N04 | 重开真实 SQLite Node journal，覆盖发送窗、同 ID 重投、冲突 digest 和原生终态回执。 `TestCrashWindowRebindAndKnownOnly`、`TestJournalLeavesUncertainSendFencedAndTerminalHistoryDoesNotFillReconcile` |
 | N05 | WakeDemand ack、真正的 Restore 决策和预算水位分别注入；核对原生 `restore_target`、原 owner 和执行身份。 `TestIngressWakeDemandOnlyFoldsAfterPinnedRestoreAndNewBudget`、`TestRestoreVerifiesNativeTargetReceipt` |
-| N06 | 本地/远程 owner fixture 上运行部分成功的批量 Fork、源解绑、取消和原生 retry。核对逻辑 child、capture、attempt 和已成功项。 `TestNativeForkKeepsPartialChildrenAfterSourceRemoval`、`TestNativeForkCancellationOwnsOnlyUncommittedTargets` |
+| N06 | 本地/远程 owner fixture 上运行部分成功的批量 Fork、源解绑、取消和原生 retry。核对逻辑 child、capture、attempt 和已成功项，按每个可写设备及有效 child 数计费。 `TestForkBatchAndRetryChargeOriginalWritableCapacity`、`TestNativeForkKeepsPartialChildrenAfterSourceRemoval`、`TestNativeForkCancellationOwnsOnlyUncommittedTargets` |
 | N07 | 两路 Node 的相同本地对象名、服务及卷按各自 route 校验；经真实 Unix socket 和 TLS 的 Guest relay 验证 grant、凭据过滤及撤销。 `TestIdentityScopeAndTypedRequests`、`TestVolumeScopeReplayAndAdmittedActions`、`TestRemoteGuestRelayAttestsAndCancelsCredentialProxy` |
 | N08 | 回环 TCP 半关闭后仍能收到反向数据；HTTP POST 在上游读完整个请求体后断链，计数仍为一次。 `TestStreamHalfCloseAndControlUnderBackpressure`、`TestRemoteHTTPPostBodyIsForwardedOnceAfterLostResponse` |
 | N09 | 活动请求和 running lease 阻止休眠；同一源上手工 Fork 仍经独立准入并到达原 Worker。本例使用等待中的请求和持久租约。 `TestLongRequestProtectsSleepAndAllowsOwnerFork` |
@@ -50,8 +52,8 @@ sandbox-node -config /etc/sandbox-node/config.next.yaml \
 | N13 | 生产注册/轮询路径接两套回环 TLS Node，分别跟踪 host、broker、Node 和 Serve 身份。注入旧会话和重启后的原操作回执。 `TestControllerEnrollsAndSamplesTwoLoopbackNodes`、`TestFreshRetiredWorkerQuarantinesButOverlappingQueryDoesNot`、`TestNativePowerReconcilesOriginalWorkerOperationAfterRestart` |
 | N14 | 模拟重启后的 Hibernate：对账要求原实例、epoch、HIBERNATED 和原 capture 均相符；STOPPED 或错误 capture 保持阻塞。 `TestRebootRequiresOriginalHibernateCapture` |
 | N15 | 数据库恢复轮换 epoch。离线换代与恢复重绑校验旧 authority；已建立的长连接也会重查授权。 `TestBackupRestoreChangesEpochWithoutReplayingOldWork`、`TestOfflineEnrollmentRotationKeepsGateAndRecoverRebindDrains`、`TestLongNodeStreamsRenewAuthority` |
-| N16 | 卷、StatePoint、备份 capture 校验 owner/Bundle/reader 与原生来源；错误 pin 被拒绝。 `TestWorkerPinsRejectCrossNodeResources`、`TestPinnedPlacementCannotOverrideOwnerOrReader`、`TestBackupCapturesRequireOriginalServeAndSourceOperation` |
-| N17 | 错证书、重复登记和跨 Serve 的读写被拒绝；路径型备份成员限于已选择的不可变闭包。 `TestWorkerEnrollmentIsUniqueAndRotationIsAtomic`、`TestWorkerRPCRejectsOtherServeOnSameWorkerAndBundle`、`TestRemoteBackupRejectsPathsAndRouteAlias` |
+| N16 | 卷、StatePoint、备份 capture 校验 owner/Bundle/reader 与原生来源；手工 Restore 依据捕获时的 CPU、内存和可写容量向原 reader 准入。 `TestManualRestoreUsesCapturedResourcesOnOriginalReader`、`TestWorkerPinsRejectCrossNodeResources`、`TestPinnedPlacementCannotOverrideOwnerOrReader`、`TestBackupCapturesRequireOriginalServeAndSourceOperation` |
+| N17 | 错证书、重复登记和跨 Serve 的读写被拒绝；一次性凭证支持限定 CSR 换证，路径型备份成员限于已选择的不可变闭包。 `TestWorkerEnrollmentTicketTLSRotationAndRecovery`、`TestWorkerEnrollmentIsUniqueAndRotationIsAtomic`、`TestWorkerRPCRejectsOtherServeOnSameWorkerAndBundle`、`TestRemoteBackupRejectsPathsAndRouteAlias` |
 | N18 | 模板校验受单次和总时限约束，轮询游标让后续模板也可取得证明；以阻塞流占满 bulk 配额时控制握手仍可用；接收方独立核对成员长度及 SHA-256，截断和错误摘要均失败。 `TestWarmingRootsLeaveTimeForBudgetAndRotate`、`TestRemoteBackupLimitsLeaveControlAvailable`、`TestRemoteBackupDigestAndIncompleteMembers` |
 
 [NodeGateway 故障用例](../../internal/nodegateway/gateway_test.go) · [调度与维护用例](../../internal/registry/worker_placement_test.go) · [控制面至双回环 Node](../../internal/nodegateway/controller_poll_test.go)
@@ -59,6 +61,6 @@ sandbox-node -config /etc/sandbox-node/config.next.yaml \
 ## 发行验证范围
 
 - Go 全仓测试、`go vet ./...` 及 NodeGateway、Node 轮询、registry、生命周期、服务网关和管理 API 的竞态检测。
-- TypeScript SDK 编译、Web 的 TypeScript/Vite 构建、内嵌源码与工作树内容比对。Python 和 TypeScript SDK 使用模拟 HTTP 校验 Worker 查询、维护和撤证的路径、方法、body 及条件头。
+- TypeScript SDK 编译、Web 的 TypeScript/Vite 构建、内嵌源码与工作树内容比对。Chromium 打开生产构建，使用模拟管理 API 检查 Worker 预算、覆盖级别、CAS 维护请求和状态刷新。Python 和 TypeScript SDK 使用模拟 HTTP 校验 Worker 查询、维护和撤证的路径、方法、body 及条件头。
 - 以本地小型合成 Docker-save 归档制作 Linux/amd64 发布包。检查三份二进制、Node unit、配置样例和发布清单，再执行安装脚本的只读 `--plan`。此项验证检验打包和校验流程。
 - 待实机验收包括两个独立 Worker 的真实资源准入和同时重启、跨主机 Guest/PTY/服务及桌面、Hibernate 和备份恢复、磁盘预热与大流并发时的心跳延迟。本轮未做生产部署，也未运行双 Worker 压测。

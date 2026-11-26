@@ -21,6 +21,8 @@ import (
 	rt "sandbox-platform/internal/runtime"
 )
 
+var errEnrollmentBusy = errors.New("Worker certificate signing capacity reached")
+
 func (s *Server) workerEnrollmentRoutes() {
 	s.route("POST /v1/workers/{worker}/enrollment/ticket", s.issueWorkerEnrollmentTicket)
 	slots := make(chan struct{}, 2)
@@ -114,7 +116,7 @@ func (s *Server) redeemWorkerEnrollmentTicket(w http.ResponseWriter, r *http.Req
 	case slots <- struct{}{}:
 		defer func() { <-slots }()
 	default:
-		return auth.ErrGuestQuota
+		return errEnrollmentBusy
 	}
 	var request struct {
 		CSR string `json:"csr_pem"`
