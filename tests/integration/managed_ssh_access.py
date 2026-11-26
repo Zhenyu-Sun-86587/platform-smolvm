@@ -2,13 +2,14 @@
 
 from contextlib import ExitStack, closing
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import subprocess
 from urllib.parse import urlencode, urlsplit
 
-from authorized_services_kvm import PROGRAM, SERVICE_PORT, machine, write_service
+from authorized_services_kvm import NETWORK, PROGRAM, SERVICE_PORT, machine, write_service
 from managed_system_vsock import wait_for
 
 
@@ -58,7 +59,8 @@ def check(platform, args, keys):
         alias = "ssh-first-use.sandbox"
         assert run("ssh", "-oBatchMode=yes", alias, "id -u; exit 23", code=23) == b"0\n"
         connection = run("ssh", "-oBatchMode=yes", alias, 'printf "%s" "$SSH_CONNECTION"').decode().split()
-        assert len(connection) == 4 and connection[-1] == "2222", connection
+        router = str(ipaddress.ip_network(NETWORK["cidr"]).network_address + 1)
+        assert len(connection) == 4 and connection[0] == router and connection[-1] == "2222", connection
         assert run(args.sandboxctl, "ssh", "ssh-first-use", "--", "id -u") == b"0\n"
         blob = os.urandom(36865)
         source, downloaded = directory / "source.bin", directory / "downloaded.bin"
@@ -102,10 +104,16 @@ def check(platform, args, keys):
         parked = platform.wait_capability(path, "lifecycle.standby")
         platform.complete(platform.change(path + "/standby", "managed-ssh-standby", {}, parked))
         assert platform.app(path)["power_state"] == "standby"
-        after = run("ssh", "-oBatchMode=yes", alias, 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
+        after = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
         assert after[0] == "0" and after[1] == connection[0] and after[-1] == "2222", after
         assert platform.app(path)["power_state"] == "running"
+        live = platform.wait_capability(path, "state.hibernate")
+        platform.complete(platform.change(path + "/hibernate", "managed-ssh-hibernate", {}, live))
+        assert platform.app(path)["power_state"] == "hibernated"
+        restored = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
+        assert restored[0] == "0" and restored[1] == router and restored[-1] == "2222", restored
+        assert platform.context(mid)[1]["execution_epoch"] > ref["execution_epoch"]
         print(json.dumps(dict(case="managed-ssh-and-web", machine_id=mid, ssh_source=connection[0],
                               guest_port=connection[-1], new_user_exit=23, agent=False, published_ssh=False,
                               sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
-                              direct_tcpip=True, web_receipts=len(receipts), standby_wake=True)), flush=True)
+                              direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
