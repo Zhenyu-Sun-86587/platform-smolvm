@@ -9,18 +9,20 @@ import (
 )
 
 type LifecycleSettings struct {
-	BindingID       string              `json:"-"`
-	Supported       bool                `json:"supported"`
-	DesiredRevision int64               `json:"desired_revision"`
-	AppliedRevision int64               `json:"applied_revision"`
-	Desired         rt.LifecyclePolicy  `json:"desired"`
-	Overrides       json.RawMessage     `json:"overrides"`
-	Applied         *rt.LifecyclePolicy `json:"applied,omitempty"`
-	Source          string              `json:"source"`
-	DefaultRevision int64               `json:"default_revision"`
-	LastOperation   string              `json:"operation_id"`
-	Worker          json.RawMessage     `json:"worker,omitempty"`
-	LastError       *string             `json:"last_error,omitempty"`
+	BindingID         string              `json:"-"`
+	Supported         bool                `json:"supported"`
+	DesiredRevision   int64               `json:"desired_revision"`
+	AppliedRevision   int64               `json:"applied_revision"`
+	Desired           rt.LifecyclePolicy  `json:"desired"`
+	Overrides         json.RawMessage     `json:"overrides"`
+	Applied           *rt.LifecyclePolicy `json:"applied,omitempty"`
+	Source            string              `json:"source"`
+	DefaultRevision   int64               `json:"default_revision"`
+	LastOperation     string              `json:"operation_id"`
+	Worker            json.RawMessage     `json:"worker,omitempty"`
+	LastError         *string             `json:"last_error,omitempty"`
+	EffectiveStatus   string              `json:"effective_status,omitempty"`
+	EffectiveBlockers []string            `json:"effective_blockers,omitempty"`
 }
 
 func readPolicy(ctx context.Context, q queryer, machine string) (LifecycleSettings, error) {
@@ -85,6 +87,7 @@ func LifecycleOverrides(requested json.RawMessage) (json.RawMessage, string, err
 	if spec.Idle != nil {
 		patch["auto_standby"] = false
 		patch["auto_hibernate"] = spec.Idle.Enabled
+		patch["pressure_reclaim"] = "disabled"
 		if spec.Idle.Timeout > 0 {
 			patch["hibernate_after_seconds"] = spec.Idle.Timeout
 		}

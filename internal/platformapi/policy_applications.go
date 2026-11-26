@@ -23,11 +23,14 @@ func (s *Server) policyApplicationRoutes() {
 			return err
 		}
 		supported := false
-		if m.CurrentBinding != nil {
+		managed := m.CurrentBinding != nil && m.CurrentBinding.RuntimeBundleID != ""
+		observed := false
+		if managed {
 			if a, err := s.ForBinding(*m.CurrentBinding); err == nil {
 				if c, ok := lifecycle.PolicyClient(a, *m.CurrentBinding); ok {
 					supported = true
-					_, _ = s.Engine.ObservePolicy(r.Context(), *m.CurrentBinding, c)
+					_, err := s.Engine.ObservePolicy(r.Context(), *m.CurrentBinding, c)
+					observed = err == nil
 				}
 			}
 		}
@@ -36,6 +39,9 @@ func (s *Server) policyApplicationRoutes() {
 			return err
 		}
 		v.Supported = supported
+		if managed {
+			projectPolicyStatus(&v, observed)
+		}
 		return write(w, 200, v)
 	})
 	s.route("GET /v1/lifecycle-policy-applications/{application}", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -125,4 +131,28 @@ func (s *Server) policyApplicationRoutes() {
 		w.Header().Set("Location", "/v1/lifecycle-policy-applications/"+id)
 		return write(w, status, a)
 	})
+}
+
+func projectPolicyStatus(policy *registry.LifecycleSettings, observed bool) {
+	switch {
+	case !policy.Supported:
+		policy.EffectiveStatus = "blocked"
+		policy.EffectiveBlockers = []string{"runtime_profile_unsupported"}
+	case policy.AppliedRevision != policy.DesiredRevision:
+		policy.EffectiveStatus = "pending"
+	case !policy.Desired.AutoStandby && !policy.Desired.AutoHibernate:
+		policy.EffectiveStatus = "disabled"
+	default:
+		var status lifecycle.WorkerLifecycleStatus
+		if !observed || len(policy.Worker) == 0 || json.Unmarshal(policy.Worker, &status) != nil || status.Power == "" {
+			policy.EffectiveStatus = "blocked"
+			policy.EffectiveBlockers = []string{"unknown:worker"}
+			return
+		}
+		policy.EffectiveStatus = "applied"
+		if status.Power != "HIBERNATED" && status.Power != "STOPPED" && len(status.Blockers) != 0 {
+			policy.EffectiveStatus = "blocked"
+			policy.EffectiveBlockers = status.Blockers
+		}
+	}
 }

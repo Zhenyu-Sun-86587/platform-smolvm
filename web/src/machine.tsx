@@ -564,9 +564,9 @@ function Activity({ machine, actions, revision }: Context) {
         { method: "PATCH", revision: machine.revision }),
     })}>Configure</button>}>
       <Details value={{ source: policy.source, default_revision: policy.default_revision, desired_revision: policy.desired_revision,
-        applied_revision: policy.applied_revision, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
+        applied_revision: policy.applied_revision, effective_status: policy.effective_status, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
         hibernate_after_seconds: policy.applied?.hibernate_after_seconds, idle_seconds: policy.worker?.idle_ms == null ? undefined : Math.floor(policy.worker.idle_ms / 1000),
-        overrides: policy.overrides, blockers: policy.worker?.blockers,
+        overrides: policy.overrides, blockers: policy.effective_blockers ?? policy.worker?.blockers,
         next_action: policy.worker?.next_action?.kind, next_action_origin: policy.worker?.next_action?.origin,
         eligible_after_seconds: policy.worker?.next_action && Math.ceil(policy.worker.next_action.eligible_after_ms / 1000),
         last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
@@ -581,7 +581,8 @@ function Activity({ machine, actions, revision }: Context) {
     })}>Configure</button>}>
       <p className="policy-note">Authenticated access wakes a hibernated machine and resumes its saved execution.</p>
       <FeatureStatus reason={capabilityReason(machine, "automatic_idle")} />
-      <Details value={{ enabled: machine.idle_policy?.enabled, timeout_seconds: machine.idle_policy?.timeout_seconds, keep_running: machine.keep_running, blockers: machine.blocked_reasons, last_activity: time(machine.last_user_activity_at) }} />
+      <Details value={{ enabled: machine.idle_policy?.enabled, timeout_seconds: machine.idle_policy?.timeout_seconds, keep_running: machine.keep_running,
+        effective_status: policy?.effective_status, blockers: policy?.effective_blockers ?? machine.blocked_reasons, last_activity: time(machine.last_user_activity_at) }} />
     </Section>}
     <Section title="Leases" actions={<button onClick={() => actions.dialog({
       title: "Acquire keep-running lease",

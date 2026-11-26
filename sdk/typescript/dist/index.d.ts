@@ -212,6 +212,8 @@ export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_condition
 };
 export interface LifecycleStatus {
     supported: boolean;
+    effective_status?: "pending" | "applied" | "disabled" | "blocked";
+    effective_blockers?: string[];
     desired_revision: number;
     applied_revision: number;
     default_revision: number;

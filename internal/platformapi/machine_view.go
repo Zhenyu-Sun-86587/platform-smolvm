@@ -59,6 +59,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 			if a, routeErr := s.ForBinding(*m.CurrentBinding); routeErr == nil {
 				_, policy.Supported = lifecycle.PolicyClient(a, *m.CurrentBinding)
 			}
+			projectPolicyStatus(&policy, len(policy.Worker) > 0)
 			v.Lifecycle = &policy
 		}
 	}
