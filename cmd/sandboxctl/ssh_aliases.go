@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,14 +30,21 @@ type sshAlias struct {
 
 func (c *client) visibleSSHAliases(ctx context.Context) ([]sshAlias, error) {
 	aliases := map[string]string{}
+	machines := map[string]string{}
 	ambiguous := map[string]bool{}
 	cursors := map[string]bool{}
 	for cursor := ""; ; {
 		var page struct {
 			Items []struct {
-				ID       string `json:"machine_id"`
-				Name     string `json:"name"`
-				BootMode string `json:"boot_mode"`
+				ID           string `json:"machine_id"`
+				Name         string `json:"name"`
+				BootMode     string `json:"boot_mode"`
+				Capabilities map[string]struct {
+					Status      string `json:"status"`
+					Constraints struct {
+						ManageAllowed bool `json:"manage_allowed"`
+					} `json:"constraints"`
+				} `json:"capabilities"`
 			} `json:"items"`
 			Next string `json:"next_cursor"`
 		}
@@ -50,13 +59,13 @@ func (c *client) visibleSSHAliases(ctx context.Context) ([]sshAlias, error) {
 			}
 			host := label + aliasSuffix
 			// Reserve collisions even if one entry is not a System machine.
-			if previous, exists := aliases[host]; exists && previous != item.ID {
+			if previous, exists := machines[host]; exists && previous != item.ID {
 				ambiguous[host] = true
 			}
-			if item.BootMode == "system" {
+			machines[host] = item.ID
+			managed, published := item.Capabilities["access.managed_ssh"]
+			if item.BootMode == "system" && (!published || managed.Status == "supported" && managed.Constraints.ManageAllowed) {
 				aliases[host] = item.ID
-			} else if _, exists := aliases[host]; !exists {
-				aliases[host] = ""
 			}
 		}
 		if page.Next == "" {
@@ -154,7 +163,7 @@ func (c *client) syncSSHAliases(ctx context.Context, install bool, target string
 		return "", 0, err
 	}
 	if install {
-		if err := installSSHInclude(target, generated); err != nil {
+		if err := installSSHInclude(ctx, target, generated); err != nil {
 			return "", 0, err
 		}
 	}
@@ -323,31 +332,57 @@ func sshConfigArg(value string) string {
 	return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value) + "\""
 }
 
-func installSSHInclude(target, include string) error {
+func installSSHInclude(ctx context.Context, target, include string) error {
 	if !filepath.IsAbs(target) {
 		return errors.New("OpenSSH config path must be absolute")
 	}
 	if strings.ContainsAny(include, "*?[]%") {
 		return errors.New("OpenSSH Include path must be a literal filename")
 	}
-	if err := ensurePrivateDirectory(filepath.Dir(target)); err != nil {
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return err
 	}
+	info, err := os.Lstat(parent)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode().Perm()&0o022 != 0 || !ownsSSHConfig(info) {
+		return errors.New("OpenSSH config directory must be owned by the current user and protected from other writers")
+	}
+	lock, err := sshFileLock(ctx, target+".sandboxctl.lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	raw, err := readSSHConfig(target)
-	if errors.Is(err, os.ErrNotExist) {
-		raw = nil
-	} else if err != nil {
+	existed := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	prefix := sshInclude(include)
-	if strings.HasPrefix(string(raw), prefix) {
+	if strings.Contains(string(raw), prefix) {
 		return nil
 	}
-	return writePrivate(target, append([]byte(prefix), raw...))
+	return writePrivateChecked(target, append([]byte(prefix), raw...), func() error {
+		current, err := readSSHConfig(target)
+		if !existed && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil || !existed || !bytes.Equal(current, raw) {
+			return errors.New("OpenSSH config changed while installing aliases; rerun sandboxctl ssh-config sync --install")
+		}
+		return nil
+	})
 }
 
 func sshInclude(path string) string {
 	return "# sandboxctl managed aliases\nInclude " + sshConfigArg(path) + "\n"
+}
+
+func ownsSSHConfig(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
 func readSSHConfig(path string) ([]byte, error) {
@@ -361,8 +396,8 @@ func readSSHConfig(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Size() > 1<<20 {
-		return nil, errors.New("OpenSSH config must be a regular file without group or other write permission")
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Size() > 1<<20 || !ownsSSHConfig(info) {
+		return nil, errors.New("OpenSSH config must be a regular file owned by the current user without group or other write permission")
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, 1<<20+1))
 	if len(raw) > 1<<20 {
