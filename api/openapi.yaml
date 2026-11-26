@@ -1638,6 +1638,7 @@ paths:
     get:
       operationId: get_machines_machine_files
       summary: Download bytes from a Guest file
+      description: Explicit Guest access may wake the machine. Native transfers are scoped to the current execution and have a 4 GiB download ceiling.
       parameters:
       - name: machine
         in: path
@@ -1645,7 +1646,7 @@ paths:
         schema: {type: string, minLength: 1}
       - name: path
         in: query
-        required: false
+        required: true
         schema: {type: string}
       responses:
         '200':
@@ -1657,6 +1658,7 @@ paths:
     put:
       operationId: put_machines_machine_files
       summary: Upload bytes to a Guest file
+      description: Uploads are limited to 64 MiB and may wake the machine. A missing commit receipt returns OUTCOME_UNKNOWN. Reuse the same control epoch, idempotency key and body to check the original intent.
       parameters:
       - name: machine
         in: path
@@ -1668,7 +1670,7 @@ paths:
       - {$ref: '#/components/parameters/CSRF'}
       - name: path
         in: query
-        required: false
+        required: true
         schema: {type: string}
       requestBody:
         required: true
@@ -1686,6 +1688,7 @@ paths:
     get:
       operationId: get_machines_machine_files_list
       summary: List Guest directory contents
+      description: Explicit Guest access may wake the machine. If path is omitted, native sessions list the root and official sessions list /workspace.
       parameters:
       - name: machine
         in: path
@@ -1695,12 +1698,14 @@ paths:
         in: query
         required: false
         schema: {type: string}
+      - {$ref: '#/components/parameters/Cursor'}
+      - {$ref: '#/components/parameters/Limit'}
       responses:
         '200':
           description: Successful response
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema: {$ref: '#/components/schemas/GuestFilePage'}
         default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/lifecycle:
     get:
@@ -2328,7 +2333,7 @@ paths:
   /machines/{machine}/metrics:
     get:
       operationId: get_machines_machine_metrics
-      summary: Read machine metrics
+      summary: Read passive metrics for the current machine execution
       parameters:
       - name: machine
         in: path
@@ -2339,18 +2344,18 @@ paths:
           description: Successful response
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema: {$ref: '#/components/schemas/MachineMetrics'}
         default: {$ref: '#/components/responses/Error'}
   /system/metrics:
     get:
       operationId: get_system_metrics
-      summary: Read system metrics
+      summary: Read system metrics for the reported runtime scope
       responses:
         '200':
           description: Successful response
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema: {$ref: '#/components/schemas/SystemMetrics'}
         default: {$ref: '#/components/responses/Error'}
   /templates:
     get:
@@ -2814,9 +2819,11 @@ components:
         code: {type: string, minLength: 1}
         capability: {type: string}
         reason_code: {type: string}
+        stage: {type: string}
+        scope: {type: string}
         message: {type: string}
         effect: {type: string, enum: [none, applied, partial, unknown]}
-        retry: {type: string, enum: [never, same_key, poll_operation, after_precondition, client_decision]}
+        retry: {type: string, enum: [never, same_key, poll_operation, after_precondition, client_decision, verify_original_intent]}
       required:
       - code
       - message
@@ -2905,7 +2912,13 @@ components:
         stage: {type: string}
         state: {type: string, enum: [queued, dispatching, observing, succeeded, failed, cancelled, recovery_required]}
         effect: {type: string, enum: [none, applied, partial, unknown]}
-        binding_generation: {type: integer, minimum: 1}
+        control_epoch: {type: string}
+        source_machine_id: {type: string}
+        binding_id: {type: string}
+        runtime_name: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        binding_generation: {type: integer, minimum: 0}
         source_disposition: {type: string, enum: [RUNNING, STANDBY, HELD, EXITED, UNKNOWN]}
         source_lock_released: {type: boolean, description: The source resumed its recorded disposition and can accept new mutations while fork children finish.}
         children:
@@ -3042,8 +3055,33 @@ components:
         applied: {$ref: '#/components/schemas/LifecyclePolicy'}
         overrides: {$ref: '#/components/schemas/LifecyclePolicy'}
         operation_id: {type: string}
-        worker: {type: object, additionalProperties: true}
+        worker: {$ref: '#/components/schemas/LifecycleWorkerStatus'}
+        effective_status: {enum: [pending, applied, disabled, blocked]}
+        effective_blockers: {type: array, items: {type: string}}
         last_error: {type: string}
+    LifecycleWorkerStatus:
+      type: object
+      properties:
+        power: {type: string}
+        blockers: {type: array, items: {type: string}}
+        controlled_suspended: {type: boolean}
+        idle_ms: {type: [integer, 'null']}
+        next_action:
+          type: [object, 'null']
+          properties:
+            kind: {type: string}
+            origin: {type: string}
+            eligible_after_ms: {type: integer, minimum: 0}
+        collectors:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              session: {type: string}
+              seq: {type: integer}
+              fresh: {type: boolean}
+        last_decision: {type: [object, 'null']}
+        pressure: {type: [object, 'null']}
     PolicyApplication:
       type: object
       required: [application_id, default_policy_revision, complete, policy, machines]
@@ -3143,7 +3181,15 @@ components:
         blocked_reasons: {type: array, items: {type: string}}
         runtime_identity: {type: object, additionalProperties: true}
         runtime_name: {type: string}
-        capabilities: {type: object, additionalProperties: {$ref: '#/components/schemas/Capability'}}
+        capabilities:
+          type: object
+          additionalProperties: {$ref: '#/components/schemas/Capability'}
+          properties:
+            files.list: {$ref: '#/components/schemas/GuestFileCapability'}
+            files.read: {$ref: '#/components/schemas/GuestFileCapability'}
+            files.write: {$ref: '#/components/schemas/GuestFileCapability'}
+            files.preview: {$ref: '#/components/schemas/GuestFileCapability'}
+            files.edit: {$ref: '#/components/schemas/GuestFileCapability'}
         binding:
           type: object
           properties:
@@ -3200,6 +3246,7 @@ components:
         revision: {type: integer, minimum: 1}
         source_machine_id: {type: string, minLength: 1}
         capture_mode: {type: string, enum: [managed_tasks, vm]}
+        capture_summary: {$ref: '#/components/schemas/CaptureSummary'}
         vm_provenance:
           type: object
           required: [operation_id, runtime_instance_id, runtime_bundle_id, state_reader_id, runtime_capture_id]
@@ -3250,6 +3297,7 @@ components:
         ssh_host_key: {type: string}
         readiness: {type: object, additionalProperties: true}
         auth: {type: object, additionalProperties: true}
+        observation: {$ref: '#/components/schemas/ServiceObservation'}
       required:
       - service_id
       - machine_id
@@ -3264,6 +3312,9 @@ components:
         release_reason: {type: string}
         execution_epoch: {type: integer}
         lease_id: {type: string, minLength: 1}
+        machine_id: {type: string}
+        principal_id: {type: string}
+        binding_generation: {type: integer}
         reason: {type: string}
         revision: {type: integer, minimum: 1}
         state: {type: string}
@@ -3334,6 +3385,140 @@ components:
       required:
       - ticket
       additionalProperties: false
+    GuestFileCapability:
+      allOf:
+      - {$ref: '#/components/schemas/Capability'}
+      - properties:
+          constraints:
+            type: object
+            properties:
+              transport: {enum: [native_agent, official_runtime]}
+              max_bytes: {type: integer, format: int64, minimum: 0}
+    GuestFilePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [name, type, size]
+            properties:
+              name: {type: string}
+              type: {type: string, enum: [directory, file, symlink, other]}
+              size: {type: integer, format: int64, minimum: 0}
+        next_cursor: {type: string}
+    ServiceObservation:
+      type: object
+      required: [status, stage, scope, service_revision]
+      properties:
+        status: {enum: [unknown, ready, unavailable, stale]}
+        stage: {enum: [configuration, wake, guest_management, worker_upstream, public_dns, public_tls]}
+        scope: {enum: [configuration, worker_upstream, public_ingress]}
+        service_revision: {type: integer}
+        binding_generation: {type: integer}
+        execution_epoch: {type: integer}
+        observed_at: {type: string, format: date-time}
+        reason_code: {type: string}
+        operation_id: {type: string}
+    CaptureSummary:
+      type: object
+      required: [capture_mode, configuration, ram]
+      properties:
+        capture_mode: {enum: [vm, managed_tasks]}
+        configuration:
+          type: object
+          required: [status]
+          properties:
+            status: {enum: [verified, unknown]}
+            source: {type: string}
+            schema_version: {type: integer}
+            source_machine_revision: {type: integer}
+            capture_id: {type: string}
+            manifest_digest: {type: string}
+            spec_digest: {type: string}
+            template_id: {type: string}
+            spec: {type: object}
+            reason_code: {type: string}
+        ram: {enum: [included, excluded, unknown]}
+        ram_bytes: {type: integer, format: int64, minimum: 0}
+        disks:
+          type: array
+          items:
+            type: object
+            required: [role]
+            properties:
+              role: {type: string}
+              device_id: {type: string}
+              volume_id: {type: string}
+              generation_id: {type: string}
+              read_only: {type: boolean}
+              capacity_bytes: {type: integer, format: int64, minimum: 0}
+        restore_policies:
+          type: array
+          items: {enum: [exact, clone_conflicts]}
+        verified_at: {type: string, format: date-time}
+        reason_code: {type: string}
+    MetricObservation:
+      type: object
+      required: [availability, source, scope, platform]
+      properties:
+        availability: {enum: [available, partial, unavailable, stale]}
+        source: {type: string}
+        scope: {enum: [machine, worker, official_runtime]}
+        observed_at: {type: string, format: date-time}
+        execution:
+          type: object
+          required: [binding_id, binding_generation, incarnation_id, execution_epoch]
+          properties:
+            binding_id: {type: string}
+            binding_generation: {type: integer}
+            incarnation_id: {type: string}
+            execution_epoch: {type: integer}
+        issues:
+          type: object
+          additionalProperties:
+            type: object
+            required: [code, message]
+            properties:
+              code: {type: string}
+              message: {type: string}
+        platform:
+          type: object
+          required: [active_access_holds, wake_waiters, operations_by_state]
+          properties:
+            active_access_holds: {type: integer, minimum: 0}
+            wake_waiters: {type: integer, minimum: 0}
+            operations_by_state: {type: object, additionalProperties: {type: integer, minimum: 0}}
+    MachineMetrics:
+      allOf:
+      - {$ref: '#/components/schemas/MetricObservation'}
+      - properties:
+          name: {type: string}
+          at: {type: string}
+          state: {type: string}
+          vcpus: {type: integer}
+          memory_limit_mb: {type: integer}
+          cpu_millis: {type: [integer, 'null'], description: Cumulative CPU time from the reported source.}
+          cpu_limit_millicpus: {type: [integer, 'null']}
+          memory_mb: {type: [integer, 'null']}
+          rss_mb: {type: [integer, 'null']}
+          disk_used_mb: {type: [integer, 'null']}
+          disk_gb: {type: [integer, 'null']}
+          egress_bytes: {type: [integer, 'null']}
+          pressure: {type: [object, 'null']}
+    SystemMetrics:
+      allOf:
+      - {$ref: '#/components/schemas/MetricObservation'}
+      - properties:
+          allocated_cpus: {type: integer}
+          allocated_memory_mb: {type: integer}
+          used_cpus: {type: number}
+          used_memory_mb: {type: integer}
+          host_memory_total_mb: {type: [integer, 'null']}
+          host_memory_available_mb: {type: [integer, 'null']}
+          used_disk_gb: {type: integer}
+          boot_id: {type: string}
     UploadReceipt:
       type: object
       properties:

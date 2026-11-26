@@ -16,6 +16,11 @@ from uuid import uuid4
 
 import httpx
 
+from .types import (
+    GuestFileEntry, GuestFileUpload, LifecycleStatus, Machine, MachineMetrics,
+    Operation, RunningLease, Service, Snapshot, SystemMetrics,
+)
+
 TERMINAL_OPERATIONS = frozenset(("succeeded", "failed", "cancelled", "recovery_required"))
 
 
@@ -144,10 +149,10 @@ class Client:
                 self._check(response)
             yield from response.iter_bytes()
 
-    def get_operation(self, operation_id):
+    def get_operation(self, operation_id) -> Operation:
         return self.get(_item("operations", operation_id))
 
-    def wait_operation(self, operation_id, timeout=180, *, on_update: Callable | None = None):
+    def wait_operation(self, operation_id, timeout=180, *, on_update: Callable[[Operation], None] | None = None) -> Operation:
         deadline = monotonic() + timeout
         path = _item("operations", operation_id)
         while True:
@@ -169,7 +174,7 @@ class Client:
     def wait(self, operation_id, timeout=180):
         return self.wait_operation(operation_id, timeout)
 
-    def retry_fork_targets(self, operation_id, *, revision=None, intent=None):
+    def retry_fork_targets(self, operation_id, *, revision=None, intent=None) -> Operation:
         path = _item("operations", operation_id)
         if revision is None:
             revision = self.get(path)["revision"]
@@ -265,18 +270,18 @@ class Client:
         """Create from a template. System templates accept a registered runtime and private network selection."""
         return self.mutate("machines", spec, **options)
 
-    def get_machine(self, id):
+    def get_machine(self, id) -> Machine:
         return self.get(_item("machines", id))
 
-    def get_machine_metrics(self, machine_id):
+    def get_machine_metrics(self, machine_id) -> MachineMetrics:
         """Read passive execution-scoped metrics and field availability."""
         return self.get(_item("machines", machine_id) + "/metrics")
 
-    def get_system_metrics(self):
+    def get_system_metrics(self) -> SystemMetrics:
         """Read metrics for the reported Worker or official runtime scope."""
         return self.get("system/metrics")
 
-    def list_files(self, machine_id, path=None, *, limit=100):
+    def list_files(self, machine_id, path=None, *, limit=100) -> Iterator[GuestFileEntry]:
         filters = {} if path is None else {"path": path}
         return self._pages(_item("machines", machine_id) + "/files/list", limit, filters)
 
@@ -284,22 +289,22 @@ class Client:
         target = _item("machines", machine_id) + "/files?" + urlencode({"path": path})
         return self.download(target)
 
-    def upload_file(self, machine_id, path, source, *, intent=None, revision=None):
+    def upload_file(self, machine_id, path, source, *, intent=None, revision=None) -> GuestFileUpload:
         """Upload a local file. Reuse the same intent to look up a lost receipt."""
         target = _item("machines", machine_id) + "/files?" + urlencode({"path": path})
         return self.upload(target, source, intent=intent, revision=revision)
 
-    def list_services(self, machine_id):
+    def list_services(self, machine_id) -> Iterator[Service]:
         return self.pages(_item("machines", machine_id) + "/services")
 
-    def get_service(self, service_id):
+    def get_service(self, service_id) -> Service:
         return self.get(_item("services", service_id))
 
-    def list_snapshots(self, machine_id=None):
+    def list_snapshots(self, machine_id=None) -> Iterator[Snapshot]:
         path = "snapshots" if machine_id is None else _item("machines", machine_id) + "/snapshots"
         return self.pages(path)
 
-    def get_snapshot(self, snapshot_id):
+    def get_snapshot(self, snapshot_id) -> Snapshot:
         return self.get(_item("snapshots", snapshot_id))
 
     def get_machine_resources(self, machine_id):
@@ -334,7 +339,7 @@ class Client:
             revision = self.get("system/settings")["revision"]
         return self.mutate("system/settings", body, method="PATCH", revision=revision, intent=intent)
 
-    def get_lifecycle_status(self, machine_id):
+    def get_lifecycle_status(self, machine_id) -> LifecycleStatus:
         return self.get(_item("machines", machine_id) + "/lifecycle")
 
     def set_default_lifecycle_policy(self, policy, *, revision=None, intent=None):
@@ -358,23 +363,23 @@ class Client:
             "default_policy_revision": default_policy_revision, "machines": list(machines),
         }, **options)
 
-    def list_running_leases(self, machine_id):
+    def list_running_leases(self, machine_id) -> Iterator[RunningLease]:
         return self.pages(_item("machines", machine_id) + "/leases")
 
-    def acquire_running_lease(self, machine_id, reason, ttl_seconds, *, revision=None, intent=None):
+    def acquire_running_lease(self, machine_id, reason, ttl_seconds, *, revision=None, intent=None) -> RunningLease:
         if revision is None:
             revision = self.get_machine(machine_id)["revision"]
         return self.mutate(_item("machines", machine_id) + "/leases", {
             "semantics_version": 2, "reason": reason, "ttl_seconds": ttl_seconds,
         }, revision=revision, intent=intent)
 
-    def renew_running_lease(self, lease, ttl_seconds, *, intent=None):
+    def renew_running_lease(self, lease: RunningLease, ttl_seconds, *, intent=None) -> RunningLease:
         result = self.mutate(_item("leases", lease["lease_id"]), {
             "lease_token": lease["lease_token"], "ttl_seconds": ttl_seconds,
         }, method="PATCH", revision=lease["revision"], intent=intent)
         return {**result, "lease_token": lease["lease_token"]}
 
-    def release_running_lease(self, lease, *, intent=None):
+    def release_running_lease(self, lease: RunningLease, *, intent=None) -> RunningLease:
         return self.mutate(_item("leases", lease["lease_id"]), {"lease_token": lease["lease_token"]},
                            method="DELETE", revision=lease["revision"], intent=intent)
 

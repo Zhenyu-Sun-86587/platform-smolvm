@@ -2,11 +2,14 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/snapshots"
 )
 
 type abortedStatePointRuntime struct {
@@ -128,5 +131,67 @@ func TestAbortedStatePointTargetSettlesWithoutResubmission(t *testing.T) {
 				t.Fatal(machine)
 			}
 		})
+	}
+}
+
+func TestCheckpointPersistsConfigurationFromDispatch(t *testing.T) {
+	ctx := context.Background()
+	engine, _, request := nativeForkFixture(t, ctx)
+	db := engine.DB
+	if _, err := db.DB().ExecContext(ctx, `UPDATE runtime_bundles SET manifest_json='{"contracts":{"state_reader_id":"reader"}}' WHERE id='managed';
+		UPDATE machines SET spec_json='{"boot_mode":"system","resources":{"cpu_count":1,"memory_mib":512},"idle_policy":{"enabled":true}}',revision=5 WHERE id='source'`); err != nil {
+		t.Fatal(err)
+	}
+	request.Kind, request.Key, request.Scope = rt.VMSnapshot, "snapshot-a", "POST /v1/machines/source/snapshots"
+	request.Request = JSON(map[string]string{"capture_mode": "vm"})
+	request.ForkChildren, request.AdmitNative = nil, nil
+	request.AdmitRuntime = func(route rt.BundleRoute, kind string) error {
+		if route.BundleID != "managed" || kind != rt.VMSnapshot {
+			return rt.ErrUnsupported
+		}
+		return nil
+	}
+	op, _, err := db.Accept(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := db.GetBinding(ctx, op.BindingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := db.GetMachine(ctx, op.MachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &Job{Engine: engine, Op: op, Binding: binding}
+	dispatch, err := job.prepareStatePoint(ctx, nil, rt.VMSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.Intent.StatePoint = &dispatch
+	if err := job.Stage(ctx, "statepoint_dispatch", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct the job from durable intent as on a process restart.
+	job = &Job{Engine: engine, Op: job.Op, Binding: binding}
+	if err := json.Unmarshal(job.Op.Dispatch, &job.Intent); err != nil {
+		t.Fatal(err)
+	}
+	point := rt.StatePointProgress{CaptureID: dispatch.Parameters.CaptureID, RepresentationID: "representation-a", ManifestDigest: "sha256:" + strings.Repeat("a", 64),
+		OriginalSourceDisposition: "RUNNING", Phase: "durable", SourceReleased: true}
+	if err := job.completeCheckpoint(ctx, point); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().ExecContext(ctx, `UPDATE machines SET spec_json='{"boot_mode":"system","resources":{"cpu_count":4,"memory_mib":2048}}',revision=10 WHERE id='source'`); err != nil {
+		t.Fatal(err)
+	}
+	catalog := snapshots.Catalog{DB: db}
+	item, err := catalog.Get(ctx, "snap_"+strings.TrimPrefix(op.ID, "op_"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := snapshots.CapturedConfiguration(item)
+	if config == nil || config.SourceMachineRevision != source.Revision || string(config.Spec) != `{"template_id":"t1","boot_mode":"system","resources":{"cpu_count":1,"memory_mib":512}}` {
+		t.Fatalf("wrong capture config: %+v", config)
 	}
 }

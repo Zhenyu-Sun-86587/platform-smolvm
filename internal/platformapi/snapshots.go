@@ -17,6 +17,7 @@ import (
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/tasks"
+	"sandbox-platform/internal/templates"
 	"time"
 )
 
@@ -33,6 +34,51 @@ type copyRequest struct {
 	OldStatePolicy      string                 `json:"old_state_policy,omitempty"`
 	VolumeRestorePolicy rt.VolumeRestorePolicy `json:"volume_restore_policy,omitempty"`
 	NetworkMode         string                 `json:"network_mode,omitempty"`
+}
+
+// A historical snapshot can continue using its pinned reader and immutable
+// template. The reader materializes the captured VM topology.
+func (s *Server) vmRestoreConfiguration(ctx context.Context, item snapshots.Snapshot) (string, json.RawMessage, error) {
+	var reader string
+	if err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT COALESCE(json_extract(manifest_json,'$.contracts.state_reader_id'),'')
+		FROM runtime_bundles WHERE id=?`, item.VM.RuntimeBundleID).Scan(&reader); err != nil {
+		return "", nil, err
+	}
+	if reader == "" || reader != item.VM.StateReaderID {
+		return "", nil, &lifecycle.Failure{Code: "STATE_READER_UNAVAILABLE", Message: "snapshot requires its original StatePoint reader"}
+	}
+	if captured := snapshots.CapturedConfiguration(item); captured != nil {
+		return captured.TemplateID, captured.RestoreMachineSpec(), nil
+	}
+	var metadata struct {
+		Configuration json.RawMessage `json:"captured_configuration"`
+	}
+	if (len(item.Manifest) != 0 && json.Unmarshal(item.Manifest, &metadata) != nil) || len(metadata.Configuration) != 0 {
+		return "", nil, &lifecycle.Failure{Code: "CAPTURE_CONFIGURATION_UNVERIFIED", Message: "recorded snapshot configuration could not be verified"}
+	}
+	missing := &lifecycle.Failure{Code: "CAPTURE_CONFIGURATION_UNAVAILABLE", Message: "historical snapshot lacks an immutable template for a compatible restore"}
+	source, err := s.DB.GetMachine(ctx, item.MachineID)
+	if errors.Is(err, registry.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		return "", nil, missing
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	template, err := s.DB.GetTemplate(ctx, source.TemplateID)
+	if errors.Is(err, registry.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		return "", nil, missing
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	profile, err := templates.ReadSpec(template)
+	if err != nil {
+		return "", nil, missing
+	}
+	return template.ID, lifecycle.JSON(struct {
+		TemplateID string      `json:"template_id"`
+		BootMode   rt.BootMode `json:"boot_mode"`
+	}{template.ID, profile.BootMode}), nil
 }
 
 func (s *Server) snapshotRoutes() {
@@ -127,12 +173,12 @@ func (s *Server) snapshotRoutes() {
 					if err := s.requireStatePointProfile(r.Context(), route, rt.VMRestore); err != nil {
 						return err
 					}
-					source, err := s.DB.GetMachine(r.Context(), item.MachineID)
+					tmpl, spec, err := s.vmRestoreConfiguration(r.Context(), item)
 					if err != nil {
 						return err
 					}
-					req.Kind, req.Name, req.TemplateID = rt.VMRestore, v.Name, source.TemplateID
-					req.RuntimeInstanceID, req.MachineSpec = item.VM.RuntimeInstanceID, source.Spec
+					req.Kind, req.Name, req.TemplateID = rt.VMRestore, v.Name, tmpl
+					req.RuntimeInstanceID, req.MachineSpec = item.VM.RuntimeInstanceID, spec
 					req.DefaultIdlePolicy = lifecycle.JSON(lifecycle.IdlePolicy{Enabled: false})
 					req.DesiredPower = "running"
 					return s.accept(w, r, p, v, req)

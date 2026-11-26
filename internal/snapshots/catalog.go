@@ -36,23 +36,24 @@ const (
 )
 
 type Snapshot struct {
-	ID          string          `json:"snapshot_id"`
-	MachineID   string          `json:"source_machine_id,omitempty"`
-	Generation  int64           `json:"source_generation,omitempty"`
-	Purpose     string          `json:"purpose"`
-	Content     string          `json:"task_content"`
-	State       string          `json:"state"`
-	Hash        string          `json:"sha256,omitempty"`
-	Size        int64           `json:"size_bytes"`
-	Provenance  string          `json:"provenance"`
-	Revision    int64           `json:"revision"`
-	Label       string          `json:"label"`
-	Manifest    json.RawMessage `json:"manifest,omitempty"`
-	Created     time.Time       `json:"created_at"`
-	Closure     *time.Time      `json:"closure_verified_at"`
-	Restored    *time.Time      `json:"restore_verified_at"`
-	CaptureMode CaptureMode     `json:"capture_mode"`
-	VM          *VMProvenance   `json:"vm_provenance,omitempty"`
+	ID             string          `json:"snapshot_id"`
+	MachineID      string          `json:"source_machine_id,omitempty"`
+	Generation     int64           `json:"source_generation,omitempty"`
+	Purpose        string          `json:"purpose"`
+	Content        string          `json:"task_content"`
+	State          string          `json:"state"`
+	Hash           string          `json:"sha256,omitempty"`
+	Size           int64           `json:"size_bytes"`
+	Provenance     string          `json:"provenance"`
+	Revision       int64           `json:"revision"`
+	Label          string          `json:"label"`
+	Manifest       json.RawMessage `json:"manifest,omitempty"`
+	Created        time.Time       `json:"created_at"`
+	Closure        *time.Time      `json:"closure_verified_at"`
+	Restored       *time.Time      `json:"restore_verified_at"`
+	CaptureMode    CaptureMode     `json:"capture_mode"`
+	VM             *VMProvenance   `json:"vm_provenance,omitempty"`
+	CaptureSummary *CaptureSummary `json:"capture_summary,omitempty"`
 }
 
 type VMProvenance struct {
@@ -219,6 +220,10 @@ func scan(row scanner) (Snapshot, error) {
 	if restored.Valid {
 		t := time.UnixMilli(restored.Int64).UTC()
 		s.Restored = &t
+	}
+	if err == nil && s.VM != nil {
+		summary := SummarizeCapture(s)
+		s.CaptureSummary = &summary
 	}
 	return s, err
 }

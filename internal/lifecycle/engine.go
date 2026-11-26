@@ -16,6 +16,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
+	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/tasks"
 	"sandbox-platform/internal/templates"
 )
@@ -91,23 +92,24 @@ type Action struct {
 	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
-	SourceTaskBinding *tasks.Binding           `json:"source_task_binding,omitempty"`
-	TaskCredentialID  string                   `json:"task_credential_id,omitempty"`
-	TaskAcceptedPower registry.PowerState      `json:"task_accepted_power,omitempty"`
-	TaskExecution     *rt.ExecutionRef         `json:"task_execution,omitempty"`
-	Retirement        *systemRetirement        `json:"retirement,omitempty"`
-	Native            *rt.NativeSubmission     `json:"native,omitempty"`
-	Launch            *rt.LaunchSubmission     `json:"launch,omitempty"`
-	Volume            *rt.VolumeMutation       `json:"volume,omitempty"`
-	Fork              *nativeForkIntent        `json:"fork,omitempty"`
-	StatePoint        *rt.StatePointSubmission `json:"statepoint,omitempty"`
-	Stage             string                   `json:"stage"`
-	Name              string                   `json:"runtime_name"`
-	Source            string                   `json:"source,omitempty"`
-	Target            string                   `json:"expected_state,omitempty"`
-	PauseID           string                   `json:"pause_id,omitempty"`
-	BindingID         string                   `json:"binding_id"`
-	WorkloadFailure   *workloadStartFailure    `json:"workload_failure,omitempty"`
+	SourceTaskBinding *tasks.Binding                  `json:"source_task_binding,omitempty"`
+	TaskCredentialID  string                          `json:"task_credential_id,omitempty"`
+	TaskAcceptedPower registry.PowerState             `json:"task_accepted_power,omitempty"`
+	TaskExecution     *rt.ExecutionRef                `json:"task_execution,omitempty"`
+	Retirement        *systemRetirement               `json:"retirement,omitempty"`
+	Native            *rt.NativeSubmission            `json:"native,omitempty"`
+	Launch            *rt.LaunchSubmission            `json:"launch,omitempty"`
+	Volume            *rt.VolumeMutation              `json:"volume,omitempty"`
+	Fork              *nativeForkIntent               `json:"fork,omitempty"`
+	StatePoint        *rt.StatePointSubmission        `json:"statepoint,omitempty"`
+	CaptureConfig     *snapshots.CaptureConfiguration `json:"capture_configuration,omitempty"`
+	Stage             string                          `json:"stage"`
+	Name              string                          `json:"runtime_name"`
+	Source            string                          `json:"source,omitempty"`
+	Target            string                          `json:"expected_state,omitempty"`
+	PauseID           string                          `json:"pause_id,omitempty"`
+	BindingID         string                          `json:"binding_id"`
+	WorkloadFailure   *workloadStartFailure           `json:"workload_failure,omitempty"`
 }
 
 type workloadStartFailure struct {

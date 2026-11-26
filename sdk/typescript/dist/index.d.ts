@@ -69,6 +69,8 @@ export interface ErrorDetail {
     operation_id?: string;
     capability?: string;
     reason_code?: string;
+    stage?: string;
+    scope?: string;
     [key: string]: unknown;
 }
 export interface OperationChild {
@@ -299,7 +301,7 @@ export interface LifecycleWorkerStatus {
         eligible_after_ms: number;
     } | null;
     collectors: Record<string, {
-        fresh: boolean;
+        fresh?: boolean;
         session: string;
         seq: number;
     }>;
