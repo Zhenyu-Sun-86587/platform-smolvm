@@ -322,6 +322,64 @@ def fork_case(platform, source, ref, probe, seen_cids):
     return completed["children"]
 
 
+def gate_without_agent(platform, source, ref, probe, seen_cids):
+    counter = '''
+set -eu
+path=/var/tmp/gate-counter-$1
+i=0
+while :; do
+    printf '%s %s\\n' "$$" "$i" > "$path.next"
+    mv "$path.next" "$path"
+    i=$((i+1))
+    sleep 0.1
+done
+'''
+    commands = {
+        "system": ["/bin/sh", "-c", counter, "gate-counter", "system"],
+        "nested": ["/usr/bin/unshare", "--pid", "--fork", "--mount-proc", "/bin/sh", "-c", counter,
+                   "gate-counter", "nested"],
+    }
+    for key, command in commands.items():
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-counter-" + key, *command])
+
+    def counts(execution):
+        files = ["/var/tmp/gate-counter-system", "/var/tmp/gate-counter-nested"]
+        return [tuple(map(int, line.split())) for line in platform.guest(execution, ["/bin/cat", *files]).splitlines()]
+
+    def agent_unavailable(execution):
+        try:
+            platform.native(f"/instances/{execution['instance_id']}/guest/ping", dict(expected=execution, request={}))
+            return False
+        except RuntimeError as error:
+            _, _, body = error.args[0]
+            detail = json.loads(body)
+            assert detail.get("code", detail.get("error", {}).get("code")) == "E_GUEST_MANAGEMENT_UNAVAILABLE", detail
+            return True
+
+    before = wait_for(lambda: (sample := counts(ref)) and len(sample) == 2 and min(n for _, n in sample) >= 3 and sample,
+                      retry=(RuntimeError,))
+    assert before[0][0] > 1 and before[1][0] == 1, before
+    for action, seconds in (("start", 22), ("stop", 1)):
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
+            "--timer-property=AccuracySec=100ms", "/usr/bin/systemctl", action, "smolvm-agent.service"])
+    wait_for(lambda: agent_unavailable(ref), timeout=15)
+
+    op = platform.complete(platform.change(source + "/forks", "fork-with-agent-stopped", {"child_name": "Agent stopped child"},
+                                           platform.app(source)))
+    assert op["source_lock_released"] and op["source_disposition"] == "RUNNING", op
+    (child,) = op["children"]
+    view, target = platform.context(child["machine_id"])
+    assert view["power_state"] == "running" and target != ref and child["resource_independence"] == "verified", child
+    assert agent_unavailable(ref) and agent_unavailable(target), "the capture depended on the scheduled Agent restart"
+    print("The source Agent was stopped before capture, and both execution-scoped Agent endpoints remained unavailable after the fork committed.", flush=True)
+    for execution in (ref, target):
+        after = wait_for(lambda: counts(execution), timeout=45, retry=(RuntimeError,))
+        assert len(after) == 2 and all(pid == original and count > saved
+                                      for (pid, count), (original, saved) in zip(after, before)), (after, before)
+    inherited_agent(platform, target, probe, seen_cids)
+    print("After the scheduled service starts, both VMs retained their original System and nested-PID workload processes and advanced from the retained counts.", flush=True)
+
+
 def statepoint_case(platform, source, ref, probe, seen_cids):
     peer = source_peer(platform, ref)
     view = platform.app(source)
@@ -773,6 +831,8 @@ def test(args, root, stack, case):
         relay_case(platform, source, machine_id, ref, probe)
     elif case == "fork":
         fork_case(platform, source, ref, probe, seen)
+    elif case == "gate-without-agent":
+        gate_without_agent(platform, source, ref, probe, seen)
     elif case == "statepoint":
         statepoint_case(platform, source, ref, probe, seen)
     elif case == "successive-captures":
@@ -789,7 +849,8 @@ def main():
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork", "connection-recovery"), action="append")
+    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "policy", "protected-fork",
+                                         "connection-recovery", "gate-without-agent"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
