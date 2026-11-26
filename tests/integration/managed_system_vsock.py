@@ -252,6 +252,12 @@ class Platform:
         ref = self.native(f"/machines/{view['runtime_name']}/execution")
         return view, ref
 
+    def wait_capability(self, machine_path, capability, timeout=35):
+        def supported():
+            view = self.app(machine_path)
+            return view if view["capabilities"][capability]["supported"] else None
+        return wait_for(supported, timeout=timeout)
+
     def guest(self, ref, command, stdin=None, expected=0):
         command = dict(command=command, timeout_seconds=45)
         if stdin is not None:
@@ -439,7 +445,8 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
         target_id = target["machine_id"]
     else:
         stop_agent_for_capture(platform, ref)
-        accepted_view = platform.app(source)
+        accepted_view = platform.wait_capability(source, "state.fork_batch")
+        assert agent_unavailable(platform, ref)
         path = source + "/fork-batches"
         body = dict(children=[dict(name="Live child"), dict(name="Over budget")], require_independent=True, admission="best_effort")
         accepted = platform.change(path, "same-task-cut", body, accepted_view)
