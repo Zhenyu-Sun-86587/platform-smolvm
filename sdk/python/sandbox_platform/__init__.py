@@ -498,6 +498,10 @@ class Client:
         return self.mutate(_item("workers", worker_id) + "/maintenance", {"mode": mode, "reason": reason},
                            method="PATCH", revision=revision, intent=intent)
 
+    def revoke_worker_enrollment(self, worker_id, generation, reason, *, revision, intent=None):
+        return self.mutate(_item("workers", worker_id) + "/enrollment/revoke", {"enrollment_generation": generation, "reason": reason},
+                           method="POST", revision=revision, intent=intent)
+
     def list_runtime_profiles(self, *, limit=100):
         return self.pages("runtime-profiles", limit=limit)
 

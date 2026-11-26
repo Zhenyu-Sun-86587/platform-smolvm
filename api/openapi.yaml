@@ -61,6 +61,29 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Worker'}
         default: {$ref: '#/components/responses/Error'}
+  /workers/{worker}/enrollment/revoke:
+    parameters:
+    - {name: worker, in: path, required: true, schema: {type: string}}
+    post:
+      operationId: revoke_worker_enrollment
+      parameters:
+      - {$ref: '#/components/parameters/ControlEpoch'}
+      - {$ref: '#/components/parameters/IdempotencyKey'}
+      - {$ref: '#/components/parameters/Revision'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrollment_generation, reason]
+              properties:
+                enrollment_generation: {type: integer, minimum: 1}
+                reason: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Revoked Worker enrollment
+          content: {application/json: {schema: {type: object, required: [worker_id, revision, enrollment_generation, enrollment_status], properties: {worker_id: {type: string}, revision: {type: integer}, enrollment_generation: {type: integer}, enrollment_status: {const: revoked}}}}}
   /workers/{worker}/maintenance:
     parameters:
     - {name: worker, in: path, required: true, schema: {type: string}}
@@ -2934,6 +2957,8 @@ components:
       type: object
       required: [worker_id, name, desired_mode, observed_status, revision, fresh_budget, maintenance]
       properties:
+        enrollment_generation: {type: integer, minimum: 1}
+        enrollment_status: {enum: [active, revoked]}
         worker_id: {type: string}
         name: {type: string}
         desired_mode: {$ref: '#/components/schemas/WorkerMode'}
@@ -3277,6 +3302,8 @@ components:
         revision: {type: integer, minimum: 1}
         binding_generation: {type: integer, minimum: 1}
         power_state: {type: string, enum: [running, standby, hibernated, stopped, unknown]}
+        owner_status: {type: string}
+        last_confirmed_power_state: {enum: [running, standby, hibernated, stopped]}
         health:
           type: object
           properties:

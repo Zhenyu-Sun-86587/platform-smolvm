@@ -4,7 +4,6 @@ package nodes
 import (
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"sandbox-platform/internal/config"
+	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/nodeclient"
 	"sandbox-platform/internal/nodeproto"
 	"sandbox-platform/internal/placement"
@@ -22,12 +22,16 @@ import (
 )
 
 type Worker struct {
-	config      config.Node
-	DB          *registry.Store
-	Client      *nodeclient.Client
-	Authority   nodeproto.Authority
-	routes      []config.NodeRoute
-	lastSession placement.Session
+	reached                   bool
+	config                    config.Node
+	DB                        *registry.Store
+	Client                    *nodeclient.Client
+	Authority                 nodeproto.Authority
+	routes                    []config.NodeRoute
+	lastSession               placement.Session
+	lastProcesses             map[string]string
+	pendingOffset, wakeOffset int
+	engine                    *lifecycle.Engine
 }
 
 func NewClient(n config.Node, control registry.Control, db *registry.Store) (*nodeclient.Client, nodeproto.Authority, error) {
@@ -40,8 +44,8 @@ func NewClient(n config.Node, control registry.Control, db *registry.Store) (*no
 		Authorize: func(ctx context.Context) error {
 			var active bool
 			err := db.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_enrollments e JOIN workers w ON w.id=e.worker_id JOIN meta m ON m.id=1
-                WHERE e.worker_id=? AND e.generation=? AND e.certificate_fingerprint=? AND e.status='active' AND e.authority=? AND m.control_epoch=e.authority
-                AND w.desired_mode<>'decommissioned' AND w.observed_status<>'identity_conflict')`, n.ID, n.Generation, n.Pin, authority.ControlEpoch).Scan(&active)
+                WHERE e.worker_id=? AND e.generation=? AND e.certificate_fingerprint=? AND e.status='active' AND e.authority=? AND m.control_epoch=e.authority AND m.installation_id=?
+                AND w.desired_mode<>'decommissioned' AND w.observed_status<>'identity_conflict')`, n.ID, n.Generation, n.Pin, authority.ControlEpoch, authority.ControllerID).Scan(&active)
 			if err != nil {
 				return err
 			}
@@ -65,6 +69,9 @@ func Register(ctx context.Context, db *registry.Store, configNodes []config.Node
 			name = n.ID
 		}
 		if err := db.RegisterWorker(ctx, registry.Worker{ID: n.ID, Name: name, Endpoint: n.Endpoint}); err != nil {
+			return nil, err
+		}
+		if _, err = db.DB().ExecContext(ctx, `UPDATE workers SET observed_status='recovering' WHERE id=? AND observed_status IN ('ready','degraded')`, n.ID); err != nil {
 			return nil, err
 		}
 		client, authority, err := NewClient(n, control, db)
@@ -95,9 +102,10 @@ func Register(ctx context.Context, db *registry.Store, configNodes []config.Node
 	return nodes, nil
 }
 
-func Run(ctx context.Context, nodes []*Worker) {
+func Run(ctx context.Context, nodes []*Worker, engine *lifecycle.Engine) {
 	var wg sync.WaitGroup
 	for _, n := range nodes {
+		n.engine = engine
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -111,7 +119,11 @@ func Run(ctx context.Context, nodes []*Worker) {
 				if err != nil && ctx.Err() == nil {
 					// Stop new admission immediately. Last confirmed machine power
 					// state and reservation evidence survive the link failure.
-					_, dbErr := n.DB.DB().ExecContext(ctx, `UPDATE workers SET observed_status='unreachable' WHERE id=? AND observed_status NOT IN ('identity_conflict','unreachable')`, n.Authority.WorkerID)
+					status := "unreachable"
+					if n.reached {
+						status = "degraded"
+					}
+					_, dbErr := n.DB.DB().ExecContext(ctx, `UPDATE workers SET observed_status=? WHERE id=? AND observed_status NOT IN ('identity_conflict',?)`, status, n.Authority.WorkerID, status)
 					if dbErr != nil {
 						slog.Warn("record Worker reachability", "worker", n.Authority.WorkerID, "error", dbErr)
 					}
@@ -130,10 +142,12 @@ func Run(ctx context.Context, nodes []*Worker) {
 }
 
 func (n *Worker) refresh(ctx context.Context) error {
+	n.reached = false
 	hello, err := n.Client.Handshake(ctx)
 	if err != nil {
 		return err
 	}
+	n.reached = true
 	for _, r := range n.routes {
 		if !slices.ContainsFunc(hello.Routes, func(i nodeproto.RouteInfo) bool { return i.Route == r.Route }) {
 			return errors.New("Worker lacks a registered runtime route")
@@ -141,6 +155,17 @@ func (n *Worker) refresh(ctx context.Context) error {
 	}
 	if err = n.DB.EnrollWorker(ctx, registry.WorkerEnrollment{WorkerID: n.Authority.WorkerID, Generation: int64(n.Authority.EnrollmentGeneration), CertificateFingerprint: n.config.Pin, Authority: n.Authority.ControlEpoch}); err != nil {
 		return err
+	}
+	// Close the Node's admission gates as soon as the enrollment is verified.
+	// Even an unavailable budget must not delay a requested cordon or drain.
+	mode, err := n.DB.GetWorkerMaintenance(ctx, n.config.ID)
+	if err != nil {
+		return err
+	}
+	if mode.Mode == "cordoned" || mode.Mode == "draining" {
+		if _, err = n.syncGate(ctx, mode.Mode); err != nil {
+			return err
+		}
 	}
 	pending, err := n.DB.ListPlacementRechecks(ctx, n.Authority.WorkerID)
 	if err != nil {
@@ -158,11 +183,20 @@ func (n *Worker) refresh(ctx context.Context) error {
 		}
 		query.Routes = append(query.Routes, wanted)
 	}
-	for _, p := range pending {
-		if len(query.Pending) >= nodeproto.ReconcileLimit {
-			break
+	checks, err := n.DB.ListAccessWakeChecks(ctx, n.config.ID)
+	if err != nil {
+		return err
+	}
+	wakes := make(map[nodeproto.AccessWakeQuery][]registry.AccessWakeCheck)
+	for _, w := range pageChecks(checks, &n.wakeOffset, nodeproto.ReconcileLimit/2) {
+		key := nodeproto.AccessWakeQuery{RuntimeInstanceID: w.RuntimeInstanceID, OperationID: w.OperationID}
+		if len(wakes[key]) == 0 {
+			query.AccessWakes = append(query.AccessWakes, key)
 		}
-		query.Pending = append(query.Pending, nodeproto.AdmissionQuery{RuntimeInstanceID: p.RuntimeInstanceID, OperationID: p.OperationID, Digest: p.NativeDigest, Attempt: p.Attempt})
+		wakes[key] = append(wakes[key], w)
+	}
+	for _, p := range pageChecks(pending, &n.pendingOffset, nodeproto.ReconcileLimit-len(query.AccessWakes)) {
+		query.Pending = append(query.Pending, nodeproto.AdmissionQuery{RuntimeInstanceID: p.RuntimeInstanceID, OperationID: p.OperationID, Digest: p.NativeDigest, Attempt: p.Attempt, NativeAttempt: p.NativeAttempt})
 	}
 	window := placement.Query{Nonce: query.Nonce, StartedAt: time.Now()}
 	sampleCtx, cancel := context.WithTimeout(ctx, placement.MaxQueryDuration)
@@ -180,7 +214,18 @@ func (n *Worker) refresh(ctx context.Context) error {
 		s.Session.NodeSessionID != hello.NodeSession || s.Session.HostBootID != hello.HostBootID || len(s.Profiles) != len(n.routes) {
 		return errors.New("Worker sample differs from its handshake")
 	}
-	if s.Session != n.lastSession {
+	processes := make(map[string]string, len(s.Profiles))
+	changed := s.Session != n.lastSession
+	for _, r := range s.Profiles {
+		processes[r.RuntimeInstanceID] = r.RuntimeProcessID
+		if n.lastProcesses[r.RuntimeInstanceID] != r.RuntimeProcessID {
+			changed = true
+		}
+	}
+	if changed {
+		if err = n.DB.CheckWorkerSampleSession(ctx, s, window); err != nil {
+			return err
+		}
 		if err = n.reconcile(ctx, pending); err != nil {
 			return err
 		}
@@ -209,7 +254,7 @@ func (n *Worker) refresh(ctx context.Context) error {
 	if err = n.DB.RecordWorkerSample(ctx, s, window); err != nil {
 		return err
 	}
-	n.lastSession = s.Session
+	n.lastSession, n.lastProcesses = s.Session, processes
 	for _, proof := range result.Admissions {
 		if proof.Session != s.Session || proof.WorkerID != s.WorkerID || proof.ConfirmedThroughSequence != s.Sequence-1 {
 			return errors.New("Worker admission evidence differs from its budget sample")
@@ -218,93 +263,193 @@ func (n *Worker) refresh(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, w := range result.AccessWakes {
+		known := wakes[w.AccessWakeQuery]
+		if len(known) == 0 {
+			return errors.New("unsolicited Worker wake receipt")
+		}
+		for _, check := range known {
+			if err := n.DB.RecordAccessWakeAdmission(ctx, check, w.Receipt, s, s.Sequence-1); err != nil &&
+				!errors.Is(err, registry.ErrInvalid) && !errors.Is(err, registry.ErrOperationState) {
+				return err
+			}
+		}
+	}
 	return n.maintenance(ctx, s)
 }
 
+// Cycle across a bounded window so a permanently unresolved operation cannot starve later receipts.
+func pageChecks[T any](rows []T, offset *int, limit int) []T {
+	if len(rows) <= limit {
+		*offset = 0
+		return rows
+	}
+	start := *offset % len(rows)
+	end := start + limit
+	*offset = end % len(rows)
+	if end <= len(rows) {
+		return rows[start:end]
+	}
+	out := make([]T, 0, limit)
+	out = append(out, rows[start:]...)
+	return append(out, rows[:end-len(rows)]...)
+}
+
+// Reconcile only IDs retained by platform or the enrolled Node. A missing
+// Hibernate generation or a foreign journal entry holds the Worker in recovery.
 func (n *Worker) reconcile(ctx context.Context, pending []placement.Reservation) error {
 	for _, r := range n.routes {
-		rows, err := n.DB.ReadDB().QueryContext(ctx, "SELECT runtime_name FROM runtime_bindings WHERE worker_id=? AND runtime_instance_id=? AND status='current' ORDER BY id", n.config.ID, r.RuntimeInstanceID)
+		rows, err := n.DB.ReadDB().QueryContext(ctx, `SELECT runtime_name,runtime_instance_object_id,COALESCE(execution_epoch,0),COALESCE(incarnation_id,'') FROM runtime_bindings
+			WHERE worker_id=? AND runtime_instance_id=? AND status='current' AND COALESCE(runtime_instance_object_id,'')<>'' ORDER BY id`, n.config.ID, r.RuntimeInstanceID)
 		if err != nil {
 			return err
 		}
-		var query nodeproto.ReconcileRequest
+		type binding struct {
+			instance    string
+			epoch       int64
+			incarnation string
+		}
+		known := make(map[string]binding)
+		var names []string
 		for rows.Next() {
 			var name string
-			if err = rows.Scan(&name); err != nil {
+			var b binding
+			if err = rows.Scan(&name, &b.instance, &b.epoch, &b.incarnation); err != nil {
 				rows.Close()
 				return err
 			}
-			query.Bindings = append(query.Bindings, name)
+			known[name] = b
+			names = append(names, name)
 		}
-		err = errors.Join(rows.Err(), rows.Close())
-		if err != nil {
+		if err = errors.Join(rows.Err(), rows.Close()); err != nil {
 			return err
 		}
+		ops := map[string]string{}
+		var ids []string
 		for _, p := range pending {
 			if p.RuntimeInstanceID == r.RuntimeInstanceID {
-				query.Operations = append(query.Operations, p.OperationID)
+				if _, ok := ops[p.OperationID]; !ok {
+					ids = append(ids, p.OperationID)
+				}
+				ops[p.OperationID] = p.NativeDigest
 			}
 		}
-		adapter := n.Client.Adapter(r.Route)
-		for {
-			batch := nodeproto.ReconcileRequest{Operations: query.Operations[:min(len(query.Operations), nodeproto.ReconcileLimit)], Bindings: query.Bindings[:min(len(query.Bindings), nodeproto.ReconcileLimit)]}
-			got, err := adapter.ReconcileKnown(ctx, batch)
+		a := n.Client.Adapter(r.Route)
+		for len(names)+len(ids) > 0 {
+			bn := min(len(names), nodeproto.ReconcileLimit)
+			on := min(len(ids), nodeproto.ReconcileLimit-bn)
+			q := nodeproto.ReconcileRequest{KnownIDsOnly: true, Operations: ids[:on], Bindings: names[:bn]}
+			got, err := a.ReconcileKnown(ctx, q)
 			if err != nil {
 				return err
 			}
-			if got.Coverage != nodeproto.KnownOnly || got.JournalLimited {
-				return errors.New("known Worker reconciliation was incomplete")
+			if got.Coverage != nodeproto.KnownOnly || got.JournalLimited || len(got.Bindings) != bn || len(got.Operations) != on {
+				return errors.New("incomplete Worker reconciliation")
 			}
-			for _, b := range got.Bindings {
-				if b.Issue != "" || b.Binding == nil {
-					return errors.New("known binding is unresolved on its Worker")
+			for i, b := range got.Bindings {
+				p := known[q.Bindings[i]]
+				if b.Name != q.Bindings[i] || b.Binding == nil || b.Issue != "" || b.Binding.InstanceID != p.instance || b.Binding.ExecutionEpoch < p.epoch ||
+					b.Binding.ExecutionEpoch == p.epoch && b.Binding.IncarnationID != nil && p.incarnation != "" && *b.Binding.IncarnationID != p.incarnation {
+					return errors.New("known binding differs from Worker evidence")
 				}
 			}
-			query.Operations = query.Operations[len(batch.Operations):]
-			query.Bindings = query.Bindings[len(batch.Bindings):]
-			if len(query.Operations)+len(query.Bindings) == 0 {
+			for _, op := range got.Operations {
+				digest, ok := ops[op.OperationID]
+				if !ok || op.Receipt != nil && (op.Receipt.OperationID != op.OperationID || op.Receipt.BundleDigest != r.BundleDigest || op.Receipt.RequestDigest != digest) {
+					return errors.New("known operation differs from Worker evidence")
+				}
+			}
+			names, ids = names[bn:], ids[on:]
+		}
+		var after string
+		for {
+			got, err := a.ReconcileKnown(ctx, nodeproto.ReconcileRequest{JournalAfter: after})
+			if err != nil {
+				return err
+			}
+			if got.Coverage != nodeproto.KnownOnly {
+				return errors.New("invalid Worker reconciliation coverage")
+			}
+			for _, op := range got.Operations {
+				var belongs bool
+				err := n.DB.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM operations WHERE id=? AND worker_id=? AND runtime_instance_id=?)`, op.OperationID, n.config.ID, r.RuntimeInstanceID).Scan(&belongs)
+				if err != nil {
+					return err
+				}
+				if !belongs {
+					return fmt.Errorf("unresolved journal operation %s on Worker %s", op.OperationID, n.config.ID)
+				}
+			}
+			if !got.JournalLimited {
 				break
 			}
+			if got.NextJournalAfter <= after {
+				return errors.New("Worker journal page did not advance")
+			}
+			after = got.NextJournalAfter
 		}
 	}
 	return nil
 }
 
-func (n *Worker) maintenance(ctx context.Context, s placement.Sample) error {
-	m, err := n.DB.GetWorkerMaintenance(ctx, s.WorkerID)
-	if err != nil {
-		return err
-	}
+func (n *Worker) syncGate(ctx context.Context, mode string) (nodeproto.Gate, error) {
 	gate, err := n.Client.Gate(ctx)
-	if err != nil {
-		return err
+	if err != nil || gate.Mode == mode {
+		return gate, err
 	}
+	return n.Client.SetGate(ctx, nodeproto.SetGate{Mode: mode, ExpectedRevision: gate.Revision})
+}
+
+func (n *Worker) maintenance(ctx context.Context, s placement.Sample) error {
 	control, err := n.DB.Control(ctx)
 	if err != nil {
 		return err
 	}
 	if control.Maintenance {
-		return nil
-	}
-	if gate.Mode != m.Mode {
-		switch m.Mode {
-		case "active", "cordoned", "draining":
-		default:
-			return nil
-		}
-		gate, err = n.Client.SetGate(ctx, nodeproto.SetGate{Mode: m.Mode, ExpectedRevision: gate.Revision})
+		rows, err := n.DB.ListWorkerAuthorityRecovery(ctx)
 		if err != nil {
 			return err
 		}
+		for _, r := range rows {
+			if r.WorkerID == s.WorkerID && r.ReboundGeneration == nil {
+				return n.DB.ConfirmWorkerAuthority(ctx, registry.WorkerAuthorityProof{WorkerID: s.WorkerID,
+					ControlEpoch: s.ControlEpoch, EnrollmentGeneration: s.EnrollmentGeneration, Session: s.Session,
+					BudgetSequence: s.Sequence, Coverage: registry.InventoryKnownOnly})
+			}
+		}
+		return nil
+	}
+	m, err := n.DB.GetWorkerMaintenance(ctx, s.WorkerID)
+	if err != nil {
+		return err
+	}
+	if m.Mode != "cordoned" && m.Mode != "draining" && m.Mode != "active" {
+		return nil
+	}
+	facts, err := n.engine.ReconcileWorkerMaintenance(ctx, s.WorkerID, m.Revision)
+	if err != nil {
+		return err
+	}
+	if m.Phase == "activating" && len(facts.UnresolvedResources) != 0 {
+		return nil
+	}
+	gate, err := n.syncGate(ctx, m.Mode)
+	if err != nil {
+		return err
+	}
+	if m.Phase == "activating" {
+		unresolved, err := n.engine.RestoreWorkerPacketRules(ctx, s.WorkerID, m.Revision)
+		if err != nil {
+			return err
+		}
+		facts.UnresolvedResources = append(facts.UnresolvedResources, unresolved...)
 	}
 	if m.Phase == "active" && m.Mode == "active" {
 		return nil
 	}
 	evidence := registry.WorkerMaintenanceEvidence{Coverage: registry.InventoryKnownOnly, GateMode: gate.Mode, GateRevision: uint64(gate.Revision),
-		ControlEpoch: s.ControlEpoch, Session: s.Session, BudgetSequence: s.Sequence}
+		ControlEpoch: s.ControlEpoch, Session: s.Session, BudgetSequence: s.Sequence, CollectorsActive: facts.CollectorsActive,
+		Rules: facts.Rules, PendingWakeOperations: facts.PendingWakeOperations, UnresolvedResources: facts.UnresolvedResources}
 	_, err = n.DB.RecordWorkerMaintenanceEvidence(ctx, s.WorkerID, m.Revision, evidence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return registry.ErrNotFound
-	}
 	return err
 }

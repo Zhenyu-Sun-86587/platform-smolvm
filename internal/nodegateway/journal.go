@@ -288,18 +288,18 @@ func (j *Journal) refuse(ctx context.Context, id, step, code string) error {
 	return nil
 }
 
-func (j *Journal) operationIDs(ctx context.Context, route nodeproto.Route, limit int) ([]string, error) {
-	query := `SELECT operation_id FROM commands WHERE step='submit' AND
+func (j *Journal) operationIDs(ctx context.Context, route nodeproto.Route, after string, limit int) ([]string, error) {
+	query := `SELECT operation_id FROM commands WHERE step='submit' AND operation_id>? AND
 		json_extract(scope,'$.Route.runtime_instance_id')=? AND json_extract(scope,'$.Route.local_instance_id')=?
 		AND json_extract(scope,'$.Route.bundle_digest')=?
 		AND refusal IS NULL AND (receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED'))
 		UNION ALL
-		SELECT operation_id FROM volume_commands WHERE receipt IS NULL AND refusal IS NULL
+		SELECT operation_id FROM volume_commands WHERE operation_id>? AND receipt IS NULL AND refusal IS NULL
 		AND json_extract(scope,'$.runtime_instance_id')=? AND json_extract(scope,'$.local_instance_id')=?
 		AND json_extract(scope,'$.bundle_digest')=?
 		ORDER BY operation_id LIMIT ?`
-	rows, err := j.db.QueryContext(ctx, query, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest,
-		route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest, limit)
+	rows, err := j.db.QueryContext(ctx, query, after, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest,
+		after, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest, limit)
 	if err != nil {
 		return nil, err
 	}

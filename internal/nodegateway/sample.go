@@ -93,7 +93,7 @@ func (s *Server) registerSample(mux *http.ServeMux) {
 
 func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest, sequence int64) (nodeproto.SampleReply, error) {
 	var reply nodeproto.SampleReply
-	if !nodeproto.ValidID(req.Nonce) || len(req.Routes) == 0 || len(req.Routes) > 64 || len(req.Pending) > nodeproto.ReconcileLimit {
+	if !nodeproto.ValidID(req.Nonce) || len(req.Routes) == 0 || len(req.Routes) > 64 || len(req.Pending)+len(req.AccessWakes) > nodeproto.ReconcileLimit {
 		return reply, rt.ErrInvalid
 	}
 	var worker workerclient.Client
@@ -166,12 +166,17 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		kind := placement.AdmissionOperation
 		switch receipt.Kind {
 		case "launch":
+			if receipt.Phase != "COMPLETED" || receipt.Execution == nil {
+				continue
+			}
 		case "independent_fork", "fork_batch":
-			if receipt.Fork == nil || !slices.ContainsFunc(receipt.Fork.Children, func(c rt.ForkChildReceipt) bool { return c.Attempt == q.Attempt && c.AdmissionError == "" }) {
+			if receipt.Phase != "COMPLETED" || receipt.Fork == nil || receipt.Fork.Stage != "complete" ||
+				slices.ContainsFunc(receipt.Fork.Children, func(c rt.ForkChildReceipt) bool { return c.Phase != "COMPLETED" && c.Phase != "ABORTED" }) ||
+				!slices.ContainsFunc(receipt.Fork.Children, func(c rt.ForkChildReceipt) bool { return c.Attempt == q.NativeAttempt && c.AdmissionError == "" }) {
 				continue
 			}
 		case "vm_restore":
-			if receipt.StatePoint == nil {
+			if receipt.Phase != "COMPLETED" || receipt.StatePoint == nil || receipt.StatePoint.ActivationDecision != "commit" || receipt.StatePoint.Stage != "released" {
 				continue
 			}
 			kind = placement.AdmissionRestore
@@ -181,6 +186,23 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		reply.Admissions = append(reply.Admissions, placement.Admission{OperationID: q.OperationID, Attempt: q.Attempt, WorkerID: sample.WorkerID, RuntimeInstanceID: q.RuntimeInstanceID, BundleID: receipt.BundleDigest, ControlEpoch: sample.ControlEpoch,
 			EnrollmentGeneration: sample.EnrollmentGeneration, NativeDigest: q.Digest, Kind: kind, ReceiptID: receipt.OperationID, Session: sample.Session, ConfirmedThroughSequence: sequence - 1})
 	}
+	// Access wake receipts are native launch/restore decisions observed before
+	// this budget. The controller also checks the original demand and execution.
+	for _, q := range req.AccessWakes {
+		route, ok := profiles[q.RuntimeInstanceID]
+		if !ok || !nodeproto.ValidID(q.OperationID) {
+			return reply, rt.ErrInvalid
+		}
+		native, ok := route.Adapter.(rt.NativeControl)
+		if !ok {
+			continue
+		}
+		receipt, err := native.QueryOperation(ctx, q.OperationID)
+		if err == nil && receipt.OperationID == q.OperationID && receipt.Phase == "COMPLETED" &&
+			(receipt.Kind == "launch" || receipt.Kind == rt.VMRestore) && receipt.BundleDigest == route.Worker.Bundle {
+			reply.AccessWakes = append(reply.AccessWakes, nodeproto.AccessWakeAdmission{AccessWakeQuery: q, Receipt: receipt})
+		}
+	}
 	sample.Budget, err = worker.Budget(ctx)
 	if err != nil {
 		return reply, err
@@ -188,7 +210,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 	// The Node admits one placement-heavy operation at a time. The journal also
 	// charges unknown or in-flight command receipts until the native query settles.
 	sample.Budget.Capacity.HeavySlots = 1
-	if err = s.journal.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM commands WHERE receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED'))`).Scan(&sample.Budget.Allocated.HeavySlots); err != nil {
+	if err = s.journal.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM commands WHERE refusal IS NULL AND (receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED')))`).Scan(&sample.Budget.Allocated.HeavySlots); err != nil {
 		return reply, err
 	}
 	sample.Pressure, err = hostPressure(sample.Budget.Capacity.StorageBytes)

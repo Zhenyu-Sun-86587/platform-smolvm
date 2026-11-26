@@ -25,6 +25,8 @@ export interface WorkerMaintenance {
 export interface Worker {
   worker_id: string
   name: string
+  enrollment_generation?: number
+  enrollment_status?: "active" | "revoked"
   desired_mode: WorkerMode
   observed_status: string
   revision: number
@@ -271,6 +273,8 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
   spec?: { resources?: Resources }
   revision: number
   binding_generation: number
+  owner_status?: string
+  last_confirmed_power_state?: PowerState
   power_state?: PowerState
   health?: {vm: string; guest_management: string; workload: string; workload_error?: {code: string; message: string}; network_identity: string; services: string}
   observed_state: string
@@ -910,6 +914,9 @@ export class Client {
   getPlacement(operationId: string, signal?: AbortSignal) { return this.get<PlacementReservation>(operation(operationId) + "/placement", signal) }
   setWorkerMode(id: string, mode: WorkerMode, reason: string, revision: number, options?: WriteOptions) {
     return this.mutate<WorkerMaintenance>("workers/" + encodeURIComponent(id) + "/maintenance", { mode, reason }, { ...options, method: "PATCH", revision })
+  }
+  revokeWorkerEnrollment(id: string, generation: number, reason: string, revision: number, options?: WriteOptions) {
+    return this.mutate<{ worker_id: string; revision: number; enrollment_generation: number; enrollment_status: "revoked" }>("workers/" + encodeURIComponent(id) + "/enrollment/revoke", { enrollment_generation: generation, reason }, { ...options, revision })
   }
   listRuntimeProfiles(signal?: AbortSignal) { return this.pages<RuntimeProfile>("runtime-profiles", 100, signal) }
   machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions) {

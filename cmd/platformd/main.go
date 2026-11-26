@@ -136,7 +136,7 @@ func run() error {
 	httpServer := &http.Server{Addr: c.API.Listen, Handler: api, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 64 << 10}
 	go api.StartTCP(ctx)
 	nodesDone := make(chan struct{})
-	go func() { defer close(nodesDone); nodes.Run(ctx, workers) }()
+	go func() { defer close(nodesDone); nodes.Run(ctx, workers, engine) }()
 	backupDone := make(chan struct{})
 	go func() { defer close(backupDone); backups.Run(ctx, db, c, *cfg) }()
 	workerDone := make(chan struct{})

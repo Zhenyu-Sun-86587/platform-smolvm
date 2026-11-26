@@ -37,6 +37,18 @@ func (s *Server) registerRuntimeRPC(mux *http.ServeMux) {
 	rpc(s, mux, nodeproto.ObservePath, func(ctx context.Context, route Route, in nodeproto.Name) (rt.Observation, error) {
 		return route.Adapter.Observe(ctx, in.Name)
 	})
+	rpc(s, mux, nodeproto.MachineMetricsPath, func(ctx context.Context, route Route, in nodeproto.MachineMetrics) (rt.Metrics, error) {
+		if err := smolvm.ValidateName(in.Name); err != nil || !nodeproto.ValidExecution(in.Execution) {
+			return rt.Metrics{}, rt.ErrInvalid
+		}
+		a, err := require[interface {
+			MachineMetrics(context.Context, string, rt.ExecutionRef) (rt.Metrics, error)
+		}](route)
+		if err != nil {
+			return rt.Metrics{}, err
+		}
+		return a.MachineMetrics(ctx, in.Name, in.Execution)
+	})
 	rpc(s, mux, nodeproto.CapacityPath, func(ctx context.Context, route Route, _ nodeproto.Empty) (rt.Capacity, error) {
 		return route.Adapter.Capacity(ctx)
 	})
@@ -415,16 +427,24 @@ func (s *Server) reconcileKnown(ctx context.Context, scope nodeproto.Route, rout
 	if len(in.Bindings)+len(in.Operations) > nodeproto.ReconcileLimit {
 		return nodeproto.ReconcileResult{}, rt.ErrInvalid
 	}
-	ids, err := s.journal.operationIDs(ctx, scope, nodeproto.ReconcileLimit+1)
-	if err != nil {
-		return nodeproto.ReconcileResult{}, err
-	}
-	ids = append(append([]string{}, in.Operations...), ids...)
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
+	out := nodeproto.ReconcileResult{Coverage: nodeproto.KnownOnly, Operations: []nodeproto.KnownOperation{}, Bindings: []nodeproto.KnownBinding{}}
 	limit := nodeproto.ReconcileLimit - len(in.Bindings)
-	out := nodeproto.ReconcileResult{Coverage: nodeproto.KnownOnly, JournalLimited: len(ids) > limit,
-		Operations: []nodeproto.KnownOperation{}, Bindings: []nodeproto.KnownBinding{}}
+	var ids []string
+	if !in.KnownIDsOnly {
+		if in.JournalAfter != "" && !nodeproto.ValidID(in.JournalAfter) {
+			return out, rt.ErrInvalid
+		}
+		room := limit - len(in.Operations)
+		found, err := s.journal.operationIDs(ctx, scope, in.JournalAfter, room+1)
+		if err != nil {
+			return out, err
+		}
+		out.JournalLimited = len(found) > room
+		ids = found[:min(room, len(found))]
+		if out.JournalLimited && len(ids) > 0 {
+			out.NextJournalAfter = ids[len(ids)-1]
+		}
+	}
 	// Central-supplied IDs take priority over journal discoveries.
 	seen := make(map[string]bool, limit)
 	for _, id := range append(append([]string{}, in.Operations...), ids...) {
@@ -449,7 +469,16 @@ func (s *Server) reconcileKnown(ctx context.Context, scope nodeproto.Route, rout
 		if ctx.Err() != nil {
 			return nodeproto.ReconcileResult{}, ctx.Err()
 		}
-		binding, err := discoverBinding(ctx, route, name)
+		var binding rt.LaunchBinding
+		var err error
+		if route.Worker.Socket != "" {
+			if err = smolvm.ValidateName(name); err == nil {
+				instance := nodeproto.ManagedInstanceID(scope.LocalInstanceID, name)
+				binding, err = route.Worker.QueryInstanceBinding(ctx, instance)
+			}
+		} else {
+			binding, err = discoverBinding(ctx, route, name)
+		}
 		item := nodeproto.KnownBinding{Name: name}
 		if err != nil {
 			item.Issue = nodeproto.FailureCode(err)

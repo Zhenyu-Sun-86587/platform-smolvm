@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
+
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/placement"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
-	"time"
 )
 
 func (s *Server) remoteRuntime(id string) bool {
@@ -81,16 +82,21 @@ func (s *Server) preparePlacement(input *lifecycle.Create, accept *registry.Acce
 
 type workerView struct {
 	registry.Worker
-	Maintenance registry.WorkerMaintenance `json:"maintenance"`
-	Sample      *placement.Sample          `json:"sample,omitempty"`
-	SampledAt   *time.Time                 `json:"sampled_at,omitempty"`
-	Fresh       bool                       `json:"fresh_budget"`
+	EnrollmentGeneration int64                      `json:"enrollment_generation,omitempty"`
+	EnrollmentStatus     string                     `json:"enrollment_status,omitempty"`
+	Maintenance          registry.WorkerMaintenance `json:"maintenance"`
+	Sample               *placement.Sample          `json:"sample,omitempty"`
+	SampledAt            *time.Time                 `json:"sampled_at,omitempty"`
+	Fresh                bool                       `json:"fresh_budget"`
 }
 
 func (s *Server) workerView(ctx context.Context, w registry.Worker) (workerView, error) {
 	v := workerView{Worker: w}
 	v.Endpoint = ""
-	var err error
+	err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT generation,status FROM worker_enrollments WHERE worker_id=? ORDER BY generation DESC LIMIT 1`, w.ID).Scan(&v.EnrollmentGeneration, &v.EnrollmentStatus)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return v, err
+	}
 	v.Maintenance, err = s.DB.GetWorkerMaintenance(ctx, w.ID)
 	if err != nil {
 		return v, err
@@ -151,22 +157,42 @@ func (s *Server) workerRoutes() {
 		if err := decode(r, &change); err != nil {
 			return err
 		}
-		control, err := s.DB.Control(r.Context())
+		rev, err := revision(r)
 		if err != nil {
 			return err
 		}
-		if control.ControlEpoch != r.Header.Get("If-Control-Epoch") {
-			return registry.ErrControlEpoch
+		return s.mutate(w, r, p, change, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+			state, err := s.DB.SetWorkerMaintenanceTx(ctx, tx, r.PathValue("worker"), rev, change.Mode, change.Reason)
+			if err != nil {
+				return registry.MutationResult{}, err
+			}
+			response, err := json.Marshal(state)
+			return registry.MutationResult{Response: response}, err
+		})
+	})
+	s.route("POST /v1/workers/{worker}/enrollment/revoke", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+		if err := p.Authorize(auth.ActionAdmin, ""); err != nil {
+			return err
+		}
+		var req struct {
+			Generation int64  `json:"enrollment_generation"`
+			Reason     string `json:"reason"`
+		}
+		if err := decode(r, &req); err != nil {
+			return err
 		}
 		rev, err := revision(r)
 		if err != nil {
 			return err
 		}
-		state, err := s.DB.SetWorkerMaintenance(r.Context(), r.PathValue("worker"), rev, change.Mode, change.Reason)
-		if err != nil {
-			return err
-		}
-		return write(w, 200, state)
+		return s.mutate(w, r, p, req, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+			state, err := s.DB.RevokeWorkerEnrollmentTx(ctx, tx, r.PathValue("worker"), rev, req.Generation, req.Reason)
+			if err != nil {
+				return registry.MutationResult{}, err
+			}
+			response, err := json.Marshal(map[string]any{"worker_id": state.ID, "revision": state.Revision, "enrollment_generation": req.Generation, "enrollment_status": "revoked"})
+			return registry.MutationResult{Response: response}, err
+		})
 	})
 	s.route("GET /v1/operations/{operation}/placement", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		op, err := s.DB.GetOperation(r.Context(), r.PathValue("operation"))

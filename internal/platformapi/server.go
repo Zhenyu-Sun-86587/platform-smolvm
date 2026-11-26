@@ -149,6 +149,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		if capability.Status.Status == "unsupported" {
 			code = "CAPABILITY_UNSUPPORTED"
 		}
+	case errors.Is(err, rt.ErrUncertain):
+		code, status = "OUTCOME_UNKNOWN", 409
 	case errors.Is(err, placement.ErrNoCandidate):
 		code, status = "NO_ELIGIBLE_WORKER", 409
 	case errors.Is(err, registry.ErrWorkerMaintenance):

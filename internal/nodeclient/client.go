@@ -133,7 +133,7 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if scope != (nodeproto.Route{}) || path == nodeproto.SetGatePath {
+	if path != nodeproto.HandshakePath {
 		if err := c.authorizeRequest(ctx); err != nil {
 			return out, err
 		}

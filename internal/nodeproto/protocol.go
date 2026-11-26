@@ -118,6 +118,12 @@ type RouteInfo struct {
 
 type Empty struct{}
 
+const MachineMetricsPath = Prefix + "/metrics/machine"
+
+type MachineMetrics struct {
+	Name      string          `json:"name"`
+	Execution rt.ExecutionRef `json:"execution"`
+}
 type Name struct {
 	Name string `json:"name"`
 }
@@ -146,8 +152,10 @@ type Inventory struct {
 }
 
 type ReconcileRequest struct {
-	Operations []string `json:"operations"`
-	Bindings   []string `json:"bindings"`
+	KnownIDsOnly bool     `json:"known_ids_only,omitempty"`
+	JournalAfter string   `json:"journal_after,omitempty"`
+	Operations   []string `json:"operations"`
+	Bindings     []string `json:"bindings"`
 }
 
 const ReconcileLimit = 128
@@ -165,10 +173,11 @@ type KnownBinding struct {
 }
 
 type ReconcileResult struct {
-	Coverage       string           `json:"coverage"`
-	Operations     []KnownOperation `json:"operations"`
-	Bindings       []KnownBinding   `json:"bindings"`
-	JournalLimited bool             `json:"journal_limited"`
+	Coverage         string           `json:"coverage"`
+	Operations       []KnownOperation `json:"operations"`
+	Bindings         []KnownBinding   `json:"bindings"`
+	NextJournalAfter string           `json:"next_journal_after,omitempty"`
+	JournalLimited   bool             `json:"journal_limited"`
 }
 
 type GuestExec struct {

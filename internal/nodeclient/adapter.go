@@ -52,6 +52,10 @@ func (a *Adapter) Admit(action string) error {
 	return rt.ErrUnsupported
 }
 
+func (a *Adapter) MachineMetrics(ctx context.Context, name string, execution rt.ExecutionRef) (rt.Metrics, error) {
+	return call[nodeproto.MachineMetrics, rt.Metrics](ctx, a, nodeproto.MachineMetricsPath, nodeproto.MachineMetrics{Name: name, Execution: execution})
+}
+
 func (a *Adapter) Health(ctx context.Context) (rt.Health, error) {
 	return call[nodeproto.Empty, rt.Health](ctx, a, nodeproto.HealthPath, nodeproto.Empty{})
 }

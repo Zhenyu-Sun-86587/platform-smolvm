@@ -17,6 +17,7 @@ import (
 
 type packetWakeContext struct {
 	client     workerclient.BindingControl
+	bindingID  string
 	workerID   string
 	routeID    string
 	execution  workerclient.Execution
@@ -53,7 +54,7 @@ func (s *Server) packetWakeEndpoint(ctx context.Context, machineID string) (pack
 	if observed.InstanceID != binding.RuntimeInstanceObjectID || observed.ExecutionEpoch < binding.ExecutionEpoch {
 		return result, registry.ErrGeneration
 	}
-	result.client, result.workerID, result.routeID = client, binding.WorkerID, binding.RuntimeInstanceID
+	result.client, result.bindingID, result.workerID, result.routeID = client, binding.ID, binding.WorkerID, binding.RuntimeInstanceID
 	result.revision = machine.Revision
 	result.generation = machine.BindingGeneration
 	result.execution = workerclient.Execution{InstanceID: observed.InstanceID, Epoch: observed.ExecutionEpoch}
@@ -162,11 +163,6 @@ func (s *Server) privatePacketWakeRule(w http.ResponseWriter, r *http.Request, p
 		return auth.ErrForbidden
 	}
 	if r.Method == http.MethodPut {
-		if *change.Enabled {
-			if err = s.DB.CheckWorkerEntrance(ctx, target.workerID, "packet_wake_enable"); err != nil {
-				return err
-			}
-		}
 		if change.ExpectedGeneration != target.generation {
 			return registry.ErrGeneration
 		}
@@ -178,6 +174,13 @@ func (s *Server) privatePacketWakeRule(w http.ResponseWriter, r *http.Request, p
 		Transport: transport, GuestPort: uint16(port), Enabled: change.Enabled, ExpectedRevision: change.ExpectedRevision}
 	if change.Enabled != nil && *change.Enabled {
 		rule.SourceExecution = &source.execution
+	}
+	if change.Enabled != nil {
+		pins := registry.WorkerPacketWakeRule{BindingID: target.bindingID, WorkerID: target.workerID, SourceBindingID: source.bindingID,
+			SourceAttachmentID: rule.SourceAttachmentID, TargetAttachmentID: rule.TargetAttachmentID, Transport: rule.Transport, Port: rule.GuestPort}
+		if err := s.DB.TrackWorkerPacketWakeRule(ctx, pins, *change.Enabled); err != nil {
+			return err
+		}
 	}
 	result, err := target.client.PacketWakeRule(ctx, target.execution, rule, operation, digest)
 	if err != nil {

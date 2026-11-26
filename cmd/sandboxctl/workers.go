@@ -19,6 +19,16 @@ func (c *client) workers() *cobra.Command {
 	})
 	mode.Flags().Int64Var(&revision, "revision", 0, "Worker revision from workers show")
 	mode.Flags().StringVar(&reason, "reason", "", "Reason for the maintenance change")
-	group.AddCommand(mode)
+	var generation int64
+	revoke := sub("revoke-enrollment WORKER", "Revoke an enrolled Worker generation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if revision < 1 || generation < 1 || reason == "" {
+			return fmt.Errorf("--revision, --generation and --reason are required")
+		}
+		return c.mutation(cmd, "POST", res("workers", args[0])+"/enrollment/revoke", map[string]any{"enrollment_generation": generation, "reason": reason}, revision)
+	})
+	revoke.Flags().Int64Var(&revision, "revision", 0, "Current Worker revision")
+	revoke.Flags().Int64Var(&generation, "generation", 0, "Enrollment generation to revoke")
+	revoke.Flags().StringVar(&reason, "reason", "", "Reason for revocation")
+	group.AddCommand(mode, revoke)
 	return group
 }

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -173,4 +174,35 @@ func (s *Store) EnrollWorker(ctx context.Context, enrollment WorkerEnrollment) e
 		return err
 	}
 	return tx.Commit()
+}
+
+// RevokeWorkerEnrollmentTx closes the controller's current authority even when
+// unknown local resources make decommission impossible. A later enrollment
+// requires an explicitly provisioned higher generation.
+func (s *Store) RevokeWorkerEnrollmentTx(ctx context.Context, tx *sql.Tx, worker string, revision, generation int64, reason string) (Worker, error) {
+	var state Worker
+	if generation < 1 || revision < 1 || !validateLabel(reason, 255) || worker == LocalWorkerID {
+		return state, ErrInvalid
+	}
+	if err := checkWritable(ctx, tx); err != nil {
+		return state, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE workers SET revision=revision+1,observed_status='unreachable' WHERE id=? AND revision=? AND desired_mode<>'decommissioned'`, worker, revision)
+	if err != nil {
+		return state, err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return state, ErrRevision
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE worker_enrollments SET status='revoked',revoked_at=? WHERE worker_id=? AND generation=? AND status='active'`, time.Now().UnixMilli(), worker, generation)
+	if err != nil {
+		return state, err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return state, ErrGeneration
+	}
+	if err := AppendEvent(ctx, tx, "maintenance", "", "", map[string]any{"action": "worker_enrollment_revoked", "worker_id": worker, "generation": generation, "reason": reason}, true); err != nil {
+		return state, err
+	}
+	return scanWorker(tx.QueryRowContext(ctx, "SELECT "+workerColumns+" FROM workers WHERE id=?", worker))
 }

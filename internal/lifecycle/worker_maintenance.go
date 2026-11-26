@@ -92,80 +92,201 @@ func (e *Engine) ReconcileWorkerMaintenance(ctx context.Context, worker string, 
 	return observed, nil
 }
 
-func (e *Engine) disableManagedPacketWakeRule(ctx context.Context, rule registry.WorkerPacketWakeRule, maintenanceRevision int64) (registry.PacketWakeRuleEvidence, error) {
-	var zero registry.PacketWakeRuleEvidence
-	b, err := e.DB.GetBinding(ctx, rule.BindingID)
+type packetRuleReceipt struct {
+	ID                string `json:"rule_id"`
+	Revision          int64  `json:"revision"`
+	Enabled           *bool  `json:"enabled"`
+	Source            string `json:"source_attachment_id"`
+	Target            string `json:"target_attachment_id"`
+	Transport         string `json:"transport"`
+	Port              uint16 `json:"guest_port"`
+	SourceIncarnation string `json:"source_incarnation_id"`
+	SourceEpoch       int64  `json:"source_execution_epoch"`
+	SourceCurrent     bool   `json:"source_current"`
+}
+
+type packetRuleOverlay struct {
+	ID        string
+	Before    int64
+	Key       string
+	Target    workerclient.Execution
+	Source    workerclient.Execution
+	Confirmed bool
+}
+
+func checkedPacketRule(ctx context.Context, client workerclient.BindingControl, scope workerclient.Execution, req workerclient.PacketWakeRule, key string) (packetRuleReceipt, error) {
+	digest := ""
+	if key != "" {
+		digest = fmt.Sprintf("sha256:%x", sha256.Sum256(JSON(req)))
+	}
+	raw, err := client.PacketWakeRule(ctx, scope, req, key, digest)
+	var reply packetRuleReceipt
 	if err != nil {
-		return zero, err
+		return reply, err
 	}
-	if b.WorkerID != rule.WorkerID || b.Status != "current" {
-		return zero, registry.ErrGeneration
+	if err = json.Unmarshal(raw, &reply); err != nil {
+		return reply, err
 	}
-	adapter, err := e.ForBinding(b)
+	if reply.ID == "" || reply.Revision < 1 || reply.Enabled == nil || reply.Source != req.SourceAttachmentID || reply.Target != req.TargetAttachmentID ||
+		reply.Transport != req.Transport || reply.Port != req.GuestPort {
+		return reply, registry.ErrGeneration
+	}
+	return reply, nil
+}
+
+func (e *Engine) packetRuleControl(ctx context.Context, r registry.WorkerPacketWakeRule) (workerclient.BindingControl, workerclient.Execution, workerclient.PacketWakeRule, error) {
+	var scope workerclient.Execution
+	req := workerclient.PacketWakeRule{SourceAttachmentID: r.SourceAttachmentID, TargetAttachmentID: r.TargetAttachmentID, Transport: r.Transport, GuestPort: r.Port}
+	b, err := e.DB.GetBinding(ctx, r.BindingID)
 	if err != nil {
-		return zero, err
+		return nil, scope, req, err
 	}
-	client, ok := PolicyClient(adapter, b)
-	if !ok {
-		return zero, registry.ErrNotFound
+	if b.WorkerID != r.WorkerID || b.Status != "current" {
+		return nil, scope, req, registry.ErrGeneration
 	}
-	scope := WorkerExecution(b)
-	req := workerclient.PacketWakeRule{SourceAttachmentID: rule.SourceAttachmentID, TargetAttachmentID: rule.TargetAttachmentID,
-		Transport: rule.Transport, GuestPort: rule.Port}
-	type ruleReply struct {
-		ID        string `json:"rule_id"`
-		Revision  int64  `json:"revision"`
-		Enabled   *bool  `json:"enabled"`
-		Source    string `json:"source_attachment_id"`
-		Target    string `json:"target_attachment_id"`
-		Transport string `json:"transport"`
-		Port      uint16 `json:"guest_port"`
+	a, err := e.ForBinding(b)
+	if err != nil {
+		return nil, scope, req, err
 	}
-	parse := func(raw json.RawMessage) (ruleReply, error) {
-		var reply ruleReply
-		if err := json.Unmarshal(raw, &reply); err != nil {
-			return reply, err
+	c := workerclient.ForAdapter(a, b.RuntimeBundleID)
+	if c == nil {
+		return nil, scope, req, registry.ErrNotFound
+	}
+	return c, WorkerExecution(b), req, nil
+}
+
+func (e *Engine) disableManagedPacketWakeRule(ctx context.Context, r registry.WorkerPacketWakeRule, revision int64) (registry.PacketWakeRuleEvidence, error) {
+	var proof registry.PacketWakeRuleEvidence
+	client, scope, req, err := e.packetRuleControl(ctx, r)
+	if err != nil {
+		return proof, err
+	}
+	current, err := checkedPacketRule(ctx, client, scope, req, "")
+	if err != nil {
+		return proof, err
+	}
+	proof = registry.PacketWakeRuleEvidence{ID: current.ID, Revision: current.Revision, Enabled: *current.Enabled}
+	var overlay packetRuleOverlay
+	if r.Overlay != nil {
+		if err = json.Unmarshal(r.Overlay, &overlay); err != nil {
+			return proof, err
 		}
-		if reply.ID == "" || reply.Revision < 1 || reply.Enabled == nil || reply.Source != req.SourceAttachmentID ||
-			reply.Target != req.TargetAttachmentID || reply.Transport != req.Transport || reply.Port != req.GuestPort {
-			return reply, registry.ErrGeneration
+	}
+	// A crash after sending Disable must recover its own idempotent receipt.
+	// An independent revision on the Worker is never a restoration authority.
+	if !proof.Enabled && (overlay.ID == "" || overlay.Confirmed || current.Revision != overlay.Before+1) {
+		return proof, nil
+	}
+	if proof.Enabled {
+		overlay = packetRuleOverlay{ID: current.ID, Before: current.Revision, Target: scope,
+			Key: fmt.Sprintf("maintenance-packet-%x", sha256.Sum256(JSON([]any{current.ID, r.BindingID, scope, revision, current.Revision})))}
+		if r.DesiredEnabled && current.SourceCurrent && r.SourceBindingID != "" {
+			src, err := e.DB.GetBinding(ctx, r.SourceBindingID)
+			if err != nil {
+				return proof, err
+			}
+			actual := WorkerExecution(src)
+			if src.Status == "current" && src.WorkerID == r.WorkerID && actual.IncarnationID == current.SourceIncarnation && actual.Epoch == current.SourceEpoch {
+				overlay.Source = actual
+				if err = e.DB.SetPacketWakeOverlay(ctx, r, revision, overlay); err != nil {
+					return proof, err
+				}
+			}
 		}
-		return reply, nil
 	}
-	raw, err := client.PacketWakeRule(ctx, scope, req, "", "")
+	state, err := e.DB.GetWorkerMaintenance(ctx, r.WorkerID)
 	if err != nil {
-		return zero, err
+		return proof, err
 	}
-	before, err := parse(raw)
+	if state.Mode != "draining" || state.Revision != revision {
+		return proof, registry.ErrRevision
+	}
+	disabled := false
+	req.Enabled, req.ExpectedRevision = &disabled, &overlay.Before
+	ack, err := checkedPacketRule(ctx, client, overlay.Target, req, overlay.Key)
 	if err != nil {
-		return zero, err
+		return proof, err
 	}
-	if !*before.Enabled {
-		return registry.PacketWakeRuleEvidence{ID: before.ID, Revision: before.Revision}, nil
+	if ack.ID != overlay.ID || ack.Revision != overlay.Before+1 || *ack.Enabled {
+		return proof, registry.ErrRevision
 	}
-	state, err := e.DB.GetWorkerMaintenance(ctx, rule.WorkerID)
+	proof.Revision, proof.Enabled = ack.Revision, false
+	if overlay.Source.InstanceID != "" {
+		overlay.Confirmed = true
+		err = e.DB.SetPacketWakeOverlay(ctx, r, revision, overlay)
+	}
+	return proof, err
+}
+
+// Reopen only the exact source execution and disabled revision that the
+// maintenance cycle closed. The central gate stays closed during activation.
+func (e *Engine) RestoreWorkerPacketRules(ctx context.Context, worker string, revision int64) ([]string, error) {
+	rules, err := e.DB.ListWorkerPacketWakeRules(ctx, worker)
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
-	if state.Mode != "draining" || state.Revision != maintenanceRevision {
-		return zero, registry.ErrRevision
+	var pending []string
+	for _, r := range rules {
+		if r.Overlay == nil || !r.DesiredEnabled {
+			continue
+		}
+		var saved packetRuleOverlay
+		if err = json.Unmarshal(r.Overlay, &saved); err != nil {
+			return nil, err
+		}
+		if err := e.restorePacketRule(ctx, r, saved, revision); err != nil {
+			pending = append(pending, saved.ID)
+		}
 	}
-	enabled := false
-	req.Enabled, req.ExpectedRevision = &enabled, &before.Revision
-	key := fmt.Sprintf("maintenance-packet-%x", sha256.Sum256(JSON([]any{before.ID, b.ID, scope, maintenanceRevision, before.Revision})))
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(JSON(req)))
-	raw, err = client.PacketWakeRule(ctx, scope, req, key, digest)
+	return pending, nil
+}
+
+func (e *Engine) restorePacketRule(ctx context.Context, r registry.WorkerPacketWakeRule, saved packetRuleOverlay, revision int64) error {
+	if !saved.Confirmed || saved.Source.InstanceID == "" {
+		return registry.ErrStaleObservation
+	}
+	client, scope, req, err := e.packetRuleControl(ctx, r)
 	if err != nil {
-		return zero, err
+		return err
 	}
-	after, err := parse(raw)
+	current, err := checkedPacketRule(ctx, client, scope, req, "")
 	if err != nil {
-		return zero, err
+		return err
 	}
-	if after.ID != before.ID || after.Revision != before.Revision+1 || *after.Enabled {
-		return zero, registry.ErrRevision
+	if current.ID != saved.ID {
+		return registry.ErrGeneration
 	}
-	return registry.PacketWakeRuleEvidence{ID: after.ID, Revision: after.Revision}, nil
+	if current.Revision > saved.Before+1 {
+		// A completed restore or a newer local edit supersedes the overlay.
+		return e.DB.SetPacketWakeOverlay(ctx, r, revision, nil)
+	}
+	if current.Revision != saved.Before+1 || *current.Enabled {
+		return registry.ErrRevision
+	}
+	src, err := e.DB.GetBinding(ctx, r.SourceBindingID)
+	if err != nil {
+		return err
+	}
+	if src.Status != "current" || WorkerExecution(src) != saved.Source || src.WorkerID != r.WorkerID {
+		return registry.ErrGeneration
+	}
+	state, err := e.DB.GetWorkerMaintenance(ctx, r.WorkerID)
+	if err != nil {
+		return err
+	}
+	if state.Mode != "active" || state.Phase != "activating" || state.Revision != revision {
+		return registry.ErrRevision
+	}
+	enabled := true
+	req.Enabled, req.ExpectedRevision, req.SourceExecution = &enabled, &current.Revision, &saved.Source
+	ack, err := checkedPacketRule(ctx, client, scope, req, saved.Key+"-restore")
+	if err != nil {
+		return err
+	}
+	if ack.ID != saved.ID || !*ack.Enabled || ack.Revision != current.Revision+1 {
+		return registry.ErrRevision
+	}
+	return e.DB.SetPacketWakeOverlay(ctx, r, revision, nil)
 }
 
 func (e *Engine) cancelManagedPendingWakes(ctx context.Context, worker string, revision int64, observed *WorkerMaintenanceObservations) error {

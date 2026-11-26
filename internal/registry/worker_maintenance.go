@@ -109,6 +109,9 @@ func workerMaintenanceBlockers(ctx context.Context, q queryer, state WorkerMaint
 		out = append(out, "policy_overlay_pending")
 	}
 	if state.Phase == "activating" {
+		if p != nil && len(p.UnresolvedResources) != 0 {
+			out = append(out, "resources_unresolved")
+		}
 		return out, nil
 	}
 	// A known-only view cannot prove Worker-wide quiescence, even when
