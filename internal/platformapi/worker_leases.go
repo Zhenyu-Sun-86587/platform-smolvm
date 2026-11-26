@@ -230,7 +230,7 @@ func (s *Server) driveWorkerLease(ctx context.Context, client workerclient.Clien
 				fault = &workerclient.Fault{Code: "E_PERMISSION_DENIED", Message: "lease authorization changed during wake"}
 			case errors.Is(err, registry.ErrGeneration), errors.Is(err, registry.ErrNotFound):
 				fault = &workerclient.Fault{Code: "E_STALE_EXECUTION", Message: "lease target changed during wake"}
-			case errors.As(err, &failure) && failure.Code == "SERVICE_NOT_READY":
+			case errors.As(err, &failure) && (failure.Code == "SERVICE_NOT_READY" || failure.Code == lifecycle.StatePointWakeFailed):
 				fault = &workerclient.Fault{Code: failure.Code, Message: failure.Message}
 			case !errors.As(err, &fault) || workerclient.RetryDelivery(err):
 				return l, err

@@ -26,7 +26,10 @@ type protectionReceipt struct {
 	Revision    int64  `json:"revision"`
 	Wake        string `json:"wake_operation"`
 	Incarnation string `json:"incarnation_id"`
+	Reason      string `json:"reason"`
 }
+
+const StatePointWakeFailed = "STATEPOINT_RESTORE_FAILED"
 
 func (e *Engine) checkAccessPrincipal(ctx context.Context, p auth.Principal, machine string) error {
 	var scope string
@@ -99,6 +102,10 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		if err != nil {
 			return none, nil, err
 		}
+		if b.PowerState == registry.PowerHibernated && (st.Power == "STOPPED" ||
+			st.Power == "HIBERNATED" && st.StatePoint != b.LastCaptureID) {
+			return none, nil, &Failure{StatePointWakeFailed, "Worker cannot confirm the binding's saved execution"}
+		}
 		scope = st.Execution()
 		if ack.ID == "" {
 			if err = reauthorize(); err != nil {
@@ -151,6 +158,9 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 			return none, nil, err
 		}
 		if ack.State == "released" {
+			if ack.Reason == "statepoint_restore_failed" {
+				return none, nil, &Failure{StatePointWakeFailed, "Worker could not restore the saved execution"}
+			}
 			return none, nil, auth.ErrForbidden
 		}
 		if ack.Kind == "wake" && st.Power != "RUNNING" {
