@@ -12,6 +12,9 @@ func serviceObservationIdentity(v service, b *registry.Binding) servicehealth.Id
 		key.BindingGeneration = b.Generation
 		key.IncarnationID = b.IncarnationID
 		key.ExecutionEpoch = b.ExecutionEpoch
+		if b.RuntimeBundleID == "" && b.RuntimeInstanceID == "" {
+			key.IncarnationID = string(b.RuntimeIdentity)
+		}
 	}
 	return key
 }

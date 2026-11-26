@@ -61,18 +61,23 @@ func (s *Server) serviceIdentity(ctx context.Context, v *service) error {
 	if err != nil {
 		return err
 	}
-	if m.CurrentBinding == nil || m.DeletedAt != nil {
+	return s.serviceIdentityForMachine(ctx, v, m)
+}
+
+func (s *Server) serviceIdentityForMachine(ctx context.Context, v *service, m registry.Machine) error {
+	if v.Protocol != "ssh" || m.CurrentBinding == nil || m.DeletedAt != nil {
 		return nil
 	}
 	if m.CurrentBinding.RuntimeBundleID != "" {
-		v.SSHKey, err = s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		v.SSHKey = key
 		return err
 	}
 	var e struct {
 		Ready bool   `json:"ssh_ready"`
 		Key   string `json:"ssh_host_key"`
 	}
-	if err = json.Unmarshal(m.CurrentBinding.GuestManagementEvidence, &e); err != nil {
+	if err := json.Unmarshal(m.CurrentBinding.GuestManagementEvidence, &e); err != nil {
 		return err
 	}
 	if e.Ready {
@@ -169,12 +174,12 @@ func (s *Server) serviceRoutes() {
 			if e != nil {
 				return e
 			}
-			if e = s.serviceIdentity(r.Context(), &v); e != nil {
-				return e
-			}
 			out = append(out, v)
 		}
 		if err = rows.Err(); err != nil {
+			return err
+		}
+		if err = rows.Close(); err != nil {
 			return err
 		}
 		if len(out) > 0 {
@@ -183,6 +188,9 @@ func (s *Server) serviceRoutes() {
 				return err
 			}
 			for i := range out {
+				if err := s.serviceIdentityForMachine(r.Context(), &out[i], m); err != nil {
+					return err
+				}
 				s.projectServiceObservation(&out[i], m)
 			}
 		}
