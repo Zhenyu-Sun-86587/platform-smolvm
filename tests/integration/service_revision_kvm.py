@@ -159,12 +159,9 @@ def revise(platform, service, edit):
     return current
 
 
-def revision_case(platform, keys, protocol):
+def revision_case(platform, keys, protocol, observe=False):
     mid, _, ref = machine(platform, "owned revision service", "native")
     platform.guest(ref, ["/bin/sh", "-ec", 'cat > "$1"', "owned", PROGRAM], stdin=BACKEND)
-    for label, port in zip(("before", "after"), PORTS, strict=True):
-        platform.guest(ref, ["systemd-run", "--unit=a22-" + label, "/usr/bin/perl", PROGRAM, protocol, str(port), label])
-        wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["cat", "/proc/net/tcp"]))
     sid = create_service(platform, mid, protocol, PORTS[0])
     service_path = "services/" + sid
     before = platform.app(service_path)
@@ -173,11 +170,44 @@ def revision_case(platform, keys, protocol):
     revoked_path, revocation_revision, original = credentials(platform, mid, before, protocol, keys, "selected")
     _, _, survivor = credentials(platform, mid, before, protocol, keys, "separate")
 
+    if observe:
+        assert before["observation"]["status"] == "unknown", before
+        machine_path = "machines/" + mid
+        platform.complete(platform.change(machine_path + "/standby", "park-before-observation", {},
+                                          platform.wait_capability(machine_path, "lifecycle.standby")))
+        for _ in range(3):
+            assert platform.app(service_path)["observation"] == before["observation"]
+            platform.app(machine_path + "/metrics")
+            assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "STANDBY"
+        # A real request wakes the source and tries a port with no listener.
+        client = platform.api_connection(timeout=30)
+        try:
+            client.request("GET", "/timeline/before-start", headers={
+                "Host": before["public_host"], "Authorization": "Bearer " + original})
+            reply = client.getresponse()
+            assert reply.status >= 400, (reply.status, reply.read())
+            reply.read()
+        finally:
+            client.close()
+        negative = platform.app(service_path)["observation"]
+        assert negative["stage"] == "worker_upstream" and negative["status"] == "unavailable", negative
+        assert negative["execution_epoch"] == ref["execution_epoch"] and negative["observed_at"], negative
+        print("Unlistened upstream", negative, flush=True)
+
+    for label, port in zip(("before", "after"), PORTS, strict=True):
+        platform.guest(ref, ["systemd-run", "--unit=a22-" + label, "/usr/bin/perl", PROGRAM, protocol, str(port), label])
+        wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["cat", "/proc/net/tcp"]))
     with ExitStack() as clients:
         old = connect(platform, clients, before, original, protocol, "before")
+        if observe:
+            live = platform.app(service_path)["observation"]
+            assert live["scope"] == "worker_upstream" and live["status"] == "ready", live
+            assert live["service_revision"] == before["revision"] and live["execution_epoch"] == ref["execution_epoch"]
         changed = time.monotonic()
         after = revise(platform, before, {"guest_port": PORTS[1]})
         assert after["guest_port"] == PORTS[1], after
+        if observe:
+            assert after["observation"]["status"] == "stale" and after["observation"]["service_revision"] == before["revision"], after
         revision_close_ms = old.close_after(changed)
         selected = connect(platform, clients, after, original, protocol, "after")
         unaffected = connect(platform, clients, after, survivor, protocol, "after")
@@ -270,7 +300,10 @@ def main():
         parser.add_argument("--" + name, type=lambda value: Path(value).resolve(strict=True), required=True)
     parser.add_argument("--case", choices=("http", "tcp-mtls", "ssh"), required=True)
     parser.add_argument("--sandboxctl", type=lambda value: Path(value).resolve(strict=True))
+    parser.add_argument("--check-observations", action="store_true", help="check passive reads and actual HTTP upstream evidence")
     args = parser.parse_args()
+    if args.check_observations and args.case != "http":
+        parser.error("service observation checks use HTTP")
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
         parser.error("requires root and KVM")
     if args.case == "ssh" and args.sandboxctl is None:
@@ -299,7 +332,7 @@ def main():
             if args.case == "ssh":
                 ssh_case(platform, keys)
             else:
-                revision_case(platform, keys, args.case)
+                revision_case(platform, keys, args.case, args.check_observations)
         except BaseException:
             for log in root.glob("*.log"):
                 print(log.name, log.read_text(errors="replace")[-2000:], file=sys.stderr)
