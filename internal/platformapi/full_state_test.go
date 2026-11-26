@@ -135,9 +135,9 @@ func TestFullStateAdmissionPreservesLegacyAndRefusesBeforeWrite(t *testing.T) {
 		VALUES ('b_first','first',1,'first','candidate','ns_first','digest','serve','bundle'),
 		       ('b_second','second',1,'second','unknown','ns_second','digest','serve','bundle');
 		INSERT INTO operations(id,control_epoch,machine_id,binding_id,binding_generation,runtime_name,
-			kind,state,stage,request_json,effect,created_at,updated_at,heavy,source_disposition)
-		VALUES ('batch',?,'deep','b_deep',1,'deep','fork_batch','observing','children_identity','{}','partial',1,1,1,'STANDBY'),
-		       ('capture',?,'deep','b_deep',1,'deep','vm_snapshot','succeeded','committed','{}','applied',1,1,1,'RUNNING');
+			kind,state,stage,request_json,effect,created_at,updated_at,heavy,source_disposition,runtime_instance_id,runtime_bundle_id)
+		VALUES ('batch',?,'deep','b_deep',1,'deep','fork_batch','observing','children_identity','{}','partial',1,1,1,'STANDBY','serve','bundle'),
+		       ('capture',?,'deep','b_deep',1,'deep','vm_snapshot','succeeded','committed','{}','applied',1,1,1,'RUNNING','serve','bundle');
 		INSERT INTO operation_children(operation_id,ordinal,binding_id,state,resource_independence,error_code)
 		VALUES ('batch',1,'b_second','quarantined','failed','NETWORK_IDENTITY_FAILED'),('batch',0,'b_first','ready','verified',NULL);
 		INSERT INTO snapshots(id,source_machine_id,source_generation,purpose,task_content,state,relative_path,provenance,created_at)

@@ -46,7 +46,7 @@ func (s *Server) StartGuestRelays(ctx context.Context) error {
 		if !ok || !info.IsDir() || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0o022 != 0 {
 			return fmt.Errorf("Guest relay directory must belong to platformd and exclude other writers")
 		}
-		routes[route.Key()] = route
+		routes[route.Key().Key()] = route
 	}
 	if len(routes) > 0 {
 		go s.superviseGuestRelays(ctx, routes)
@@ -72,7 +72,7 @@ func (s *Server) superviseGuestRelays(ctx context.Context, routes map[rt.BundleR
 			if b == nil || m.DeletedAt != nil || b.PowerState != registry.PowerRunning || !relayIncarnation.MatchString(b.IncarnationID) {
 				continue
 			}
-			route, ok := routes[rt.BundleRoute{InstanceID: b.RuntimeInstanceID, BundleID: b.RuntimeBundleID}]
+			route, ok := routes[b.BundleRoute().Key()]
 			if !ok {
 				continue
 			}

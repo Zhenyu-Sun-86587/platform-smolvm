@@ -30,7 +30,7 @@ func (s *Server) requireStatePointProfile(ctx context.Context, binding registry.
 	} else if !legacyProfile {
 		return rt.FullStateUnavailable(kind, false)
 	}
-	return s.AdmitRuntime(rt.BundleRoute{InstanceID: binding.RuntimeInstanceID, BundleID: binding.RuntimeBundleID}, kind)
+	return s.AdmitRuntime(binding.BundleRoute(), kind)
 }
 
 func (s *Server) machineStatePointProfile(ctx context.Context, id, kind string) error {

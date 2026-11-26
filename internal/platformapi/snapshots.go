@@ -169,7 +169,8 @@ func (s *Server) snapshotRoutes() {
 					if !validChildName(v.Name) {
 						return registry.ErrInvalid
 					}
-					route := registry.Binding{RuntimeInstanceID: item.VM.RuntimeInstanceID, RuntimeBundleID: item.VM.RuntimeBundleID}
+					route := registry.Binding{WorkerID: item.VM.WorkerID, LocalInstanceID: item.VM.LocalInstanceID,
+						RuntimeInstanceID: item.VM.RuntimeInstanceID, RuntimeBundleID: item.VM.RuntimeBundleID}
 					if err := s.requireStatePointProfile(r.Context(), route, rt.VMRestore); err != nil {
 						return err
 					}

@@ -85,7 +85,7 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 	}
 	defer store.Close()
 	control, err := store.Control(ctx)
-	if err != nil || control.SchemaVersion != 1019 || control.ControlEpoch != "control" {
+	if err != nil || control.SchemaVersion < 1020 || control.ControlEpoch != "control" {
 		t.Fatal(control, err)
 	}
 	owner, err := auth.New(store).Bootstrap(ctx, "owner", "existing-password")
@@ -96,7 +96,7 @@ func testDeepMigrationPreservesPauseEvidence(t *testing.T, version int) {
 		t.Fatal(id, err)
 	}
 	b, err := store.GetBinding(ctx, "b")
-	if err != nil || b.PowerState != "unknown" || b.RuntimeBundleID != "" ||
+	if err != nil || b.WorkerID != registry.LocalWorkerID || !b.BundleRoute().Legacy() || b.PowerState != "unknown" ||
 		b.RuntimePauseID != "pause-v1" || b.PauseStatus != "active" || b.ObservedState != "paused" {
 		t.Fatal(b, err)
 	}

@@ -113,24 +113,35 @@ func (n *forkRuntime) CancelFork(_ context.Context, id string, control rt.ForkCo
 
 func nativeForkFixture(t *testing.T, ctx context.Context) (*Engine, *forkRuntime, registry.AcceptRequest) {
 	t.Helper()
+	return nativeForkWorkerFixture(t, ctx, rt.LocalWorkerID)
+}
+
+func nativeForkWorkerFixture(t *testing.T, ctx context.Context, workerID string) (*Engine, *forkRuntime, registry.AcceptRequest) {
+	t.Helper()
 	official := &createRuntime{}
 	engine, owner, epoch := runtimeTestEngine(t, ctx, official)
 	engine.Config.StateDir = t.TempDir()
 	engine.Config.Storage.MinBytes, engine.Config.Storage.MinPercent = 0, 0
 	db := engine.DB
 	source := rt.ExecutionRef{InstanceID: "source", IncarnationID: "source-vmm", ExecutionEpoch: 8}
-	route := rt.BundleRoute{InstanceID: "serve", BundleID: "managed"}
+	route := rt.BundleRoute{WorkerID: workerID, InstanceID: "serve", LocalInstanceID: "serve", BundleID: "managed"}
+	if workerID != rt.LocalWorkerID {
+		route.InstanceID = "global-" + workerID
+		if err := db.RegisterWorker(ctx, registry.Worker{ID: workerID, Name: workerID}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	worker := &forkRuntime{references: map[string]rt.ExecutionRef{"source": source}}
 	worker.route = route
 	engine.runtimes = rt.NewResolver(official, map[rt.BundleRoute]rt.Adapter{route: worker})
 	if err := db.RegisterRuntime(ctx, route, "fork-socket", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.DB().ExecContext(ctx, `INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
-		VALUES ('source','source','t1',1,1,'running','{}','{}',0);
-		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,runtime_instance_id,runtime_bundle_id)
-		VALUES ('source-bind','source',1,'source','current','source-ns','digest','serve','managed');
-		UPDATE machines SET current_binding_id='source-bind' WHERE id='source';`); err != nil {
+	if _, err := db.DB().ExecContext(ctx, `INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running,worker_id)
+		VALUES ('source','source','t1',1,1,'running','{}','{}',0,?);
+		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,runtime_instance_id,runtime_bundle_id,worker_id)
+		VALUES ('source-bind','source',1,'source','current','source-ns','digest',?,'managed',?);
+		UPDATE machines SET current_binding_id='source-bind' WHERE id='source';`, workerID, route.InstanceID, workerID); err != nil {
 		t.Fatal(err)
 	}
 	binding, err := db.GetBinding(ctx, "source-bind")
@@ -144,18 +155,25 @@ func nativeForkFixture(t *testing.T, ctx context.Context) (*Engine, *forkRuntime
 }
 
 func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
+	for _, workerID := range []string{rt.LocalWorkerID, "worker-b"} {
+		t.Run(workerID, func(t *testing.T) { testNativeForkKeepsPartialChildren(t, workerID) })
+	}
+}
+
+func testNativeForkKeepsPartialChildren(t *testing.T, workerID string) {
 	ctx := context.Background()
-	engine, worker, request := nativeForkFixture(t, ctx)
+	engine, worker, request := nativeForkWorkerFixture(t, ctx, workerID)
 	db, owner, epoch := engine.DB, request.PrincipalID, request.Epoch
 	accepted, _, err := db.Accept(ctx, request)
-	if err != nil || len(accepted.Children) != 2 {
+	if err != nil || accepted.WorkerID != workerID || len(accepted.Children) != 2 ||
+		accepted.Children[0].WorkerID != workerID || accepted.Children[1].WorkerID != workerID {
 		t.Fatal(accepted, err)
 	}
 	read := func() registry.Operation {
 		t.Helper()
 		op, err := db.GetOperation(ctx, accepted.ID)
-		if err != nil {
-			t.Fatal(err)
+		if err != nil || op.BundleRoute() != worker.route || op.Children[0].WorkerID != workerID || op.Children[1].WorkerID != workerID {
+			t.Fatal(op, err)
 		}
 		return op
 	}
@@ -188,7 +206,8 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 		t.Fatal(partial)
 	}
 	machine, err = db.GetMachine(ctx, partial.Children[0].MachineID)
-	if err != nil || machine.ActiveOperationID != "" || machine.CurrentBinding == nil || machine.CurrentBinding.PowerState != registry.PowerRunning {
+	if err != nil || machine.WorkerID != workerID || machine.ActiveOperationID != "" || machine.CurrentBinding == nil ||
+		machine.CurrentBinding.BundleRoute() != worker.route || machine.CurrentBinding.PowerState != registry.PowerRunning {
 		t.Fatal(machine, err)
 	}
 	worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage, worker.forkReceipt.Fork.Children[1].Phase = "COMPLETED", "complete", "ABORTED"
@@ -221,6 +240,7 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 	drive(read())
 	completed := read()
 	if completed.State != registry.Succeeded || completed.Effect != registry.EffectApplied || worker.retries != 1 || !completed.SourceLockReleased ||
+		worker.forkReceipt.Fork.CaptureID != "one-source-cut" ||
 		completed.Children[0].MachineID != previous.Children[0].MachineID || completed.Children[0].Attempt != 0 ||
 		completed.Children[1].MachineID != previous.Children[1].MachineID || completed.Children[1].State != "ready" {
 		t.Fatal(completed, worker.retries)
