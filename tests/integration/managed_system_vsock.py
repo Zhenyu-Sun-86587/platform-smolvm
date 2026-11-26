@@ -27,7 +27,7 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history"}
+INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1629,10 +1629,11 @@ def test(args, root, stack, case):
         from polish_product import check_historical_capture
         check_historical_capture(platform, source, ref, candidate)
         return
-    if case in ("polish-files", "polish-capture", "polish-lease-fork", "polish-metrics"):
-        from polish_product import check_capture, check_files, check_lease_and_fork, check_passive_metrics
+    if case in ("polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-old-agent"):
+        from polish_product import check_capture, check_files, check_lease_and_fork, check_old_agent, check_passive_metrics
         check = {"polish-files": check_files, "polish-capture": check_capture,
-                 "polish-lease-fork": check_lease_and_fork, "polish-metrics": check_passive_metrics}[case]
+                 "polish-lease-fork": check_lease_and_fork, "polish-metrics": check_passive_metrics,
+                 "polish-old-agent": check_old_agent}[case]
         check(platform, source, ref)
         return
     if case in ("live-resources", "live-resources-hot"):
@@ -1710,7 +1711,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

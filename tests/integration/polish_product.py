@@ -91,6 +91,24 @@ def check_files(platform, path, ref):
                           replay_preserved_later_bytes=replacement.hex())), flush=True)
 
 
+def check_old_agent(platform, path, ref):
+    def observed():
+        view = platform.app(path)
+        return view if view["guest_management_status"] == "ready" else None
+
+    view = wait_for(observed)
+    cap = view["capabilities"]["files.write"]
+    assert not cap["supported"] and cap["status"] in ("unknown", "unsupported"), cap
+    target = "/root/polish-legacy-denied"
+    status, _, body = file_request(platform, "PUT", path + "/files?" + urlencode({"path": target}),
+                                   b"unavailable", "polish-legacy-agent")
+    failure = json.loads(body)["error"]
+    assert status == 409 and failure["code"] == "CAPABILITY_UNSUPPORTED" and failure["effect"] == "none", failure
+    platform.guest(ref, ["test", "!", "-e", target])
+    print(json.dumps(dict(case="old_agent", capability=cap, upload_error=failure["code"],
+                          execution=ref["incarnation_id"], bundle=platform.bundle_id)), flush=True)
+
+
 def check_capture(platform, path, ref):
     before = platform.app(path + "/resources")["requested"]
     platform.guest(ref, ["sh", "-ec", "printf captured >/root/polish-marker; sync /root/polish-marker"])
