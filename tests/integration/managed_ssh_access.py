@@ -132,3 +132,27 @@ def check(platform, args, keys):
                               new_user_exit=23, agent=False, published_ssh=False,
                               revocation_ms=revoke_ms, sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
                               direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
+
+
+def check_networkless(platform, args, keys):
+    mid, _, ref = machine(platform, "isolated-ssh", light=True)
+    path = "machines/" + mid
+    view = platform.app(path)
+    assert not view.get("network"), view.get("network")
+    token = platform.change("tokens", "isolated-manage", {
+        "label": "Isolated machine", "scope": {"access": "manage", "machine_id": mid},
+    }, status=200)["token"]
+    env = {**os.environ, "SANDBOX_URL": platform.origin, "SANDBOX_TOKEN": token,
+           "SANDBOX_CA_FILE": str(keys / "ca.pem"), "SSH_ASKPASS_REQUIRE": "never"}
+    env.pop("SSH_AUTH_SOCK", None)
+    # Force a large discrepancy between Guest and host realtime in this disposable
+    # VM. SSH must authenticate normally and preserve the Guest's chosen clock.
+    platform.guest(ref, ["date", "-u", "-s", "@1600000000"])
+    response = subprocess.run([args.sandboxctl, "ssh", "--batch-mode", mid, "--", "id -u; date -u +%s"],
+                              env=env, capture_output=True, timeout=90)
+    assert response.returncode == 0, response.stderr.replace(token.encode(), b"<redacted>")
+    uid, timestamp = response.stdout.decode().split()
+    assert uid == "0" and 1600000000 <= int(timestamp) < 1600000600, (uid, timestamp)
+    assert platform.app(path + "/services")["items"] == []
+    print(json.dumps(dict(case="managed-ssh-networkless", machine_id=mid, guest_clock=int(timestamp),
+                          network=False, published_services=0, ssh_uid=uid)), flush=True)
