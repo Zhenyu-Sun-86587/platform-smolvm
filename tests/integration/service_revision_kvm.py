@@ -124,10 +124,10 @@ def credentials(platform, mid, service, protocol, keys, label):
     return "client-certificates/" + issued["certificate_id"], issued["revision"], tls
 
 
-def connect(platform, clients, service, credential, protocol, backend):
+def connect(platform, clients, service, credential, protocol, backend, *, admission_timeout=5):
     request_id = "revision-" + secrets.token_hex(10)
     if protocol == "http":
-        connection = platform.api_connection(timeout=5)
+        connection = platform.api_connection(timeout=admission_timeout)
         clients.callback(connection.close)
         connection.request("GET", "/timeline/" + request_id, headers={
             "Host": service["public_host"], "Authorization": "Bearer " + credential,
@@ -199,7 +199,15 @@ def revision_case(platform, keys, protocol, observe=False):
         platform.guest(ref, ["systemd-run", "--unit=a22-" + label, "/usr/bin/perl", PROGRAM, protocol, str(port), label])
         wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["cat", "/proc/net/tcp"]))
     with ExitStack() as clients:
-        old = connect(platform, clients, before, original, protocol, "before")
+        try:
+            old = connect(platform, clients, before, original, protocol, "before",
+                          admission_timeout=30 if observe else 5)
+        except (OSError, AssertionError):
+            print("Service observation at admission failure", platform.app(service_path).get("observation"), flush=True)
+            print(platform.guest(ref, ["/bin/sh", "-c",
+                  "systemctl is-active a22-before; cat /run/service-revision-receipts /proc/net/tcp; "
+                  "journalctl --no-pager -n 8 -u a22-before"]).decode(errors="replace"), flush=True)
+            raise
         if observe:
             live = platform.app(service_path)["observation"]
             assert live["scope"] == "worker_upstream" and live["status"] == "ready", live
