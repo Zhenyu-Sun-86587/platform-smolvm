@@ -144,7 +144,13 @@ func TestCheckpointPersistsConfigurationFromDispatch(t *testing.T) {
 	}
 	request.Kind, request.Key, request.Scope = rt.VMSnapshot, "snapshot-a", "POST /v1/machines/source/snapshots"
 	request.Request = JSON(map[string]string{"capture_mode": "vm"})
-	request.ForkChildren, request.AdmitNative, request.AdmitRuntime = nil, nil, nil
+	request.ForkChildren, request.AdmitNative = nil, nil
+	request.AdmitRuntime = func(route rt.BundleRoute, kind string) error {
+		if route.BundleID != "managed" || kind != rt.VMSnapshot {
+			return rt.ErrUnsupported
+		}
+		return nil
+	}
 	op, _, err := db.Accept(ctx, request)
 	if err != nil {
 		t.Fatal(err)
