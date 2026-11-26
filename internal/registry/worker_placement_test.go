@@ -555,8 +555,8 @@ func TestStoppedCreateClearsZeroHoldAndStartRequiresPinnedWritableStorage(t *tes
 			t.Fatal(err)
 		}
 		if _, err := f.db.DB().ExecContext(ctx, `INSERT INTO volumes
-			(id,owner_id,name,runtime_instance_id,runtime_bundle_id,revision,state,worker_receipt_json,created_at,worker_id)
-			VALUES(?,?,?,'global-a','bundle',1,'available',?,0,'a')`, volume.id, f.actor, volume.id, string(raw)); err != nil {
+			(id,owner_id,name,runtime_instance_id,runtime_bundle_id,revision,state,worker_receipt_json,created_at)
+			VALUES(?,?,?,'global-a','bundle',1,'available',?,0)`, volume.id, f.actor, volume.id, string(raw)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.db.DB().ExecContext(ctx, `INSERT INTO volume_attachments

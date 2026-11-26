@@ -447,8 +447,9 @@ func pinnedLaunchStorage(ctx context.Context, q queryer, m Machine, route rt.Bun
 	if err != nil {
 		return "", 0, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.id, v.worker_id, v.runtime_instance_id, v.runtime_bundle_id, v.worker_receipt_json
+	rows, err := q.QueryContext(ctx, `SELECT a.id, i.worker_id, v.runtime_instance_id, v.runtime_bundle_id, v.worker_receipt_json
 		FROM volume_attachments a JOIN volumes v ON v.id=a.volume_id
+		JOIN runtime_instances i ON i.id=v.runtime_instance_id AND i.runtime_bundle_id=v.runtime_bundle_id
 		WHERE a.machine_id=? AND a.state='reserved'`, m.ID)
 	if err != nil {
 		return "", 0, err
