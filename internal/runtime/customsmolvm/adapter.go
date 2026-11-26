@@ -52,23 +52,34 @@ func (r Route) Validate() error {
 
 type Adapter struct {
 	unimplemented
-	route           Route
-	lifecyclePolicy bool
+	route               Route
+	legacyLifecycle     bool
+	scopedRelease       bool
+	authorizedLifecycle bool
 }
 
 func (a *Adapter) WorkerSocket() string { return a.route.WorkerSocket }
 
 func (a *Adapter) LifecycleWorkerSocket() string {
-	if a.lifecyclePolicy {
+	if a.legacyLifecycle || a.authorizedLifecycle {
 		return a.WorkerSocket()
 	}
 	return ""
 }
 
-func (a *Adapter) NativeStopContract() bool { return a.lifecyclePolicy }
+func (a *Adapter) NativeStopContract() bool {
+	return a.legacyLifecycle || a.authorizedLifecycle
+}
+
+func (a *Adapter) NativeStandbyContract() bool {
+	return !a.scopedRelease || a.authorizedLifecycle
+}
 
 func (a *Adapter) Admit(kind string) error {
-	if (kind == "configure" || kind == "delete" || kind == "task_start" || kind == "task_cancel") && a.LifecycleWorkerSocket() != "" {
+	if kind == "configure" && a.LifecycleWorkerSocket() != "" {
+		return nil
+	}
+	if a.legacyLifecycle && (kind == "delete" || kind == "task_start" || kind == "task_cancel") {
 		return nil
 	}
 	if a.WorkerSocket() != "" {
@@ -95,12 +106,23 @@ func New(route Route) (*Adapter, error) {
 		var manifest struct {
 			Contracts struct {
 				Policy int `json:"lifecycle_policy"`
+				Scoped int `json:"managed_authorized_scope"`
 			}
 		}
 		if err := json.Unmarshal(raw, &manifest); err != nil {
 			return nil, err
 		}
-		a.lifecyclePolicy = manifest.Contracts.Policy == 1
+		a.legacyLifecycle = manifest.Contracts.Policy == 1
+		a.scopedRelease = manifest.Contracts.Scoped == 1
+		if a.scopedRelease {
+			if a.legacyLifecycle {
+				return nil, fmt.Errorf("scoped Runtime Bundle has a conflicting historical lifecycle contract")
+			}
+			a.authorizedLifecycle, err = route.readAuthorizedLifecycle(raw)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return a, nil
 }
@@ -114,6 +136,13 @@ func (a *Adapter) connect(ctx context.Context) (*http.Client, Handshake, error) 
 	if err != nil {
 		endpoint.CloseIdleConnections()
 		return nil, Handshake{}, err
+	}
+	if a.authorizedLifecycle && h.Capabilities[rt.SystemBootCapability].Supported {
+		capability := rt.Capability{Status: "supported", Supported: true, ContractVersion: 1, VerifiedProfile: "managed-parked-v1"}
+		h.Capabilities["lifecycle.standby"] = capability
+		h.Capabilities["lifecycle.standby_wake"] = capability
+		capability.VerifiedProfile = rt.SystemBootProfile
+		h.Capabilities["lifecycle.stop"] = capability
 	}
 	return endpoint, h, nil
 }

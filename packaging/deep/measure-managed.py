@@ -95,15 +95,17 @@ def measure_authorized(args, runtime, image, source, platform):
     (output / managed_evidence.SYSTEM_TEMPLATE).parent.mkdir()
     (output / managed_evidence.log_name("system-boot")).parent.mkdir(parents=True)
     selected = set(args.authorized_case or managed_evidence.AUTHORIZED_CASES) | {"system-boot"}
+    cases = {case: options for case, options in managed_evidence.AUTHORIZED_CASES.items() if case in selected}
+    if args.authorized_lifecycle:
+        case = managed_evidence.LIFECYCLE_CASE
+        cases[case] = (case, None)
     runs = {}
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="authorized-acceptance-") as temporary:
         disk, bundle, measured, platformd = stage_guest(runtime, image, args.platformd, Path(temporary))
         product = [sys.executable, "-B", str(fixture), "--bundle", str(bundle), "--system-image", str(disk),
                    "--platformd", str(platformd), "--work-dir", str(args.work_dir)]
-        for case, (name, mode) in managed_evidence.AUTHORIZED_CASES.items():
-            if case not in selected:
-                continue
+        for case, (name, mode) in cases.items():
             path = output / managed_evidence.log_name(case)
             command = [*product, "--case", name]
             if mode:
@@ -121,6 +123,10 @@ def measure_authorized(args, runtime, image, source, platform):
                     "system_disk_bytes": disk.stat().st_size, "system_disk_sha256": checksum(disk),
                     "acceptance_revisions": revisions, "measurement_bundle_digest": measured,
                     "system_template_sha256": checksum(template), "runs": runs}
+        if args.authorized_lifecycle:
+            evidence[managed_evidence.AUTHORIZED_LIFECYCLE] = {
+                "schema": managed_evidence.LIFECYCLE_SCHEMA, **runs.pop(managed_evidence.LIFECYCLE_CASE),
+            }
         (output / managed_evidence.EVIDENCE).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
 
@@ -213,13 +219,14 @@ if __name__ == "__main__":
     parser.add_argument("--authorized-only", action="store_true", help="measure authorized System and private TCP lifecycle cases")
     parser.add_argument("--authorized-case", action="append", choices=managed_evidence.AUTHORIZED_CASES,
                         help="select an authorized case in addition to System boot; defaults to all authorized cases")
+    parser.add_argument("--authorized-lifecycle", action="store_true", help="also measure verified owner policy and Standby resume")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"), help="scratch directory for private measurement inputs")
     parser.add_argument("--cc", default="cc", help="C compiler for Guest test fixtures")
     args = parser.parse_args()
     if args.authorized_only and (args.private_network or args.live_resources or args.probe or args.counter):
         parser.error("--authorized-only has its own fixtures and cases")
-    if args.authorized_case and not args.authorized_only:
-        parser.error("--authorized-case requires --authorized-only")
+    if (args.authorized_case or args.authorized_lifecycle) and not args.authorized_only:
+        parser.error("authorized case selection requires --authorized-only")
     try:
         measure(args)
     except (BundleError, OSError, subprocess.SubprocessError, ValueError) as error:

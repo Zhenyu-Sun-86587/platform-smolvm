@@ -125,6 +125,8 @@ python3 -B packaging/deep/pack-candidate.py \
 
 For a narrower run, repeat `--authorized-case` with the desired cases. Every release under this contract includes a System boot result. The installer verifies the completed case logs, the same-build measurement digest and the system disk. Serve verifies the configured Worker's executable digest before publishing the measured capabilities. The records for versions 1–3 continue to use their complete acceptance groups and existing reader contract.
 
+Add `--authorized-lifecycle` to measure an owner's policy change against the live Worker, park the same System execution and resume it through an authorized lease. The case also checks that public Stop releases the execution and a cold start reads the root disk at the next epoch. The platform verifies the optional `RuntimeAuthorizedLifecycle/1` result inside the installed /4 record and enables Worker-backed policy and service access for that route. The lifecycle log is bound to the same binaries, disk and fixture as the System boot case.
+
 ## Retain a historical reader and roll back selection
 
 Install each release in its own digest-named directory. Keep a separate Serve process, Unix socket and writable state directory for each release. Configure each verified endpoint under `runtime.custom` with the values from `sandboxctl admin runtime-capabilities`. The Worker broker and its resource catalog are shared. Existing bindings keep their Serve identity and Bundle digest. Switch the selected runtime for new instances to the earlier installed route to roll back new-instance placement. A binary rollback of platformd follows the [platform rollback procedure](../install/README.md) and requires a compatible pre-upgrade database backup for schema changes.

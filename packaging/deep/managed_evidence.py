@@ -13,6 +13,9 @@ MANAGED = {"managed_block_launch", "managed_parked_fork", "managed_statepoint", 
 PRIVATE_NETWORK = "managed_private_network"
 LIVE_RESOURCES = "managed_live_resources"
 AUTHORIZED_SCOPE = "managed_authorized_scope"
+AUTHORIZED_LIFECYCLE = "authorized_lifecycle"
+LIFECYCLE_CASE = "system-lifecycle"
+LIFECYCLE_SCHEMA = "RuntimeAuthorizedLifecycle/1"
 SCHEMA_V1 = "RuntimeManagedAcceptance/1"
 SCHEMA_V2 = "RuntimeManagedAcceptance/2"
 SCHEMA_V3 = "RuntimeManagedAcceptance/3"
@@ -182,7 +185,7 @@ def authorized_contracts(evidence):
 
 def verify_authorized_log(case, path, measured):
     require(path.is_file() and 0 < path.stat().st_size <= 4 * 1024 * 1024, f"invalid authorized log for {case}")
-    label, mode = AUTHORIZED_CASES[case]
+    label, mode = (case, None) if case == LIFECYCLE_CASE else AUTHORIZED_CASES[case]
     prefix = "Authorized KVM "
     lines = path.read_text(encoding="utf-8").splitlines()
     require(bool(lines) and lines[-1].startswith(prefix), f"missing final authorized result for {case}")
@@ -228,6 +231,14 @@ def verify_authorized_log(case, path, measured):
         require(same_slot(old, saved)
                 and all(restored[key] not in {old[key], saved[key]} for key in ("instance_id", "incarnation_id"))
                 and marked("capture_id", "snapshot_id", "marker"), "missing System checkpoint and exact Hibernate resume")
+    elif case == LIFECYCLE_CASE:
+        original = ref("execution")
+        protected, cleared = value.get("protected_revision"), value.get("cleared_revision")
+        require(original == ref("standby") == ref("resumed")
+                and type(protected) is int and protected > 0 and type(cleared) is int and cleared == protected + 1
+                and marked("wake_operation_id", "released_lease_id"), "missing policy, held Standby and authorized resume")
+        require(same_slot(original, ref("cold_started")) and marked("stop_operation_id", "start_operation_id")
+                and value["stop_operation_id"] != value["start_operation_id"], "missing verified cold restart")
     else:
         original, restored = ref("original"), ref("restored")
         receipts = value.get("business_receipts")
@@ -245,8 +256,9 @@ def verify_authorized_log(case, path, measured):
 
 
 def verify_authorized(root, profile, artifacts, evidence):
-    fields(evidence, "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes "
-                    "system_template_sha256 acceptance_revisions measurement_bundle_digest runs", "authorized evidence")
+    base = ("schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes "
+            "system_template_sha256 acceptance_revisions measurement_bundle_digest runs")
+    fields(evidence, base + (" " + AUTHORIZED_LIFECYCLE if AUTHORIZED_LIFECYCLE in evidence else ""), "authorized evidence")
     advertised = set(profile["contracts"]) - MEASUREMENT_PROTOCOLS
     require(advertised == authorized_contracts(evidence) and "system-debian-v1" in profile["boot_profiles"],
             "authorized evidence differs from the advertised contract scope")
@@ -269,6 +281,11 @@ def verify_authorized(root, profile, artifacts, evidence):
     runs = evidence["runs"]
     fields(runs["system-boot"], "log_sha256 harness_sha256", "authorized System boot run")
     harness = runs["system-boot"]["harness_sha256"]
+    if AUTHORIZED_LIFECYCLE in evidence:
+        lifecycle = evidence[AUTHORIZED_LIFECYCLE]
+        fields(lifecycle, "schema log_sha256 harness_sha256", "authorized lifecycle run")
+        require(lifecycle["schema"] == LIFECYCLE_SCHEMA, "unsupported authorized lifecycle schema")
+        runs = {**runs, LIFECYCLE_CASE: {key: lifecycle[key] for key in ("log_sha256", "harness_sha256")}}
     for case, result in runs.items():
         fields(result, "log_sha256 harness_sha256", "authorized acceptance run")
         digest(result["harness_sha256"], "authorized harness digest")

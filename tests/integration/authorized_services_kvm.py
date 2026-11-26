@@ -20,7 +20,7 @@ from managed_system_vsock import Platform, wait_for, worker
 
 
 DIRECT = {"private-tcp", "private-udp"}
-SYSTEM = {"system-boot", "system-fork", "system-restore"}
+SYSTEM = {"system-boot", "system-fork", "system-restore", "system-lifecycle"}
 NETWORK = dict(network_id="owned-services", route_domain_id="owned-services", cidr="10.44.61.0/24")
 PROGRAM = "/run/authorized-service.pl"
 RECEIPTS = "/run/authorized-service-receipts"
@@ -35,8 +35,8 @@ def witness(platform, case, **facts):
     print("Authorized KVM", json.dumps(dict(case=case, bundle_digest=platform.bundle_id, **facts), sort_keys=True), flush=True)
 
 
-def machine(platform, label, mode=None):
-    resources = dict(cpu_count=1, memory_mib=512) if mode else dict(cpu_count=2, memory_mib=768)
+def machine(platform, label, mode=None, *, light=False):
+    resources = dict(cpu_count=1, memory_mib=512) if mode or light else dict(cpu_count=2, memory_mib=768)
     parameters = dict(name=label, template_id="t_system", boot_mode="system", runtime_instance_id=platform.serve_id,
                       start=True, resources=resources)
     if mode:
@@ -56,17 +56,87 @@ def worker_get(platform, method, ref, payload=None):
                   expected=identity(ref))
 
 
-def stop(platform, mid):
+def policy_standby(platform, mid, ref, confirmed, marker, volatile_path):
     path = f"machines/{mid}"
-    def running():
-        view = platform.app(path)
-        return view if view["power_state"] == "running" else None
+    lifecycle = path + "/lifecycle"
+    def policy_ready():
+        status = platform.app(lifecycle)
+        return status if status["supported"] and status["applied_revision"] == status["desired_revision"] else None
 
-    platform.complete(platform.change(path + "/stop", "stop-" + mid, {}, wait_for(running, timeout=15)))
+    wait_for(policy_ready, timeout=25)
+
+    def protect(key, value):
+        status = platform.app(lifecycle)
+        policy = {"keep_running": value, "auto_standby": False, "auto_hibernate": False}
+        configured = platform.change(path, key, {
+            "expected_policy_revision": status["desired_revision"], "lifecycle_policy": policy,
+        }, platform.app(path), method="PATCH")
+        platform.complete(configured)
+        applied = platform.app(lifecycle)
+        current = worker_get(platform, "GetLifecycleStatus", ref, {})
+        assert identity(current) == identity(ref) and current["power"] == "RUNNING", current
+        assert applied["applied_revision"] == current["applied_revision"] == status["desired_revision"] + 1
+        assert applied["applied"]["keep_running"] == current["effective_policy"]["keep_running"] == value
+        return applied["applied_revision"]
+
+    protected = protect("owned-enable-running-protection", True)
+    cleared = protect("owned-clear-running-protection", False)
+    events = worker_get(platform, "QueryLifecycleEvents", ref, {"after": 0})["events"]
+    cursor = max((event["seq"] for event in events), default=0)
+    view = platform.wait_capability(path, "lifecycle.standby")
+    platform.complete(platform.change(path + "/standby", "owned-standby", {}, view))
+    parked = worker_get(platform, "GetLifecycleStatus", ref, {})
+    inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
+    assert parked["power"] == "STANDBY" and inventory["inventory"]["source_disposition"] == "STANDBY", inventory
+    assert identity(parked) == identity(ref)
+
+    def lease(route, method, key, body, revision):
+        return platform.app(route, method, body, {"If-Control-Epoch": platform.epoch,
+                            "If-Match": f'"{revision}"', "Idempotency-Key": key}, timeout=60)
+
+    hold = lease(path + "/leases", "POST", "owned-wake-via-lease", {
+        "reason": "Authorized standby resume", "ttl_seconds": 60, "semantics_version": 2,
+    }, platform.app(path)["revision"])
+    assert hold["state"] == "active" and hold["execution_epoch"] == ref["execution_epoch"], hold["state"]
+    awake = worker_get(platform, "GetLifecycleStatus", ref, {})
+    assert awake["power"] == "RUNNING" and not awake["controlled_suspended"] and identity(awake) == identity(ref), awake
+    confirmed(ref)
+
+    def completed_wake():
+        new = worker_get(platform, "QueryLifecycleEvents", ref, {"after": cursor})["events"]
+        operations = {event["operation_id"] for event in new if event["origin"] == "wake"}
+        assert len(operations) <= 1, new
+        if operations and any(event["origin"] == "wake" and event["stage"] == "completed" for event in new):
+            return operations.pop()
+
+    wake = wait_for(completed_wake, timeout=10)
+    released = lease("leases/" + hold["lease_id"], "DELETE", "owned-release-resume-lease",
+                     {"lease_token": hold["lease_token"]}, hold["revision"])
+    assert released["state"] == "released", released
+    durable_path = "/root/authorized-lifecycle-state"
+    platform.guest(ref, ["/bin/sh", "-ec", 'cat > "$1"; sync "$1"', "owned", durable_path], stdin=marker)
+    view = platform.wait_capability(path, "lifecycle.stop")
+    stopped = platform.complete(platform.change(path + "/stop", "owned-cold-stop", {}, view))
+    stopped_view = platform.app(path)
+    no_incarnation = {**ref, "incarnation_id": None}
+    offline = worker_get(platform, "GetLifecycleStatus", no_incarnation, {})
+    assert stopped_view["power_state"] == "stopped" and offline["power"] == "STOPPED", offline
+    assert offline["execution_epoch"] == ref["execution_epoch"] and not offline.get("incarnation_id"), offline
+    started = platform.complete(platform.change(path + "/start", "owned-cold-restart", {}, stopped_view))
+    _, restarted = platform.context(mid)
+    assert restarted["instance_id"] == ref["instance_id"] and restarted["incarnation_id"] != ref["incarnation_id"]
+    assert restarted["execution_epoch"] == ref["execution_epoch"] + 1, restarted
+    assert wait_for(lambda: platform.guest(restarted, ["/bin/sh", "-ec", 'test ! -e "$2"; cat "$1"',
+                                                       "owned", durable_path, volatile_path]) == marker.encode(),
+                    retry=(RuntimeError, OSError))
+    witness(platform, "system-lifecycle", execution=identity(ref), standby=identity(parked),
+            resumed=identity(awake), protected_revision=protected, cleared_revision=cleared,
+            wake_operation_id=wake, released_lease_id=hold["lease_id"], cold_started=identity(restarted),
+            stop_operation_id=stopped["operation_id"], start_operation_id=started["operation_id"])
 
 
 def system_lifecycle(platform, case):
-    mid, _, ref = machine(platform, "system")
+    mid, _, ref = machine(platform, "system", light=case == "system-lifecycle")
     machine_path = f"machines/{mid}"
     marker = "ram-" + os.urandom(12).hex()
     path = "/run/authorized-state"
@@ -79,6 +149,9 @@ def system_lifecycle(platform, case):
     confirmed(ref)
     if case == "system-boot":
         witness(platform, case, execution=identity(ref), marker=marker)
+        return
+    if case == "system-lifecycle":
+        policy_standby(platform, mid, ref, confirmed, marker, path)
         return
     if case == "system-fork":
         fork_view = platform.wait_capability(machine_path, "state.fork_batch")
@@ -311,9 +384,6 @@ def service_access(platform, case, keys, ssh_key, sandboxctl, mode):
     witness(platform, case, original=identity(ref), restored=identity(live), capture_id=capture,
             operation_id=operation, business_receipts=dict(observed), mode=mode,
             lost_response=lost_response, **physical)
-    stop(platform, mid)
-    if case in DIRECT:
-        stop(platform, source)
 
 
 def main():
@@ -324,6 +394,7 @@ def main():
     parser.add_argument("--mode", choices=("native", "fixed_internal"), default="native")
     parser.add_argument("--sandboxctl", type=lambda path: Path(path).resolve())
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
+    parser.add_argument("--use-installation", action="store_true", help="read-only bind the supplied installed Bundle")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("Linux KVM and an isolated root fixture are required")
@@ -347,7 +418,7 @@ def main():
         system = args.case in SYSTEM
         keys, tls, gateway = (None, None, None) if system or args.case in DIRECT else tls_setup(root)
         platform = Platform(args, root, stack, () if system else (NETWORK,),
-                            tls=tls, gateway=gateway, managed_ssh=args.case == "ssh")
+                            use_installation=args.use_installation, tls=tls, gateway=gateway, managed_ssh=args.case == "ssh")
         try:
             platform.start()
             if system:

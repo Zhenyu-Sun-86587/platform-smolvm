@@ -134,6 +134,14 @@ class ManagedEvidenceTest(unittest.TestCase):
         self.profile["contracts"] = dict.fromkeys((*PROTOCOLS, *managed.authorized_contracts(self.evidence)), 1)
         self.verify()
 
+        policy = self.log(managed.LIFECYCLE_CASE, (witness(
+            managed.LIFECYCLE_CASE, execution=original, standby=original, resumed=original,
+            protected_revision=2, cleared_revision=3, wake_operation_id="wake", released_lease_id="released",
+            cold_started=restored, stop_operation_id="stopped", start_operation_id="started",
+        ),))
+        self.evidence[managed.AUTHORIZED_LIFECYCLE] = dict(schema=managed.LIFECYCLE_SCHEMA, **policy)
+        self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()

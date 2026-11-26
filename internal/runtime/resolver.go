@@ -55,6 +55,9 @@ func (r *Resolver) Admit(route BundleRoute, kind string) error {
 			return NativePowerUnavailable(kind)
 		}
 		if _, ok := adapter.(NativeControl); err == nil && ok {
+			if contract, scoped := adapter.(interface{ NativeStandbyContract() bool }); scoped && !contract.NativeStandbyContract() {
+				return NativePowerUnavailable(kind)
+			}
 			return nil
 		}
 		return NativePowerUnavailable(kind)

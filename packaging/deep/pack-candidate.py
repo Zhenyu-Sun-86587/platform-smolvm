@@ -218,6 +218,8 @@ def main():
                 if measured.get("schema") == managed_evidence.SCHEMA_V4:
                     managed_contracts = managed_evidence.authorized_contracts(measured)
                     cases = list(measured["runs"])
+                    if managed_evidence.AUTHORIZED_LIFECYCLE in measured:
+                        cases.append(managed_evidence.LIFECYCLE_CASE)
                 else:
                     managed_contracts = set(managed_evidence.MANAGED)
                     cases = [*managed_evidence.SCENARIOS]
