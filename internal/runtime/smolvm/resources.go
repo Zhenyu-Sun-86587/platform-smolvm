@@ -161,5 +161,9 @@ func (client *Client) Metrics(ctx context.Context, name string) (runtime.Metrics
 	if native.Name != name || native.At == "" {
 		return runtime.Metrics{}, protocolError("metrics response is missing the expected runtime and timestamp", false, nil)
 	}
-	return runtime.Metrics(native), nil
+	return runtime.Metrics{
+		Name: native.Name, At: native.At, State: native.State, VCPUs: native.VCPUs, MemoryLimitMB: native.MemoryLimitMB,
+		CPUMillis: native.CPUMillis, CPULimitMillis: native.CPULimitMillis, MemoryMB: native.MemoryMB, RSSMB: native.RSSMB,
+		DiskUsedMB: native.DiskUsedMB, DiskGB: native.DiskGB, EgressBytes: native.EgressBytes, Pressure: native.Pressure,
+	}, nil
 }
