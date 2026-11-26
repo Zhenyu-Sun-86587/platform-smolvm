@@ -270,6 +270,11 @@ func transitionPlacement(ctx context.Context, tx *sql.Tx, op Operation, change T
 		case change.PlacementNotAdmitted && rt.IsNativeFork(op.Kind) && r.Attempt > 1 &&
 			oneOf(r.Phase, placement.Reserved, placement.DispatchStarted, placement.Unknown):
 			return setReservationPhase(ctx, tx, r, placement.Rejected)
+		case change.FencedActivationFailure && op.Kind == rt.VMRestore &&
+			oneOf(r.Phase, placement.DispatchStarted, placement.Unknown):
+			// The native restore target is durably aborted and fenced even
+			// though its former guest-side effects were unknowable.
+			return setReservationPhase(ctx, tx, r, placement.Rejected)
 		case op.Effect == EffectNone && r.Phase == placement.Reserved:
 			return setReservationPhase(ctx, tx, r, placement.Released)
 		case op.Effect == EffectNone && oneOf(r.Phase, placement.DispatchStarted, placement.Unknown):

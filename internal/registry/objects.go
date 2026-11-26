@@ -439,6 +439,12 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 			if native.ForkCapabilities != nil {
 				fields["native_fork_capabilities"], _ = json.Marshal(native.ForkCapabilities)
 			}
+			if native.ForkStorage != nil && native.ForkStorage.Execution == ref &&
+				native.ForkStorage.HostBootID != "" && native.ForkStorage.WritableBytes > 0 {
+				fields["native_fork_storage"], _ = json.Marshal(native.ForkStorage)
+			} else if native.ForkCapabilities != nil || old.ExecutionRef() != ref || stopped || hibernated {
+				delete(fields, "native_fork_storage")
+			}
 			if native.StopBarrier != nil {
 				fields["native_stop_barrier"], _ = json.Marshal(*native.StopBarrier)
 			} else if old.ExecutionRef() != ref {

@@ -125,6 +125,9 @@ func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
 	if inventory.Execution.ExecutionRef != ref || !inventory.ForkEligible(j.Op.Kind) {
 		return j.fail(ctx, rt.FullStateUnavailable(j.Op.Kind, false))
 	}
+	if err := j.DB.VerifyForkPlacementStorage(ctx, j.Op.ID, len(j.Op.Children), inventory.ForkStorage()); err != nil {
+		return j.fail(ctx, err)
+	}
 	request := rt.ForkSubmission{OperationID: j.Op.ID, Expected: ref, Kind: j.Op.Kind}
 	if j.Op.Kind == rt.ForkBatch && len(j.Op.Request) != 0 {
 		var input struct {
@@ -530,6 +533,7 @@ func (j *Job) confirmForkChild(ctx context.Context, control rt.NativeForkControl
 	x := nativeObservation(binding, ref, registry.PowerRunning, profile)
 	x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	x.Native.ForkCapabilities = observedForkCapabilities(inventory)
+	x.Native.ForkStorage = inventory.ForkStorage()
 	result = registry.ForkChildTransition{Ordinal: child.Ordinal, State: "ready", Observation: &x, ResourceProof: disks}
 	if !receipt.HasProductVolumes {
 		return result, nil, nil

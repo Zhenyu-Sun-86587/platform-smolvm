@@ -125,6 +125,7 @@ type NativeObservation struct {
 	VerifiedStandbyProfile string
 	VerifiedLaunch         bool
 	ForkCapabilities       map[string]rt.Capability
+	ForkStorage            *rt.ForkStorageEvidence
 	VerifiedRestore        bool
 	VerifiedStop           bool
 	StopBarrier            *bool

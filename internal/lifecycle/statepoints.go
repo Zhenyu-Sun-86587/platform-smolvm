@@ -457,6 +457,10 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 	}
 	observation := nativeObservation(j.Binding, current, registry.PowerRunning, profile)
 	observation.Native.VerifiedRestore = true
+	if storage := inventory.ForkStorage(); storage != nil {
+		observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
+		observation.Native.ForkStorage = storage
+	}
 	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	result := map[string]any{"machine_id": j.Op.MachineID, "execution_epoch": current.ExecutionEpoch,
 		"statepoint": point, "volume_map": point.VolumeMap}

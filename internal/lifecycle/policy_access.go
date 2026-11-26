@@ -339,6 +339,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 			x := nativeObservation(b, current, registry.PowerRunning, b.RuntimeBundleID+"/"+inv.Inventory.Protocol)
 			x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 			x.Native.ForkCapabilities = observedForkCapabilities(inv)
+			x.Native.ForkStorage = inv.ForkStorage()
 			return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 		}
 		// A concurrent access can journal a newer authorization decision.
@@ -367,6 +368,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		x.Native.VerifiedRestore = !x.Native.VerifiedLaunch
 		x.Native.StopBarrier = &inv.Inventory.StopBarrier
 		x.Native.ForkCapabilities = observedForkCapabilities(inv)
+		x.Native.ForkStorage = inv.ForkStorage()
 		x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 		return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 	}

@@ -163,6 +163,10 @@ func (j *Job) driveSystemLaunch(ctx context.Context, request Create, routeError 
 		ref := rt.ExecutionRef{InstanceID: binding.InstanceID}
 		observation := nativeObservation(j.Binding, ref, registry.PowerStopped, "")
 		observation.Native.VerifiedLaunch = true
+		if storage := inventory.ForkStorage(); storage != nil {
+			observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
+			observation.Native.ForkStorage = storage
+		}
 		return j.Done(ctx, registry.TransitionRequest{Observation: &observation, Effect: registry.EffectApplied,
 			PromoteBinding: true, DesiredPower: "stopped", Result: JSON(map[string]any{"machine_id": j.Op.MachineID, "boot_mode": rt.BootSystem})})
 	}

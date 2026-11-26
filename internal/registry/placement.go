@@ -268,8 +268,18 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 			return nil, err
 		}
 	}
+	if r.Kind == rt.VMRestore {
+		if r.Placement != nil || r.ResolvePlacement != nil || route.Legacy() {
+			return nil, ErrInvalid
+		}
+		managed, err := placementWorkerManaged(ctx, tx, worker)
+		if err != nil || !managed {
+			return nil, err
+		}
+		return statePointRestorePlacement(ctx, tx, route, request, r.Heavy)
+	}
 	if r.Placement != nil || r.ResolvePlacement != nil {
-		if r.Placement == nil || !oneOf(r.Kind, "create", rt.VMRestore) {
+		if r.Placement == nil || r.Kind != "create" {
 			return nil, ErrInvalid
 		}
 		requirements := *r.Placement
@@ -292,9 +302,6 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 				return nil, ErrConflict
 			}
 			requirements.RuntimeInstanceID = route.InstanceID
-			if r.Kind == rt.VMRestore {
-				requirements.OwnerWorkerID = worker
-			}
 		}
 		return &requirements, nil
 	}
@@ -322,6 +329,11 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 	if err != nil {
 		return nil, err
 	}
+	if rt.IsNativeFork(r.Kind) {
+		if err := setForkPlacementStorage(ctx, tx, prior.CurrentBinding, route, count, req); err != nil {
+			return nil, err
+		}
+	}
 	if r.Kind == "start" && prior.CurrentBinding.PowerState == PowerStopped {
 		digest, bytes, err := pinnedLaunchStorage(ctx, tx, prior, route)
 		if err != nil {
@@ -341,10 +353,8 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 func ownerPlacement(spec json.RawMessage, route rt.BundleRoute, worker, capability string, count int64, heavy bool) (*placement.Request, error) {
 	var source struct {
 		Resources struct {
-			CPUs    uint8  `json:"cpu_count"`
-			Memory  uint32 `json:"memory_mib"`
-			Storage uint32 `json:"storage_gib"`
-			Overlay uint32 `json:"overlay_gib"`
+			CPUs   uint8  `json:"cpu_count"`
+			Memory uint32 `json:"memory_mib"`
 		}
 	}
 	if err := json.Unmarshal(spec, &source); err != nil {
@@ -357,11 +367,6 @@ func ownerPlacement(spec json.RawMessage, route rt.BundleRoute, worker, capabili
 		VCPUs:     int64(source.Resources.CPUs) * count,
 		MemoryMiB: int64(source.Resources.Memory) * count,
 	}
-	storageGiB := int64(source.Resources.Storage) + int64(source.Resources.Overlay)
-	if storageGiB > (1<<33-1)/count {
-		return nil, ErrInvalid
-	}
-	resources.StorageBytes = storageGiB * count << 30
 	if heavy {
 		resources.HeavySlots = 1
 	}
@@ -377,7 +382,14 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 		if worker == "" {
 			worker = "local-worker"
 		}
-		return checkWorkerEntrance(ctx, tx, worker, "fork_retry")
+		if err := checkWorkerEntrance(ctx, tx, worker, "fork_retry"); err != nil {
+			return err
+		}
+		managed, err := placementWorkerManaged(ctx, tx, worker)
+		if err != nil || !managed {
+			return err
+		}
+		return placementEvidenceMissing(op.BundleRoute(), "fork_retry_admission_evidence_unavailable")
 	}
 	if err != nil {
 		return err
@@ -395,10 +407,6 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 	if oneOf(last.Phase, placement.DispatchStarted, placement.Unknown, placement.Admitted, placement.Reserved) {
 		return fmt.Errorf("%w: prior Worker reservation has not reconciled", ErrOperationState)
 	}
-	source, err := readMachine(ctx, tx, op.MachineID)
-	if err != nil {
-		return err
-	}
 	route, err := loadRuntimeRoute(ctx, tx, last.RuntimeInstanceID)
 	if err != nil {
 		return err
@@ -413,21 +421,36 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 			nativeAttempt = max(nativeAttempt, child.Attempt+1)
 		}
 	}
-	req, err := ownerPlacement(source.Spec, route, route.WorkerID, rt.FullStateOperationCapability(op.Kind), count, op.Heavy)
+	first, err := scanPlacementReservation(tx.QueryRowContext(ctx, `SELECT `+reservationFields+
+		` FROM placement_reservations WHERE operation_id=? AND attempt=1`, op.ID))
 	if err != nil {
 		return err
 	}
-	route, err = selectPlacement(ctx, tx, op.ControlEpoch, "fork_retry", *req, time.Now())
+	total := int64(len(op.Children))
+	if total < 1 || count < 1 || count > total || first.WorkerID != route.Owner() || first.RuntimeInstanceID != route.InstanceID ||
+		first.BundleID != route.BundleID || first.Resources.StorageBytes <= 0 || first.Resources.StorageBytes%total != 0 ||
+		first.Resources.VCPUs <= 0 || first.Resources.VCPUs%total != 0 ||
+		first.Resources.MemoryMiB <= 0 || first.Resources.MemoryMiB%total != 0 {
+		return placementEvidenceMissing(route, "fork_retry_admission_evidence_unavailable")
+	}
+	req := placement.Request{Mode: placement.Pinned, WorkerID: route.Owner(), OwnerWorkerID: route.Owner(),
+		RuntimeInstanceID: route.InstanceID, BundleID: route.BundleID, Capabilities: []string{rt.FullStateOperationCapability(op.Kind)},
+		Resources: placement.Resources{VCPUs: first.Resources.VCPUs / total * count,
+			MemoryMiB: first.Resources.MemoryMiB / total * count, StorageBytes: first.Resources.StorageBytes / total * count,
+			HeavySlots: first.Resources.HeavySlots}}
+
+	route, err = selectPlacement(ctx, tx, op.ControlEpoch, "fork_retry", req, time.Now())
 	if err != nil {
 		return err
 	}
-	return insertPlacementReservation(ctx, tx, op, route, *req, last.Attempt+1, nativeAttempt)
+	return insertPlacementReservation(ctx, tx, op, route, req, last.Attempt+1, nativeAttempt)
 }
 
 func placementWorkerManaged(ctx context.Context, q queryer, worker string) (bool, error) {
 	var managed bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
-		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&managed)
+		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)
+		OR EXISTS(SELECT 1 FROM workers WHERE id=? AND endpoint<>'')`, worker, worker, worker).Scan(&managed)
 	return managed, err
 }
 
