@@ -58,3 +58,14 @@ Serve 修复 `695dd571d45b0f3bb403775da8ac04c8298e6475` 在控制路径存在但
 | `policy_armed` | revision 6。目标 `ABORTED/failed_held`，保留 `commit`，writer 已释放、TAP 已退休且无已记录发布。父机继续。另一批成功子机的私网接收端有新身份心跳 18–21，本机回环得到计数 23。该笔 UDP 对应的外部收据等待 8 s 超时。 | `dev-owned-target-exit-v3-policy_armed.log` `b2271e32f15c55105a02f8cd911550acd6d17f7a2e837f2d470ab4b516303ecd` |
 
 接收端在 `committing` 和 `policy_armed` 退出观察期间都未收到失败目标地址的数据。`commit` 已持久化的目标可能在退出前收到放行，因此这些接收端观测仅证明本次业务收件结果。Worker 后续提交 `b75b1b743e9fcd6c06cc241a9211cf0f44a97ca2` 将当次执行已记录的 `activation_decision` 带入 Fork 回执，使平台可以独立判断业务结果的不确定性。Worker 的 7 项 Catalog 单测通过。
+
+## 公开操作的放行结果
+
+平台 `b66f5d9` 与带新 Worker 回执的开发 Bundle `sha256:0868d46265940ba7d082cdb2dd1d61ce62d95844aef00ae173171bf4f4b7f3d1` 在同一 Debian 盘上再次运行。两次目标进程经 pidfd 确认退出，writer 释放、TAP 退休，父机继续。退出前、退出后以及写入终态时的三份决议均与同一子尝试匹配。原始记录位于 `.build/a14-public-effect/`。
+
+| 命中切点 | 持久决议与公开结果 | 随后正常子机的独立业务观测 | 日志和 SHA-256 |
+| --- | --- | --- | --- |
+| `authority_prepared`，revision 1 | 三次均为 `none`，公开终态 `failed`、`effect=none` | 接收器记录心跳 83、84。子机回环确认业务 100，本机持续发送至 120，外部未收到业务 100。 | `owned-cut-authority_prepared-v1.log` · `cb831c44c6c9f590d5e589d90488670e3e6b3cca76c48e063daaf706509604f9` |
+| `policy_armed`，revision 6 | 三次均为 `commit`，公开终态 `failed`、`effect=unknown` | 接收器记录心跳 115、116。子机回环确认业务 132，本机持续发送至 152，外部未收到业务 132。 | `owned-cut-policy_armed-v2.log` · `f241ca60a6e04c823402d4da9a4ed8747f6ad0c1a9690f2af3bfdad071470f78` |
+
+`policy_armed` 首轮在 45 秒内没有命中，日志保存在 `owned-cut-policy_armed-v1.log`，表中一轮的阶段观测窗口为 90 秒。两次完整用例均在正常子机的外部业务回执处超时。后续验收另要求正常子机跨至少 12 秒完成三次不同的业务请求，并逐个同接收器的记录匹配。
