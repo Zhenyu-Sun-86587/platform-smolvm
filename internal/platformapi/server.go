@@ -156,7 +156,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, status = upstream.Code, upstream.Status
 	case errors.As(err, &upstream) && upstream.Code == "RESOURCE_LIMIT" && upstream.Status == http.StatusRequestEntityTooLarge:
 		code, status = upstream.Code, upstream.Status
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, rt.ErrNotFound), errors.Is(err, sql.ErrNoRows):
 		code, status = "NOT_FOUND", 404
 	case errors.Is(err, registry.ErrInvalid), errors.Is(err, rt.ErrInvalid):
 		code, status = "INVALID_ARGUMENT", 400
@@ -201,6 +201,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status == 500 {
 		detail["effect"] = "unknown"
 		detail["retry"] = "client_decision"
+	}
+	if code == "OUTCOME_UNKNOWN" {
+		detail["effect"] = "unknown"
+		detail["retry"] = "verify_original_intent"
 	}
 	var active *registry.ActiveOperationError
 	if errors.As(err, &active) {

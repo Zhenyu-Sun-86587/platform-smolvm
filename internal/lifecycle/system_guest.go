@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"sandbox-platform/internal/registry"
@@ -17,10 +18,11 @@ const systemSSHCommand = "/usr/local/sbin/sandbox-system-ssh-sync"
 const SystemSSHPort = 2222
 
 type nativeSSHEvidence struct {
-	Ready        bool            `json:"ssh_ready"`
-	Key          string          `json:"ssh_host_key,omitempty"`
-	KeysetDigest string          `json:"ssh_keyset_digest,omitempty"`
-	Execution    rt.ExecutionRef `json:"ssh_execution"`
+	Ready        bool                  `json:"ssh_ready"`
+	Key          string                `json:"ssh_host_key,omitempty"`
+	KeysetDigest string                `json:"ssh_keyset_digest,omitempty"`
+	Execution    rt.ExecutionRef       `json:"ssh_execution"`
+	FileTransfer *rt.GuestFileEvidence `json:"file_transfer,omitempty"`
 }
 
 type nativeSSHRequest struct {
@@ -72,16 +74,30 @@ func (e *Engine) observeSystemGuest(ctx context.Context, binding registry.Bindin
 	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	x.GuestManagementStatus = "degraded"
-	if err := guest.GuestPing(probe, binding.ExecutionRef()); err != nil {
+	ref := binding.ExecutionRef()
+	var capabilities []string
+	if inspection, ok := adapter.(interface {
+		GuestCapabilities(context.Context, rt.ExecutionRef) ([]string, error)
+	}); ok {
+		capabilities, err = inspection.GuestCapabilities(probe, ref)
+	} else {
+		err = guest.GuestPing(probe, ref)
+	}
+	if err != nil {
 		return ""
 	}
 	x.GuestManagementStatus = "ready"
+	var evidence nativeSSHEvidence
+	if json.Unmarshal(binding.GuestManagementEvidence, &evidence) != nil || evidence.Execution != ref {
+		evidence = nativeSSHEvidence{Execution: ref}
+	}
+	evidence.FileTransfer = nil
+	if _, ok := PolicyClient(adapter, binding); ok && capabilities != nil {
+		evidence.FileTransfer = &rt.GuestFileEvidence{Execution: ref, Supported: slices.Contains(capabilities, rt.SystemFileTransferCapability)}
+	}
+	x.GuestManagementEvidence = JSON(evidence)
 	if !profile.ManagedSSH {
 		return ""
-	}
-	var evidence nativeSSHEvidence
-	if json.Unmarshal(binding.GuestManagementEvidence, &evidence) != nil || evidence.Execution != binding.ExecutionRef() {
-		evidence = nativeSSHEvidence{Execution: binding.ExecutionRef()}
 	}
 	keys, err := e.authorizedSSHKeys(ctx)
 	if err != nil {
@@ -181,6 +197,8 @@ func (j *Job) driveNativeSSH(ctx context.Context, routeError error) error {
 	}
 	x := nativeObservation(j.Binding, ref, registry.PowerRunning, j.Binding.CapabilityProfileID)
 	x.GuestManagementStatus = "ready"
-	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref})
+	var previous nativeSSHEvidence
+	_ = json.Unmarshal(j.Binding.GuestManagementEvidence, &previous)
+	x.GuestManagementEvidence = JSON(nativeSSHEvidence{Ready: true, Key: key, KeysetDigest: request.KeysetDigest, Execution: ref, FileTransfer: previous.FileTransfer})
 	return j.Done(ctx, registry.TransitionRequest{Effect: registry.EffectApplied, Observation: &x})
 }
