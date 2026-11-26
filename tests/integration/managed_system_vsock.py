@@ -726,7 +726,9 @@ def saved_wake_failure_case(platform, source, ref):
             while time.monotonic() < deadline:
                 entered = db.execute("""SELECT e.incarnation_id,e.pid,e.pid_start_time FROM executions e
                     JOIN operations o ON o.operation_id=e.last_operation_id WHERE e.instance_id=? AND e.execution_epoch=?
-                    AND e.phase='registered' AND o.kind='restore_target' AND o.phase='NEW'""",
+                    AND e.phase='registered' AND o.kind='restore_target' AND o.phase='NEW'
+                    AND EXISTS(SELECT 1 FROM writer_grants g WHERE g.operation_id=o.operation_id
+                        AND g.state IN ('offered','attached'))""",
                     (ref["instance_id"], ref["execution_epoch"] + 1)).fetchone()
                 if entered:
                     incarnation, pid, start = entered
@@ -735,14 +737,16 @@ def saved_wake_failure_case(platform, source, ref):
                         assert actual == start
                         signal.pidfd_send_signal(process.fileno(), signal.SIGSTOP)
                         try:
-                            commit = db.execute("SELECT 1 FROM target_activations WHERE incarnation_id=? AND decision='commit'", (incarnation,)).fetchone()
-                            assert not commit, "fixture needs to intercept an uncommitted restore"
+                            activation = db.execute("""SELECT phase,decision,begin_revision FROM target_activations
+                                WHERE incarnation_id=?""", (incarnation,)).fetchone()
+                            assert not activation or activation in (("authority_prepared", "none", None),
+                                                                  ("offered", "none", None)), activation
                         finally:
                             signal.pidfd_send_signal(process.fileno(), signal.SIGKILL)
                         assert select.select([process], [], [], 10)[0]
                         return
                 time.sleep(0.005)
-        raise TimeoutError("no registered uncommitted restoration process")
+        raise TimeoutError("no held restore process with a writer grant")
 
     with ThreadPoolExecutor(max_workers=1) as clients:
         request = clients.submit(request_lease, "failed-restore-activation")
@@ -752,6 +756,12 @@ def saved_wake_failure_case(platform, source, ref):
     advanced, failed = check_held(ref["execution_epoch"] + 1)
     result = platform.native("/operations/" + failed)
     assert result["phase"] == "ABORTED" and result["statepoint"]["capture_id"] == point["capture_id"], result
+    with sqlite3.connect(catalog_file) as db:
+        writer = db.execute("""SELECT g.state,e.phase,a.begin_revision,a.decision
+            FROM writer_grants g JOIN executions e USING(incarnation_id)
+            LEFT JOIN target_activations a ON a.operation_id=g.operation_id
+            WHERE g.operation_id=? AND e.execution_epoch=g.execution_epoch""", (failed,)).fetchone()
+        assert writer in (("released", "exited", None, None), ("released", "exited", None, "none")), writer
     try:
         platform.native("/operations", dict(kind="launch", operation_id="forbidden-saved-cold-launch",
             request_digest="sha256:" + "3" * 64, expected=advanced, parameters=dict(name=original["runtime_name"],
@@ -762,7 +772,8 @@ def saved_wake_failure_case(platform, source, ref):
         assert status == 409 and json.loads(body)["code"] == "E_STATE_CONFLICT", error
     else:
         raise AssertionError("Worker accepted a cold launch over a saved execution")
-    print("An unpublished restore VMM exited after consuming an epoch. The Worker retained the saved cut and rejected a cold launch on the advanced slot.", flush=True)
+    print("A restore VMM exited after receiving its writer grant and before Guest identity began. "
+          "The Worker released the grant, retained the saved cut and rejected a cold launch on the advanced slot.", flush=True)
 
     restored = platform.complete(platform.change(source + "/start", "repair-preserved-wake", {}, platform.app(source)))
     _, live = platform.context(original["machine_id"])
