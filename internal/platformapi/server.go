@@ -26,6 +26,7 @@ import (
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/servicehealth"
 	"sandbox-platform/internal/snapshots"
 	"sandbox-platform/internal/templates"
 )
@@ -42,6 +43,7 @@ type Server struct {
 	guestExecs      sync.Map
 	leaseDeliveries sync.Map
 	uploadSlots     chan struct{}
+	serviceHealth   servicehealth.Tracker
 }
 
 func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Server {
@@ -205,6 +207,12 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	if code == "OUTCOME_UNKNOWN" {
 		detail["effect"] = "unknown"
 		detail["retry"] = "verify_original_intent"
+	}
+	var access *servicehealth.Diagnostic
+	if errors.As(err, &access) {
+		detail["stage"] = access.Observation.Stage
+		detail["scope"] = access.Observation.Scope
+		detail["reason_code"] = access.Observation.ReasonCode
 	}
 	var active *registry.ActiveOperationError
 	if errors.As(err, &active) {
