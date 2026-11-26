@@ -58,21 +58,27 @@ type captureMetadata struct {
 	Scope         *CapturedScope        `json:"captured_scope,omitempty"`
 }
 
+type machineCaptureSpec struct {
+	TemplateID        string             `json:"template_id"`
+	BootMode          rt.BootMode        `json:"boot_mode,omitempty"`
+	LiveComputeGrowth bool               `json:"live_compute_growth,omitempty"`
+	Network           *rt.LaunchNetwork  `json:"network,omitempty"`
+	Resources         *capturedResources `json:"resources,omitempty"`
+}
+
+type capturedResources struct {
+	CPUs              *uint8  `json:"cpu_count,omitempty"`
+	Memory            *uint32 `json:"memory_mib,omitempty"`
+	Storage           *uint64 `json:"storage_gib,omitempty"`
+	Overlay           *uint64 `json:"overlay_gib,omitempty"`
+	CPULimitMillicpus *uint32 `json:"cpu_limit_millicpus,omitempty"`
+	BalloonTargetMiB  *uint32 `json:"balloon_target_mib,omitempty"`
+}
+
 // Take only VM settings. A create request can also contain names or lifecycle
 // intent. The restored machine gets its own identity and authorization.
 func CaptureSpec(raw json.RawMessage, templateID string, revision int64, captureID string) (*CaptureConfiguration, error) {
-	spec := struct {
-		TemplateID        string            `json:"template_id"`
-		BootMode          rt.BootMode       `json:"boot_mode,omitempty"`
-		LiveComputeGrowth bool              `json:"live_compute_growth,omitempty"`
-		Network           *rt.LaunchNetwork `json:"network,omitempty"`
-		Resources         *struct {
-			CPUs    *uint8  `json:"cpu_count,omitempty"`
-			Memory  *uint32 `json:"memory_mib,omitempty"`
-			Storage *uint64 `json:"storage_gib,omitempty"`
-			Overlay *uint64 `json:"overlay_gib,omitempty"`
-		} `json:"resources,omitempty"`
-	}{}
+	var spec machineCaptureSpec
 	if err := json.Unmarshal(raw, &spec); err != nil {
 		return nil, err
 	}
@@ -84,6 +90,22 @@ func CaptureSpec(raw json.RawMessage, templateID string, revision int64, capture
 	return &CaptureConfiguration{Status: "verified", Source: "machine_spec", SchemaVersion: captureConfigurationVersion,
 		SourceMachineRevision: revision, TemplateID: templateID, CaptureID: captureID, Spec: encoded,
 		SpecDigest: captureSpecDigest(encoded)}, nil
+}
+
+// RestoreMachineSpec projects the captured machine settings used by the
+// platform after restore. The saved policy targets remain capture evidence.
+// The active execution reports its CPU quota and balloon state independently.
+func (c *CaptureConfiguration) RestoreMachineSpec() json.RawMessage {
+	var spec machineCaptureSpec
+	if json.Unmarshal(c.Spec, &spec) != nil {
+		return nil
+	}
+	if spec.Resources != nil {
+		spec.Resources.CPULimitMillicpus = nil
+		spec.Resources.BalloonTargetMiB = nil
+	}
+	encoded, _ := json.Marshal(spec)
+	return encoded
 }
 
 func captureSpecDigest(spec json.RawMessage) string {
