@@ -15,12 +15,15 @@
 
 | 场景 | 结果与证据 |
 | --- | --- |
+| 独立内核 MM 套件 | 23/23。覆盖 C01–C04 和 C06 的权限、地址、ENOMEM/信号清理、THP、swap、回收，以及 NUMA 迁移。内核 taint 与 exit 均为 0。日志 `.build/kernel-cow-runtime/k1-mm-serial.log`。 |
 | 独立内核 KVM 套件 | 6/6。覆盖严格 ABI、活源 writable memslot、只读 anchor、设备线程写入、递归导入，以及 anchor 退出后两个 Guest 首次冷读和独立写。两条结果标记均为 0。日志 `.build/kernel-cow-runtime/k1-kvm-serial.log`。 |
 | libkrun 的两个 KVM 进程 | 均使用固定位址和独立 KVM fd。恢复寄存器，验证 `31 → 42` 与子进程 `31 → 53` 的写隔离。源退出后从子 Guest 首次读取另一页。 |
 | libkrun held capture 和 builder | 源 Guest 先写 RAM 并经实际 MMIO 完成 Gate 停驻。import 成功前拒绝继续，Native 文件出口拒绝这个点。目标用新 KVM VM 恢复，在源启动 ELF 已移除的条件下，先完成目标身份授权再继续普通 Guest 工作。源退出后子 Guest 冷页读取仍正确。日志 `.build/kernel-cow-runtime/libkrun-held-kvm-serial.log`，其中内核 taint 与 exit 都为 0。 |
 | 原有 VMM、Native 和快照回归 | stock 内核上用 `cargo test --locked --offline -p krun-vmm --features blk,net --lib -- --test-threads=2`，176 通过、7 个原有忽略、0 失败。日志 `.build/kernel-cow-runtime/libkrun-native-regression.log`。stock 内核上的 CoW 探测返回 4，提示内核未公布 ABI。 |
+| libkrun 动态库 | `make debug BLK=1 NET=1` 完成。产物 `libkrun.so.2.0.0`，SHA-256 为 `1c3d5035142cf40719cdd34ac2afd8441d30d3d06bb8f5e1407e375d273acd13`。日志 `.build/kernel-cow-runtime/libkrun-shared-build.log`。 |
+| smolvm 和 resourced 编译检查 | `cargo check --locked --offline -p smolvm -p smolvm-resourced --features smolvm/deep-runtime --bins` 通过。日志 `.build/kernel-cow-runtime/smolvm-bundle-check.log`。 |
 
-复验入口为 libkrun 的 `kernel_cow_kvm` 示例。用同版工具链运行 `cargo build --locked --offline -p krun-vmm --features blk,net --example kernel_cow_kvm --target x86_64-unknown-linux-musl`。在专用 KVM 实验机上按顺序取得 `heavy.lock`、`worker-lab.lock`，将产物和上表对应的 bzImage 传给独立内核仓库的 `scripts/boot-cow-test kvm <bzImage> <kernel_cow_kvm> <serial-log>`。独立内核的 6 项复验使用同仓库 `scripts/run-extended kvm` 与对应 C 探针。二进制和内核摘要见 `.build/kernel-cow-runtime/{k1-inputs,libkrun-held-kvm-inputs}.sha256`。本地候选 gitlink 指向同机对象库中的 libkrun 提交。
+复验入口为 libkrun 的 `kernel_cow_kvm` 示例。用同版工具链运行 `cargo build --locked --offline -p krun-vmm --features blk,net --example kernel_cow_kvm --target x86_64-unknown-linux-musl`。在专用 KVM 实验机上按顺序取得 `heavy.lock`、`worker-lab.lock`，将产物和上表对应的 bzImage 传给独立内核仓库的 `scripts/boot-cow-test kvm <bzImage> <kernel_cow_kvm> <serial-log>`。独立内核套件使用同仓库 `scripts/run-extended mm|kvm` 与对应 C 探针。二进制和内核摘要见 `.build/kernel-cow-runtime/{k1-mm-inputs,k1-inputs,libkrun-held-kvm-inputs}.sha256`。本地候选 gitlink 指向同机对象库中的 libkrun 提交。
 
 ## 产品接入剩余门槛
 
