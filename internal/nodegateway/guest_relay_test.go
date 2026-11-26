@@ -134,11 +134,11 @@ func TestRemoteGuestRelayAttestsAndCancelsCredentialProxy(t *testing.T) {
 	}
 	if _, err := db.DB().ExecContext(ctx, `
 		INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running,worker_id)
-		VALUES('machine','guest','tpl',1,1,'running','{}','{}',0,?);
+		VALUES('m_source','guest','tpl',1,1,'running','{}','{}',0,?);
 		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,worker_id,runtime_instance_id,
 		  runtime_bundle_id,runtime_instance_object_id,incarnation_id,execution_epoch,power_state)
-		VALUES('bind','machine',1,'guest-slot','current','ns','spec',?,?,?,?,?,?,'running');
-		UPDATE machines SET current_binding_id='bind' WHERE id='machine';`,
+		VALUES('bind','m_source',1,'guest-slot','current','ns','spec',?,?,?,?,?,?,'running');
+		UPDATE machines SET current_binding_id='bind' WHERE id='m_source';`,
 		route.WorkerID, route.WorkerID, route.InstanceID, route.BundleID, ref.InstanceID, ref.IncarnationID, ref.ExecutionEpoch); err != nil {
 		t.Fatal(err)
 	}
@@ -148,12 +148,12 @@ func TestRemoteGuestRelayAttestsAndCancelsCredentialProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant, err := authn.CreateGuestGrant(ctx, owner, auth.GuestGrantSpec{
-		SourceMachineID: "machine", Action: auth.GuestProxy, ProxyID: "llm", MaximumUses: 3, ExpiresAt: time.Now().Add(time.Minute),
+		SourceMachineID: "m_source", Action: auth.GuestProxy, ProxyID: "llm", MaximumUses: 3, ExpiresAt: time.Now().Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := authn.IssueGuestCredential(ctx, owner, auth.AttestedGuestContext{MachineID: "machine", BindingID: "bind",
+	token, err := authn.IssueGuestCredential(ctx, owner, auth.AttestedGuestContext{MachineID: "m_source", BindingID: "bind",
 		RuntimeInstanceID: route.InstanceID, RuntimeBundleID: route.BundleID, RuntimeObjectID: ref.InstanceID,
 		IncarnationID: ref.IncarnationID, ExecutionEpoch: ref.ExecutionEpoch}, grant, time.Minute)
 	if err != nil {
