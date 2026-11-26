@@ -126,7 +126,7 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 	publish("host", host)
 	platform := map[string]any{"task": nil, "exec": nil, "stream": nil, "legacy_lease": nil}
 	var taskCount, execCount, legacyLeases int
-	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE machine_id=? AND binding_generation=? AND worker_revision IS NULL AND state IN ('active','suspect')", m.ID, b.Generation).Scan(&legacyLeases); err == nil {
+	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE machine_id=? AND binding_generation=? AND worker_revision IS NULL AND semantics_version=1 AND state IN ('active','suspect')", m.ID, b.Generation).Scan(&legacyLeases); err == nil {
 		platform["legacy_lease"] = legacyLeases
 	}
 	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE machine_id=? AND binding_generation=? AND state NOT IN ('exited','completed','cancelled','failed')", m.ID, b.Generation).Scan(&taskCount); err == nil {
@@ -153,7 +153,7 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 				guest["outbound"] = out
 			}
 		}
-		hello, err := tasks.Call(sample, func(c context.Context, argv []string, in []byte) ([]byte, error) {
+		invoke := func(c context.Context, argv []string, in []byte) ([]byte, error) {
 			res, err := control.GuestExec(c, b.ExecutionRef(), rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 2})
 			if err != nil {
 				return nil, err
@@ -162,8 +162,22 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 				return nil, fmt.Errorf("guest task collector exited %d", res.ExitCode)
 			}
 			return res.Stdout, nil
-		}, tasks.Request{Method: "hello", Binding: GuestBinding(b)})
-		if err == nil && hello.Hello != nil && hello.Binding != nil && *hello.Binding == *GuestBinding(b) && hello.Hello.Cgroup && hello.Hello.Unknown == 0 && hello.Hello.Barrier == nil {
+		}
+		expected := GuestBinding(b)
+		request := tasks.Request{Method: "hello", Binding: expected}
+		hello, err := tasks.Call(sample, invoke, request)
+		if err == nil && hello.Hello != nil && hello.Hello.Cgroup && hello.Binding == nil {
+			// Systemd starts taskd independently of native launch. Establish its
+			// first binding over the verified Guest channel before counting tasks.
+			profile, profileErr := e.systemGuestProfile(sample, b)
+			if profileErr == nil && profile.BootMode == rt.BootSystem {
+				bound, bindErr := tasks.Call(sample, invoke, tasks.Request{Method: "bind", Binding: expected})
+				if bindErr == nil && bound.Binding != nil && *bound.Binding == *expected {
+					hello, err = tasks.Call(sample, invoke, request)
+				}
+			}
+		}
+		if err == nil && hello.Hello != nil && hello.Binding != nil && *hello.Binding == *expected && hello.Hello.Cgroup && hello.Hello.Unknown == 0 && hello.Hello.Barrier == nil {
 			guest["task"] = hello.Hello.Active
 			// Exact VM exec access is protected independently by a host registration.
 			if platform["exec"] != nil {

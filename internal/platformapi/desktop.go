@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,10 +30,11 @@ type desktopSession struct {
 	leaseOwner string
 	credential string
 	serviceRev int64
+	workerRev  sql.NullInt64
 }
 
 const desktopSessions = `SELECT d.id,l.machine_id,d.service_id,d.lease_id,d.binding_id,l.binding_generation,
-	d.execution_epoch,l.state,l.revision,l.expires_at,l.principal_id,d.credential_id,d.service_revision
+	d.execution_epoch,l.state,l.revision,l.expires_at,l.principal_id,d.credential_id,d.service_revision,l.worker_revision
 	FROM desktop_sessions d JOIN leases l ON l.id=d.lease_id`
 
 func readDesktopSession(row row) (desktopSession, error) {
@@ -40,7 +42,7 @@ func readDesktopSession(row row) (desktopSession, error) {
 	var expires int64
 	err := row.Scan(&session.ID, &session.MachineID, &session.ServiceID, &session.LeaseID, &session.BindingID,
 		&session.Generation, &session.Epoch, &session.State, &session.Revision, &expires,
-		&session.leaseOwner, &session.credential, &session.serviceRev)
+		&session.leaseOwner, &session.credential, &session.serviceRev, &session.workerRev)
 	session.Expires = time.UnixMilli(expires).UTC()
 	return session, err
 }
@@ -58,7 +60,7 @@ func (s *Server) desktopRoutes() {
 	s.route("DELETE /v1/desktop-sessions/{session}", s.closeDesktopSession)
 	s.route("POST /v1/desktop-sessions/{session}/tunnel-tickets", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("session")
-		if err := s.verifyDesktop(r.Context(), id, p); err != nil {
+		if _, err := s.admitDesktop(r.Context(), id, p); err != nil {
 			return err
 		}
 		return s.issueTicket(w, r, id)
@@ -96,21 +98,24 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 	if err != nil {
 		return err
 	}
-	return s.mutate(w, r, p, request, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+	raw, err := s.applyMutation(r, p, request, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
 		var session desktopSession
+		var binding registry.Binding
 		var machineRev int64
 		var active bool
 		var desktopProfile, controlEpoch string
-		if err := tx.QueryRowContext(ctx, `SELECT b.id,b.generation,b.execution_epoch,m.revision,
-			COALESCE(json_extract(t.spec_json,'$.desktop_profile'),''),ctl.control_epoch,
+		if err := tx.QueryRowContext(ctx, `SELECT b.id,b.generation,COALESCE(b.execution_epoch,0),m.revision,
+			COALESCE(json_extract(t.spec_json,'$.desktop_profile'),''),ctl.control_epoch,COALESCE(b.runtime_instance_id,''),
+			COALESCE(b.runtime_bundle_id,''),COALESCE(b.runtime_instance_object_id,''),COALESCE(b.incarnation_id,''),b.power_state,
 			EXISTS(SELECT 1 FROM operation_locks WHERE machine_id=m.id)
 			FROM machines m JOIN templates t ON t.id=m.template_id JOIN runtime_bindings b ON b.id=m.current_binding_id
 			JOIN meta ctl ON ctl.id=1 WHERE m.id=? AND m.deleted_at IS NULL`, mid).
-			Scan(&session.BindingID, &session.Generation, &session.Epoch, &machineRev, &desktopProfile, &controlEpoch, &active); err != nil {
+			Scan(&session.BindingID, &session.Generation, &session.Epoch, &machineRev, &desktopProfile, &controlEpoch,
+				&binding.RuntimeInstanceID, &binding.RuntimeBundleID, &binding.RuntimeInstanceObjectID, &binding.IncarnationID, &binding.PowerState, &active); err != nil {
 			return registry.MutationResult{}, err
 		}
-		if desktopProfile != templates.DesktopSoftwareVNC || session.Epoch < 1 {
-			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "desktop sessions require the System software VNC profile and an execution"}
+		if desktopProfile != templates.DesktopSoftwareVNC {
+			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "desktop sessions require the System software VNC profile"}
 		}
 		if machineRev != rev {
 			return registry.MutationResult{}, registry.ErrRevision
@@ -120,6 +125,11 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		}
 		if active {
 			return registry.MutationResult{}, registry.ErrOperationActive
+		}
+		binding.ID, binding.Generation, binding.ExecutionEpoch = session.BindingID, session.Generation, session.Epoch
+		_, managed, err := s.desktopWorker(binding)
+		if err != nil {
+			return registry.MutationResult{}, err
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT revision FROM services WHERE id=? AND machine_id=? AND enabled=1
 			AND kind='vnc' AND public_host IS NULL AND public_port IS NULL`, request.ServiceID, mid).Scan(&session.serviceRev); err != nil {
@@ -131,27 +141,49 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		if session.LeaseID, err = registry.NewID("lease_"); err != nil {
 			return registry.MutationResult{}, err
 		}
+		now := time.Now().UTC()
+		session.MachineID, session.ServiceID = mid, request.ServiceID
+		session.leaseOwner, session.credential = p.ID, p.CredentialID
+		session.State, session.Revision, session.Expires = "active", 1, now.Add(time.Duration(request.TTL)*time.Second)
+		if managed {
+			err := s.createDesktopIntent(ctx, tx, session, binding, controlEpoch, request.TTL, false)
+			return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"desktop_session_id": session.ID})}, err
+		}
+		if session.Epoch < 1 {
+			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "the historical desktop contract requires an execution"}
+		}
 		secret, err := registry.NewID("desktop-lease-")
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
-		now := time.Now().UTC()
-		session.MachineID, session.ServiceID = mid, request.ServiceID
-		session.State, session.Revision, session.Expires = "active", 1, now.Add(time.Duration(request.TTL)*time.Second)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO leases(id,machine_id,binding_generation,principal_id,token_hash,reason,expires_at,state)
-			VALUES(?,?,?,?,?,'Desktop session',?,'active')`, session.LeaseID, mid, session.Generation, p.ID,
-			fmt.Sprintf("%x", sha256.Sum256([]byte(secret))), session.Expires.UnixMilli()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO leases(id,machine_id,binding_generation,principal_id,token_hash,reason,expires_at,state,semantics_version)
+			VALUES(?,?,?,?,?,'Desktop session',?,?,?)`, session.LeaseID, mid, session.Generation, p.ID,
+			fmt.Sprintf("%x", sha256.Sum256([]byte(secret))), session.Expires.UnixMilli(), session.State, 1); err != nil {
 			return registry.MutationResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO desktop_sessions VALUES (?,?,?,?,?,?,?,?,?)`, session.ID, session.LeaseID,
 			session.ServiceID, session.serviceRev, session.BindingID, session.Epoch, p.CredentialID, controlEpoch, now.UnixMilli()); err != nil {
 			return registry.MutationResult{}, err
 		}
-		if err := registry.AppendEvent(ctx, tx, "lease", mid, "", map[string]string{"lease_id": session.LeaseID, "state": "active"}, false); err != nil {
+		if err := registry.AppendEvent(ctx, tx, "lease", mid, "", map[string]string{"lease_id": session.LeaseID, "state": session.State}, false); err != nil {
 			return registry.MutationResult{}, err
 		}
 		return registry.MutationResult{Response: lifecycle.JSON(session)}, nil
 	})
+	if err != nil {
+		return err
+	}
+	var saved struct {
+		ID string `json:"desktop_session_id"`
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		return err
+	}
+	session, err := s.admitDesktopCreation(r.Context(), saved.ID, p)
+	if err != nil {
+		return err
+	}
+	return write(w, http.StatusOK, session)
 }
 
 func (s *Server) requiresDesktopSession(ctx context.Context, v service) (bool, error) {
@@ -208,7 +240,7 @@ func (s *Server) closeDesktopSession(w http.ResponseWriter, r *http.Request, p a
 	if err := decode(r, &body); err != nil {
 		return err
 	}
-	return s.mutate(w, r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
+	raw, err := s.applyMutation(r, p, body, func(ctx context.Context, tx *sql.Tx) (registry.MutationResult, error) {
 		current, err := readDesktopSession(tx.QueryRowContext(ctx, desktopSessions+" WHERE d.id=?", session.ID))
 		if err != nil {
 			return registry.MutationResult{}, err
@@ -225,26 +257,31 @@ func (s *Server) closeDesktopSession(w http.ResponseWriter, r *http.Request, p a
 		}
 		return registry.MutationResult{Response: lifecycle.JSON(current)}, nil
 	})
-}
-
-func (s *Server) verifyDesktop(ctx context.Context, id string, p auth.Principal) error {
-	session, err := s.desktopFor(ctx, id, p)
 	if err != nil {
 		return err
 	}
-	if session.State != "active" || !time.Now().Before(session.Expires) {
-		return &lifecycle.Failure{Code: "DESKTOP_SESSION_ENDED", Message: "desktop session lease has ended"}
+	if err := s.releaseDesktopProtection(r.Context(), session.ID); err != nil {
+		return err
 	}
+	return write(w, http.StatusOK, raw)
+}
+
+type desktopReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func desktopValid(ctx context.Context, db desktopReader, id string) error {
 	var valid bool
-	err = s.DB.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM desktop_sessions d
+	now := time.Now().UnixMilli()
+	err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM desktop_sessions d
 		JOIN leases l ON l.id=d.lease_id JOIN machines w ON w.id=l.machine_id AND w.current_binding_id=d.binding_id
-		JOIN runtime_bindings b ON b.id=d.binding_id AND b.execution_epoch=d.execution_epoch
+		JOIN runtime_bindings b ON b.id=d.binding_id AND b.execution_epoch=d.execution_epoch AND b.generation=l.binding_generation
 		JOIN services svc ON svc.id=d.service_id AND svc.revision=d.service_revision AND svc.enabled=1
 			AND svc.kind='vnc' AND svc.public_host IS NULL AND svc.public_port IS NULL
 		JOIN credentials c ON c.id=d.credential_id AND c.principal_id=l.principal_id AND c.revoked_at IS NULL
 		JOIN principals owner ON owner.id=l.principal_id AND owner.disabled=0 JOIN meta ctl ON ctl.id=1 AND ctl.control_epoch=d.control_epoch
-		WHERE d.id=? AND w.deleted_at IS NULL AND l.state='active' AND l.expires_at>? AND (c.expires_at IS NULL OR c.expires_at>?)
-		AND ctl.maintenance=0)`, id, time.Now().UnixMilli(), time.Now().UnixMilli()).Scan(&valid)
+		WHERE d.id=? AND w.deleted_at IS NULL AND l.state!='released' AND l.expires_at>? AND (c.expires_at IS NULL OR c.expires_at>?)
+		AND ctl.maintenance=0)`, id, now, now).Scan(&valid)
 	if err != nil {
 		return err
 	}
@@ -254,13 +291,24 @@ func (s *Server) verifyDesktop(ctx context.Context, id string, p auth.Principal)
 	return nil
 }
 
+func (s *Server) verifyDesktop(ctx context.Context, id string, p auth.Principal) error {
+	session, err := s.desktopFor(ctx, id, p)
+	if err != nil {
+		return err
+	}
+	if session.State != "active" {
+		return &lifecycle.Failure{Code: "DESKTOP_SESSION_ENDED", Message: "desktop session has no active lease"}
+	}
+	return desktopValid(ctx, s.DB.ReadDB(), id)
+}
+
 func (s *Server) desktopTunnel(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("session")
 	p, err := s.streamPrincipal(r, id)
 	if err != nil {
 		return err
 	}
-	session, err := s.desktopFor(r.Context(), id, p)
+	session, err := s.admitDesktop(r.Context(), id, p)
 	if err != nil {
 		return err
 	}

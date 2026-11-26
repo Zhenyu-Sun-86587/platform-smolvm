@@ -18,6 +18,8 @@ import (
 	"sandbox-platform/internal/snapshots"
 )
 
+type historicalDesktopRuntime struct{ rt.Adapter }
+
 func TestDesktopSessionFencesCredentialsAndExpiresLease(t *testing.T) {
 	ctx := context.Background()
 	db, err := registry.Open(ctx, filepath.Join(t.TempDir(), "registry.db"))
@@ -31,7 +33,9 @@ func TestDesktopSessionFencesCredentialsAndExpiresLease(t *testing.T) {
 	}
 	conf := config.Defaults()
 	conf.API.PublicOrigin = "https://sandbox.test"
-	s := New(lifecycle.New(db, rt.NewResolver(nil, nil), conf), &snapshots.Catalog{DB: db}, nil)
+	route := rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}
+	runtimes := rt.NewResolver(nil, map[rt.BundleRoute]rt.Adapter{route: historicalDesktopRuntime{}})
+	s := New(lifecycle.New(db, runtimes, conf), &snapshots.Catalog{DB: db}, nil)
 	p, err := s.Auth.Bootstrap(ctx, "owner", "a-test-password")
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +61,7 @@ func TestDesktopSessionFencesCredentialsAndExpiresLease(t *testing.T) {
 		ImageDigest: "sha256:" + strings.Repeat("1", 64), Spec: json.RawMessage(`{"boot_mode":"system","root_generation_id":"root","desktop_profile":"software-vnc-v1"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.RegisterRuntime(ctx, rt.BundleRoute{InstanceID: "serve", BundleID: "bundle"}, "test-socket", json.RawMessage(`{}`)); err != nil {
+	if err := db.RegisterRuntime(ctx, route, "test-socket", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.DB().ExecContext(ctx, `INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
@@ -91,6 +95,7 @@ func TestDesktopSessionFencesCredentialsAndExpiresLease(t *testing.T) {
 	if replay := do(http.MethodPost, collection, create, identity, http.StatusOK); string(first) != string(replay) {
 		t.Fatalf("desktop replay changed the receipt: %s %s", first, replay)
 	}
+	do(http.MethodPost, collection, create, other, http.StatusForbidden)
 	var session desktopSession
 	if err := json.Unmarshal(first, &session); err != nil || session.ID == "" || session.LeaseID == "" || session.Epoch != 4 || session.State != "active" {
 		t.Fatal(session, err)
