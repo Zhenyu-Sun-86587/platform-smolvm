@@ -175,6 +175,14 @@ func TestNativePowerReconcilesOriginalWorkerOperationAfterRestart(t *testing.T) 
 	if err := db.ObserveMachine(ctx, binding.ID, nativeObservation(binding, wrong, registry.PowerStandby, binding.CapabilityProfileID)); !errors.Is(err, registry.ErrStaleObservation) {
 		t.Fatalf("foreign observation admitted: %v", err)
 	}
+	for _, old := range []registry.Observation{
+		{ExpectedExecutionEpoch: &binding.ExecutionEpoch, ExpectedPowerState: registry.PowerHibernated},
+		{ExpectedExecutionEpoch: &binding.ExecutionEpoch, ExpectedPowerState: binding.PowerState, ExpectedCaptureID: "previous-save"},
+	} {
+		if err := db.ObserveMachine(ctx, binding.ID, old); !errors.Is(err, registry.ErrStaleObservation) {
+			t.Fatalf("superseded power or capture observation admitted: %v", err)
+		}
+	}
 	stop := request
 	stop.Kind, stop.Key, stop.Scope = "stop", "try-stop", "POST /v1/machines/m_native/stop"
 	stop.ExpectedRevision = 3

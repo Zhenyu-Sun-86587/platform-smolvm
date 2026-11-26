@@ -145,6 +145,8 @@ type Observation struct {
 	ExpectedRuntimeIdentity json.RawMessage `json:"-"`
 	// ExpectedExecutionEpoch also guards the transition from no native execution.
 	ExpectedExecutionEpoch *int64             `json:"-"`
+	ExpectedPowerState     PowerState         `json:"-"`
+	ExpectedCaptureID      string             `json:"-"`
 	Native                 *NativeObservation `json:"-"`
 }
 

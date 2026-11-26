@@ -339,6 +339,8 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 		}
 	}
 	if (o.ExpectedExecutionEpoch != nil && *o.ExpectedExecutionEpoch != old.ExecutionEpoch) ||
+		(o.ExpectedPowerState != "" && o.ExpectedPowerState != old.PowerState) ||
+		(o.ExpectedCaptureID != "" && o.ExpectedCaptureID != old.LastCaptureID) ||
 		(len(o.ExpectedRuntimeIdentity) > 0 && !sameJSON(o.ExpectedRuntimeIdentity, old.RuntimeIdentity)) {
 		return false, ErrStaleObservation
 	}

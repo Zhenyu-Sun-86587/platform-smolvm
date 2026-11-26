@@ -65,8 +65,16 @@ func (e *Engine) sample(ctx context.Context, started time.Time, bootID string) {
 					e.ReconcileWorkerLeases(ctx, b, client)
 				}
 				if status, err := e.ObservePolicy(ctx, b, client); err == nil {
-					if status.Power == "STOPPED" && b.PowerState == registry.PowerStopped && status.Execution() == WorkerExecution(b) {
-						_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{ExpectedExecutionEpoch: &b.ExecutionEpoch})
+					stopped := status.Power == "STOPPED" && b.PowerState == registry.PowerStopped &&
+						status.Execution() == WorkerExecution(b)
+					saved := status.Power == "HIBERNATED" && b.PowerState == registry.PowerHibernated &&
+						status.Instance == b.RuntimeInstanceObjectID && status.Epoch == b.ExecutionEpoch &&
+						status.Incarnation == "" && b.LastCaptureID != "" && status.StatePoint == b.LastCaptureID
+					if stopped || saved {
+						_ = e.DB.ObserveMachine(ctx, b.ID, registry.Observation{
+							ExpectedExecutionEpoch: &b.ExecutionEpoch, ExpectedPowerState: b.PowerState,
+							ExpectedCaptureID: b.LastCaptureID,
+						})
 						continue
 					}
 					if status.Decision != nil && status.Decision.Stage == "completed" && (status.Power == "HIBERNATED" || status.Epoch > b.ExecutionEpoch) {
