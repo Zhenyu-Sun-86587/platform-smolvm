@@ -129,6 +129,13 @@ func (s *Store) EnrollWorker(ctx context.Context, enrollment WorkerEnrollment) e
 	if control.ControlEpoch != enrollment.Authority {
 		return ErrControlEpoch
 	}
+	keyRevoked, err := workerEnrollmentKeyRevoked(ctx, tx, enrollment.WorkerID, enrollment.Generation, enrollment.CertificateFingerprint)
+	if err != nil {
+		return err
+	}
+	if keyRevoked {
+		return ErrGeneration
+	}
 	var desired string
 	if err := tx.QueryRowContext(ctx, `SELECT desired_mode FROM workers WHERE id=?`, enrollment.WorkerID).Scan(&desired); err != nil {
 		return notFound(err)
@@ -176,9 +183,9 @@ func (s *Store) EnrollWorker(ctx context.Context, enrollment WorkerEnrollment) e
 	return tx.Commit()
 }
 
-// RevokeWorkerEnrollmentTx closes the controller's current authority even when
-// unknown local resources make decommission impossible. A later enrollment
-// requires an explicitly provisioned higher generation.
+// RevokeWorkerEnrollmentTx closes an active enrollment or withdraws the
+// exact key named by a pending ticket. A withdrawn candidate can be replaced
+// at the same generation with a fresh configured key and a new ticket.
 func (s *Store) RevokeWorkerEnrollmentTx(ctx context.Context, tx *sql.Tx, worker string, revision, generation int64, reason string) (Worker, error) {
 	var state Worker
 	if generation < 1 || revision < 1 || !validateLabel(reason, 255) || worker == LocalWorkerID {
@@ -194,11 +201,20 @@ func (s *Store) RevokeWorkerEnrollmentTx(ctx context.Context, tx *sql.Tx, worker
 	if n, err := result.RowsAffected(); err != nil || n != 1 {
 		return state, ErrRevision
 	}
-	result, err = tx.ExecContext(ctx, `UPDATE worker_enrollments SET status='revoked',revoked_at=? WHERE worker_id=? AND generation=? AND status='active'`, time.Now().UnixMilli(), worker, generation)
+	now := time.Now().UnixMilli()
+	result, err = tx.ExecContext(ctx, `UPDATE worker_enrollments SET status='revoked',revoked_at=? WHERE worker_id=? AND generation=? AND status='active'`, now, worker, generation)
 	if err != nil {
 		return state, err
 	}
-	if n, err := result.RowsAffected(); err != nil || n != 1 {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return state, err
+	}
+	pendingRevoked, err := revokeWorkerEnrollmentTicketKey(ctx, tx, worker, generation, now, n == 1)
+	if err != nil {
+		return state, err
+	}
+	if n == 0 && !pendingRevoked {
 		return state, ErrGeneration
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM worker_enrollment_tickets WHERE worker_id=?", worker); err != nil {

@@ -13,3 +13,11 @@ CREATE TABLE worker_enrollment_tickets (
     certificate BLOB,
     CHECK ((csr_hash IS NULL) = (certificate IS NULL))
 );
+
+CREATE TABLE worker_enrollment_key_revocations (
+    worker_id TEXT NOT NULL REFERENCES workers(id),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    spki_pin TEXT NOT NULL,
+    revoked_at INTEGER NOT NULL,
+    PRIMARY KEY (worker_id,generation,spki_pin)
+);

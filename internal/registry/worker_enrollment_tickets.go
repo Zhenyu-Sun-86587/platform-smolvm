@@ -44,12 +44,38 @@ func enrollmentTicketGate(ctx context.Context, q queryer, scope WorkerEnrollment
 	if endpoint != scope.Endpoint || desired == "decommissioned" || observed == "identity_conflict" {
 		return control, latest, ErrGeneration
 	}
+	revoked, err := workerEnrollmentKeyRevoked(ctx, q, scope.WorkerID, scope.Generation, scope.SPKIPin)
+	if err != nil {
+		return control, latest, err
+	}
+	if revoked {
+		return control, latest, ErrGeneration
+	}
 	err = q.QueryRowContext(ctx, `SELECT generation,status,authority,certificate_fingerprint FROM worker_enrollments
 		WHERE worker_id=? ORDER BY generation DESC LIMIT 1`, scope.WorkerID).Scan(&latest.generation, &latest.status, &latest.epoch, &latest.pin)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
 	return control, latest, err
+}
+
+func workerEnrollmentKeyRevoked(ctx context.Context, q queryer, worker string, generation int64, pin string) (revoked bool, err error) {
+	err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_enrollment_key_revocations
+		WHERE worker_id=? AND generation=? AND spki_pin=?)`, worker, generation, pin).Scan(&revoked)
+	return
+}
+
+func revokeWorkerEnrollmentTicketKey(ctx context.Context, tx *sql.Tx, worker string, generation, now int64, activeRevoked bool) (bool, error) {
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO worker_enrollment_key_revocations(worker_id,generation,spki_pin,revoked_at)
+		SELECT t.worker_id,t.generation,t.spki_pin,? FROM worker_enrollment_tickets t JOIN meta m ON m.id=1
+		WHERE t.worker_id=? AND t.control_epoch=m.control_epoch AND t.controller_id=m.installation_id
+			AND (t.generation=? OR (? AND t.generation>? AND t.certificate IS NOT NULL))`,
+		now, worker, generation, activeRevoked, generation)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) IssueWorkerEnrollmentTicket(ctx context.Context, scope WorkerEnrollmentScope, hash [32]byte, mode string) (time.Time, error) {

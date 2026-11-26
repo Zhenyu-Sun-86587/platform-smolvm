@@ -134,6 +134,7 @@ paths:
     - {name: worker, in: path, required: true, schema: {type: string}}
     post:
       operationId: revoke_worker_enrollment
+      description: Revokes an active enrollment or the configured key of a pending ticket. Replacing a withdrawn candidate at the same generation requires a new configured key.
       parameters:
       - {$ref: '#/components/parameters/ControlEpoch'}
       - {$ref: '#/components/parameters/IdempotencyKey'}

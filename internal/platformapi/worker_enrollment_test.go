@@ -229,6 +229,31 @@ func TestWorkerEnrollmentTicketTLSRotationAndRecovery(t *testing.T) {
 	}
 	assertStatus(redeemWith(redeem, rotating, csr, "https"), 401)
 	fresh := issueWith(issue, adminToken, "rotate", "https", control.ControlEpoch, 201)
+	assertStatus(redeemWith(redeem, fresh, csr, "https"), 200)
+	state, err = db.GetWorker(ctx, worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err = db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.RevokeWorkerEnrollmentTx(ctx, tx, worker, state.Revision, 2, "withdraw signed candidate"); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(redeemWith(redeem, fresh, csr, "https"), 401)
+	if err := db.EnrollWorker(ctx, registry.WorkerEnrollment{WorkerID: worker, Generation: 2, Authority: control.ControlEpoch, CertificateFingerprint: pin}); !errors.Is(err, registry.ErrGeneration) {
+		t.Fatalf("withdrawn candidate certificate could be activated: %v", err)
+	}
+	issueWith(issue, adminToken, "rotate", "https", control.ControlEpoch, 409)
+	rotatedKey, rotatedPin := enrollmentTestKey(t)
+	server.Config.Nodes[0].Pin = rotatedPin
+	csr = enrollmentTestCSR(t, rotatedKey, "")
+	fresh = issueWith(issue, adminToken, "rotate", "https", control.ControlEpoch, 201)
 	if _, err := db.DB().Exec("UPDATE worker_enrollment_tickets SET expires_at=1"); err != nil {
 		t.Fatal(err)
 	}

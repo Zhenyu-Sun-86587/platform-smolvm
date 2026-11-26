@@ -65,3 +65,9 @@ an unused ticket, or issue a new ticket after expiry while the generation
 remains eligible. Remove the ticket files after use. Issued leaf certificates
 identify only the configured endpoint and Worker URI, with ServerAuth usage
 and validity capped at 30 days and at the CA expiration.
+
+Before activation, an administrator can withdraw the pending candidate with
+the Worker enrollment revoke endpoint and the ticket's generation. A
+withdrawn key can no longer redeem that ticket or activate that generation.
+Configure a fresh key and its pin before starting enrollment again at that
+generation.
