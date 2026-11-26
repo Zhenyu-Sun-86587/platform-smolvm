@@ -357,6 +357,7 @@ func list[T any](w http.ResponseWriter, r *http.Request, items []T, id func(T) s
 }
 func (s *Server) routes() {
 	s.backupRoutes()
+	s.route("POST /v1/machines/{machine}/ssh-certificates", s.issueManagedSSHCertificate)
 	s.mux.HandleFunc("POST /v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != s.Config.API.PublicOrigin {
 			fail(w, r, auth.ErrForbidden)
