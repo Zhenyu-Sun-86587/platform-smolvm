@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS commands (
 	initial_receipt TEXT,
 	receipt TEXT,
 	revision INTEGER NOT NULL DEFAULT 0,
+	refusal TEXT,
 	PRIMARY KEY (operation_id, step)
 );
 CREATE TABLE IF NOT EXISTS entrance (
@@ -187,6 +188,7 @@ type journalEntry struct {
 	Scope   commandScope
 	Digest  string
 	Receipt *rt.OperationReceipt
+	Refusal string
 }
 
 type queryer interface {
@@ -195,8 +197,10 @@ type queryer interface {
 
 func journalLookup(ctx context.Context, q queryer, id, step string) (entry journalEntry, err error) {
 	var scope string
-	var receipt sql.NullString
-	err = q.QueryRowContext(ctx, "SELECT scope,digest,COALESCE(initial_receipt,receipt) FROM commands WHERE operation_id=? AND step=?", id, step).Scan(&scope, &entry.Digest, &receipt)
+	var receipt, refusal sql.NullString
+	err = q.QueryRowContext(ctx, "SELECT scope,digest,COALESCE(initial_receipt,receipt),refusal FROM commands WHERE operation_id=? AND step=?",
+		id, step).Scan(&scope, &entry.Digest, &receipt, &refusal)
+	entry.Refusal = refusal.String
 	if err != nil {
 		return entry, err
 	}
@@ -251,15 +255,30 @@ func (j *Journal) remember(ctx context.Context, id, step string, receipt rt.Oper
 		return err
 	}
 	_, err = j.db.ExecContext(ctx, `UPDATE commands SET initial_receipt=COALESCE(initial_receipt,?),
-		receipt=?,revision=? WHERE operation_id=? AND step=? AND revision < ?`, string(raw), string(raw), receipt.Revision, id, step, receipt.Revision)
+		receipt=?,revision=?,refusal=NULL WHERE operation_id=? AND step=? AND revision < ?`, string(raw), string(raw), receipt.Revision, id, step, receipt.Revision)
 	return err
+}
+
+func (j *Journal) refuse(ctx context.Context, id, step, code string) error {
+	result, err := j.db.ExecContext(ctx, `UPDATE commands SET refusal=? WHERE operation_id=? AND step=? AND revision=0`, code, id, step)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return rt.ErrConflict
+	}
+	return nil
 }
 
 func (j *Journal) operationIDs(ctx context.Context, route nodeproto.Route, limit int) ([]string, error) {
 	query := `SELECT operation_id FROM commands WHERE step='submit' AND
 		json_extract(scope,'$.Route.runtime_instance_id')=? AND json_extract(scope,'$.Route.local_instance_id')=?
 		AND json_extract(scope,'$.Route.bundle_digest')=?
-		AND (receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED'))
+		AND refusal IS NULL AND (receipt IS NULL OR json_extract(receipt,'$.phase') NOT IN ('COMPLETED','ABORTED'))
 		ORDER BY operation_id LIMIT ?`
 	rows, err := j.db.QueryContext(ctx, query, route.RuntimeInstanceID, route.LocalInstanceID, route.BundleDigest, limit)
 	if err != nil {

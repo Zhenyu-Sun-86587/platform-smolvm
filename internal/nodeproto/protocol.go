@@ -37,16 +37,17 @@ const (
 )
 
 const (
-	CodeInvalid     = "INVALID_REQUEST"
-	CodeAuthority   = "AUTHORITY_MISMATCH"
-	CodeRoute       = "ROUTE_MISMATCH"
-	CodeConflict    = "IDEMPOTENCY_CONFLICT"
-	CodeUnknown     = "OUTCOME_UNKNOWN"
-	CodeUnavailable = "NODE_UNAVAILABLE"
-	CodeUnsupported = "NOT_SUPPORTED"
-	CodeNotFound    = "NOT_FOUND"
-	CodeBusy        = "NODE_BUSY"
-	CodeForbidden   = "FORBIDDEN"
+	CodeInvalid       = "INVALID_REQUEST"
+	CodeAuthority     = "AUTHORITY_MISMATCH"
+	CodeRoute         = "ROUTE_MISMATCH"
+	CodeConflict      = "IDEMPOTENCY_CONFLICT"
+	CodeUnknown       = "OUTCOME_UNKNOWN"
+	CodeUnavailable   = "NODE_UNAVAILABLE"
+	CodeUnsupported   = "NOT_SUPPORTED"
+	CodeNotFound      = "NOT_FOUND"
+	CodeBusy          = "NODE_BUSY"
+	CodeForbidden     = "FORBIDDEN"
+	CodeNativeRefused = "NATIVE_REFUSED"
 )
 
 const (
@@ -192,10 +193,45 @@ func ValidExecution(ref rt.ExecutionRef) bool {
 
 // Failure contains a safe machine-readable failure at the network boundary.
 type Failure struct {
-	Code string `json:"code"`
+	Code       string `json:"code"`
+	NativeCode string `json:"native_code,omitempty"`
 }
 
 func (f *Failure) Error() string { return "node gateway: " + f.Code }
+
+func (f *Failure) Unwrap() error {
+	code, native := "", ""
+	switch f.Code {
+	case CodeNotFound:
+		code, native = "NOT_FOUND", "E_NOT_FOUND"
+	case CodeGateClosed:
+		code, native = "CONFLICT", "E_STATE_CONFLICT"
+	case CodeInvalid:
+		code, native = "INVALID_ARGUMENT", "E_INVALID_REQUEST"
+	case CodeUnsupported:
+		code, native = "NOT_SUPPORTED", "E_CAPABILITY_UNSUPPORTED"
+	case CodeNativeRefused:
+		if NativeRefusal(f.NativeCode) {
+			code, native = "NATIVE_REFUSED", f.NativeCode
+		}
+	}
+	if native == "" {
+		return nil
+	}
+	return &rt.Error{Code: code, NativeCode: native, Message: f.Error()}
+}
+
+func NativeRefusal(code string) bool {
+	switch code {
+	case "E_CAPABILITY_UNSUPPORTED", "E_NATIVE_UNBOUND", "E_STALE_EXECUTION", "E_STATE_CONFLICT",
+		"E_VOLUME_CONFLICT", "E_OPERATION_IN_PROGRESS", "E_PERMISSION_DENIED", "E_INVALID_REQUEST",
+		"E_VOLUME_GENERATION_MISMATCH", "E_STATEPOINT_CORRUPT", "E_BUNDLE_UNAVAILABLE", "E_FENCE_UNPROVEN",
+		"E_RESOURCE_UNAVAILABLE", "E_RESOURCE_LIMIT":
+		return true
+	default:
+		return false
+	}
+}
 
 func (f *Failure) Is(target error) bool {
 	switch f.Code {

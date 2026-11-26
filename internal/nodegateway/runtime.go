@@ -270,6 +270,9 @@ func (s *Server) submit(ctx context.Context, route nodeproto.Route, id, step str
 	if entry.Receipt != nil {
 		return *entry.Receipt, nil
 	}
+	if entry.Refusal != "" {
+		return receipt, nativeRefused(entry.Refusal)
+	}
 	if !first {
 		if step != submitStep {
 			// Native QueryOperation exposes the current fork result but does not
@@ -292,7 +295,17 @@ func (s *Server) submit(ctx context.Context, route nodeproto.Route, id, step str
 	defer cancel()
 	receipt, err = send(dispatch)
 	if (err != nil || !scope.verifies(id, receipt)) && step == submitStep {
+		var fault *rt.Error
+		confirmedRefusal := errors.As(err, &fault) && nodeproto.NativeRefusal(fault.NativeCode)
 		receipt, err = backend.QueryOperation(dispatch, id)
+		if confirmedRefusal && nativeNotFound(err) {
+			persist, finish := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			defer finish()
+			if err := s.journal.refuse(persist, id, step, fault.NativeCode); err != nil {
+				return rt.OperationReceipt{}, uncertain()
+			}
+			return rt.OperationReceipt{}, nativeRefused(fault.NativeCode)
+		}
 	}
 	if err != nil || !scope.verifies(id, receipt) {
 		return rt.OperationReceipt{}, uncertain()
@@ -347,6 +360,9 @@ func (s *Server) queryOperation(ctx context.Context, scope nodeproto.Route, rout
 	}
 	receipt, err := a.QueryOperation(ctx, id)
 	if retained {
+		if entry.Refusal != "" && nativeNotFound(err) {
+			return rt.OperationReceipt{}, &nodeproto.Failure{Code: nodeproto.CodeNotFound}
+		}
 		if err != nil || !entry.Scope.verifies(id, receipt) {
 			return rt.OperationReceipt{}, uncertain()
 		}
@@ -354,7 +370,19 @@ func (s *Server) queryOperation(ctx context.Context, scope nodeproto.Route, rout
 			return rt.OperationReceipt{}, uncertain()
 		}
 	}
+	if !retained && errors.Is(err, rt.ErrNotFound) && !nativeNotFound(err) {
+		return rt.OperationReceipt{}, uncertain()
+	}
 	return receipt, err
+}
+
+func nativeNotFound(err error) bool {
+	var fault *rt.Error
+	return errors.As(err, &fault) && errors.Is(fault, rt.ErrNotFound) && fault.NativeCode == "E_NOT_FOUND"
+}
+
+func nativeRefused(code string) error {
+	return &nodeproto.Failure{Code: nodeproto.CodeNativeRefused, NativeCode: code}
 }
 
 func (s *Server) reconcileKnown(ctx context.Context, scope nodeproto.Route, route Route, in nodeproto.ReconcileRequest) (nodeproto.ReconcileResult, error) {

@@ -88,7 +88,7 @@ func (c Config) RuntimeRoutes() (map[nodeproto.Route]Route, error) {
 			!canonicalAbsolutePath(spec.Manifest) {
 			return nil, errors.New("runtime routes require distinct Serve sockets, Worker scopes and verified Bundle manifests")
 		}
-		sockets[spec.Socket], global[scope.RuntimeInstanceID], local[key] = true, true
+		sockets[spec.Socket], global[scope.RuntimeInstanceID], local[key] = true, true, true
 		if _, err := spec.LoadManifest(); err != nil {
 			return nil, fmt.Errorf("verify runtime %s Bundle manifest: %w", scope.RuntimeInstanceID, err)
 		}

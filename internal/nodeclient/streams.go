@@ -34,7 +34,7 @@ func runtimeExecution(in workerclient.Execution) rt.ExecutionRef {
 	return rt.ExecutionRef{InstanceID: in.InstanceID, IncarnationID: in.IncarnationID, ExecutionEpoch: in.Epoch}
 }
 
-func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ *nodeproto.FramedConn, err error) {
+func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ net.Conn, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	if err := a.client.authorizeRequest(ctx); err != nil {

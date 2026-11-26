@@ -156,15 +156,19 @@ func (s *Server) handshake() nodeproto.Handshake {
 }
 
 func writeFailure(w http.ResponseWriter, code string) {
+	writeRPCFailure(w, &nodeproto.Failure{Code: code})
+}
+
+func writeRPCFailure(w http.ResponseWriter, failure *nodeproto.Failure) {
 	status := http.StatusServiceUnavailable
-	switch code {
+	switch failure.Code {
 	case nodeproto.CodeInvalid:
 		status = http.StatusBadRequest
 	case nodeproto.CodeAuthority, nodeproto.CodeForbidden:
 		status = http.StatusForbidden
 	case nodeproto.CodeRoute, nodeproto.CodeNotFound:
 		status = http.StatusNotFound
-	case nodeproto.CodeConflict, nodeproto.CodeGateClosed:
+	case nodeproto.CodeConflict, nodeproto.CodeGateClosed, nodeproto.CodeNativeRefused:
 		status = http.StatusConflict
 	case nodeproto.CodeUnsupported:
 		status = http.StatusNotImplemented
@@ -173,7 +177,7 @@ func writeFailure(w http.ResponseWriter, code string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(&nodeproto.Failure{Code: code})
+	_ = json.NewEncoder(w).Encode(failure)
 }
 
 func decodeJSON(in io.Reader, target any) error {
@@ -240,7 +244,12 @@ func serverRPC[In, Out any](s *Server, mux *http.ServeMux, path string, slots ch
 		defer cancel()
 		out, err := f(ctx, in.Route, route, in.Request)
 		if err != nil {
-			writeFailure(w, nodeproto.FailureCode(err))
+			var failure *nodeproto.Failure
+			if errors.As(err, &failure) {
+				writeRPCFailure(w, failure)
+			} else {
+				writeFailure(w, nodeproto.FailureCode(err))
+			}
 			return
 		}
 		raw, err := json.Marshal(out)
