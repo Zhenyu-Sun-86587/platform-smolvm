@@ -1,11 +1,10 @@
 .workspaceActions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
-.connect header { display: grid; gap: 7px; padding-inline-end: 20px; }
-.connect { max-height: calc(100dvh - 28px); overflow-y: auto; }
+.connectBody { display: grid; gap: 14px; }
 .connectionLinks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .connectionLinks .connectionLink { min-height: 57px; height: auto; justify-content: start; text-align: start; white-space: normal; padding: 10px 12px; }
 .connectionLink span { display: grid; gap: 2px; }
 .connectionLink strong { font-size: 13px; }
-.connectionLink small { font-weight: 400; opacity: .78; }
+.connectionLink small { color: inherit; font-weight: 400; opacity: .85; }
 .connectionLabel, .sessionsLink { display: inline-flex; align-items: center; gap: 7px; }
 .connectionLabel h3 { margin: 0; font-size: 13px; }
 .sessionsLink { width: max-content; max-width: 100%; font-size: 12px; }
@@ -65,6 +64,8 @@
 @media (max-width: 699px), (max-width: 1023px) and (pointer: coarse) {
   .toolbar { min-height: 42px; padding-inline: 8px; }
   .connectionLinks .connectionLink { padding-inline: 8px; }
+  .workspaceActions[data-surface="detail"] { width: 100%; }
+  .workspaceActions[data-surface="detail"] button:first-child { flex: 1; }
   .screen { padding-inline: 4px; }
 }
 

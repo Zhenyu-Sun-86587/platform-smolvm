@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 import { ArrowUp, Download, FileText, FolderClosed, Pencil, RefreshCw, Upload } from "lucide-react"
-import type { GuestFileCapability, GuestFileEntry, GuestFileUpload, Machine, Page } from "../../../../sdk/typescript/src/index"
+import type { GuestFileCapability, GuestFileEntry, Machine, Page } from "../../../../sdk/typescript/src/index"
 import { machine as machinePath, PlatformError } from "../../../../sdk/typescript/src/index"
 import { api } from "../../api"
-import { Callout, download, label, machinePowerState, query, str } from "../../common"
+import { bundleBound, Callout, download, label, machinePowerState, str } from "../../common"
 import type { Actions } from "../../main"
 import { Button, Modal } from "../../ui"
 import { fileDigest } from "./digest"
@@ -91,7 +91,8 @@ function Browser({ machine, actions, current, autoload }: {
   const previewLimit = fileLimit(machine, "files.preview")
   const editLimit = fileLimit(machine, "files.edit")
   const base = machinePath(machine.machine_id) + "/files"
-  const initialPath = machine.boot_mode === "system" ? "/" : "/workspace"
+  const native = capability?.constraints?.transport === "native_agent" || bundleBound(machine)
+  const initialPath = native ? "/" : "/workspace"
   const canAutoload = useRef(autoload && canList && machinePowerState(machine) === "running")
   const [path, setPath] = useState(initialPath)
   const [input, setInput] = useState(initialPath)
@@ -163,7 +164,7 @@ function Browser({ machine, actions, current, autoload }: {
     const target = child(path, item.name)
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(target), { signal })
+      const response = await api.downloadFile(machine.machine_id, target, signal)
       const contents = await readText(response, previewLimit)
       if (signal.aborted) return
       setTransferError(undefined)
@@ -176,7 +177,7 @@ function Browser({ machine, actions, current, autoload }: {
     const target = child(path, item.name)
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(target), { signal })
+      const response = await api.downloadFile(machine.machine_id, target, signal)
       await download(response, item.name)
     })
   }
@@ -185,9 +186,8 @@ function Browser({ machine, actions, current, autoload }: {
     if (!uncertain || !canDownload) return
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(uncertain.path), { signal })
-      const blob = await response.blob()
-      const sha256 = await fileDigest(blob)
+      const response = await api.downloadFile(machine.machine_id, uncertain.path, signal)
+      const sha256 = await fileDigest(response.body ?? new Blob())
       if (signal.aborted) return
       setNotice(sha256 === uncertain.sha256
         ? "The Guest has the submitted bytes at " + uncertain.path + "."
@@ -217,13 +217,13 @@ function Browser({ machine, actions, current, autoload }: {
       let digest: string | undefined
       let dispatched = false
       try {
-        const latest = await request(machine.machine_id, signal)
         digest = await fileDigest(payload)
+        const latest = await request(machine.machine_id, signal)
         const intent = await api.intent(signal)
         dispatched = true
-        const receipt = await actions.tracked(() => api.upload<GuestFileUpload>(base + "?" + query(target), payload, {
-          revision: latest.revision, intent, signal, sha256: digest,
-        }))
+        const receipt = await actions.tracked(intent => api.uploadFile(machine.machine_id, target, payload, {
+          revision: latest.revision, intent, signal,
+        }), { intent })
         if (receipt.state !== "uploaded" || receipt.sha256 !== digest || receipt.path !== target || receipt.size !== payload.size) {
           throw new Error("The upload receipt did not match the submitted file.")
         }
@@ -257,8 +257,12 @@ function Browser({ machine, actions, current, autoload }: {
     <header className={styles.header}>
       <div><h2 id="guest-files-title">Guest files</h2><p>{capability?.constraints?.transport ? label(String(capability.constraints.transport)) : "Browse the Guest filesystem"}</p></div>
       <div className={styles.actions}>
-        <Button size="sm" disabled={!result || busy || !mayPreview} onClick={() => selectedFile && open(selectedFile)}><Pencil size={15}/> Text</Button>
-        <Button size="sm" disabled={!result || busy || !mayDownload} onClick={() => selectedFile && getDownload(selectedFile)}><Download size={15}/> Download</Button>
+        <Button size="sm" disabled={!result || busy || !mayPreview}
+          title={selectedFile && previewLimit ? "Text preview limit: " + bytes(previewLimit) : undefined}
+          onClick={() => selectedFile && open(selectedFile)}><Pencil size={15}/> Text</Button>
+        <Button size="sm" disabled={!result || busy || !mayDownload}
+          title={selectedFile && downloadLimit ? "Download limit: " + bytes(downloadLimit) : undefined}
+          onClick={() => selectedFile && getDownload(selectedFile)}><Download size={15}/> Download</Button>
         <Button size="sm" variant="primary" disabled={!result || uploadLimit === undefined || busy || Boolean(uncertain)}
           onClick={() => { setTransferError(undefined); setTransfer({ mode: "upload" }) }}><Upload size={15}/> Upload</Button>
       </div>

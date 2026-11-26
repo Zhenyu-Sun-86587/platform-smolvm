@@ -207,6 +207,17 @@ function DesktopFixture({ machine, scene }: { machine: Machine; scene: string })
   const loading = scene === "32"
   const disconnected = scene === "desktop-disconnected"
   const [open, setOpen] = useState(["34", "39", "40", "launcher-failed"].includes(scene))
+  useEffect(() => {
+    if (open || disconnected) return
+    function shortcut(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "b") return
+      event.preventDefault()
+      setOpen(true)
+    }
+    window.addEventListener("keydown", shortcut)
+    return () => window.removeEventListener("keydown", shortcut)
+  }, [open, disconnected])
+
   return <div className={styles.console}>
     <div className={styles.toolbar}>
       <DesktopHeading machine={machine} />

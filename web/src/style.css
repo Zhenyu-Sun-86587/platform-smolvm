@@ -1,10 +1,8 @@
 @import "./daytona/theme.css";
-@font-face {
-  font-family: Geist;
-  src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
-}
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
 :root {
   --shell-sidebar-width: 272px;
   --shell-header-height: 52px;
@@ -18,34 +16,34 @@
   color-scheme: dark;
   --brand-ink: #a9c7ff;
   --brand-fill: #1b2e50;
-  --background: #0c1018;
-  --foreground: #f2f5fb;
-  --sidebar-background: #111825;
+  --background: #0d0f14;
+  --foreground: #f3f4f7;
+  --sidebar-background: #111319;
   --sidebar-accent: #202f49;
-  --sidebar-border: #29364c;
-  --table-header: #151e2b;
-  --table-cell: #111923;
-  --card: #141c29;
-  --border: #2c394f;
-  --popover: #182233;
-  --input: #3b4a64;
-  --muted: #223046;
-  --muted-foreground: #a8b4c8;
+  --sidebar-border: #2e313a;
+  --table-header: #191b21;
+  --table-cell: #14151b;
+  --card: #15141a;
+  --border: #34343e;
+  --popover: #19191f;
+  --input: #42444f;
+  --muted: #262832;
+  --muted-foreground: #a6a9b2;
   --primary: #9cbeff;
   --primary-foreground: #14223a;
   --accent: #243553;
   --ring: #93bbff;
   --console-focus: #a1c2ff;
-  --code-background: #0d1421;
+  --code-background: #101218;
 }
 @layer base {
   :root {
-    font-family: Geist, system-ui, sans-serif;
+    font-family: Inter, system-ui, sans-serif;
     font-synthesis: none;
     color: var(--foreground);
     background: var(--background);
     color-scheme: light;
-    --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   }
   * {
     box-sizing: border-box;
@@ -1129,7 +1127,6 @@ td small {
 .console-overlay.legacy-form-overlay {
   z-index: 66;
 }
-.console-detail-overlay,
 .navigation-overlay {
   backdrop-filter: none;
 }
@@ -1161,7 +1158,7 @@ td small {
 .console-detail-overlay {
   z-index: 50;
 }
-.console-detail-close {
+.console-detail-controls {
   position: absolute;
   top: 15px;
   right: 18px;
@@ -1430,9 +1427,14 @@ td small {
     padding: 16px 16px max(16px, env(safe-area-inset-bottom));
     border-left: 0;
   }
-  .console-detail-close {
-    top: 12px;
-    right: 10px;
+  .console-detail-controls {
+    position: sticky;
+    z-index: 2;
+    top: -16px;
+    margin: -16px -16px 0;
+    padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--background);
   }
   .console-modal,
   .form-dialog,

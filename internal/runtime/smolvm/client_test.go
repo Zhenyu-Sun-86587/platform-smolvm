@@ -231,3 +231,32 @@ func TestOfficialRuntimeSmoke(t *testing.T) {
 		t.Fatalf("stop: %+v, %v", stopped, err)
 	}
 }
+
+func TestOfficialMetricsDistinguishZeroAndMissing(t *testing.T) {
+	client, err := New("/fixture/api.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = fixtureTransport{handler: func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/capacity":
+			fmt.Fprint(w, `{"allocated_cpus":0,"used_cpus":0,"used_disk_gb":9}`)
+		case machinesPath + "/vm/metrics":
+			fmt.Fprint(w, `{"machineId":"vm","at":"2026-11-26T00:00:00Z","state":"running","vcpus":0,"cpuMillis":0}`)
+		default:
+			t.Errorf("unexpected metrics route %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}}
+	capacity, err := client.Capacity(context.Background())
+	if err != nil || capacity.Availability != "partial" || capacity.AllocatedCPUs != 0 ||
+		capacity.Issues["allocated_cpus"].Code != "" || capacity.Issues["allocated_memory_mb"].Code != "NOT_SAMPLED" {
+		t.Fatalf("capacity = %+v, %v", capacity, err)
+	}
+	metrics, err := client.Metrics(context.Background(), "vm")
+	if err != nil || metrics.Availability != "partial" || metrics.ObservedAt == nil ||
+		metrics.CPUMillis == nil || *metrics.CPUMillis != 0 || metrics.Issues["vcpus"].Code != "" ||
+		metrics.Issues["memory_limit_mb"].Code != "NOT_SAMPLED" {
+		t.Fatalf("metrics = %+v, %v", metrics, err)
+	}
+}

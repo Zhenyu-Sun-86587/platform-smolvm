@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/netip"
+	"time"
 
 	"sandbox-platform/internal/runtime"
 )
@@ -130,9 +131,33 @@ func (client *Client) Resize(ctx context.Context, name string, request runtime.R
 }
 
 func (client *Client) Capacity(ctx context.Context) (runtime.Capacity, error) {
-	var result runtime.Capacity
-	err := client.json(ctx, http.MethodGet, "/capacity", nil, nil, &result)
-	return result, err
+	var native struct {
+		AllocatedCPUs         *uint32  `json:"allocated_cpus"`
+		AllocatedMemoryMB     *uint64  `json:"allocated_memory_mb"`
+		UsedCPUs              *float64 `json:"used_cpus"`
+		UsedMemoryMB          *uint64  `json:"used_memory_mb"`
+		HostMemoryTotalMB     *uint64  `json:"host_memory_total_mb"`
+		HostMemoryAvailableMB *uint64  `json:"host_memory_available_mb"`
+		UsedDiskGB            *uint64  `json:"used_disk_gb"`
+		BootID                *string  `json:"boot_id"`
+	}
+	if err := client.json(ctx, http.MethodGet, "/capacity", nil, nil, &native); err != nil {
+		return runtime.Capacity{}, err
+	}
+	o := officialMetricObservation("official_runtime")
+	result := runtime.Capacity{MetricObservation: o, HostMemoryTotalMB: native.HostMemoryTotalMB, HostMemoryAvailableMB: native.HostMemoryAvailableMB}
+	readOfficialMetric(o, "allocated_cpus", native.AllocatedCPUs, &result.AllocatedCPUs)
+	readOfficialMetric(o, "allocated_memory_mb", native.AllocatedMemoryMB, &result.AllocatedMemoryMB)
+	readOfficialMetric(o, "used_cpus", native.UsedCPUs, &result.UsedCPUs)
+	readOfficialMetric(o, "used_memory_mb", native.UsedMemoryMB, &result.UsedMemoryMB)
+	readOfficialMetric(o, "host_memory_total_mb", native.HostMemoryTotalMB, nil)
+	readOfficialMetric(o, "host_memory_available_mb", native.HostMemoryAvailableMB, nil)
+	readOfficialMetric(o, "used_disk_gb", native.UsedDiskGB, &result.UsedDiskGB)
+	readOfficialMetric(o, "boot_id", native.BootID, &result.BootID)
+	if len(o.Issues) == 8 {
+		o.Availability = "unavailable"
+	}
+	return result, nil
 }
 
 func (client *Client) Metrics(ctx context.Context, name string) (runtime.Metrics, error) {
@@ -144,8 +169,8 @@ func (client *Client) Metrics(ctx context.Context, name string) (runtime.Metrics
 		Name           string            `json:"machineId"`
 		At             string            `json:"at"`
 		State          string            `json:"state"`
-		VCPUs          uint32            `json:"vcpus"`
-		MemoryLimitMB  uint32            `json:"memoryLimitMb"`
+		VCPUs          *uint32           `json:"vcpus"`
+		MemoryLimitMB  *uint32           `json:"memoryLimitMb"`
 		CPUMillis      *uint64           `json:"cpuMillis"`
 		CPULimitMillis *uint32           `json:"cpuLimitMillicpus"`
 		MemoryMB       *uint64           `json:"memoryMb"`
@@ -161,5 +186,37 @@ func (client *Client) Metrics(ctx context.Context, name string) (runtime.Metrics
 	if native.Name != name || native.At == "" {
 		return runtime.Metrics{}, protocolError("metrics response is missing the expected runtime and timestamp", false, nil)
 	}
-	return runtime.Metrics(native), nil
+	o := officialMetricObservation("machine")
+	if observed, err := time.Parse(time.RFC3339Nano, native.At); err == nil {
+		o.ObservedAt = &observed
+	}
+	result := runtime.Metrics{
+		MetricObservation: o, Name: native.Name, At: native.At, State: native.State,
+		CPUMillis: native.CPUMillis, CPULimitMillis: native.CPULimitMillis, MemoryMB: native.MemoryMB, RSSMB: native.RSSMB,
+		DiskUsedMB: native.DiskUsedMB, DiskGB: native.DiskGB, EgressBytes: native.EgressBytes, Pressure: native.Pressure,
+	}
+	readOfficialMetric(o, "vcpus", native.VCPUs, &result.VCPUs)
+	readOfficialMetric(o, "memory_limit_mb", native.MemoryLimitMB, &result.MemoryLimitMB)
+	readOfficialMetric(o, "cpu_millis", native.CPUMillis, nil)
+	readOfficialMetric(o, "cpu_limit_millicpus", native.CPULimitMillis, nil)
+	readOfficialMetric(o, "memory_mb", native.MemoryMB, nil)
+	readOfficialMetric(o, "rss_mb", native.RSSMB, nil)
+	readOfficialMetric(o, "disk_used_mb", native.DiskUsedMB, nil)
+	readOfficialMetric(o, "disk_gb", native.DiskGB, nil)
+	readOfficialMetric(o, "egress_bytes", native.EgressBytes, nil)
+	readOfficialMetric(o, "pressure", native.Pressure, nil)
+	return result, nil
+}
+
+func officialMetricObservation(scope string) *runtime.MetricObservation {
+	return &runtime.MetricObservation{Availability: "available", Source: "official_runtime", Scope: scope, Issues: map[string]runtime.MetricIssue{}}
+}
+
+func readOfficialMetric[T any](observation *runtime.MetricObservation, field string, received, dest *T) {
+	if received == nil {
+		observation.Availability = "partial"
+		observation.Issues[field] = runtime.MetricIssue{Code: "NOT_SAMPLED", Message: "No runtime measurement was returned."}
+	} else if dest != nil {
+		*dest = *received
+	}
 }

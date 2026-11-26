@@ -51,9 +51,20 @@ func TestDroppedPOSTIsForwardedOnce(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer test")
 	request.Header.Set("Cookie", "__Host-sandbox-preview=private")
 	recorder := httptest.NewRecorder()
-	backend := Backend{Port: uint16(l.Addr().(*net.TCPAddr).Port), Protocol: "http"}
+	var observations int
+	backend := Backend{
+		Port: uint16(l.Addr().(*net.TCPAddr).Port), Protocol: "http",
+		Observe: func(err error) string {
+			observations++
+			if err == nil {
+				t.Error("dropped upstream response reported success")
+			}
+			return "UPSTREAM_UNAVAILABLE"
+		},
+	}
 	backend.HTTP(recorder, request, func(context.Context) error { return nil })
-	if recorder.Code != 502 || recorder.Header().Get(ForwardingHeader) != "may_have_started" {
+	if recorder.Code != 502 || recorder.Header().Get(ForwardingHeader) != "may_have_started" ||
+		recorder.Header().Get(UpstreamReasonHeader) != "UPSTREAM_UNAVAILABLE" || observations != 1 {
 		t.Fatalf("status=%d header=%v", recorder.Code, recorder.Header())
 	}
 	time.Sleep(30 * time.Millisecond)

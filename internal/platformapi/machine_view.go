@@ -174,6 +174,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 			v.Capabilities[k] = rt.Capability{Status: "unknown", Supported: false, ReasonCode: "GUEST_MANAGEMENT_UNAVAILABLE", Message: "Guest Task Manager handshake required"}
 		}
 	}
+	s.projectFileCapabilities(&v, official)
 	if !official && v.LiveComputeGrowth {
 		for _, kind := range []string{rt.Hibernate, rt.VMSnapshot, rt.IndependentFork, rt.ForkBatch} {
 			v.Capabilities[rt.FullStateOperationCapability(kind)] = rt.LiveGrowthCaptureStatus()

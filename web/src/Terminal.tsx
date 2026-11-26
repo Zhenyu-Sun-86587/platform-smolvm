@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css"
 import { api, fixtureScene, segment } from "./api"
 import { Callout } from "./common"
 import { machineHref } from "./routes"
-import { Button, useMobile } from "./ui"
+import { Button, mobileQuery, useMobile } from "./ui"
 import styles from "./features/console/console.module.css"
 
 const fixtureText = "$ whoami\r\nroot\r\n$ pwd\r\n/workspace\r\n$ "
@@ -42,7 +42,7 @@ export default function Terminal({ execId, machine, embedded = false }: { execId
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(root)
-    const viewport = matchMedia("(max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px)")
+    const viewport = matchMedia(mobileQuery)
     const resizeScreen = () => { term.options.fontSize = viewport.matches ? 12 : 13; fit.fit() }
     const observer = new ResizeObserver(resizeScreen)
     observer.observe(root)

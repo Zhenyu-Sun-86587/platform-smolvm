@@ -110,16 +110,15 @@
 .metricsHead { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .metricsHead span { color: var(--detail-muted); font-size: 11px; text-align: end; }
 .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.metric { min-height: 112px; }
+.metric { min-height: 154px; }
 .metric h3 { font-size: 12px; font-weight: 550; margin: 0; }
 .metricGrid {
-  min-height: 26px;
-  background: repeating-linear-gradient(0deg, transparent 0 11px, color-mix(in srgb, var(--detail-border) 55%, transparent) 11px 12px);
+  min-height: 56px;
+  background: repeating-linear-gradient(0deg, transparent 0 17px, color-mix(in srgb, var(--detail-border) 55%, transparent) 17px 18px);
   position: relative;
   overflow: hidden;
 }
-.metricGrid svg { width: 100%; height: 32px; color: var(--primary); }
-.metricGrid polyline { vector-effect: non-scaling-stroke; }
+.metricGrid svg { display: block; width: 100%; height: 56px; color: var(--primary); }
 .note { margin: 8px 0 0; color: var(--detail-muted); font-size: 12px; line-height: 1.55; }
 
 .empty {
@@ -155,3 +154,4 @@
 .powerOption:last-child { border-bottom: 0; }
 .powerOption strong { font-size: 13px; }
 .powerOption p { color: var(--muted-foreground); font-size: 12px; margin: 3px 0 0; }
+.metricGrid line { vector-effect: non-scaling-stroke; }

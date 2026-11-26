@@ -53,6 +53,8 @@ export interface ErrorDetail {
   operation_id?: string
   capability?: string
   reason_code?: string
+  stage?: string
+  scope?: string
   [key: string]: unknown
 }
 export interface OperationChild {
@@ -172,7 +174,7 @@ export interface LifecycleWorkerStatus {
   controlled_suspended: boolean
   idle_ms?: number | null
   next_action?: { kind: string; origin: string; eligible_after_ms: number } | null
-  collectors: Record<string, { fresh: boolean; session: string; seq: number }>
+  collectors: Record<string, { fresh?: boolean; session: string; seq: number }>
   last_decision?: {
     operation_id: string; kind: string; origin: string; stage: string; error?: string | null
     start_worker_memory_bytes?: number | null; end_worker_memory_bytes?: number | null
