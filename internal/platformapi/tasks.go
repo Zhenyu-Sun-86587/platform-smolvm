@@ -110,7 +110,18 @@ func (s *Server) taskRoutes() {
 			if err != nil {
 				return err
 			}
-			if m.CurrentBinding == nil || m.BindingGeneration != gen || m.ObservedState != "running" || m.ActiveOperationID != "" {
+			readable := m.CurrentBinding != nil && m.BindingGeneration == gen && m.ObservedState == "running"
+			if readable && m.ActiveOperationID != "" {
+				active, err := s.DB.GetOperation(r.Context(), m.ActiveOperationID)
+				if err != nil {
+					return err
+				}
+				// Task mutations keep the same execution. A native read is still
+				// fenced by the exact incarnation, epoch and Guest task namespace.
+				readable = m.CurrentBinding.RuntimeInstanceObjectID != "" && active.BindingID == m.CurrentBinding.ID &&
+					active.BindingGeneration == gen && (active.Kind == "task_start" || active.Kind == "task_cancel")
+			}
+			if !readable {
 				if suffix == "" {
 					return write(w, 200, json.RawMessage(raw))
 				}
@@ -173,7 +184,7 @@ func (s *Server) startTask(ctx context.Context, j *lifecycle.Job) error {
 	}
 	if release != nil {
 		defer release()
-		if req.Spec.Cwd == "" {
+		if req.Spec.Cwd == "" || req.Spec.Cwd == tasks.DefaultWorkDir {
 			// Previously installed System templates can predate /workspace.
 			control, ok := j.Runtime.(rt.NativeGuestControl)
 			if !ok {
