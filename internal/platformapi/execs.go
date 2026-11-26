@@ -39,19 +39,22 @@ type execRequest struct {
 }
 
 type execRecord struct {
-	ID        string `json:"exec_id"`
-	Machine   string `json:"machine_id"`
-	State     string `json:"state"`
-	ExitCode  *int   `json:"exit_code,omitempty"`
-	Binding   string `json:"-"`
-	Owner     string `json:"-"`
-	Upstream  string `json:"-"`
-	Runtime   string `json:"-"`
-	Current   string `json:"-"`
-	OutputEnd uint64 `json:"-"`
+	ID        string      `json:"exec_id"`
+	Machine   string      `json:"machine_id"`
+	State     string      `json:"state"`
+	ExitCode  *int        `json:"exit_code,omitempty"`
+	Binding   string      `json:"-"`
+	Owner     string      `json:"-"`
+	Upstream  string      `json:"-"`
+	Runtime   string      `json:"-"`
+	Current   string      `json:"-"`
+	Bundle    string      `json:"-"`
+	BootMode  rt.BootMode `json:"-"`
+	OutputEnd uint64      `json:"-"`
 }
 
-const execColumns = "x.id,x.machine_id,x.state,x.exit_code,x.binding_id,x.principal_id,x.upstream_exec_id,b.runtime_name,coalesce(m.current_binding_id,''),x.output_end"
+const execColumns = `x.id,x.machine_id,x.state,x.exit_code,x.binding_id,x.principal_id,x.upstream_exec_id,b.runtime_name,
+	coalesce(m.current_binding_id,''),coalesce(b.runtime_bundle_id,''),coalesce(json_extract(m.spec_json,'$.boot_mode'),''),x.output_end`
 const execTables = " FROM exec_sessions x JOIN machines m ON x.machine_id=m.id JOIN runtime_bindings b ON b.id=x.binding_id"
 
 type execScanner interface {
@@ -60,7 +63,8 @@ type execScanner interface {
 
 func scanExec(row execScanner) (execRecord, error) {
 	var x execRecord
-	err := row.Scan(&x.ID, &x.Machine, &x.State, &x.ExitCode, &x.Binding, &x.Owner, &x.Upstream, &x.Runtime, &x.Current, &x.OutputEnd)
+	err := row.Scan(&x.ID, &x.Machine, &x.State, &x.ExitCode, &x.Binding, &x.Owner, &x.Upstream, &x.Runtime,
+		&x.Current, &x.Bundle, &x.BootMode, &x.OutputEnd)
 	return x, err
 }
 
@@ -93,7 +97,10 @@ func (s *Server) execRoutes() {
 func (s *Server) reconcileExecSessions() {
 	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
-	_, _ = s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state='lost' WHERE state='reserved'")
+	// A platform process owns the direct Agent socket. The Agent reaps the
+	// command when that process exits. Never dispatch it again from SQLite.
+	_, _ = s.DB.DB().ExecContext(ctx, `UPDATE exec_sessions SET state='lost' WHERE state='reserved' OR
+		(state IN ('starting','running') AND binding_id IN (SELECT id FROM runtime_bindings WHERE coalesce(runtime_bundle_id,'')!=''))`)
 	rows, err := s.DB.ReadDB().QueryContext(ctx, "SELECT "+execColumns+execTables+" WHERE x.state NOT IN ('failed','exited','done','lost')")
 	if err != nil {
 		return
@@ -169,8 +176,11 @@ func (s *Server) startExec(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if spec.Cwd != "" && (!path.IsAbs(spec.Cwd) || path.Clean(spec.Cwd) != spec.Cwd || strings.ContainsRune(spec.Cwd, 0)) {
 		return registry.ErrInvalid
 	}
+	ctx := r.Context()
 	if spec.Cwd == "" {
-		spec.Cwd = "/workspace"
+		if err := s.defaultExecDirectory(ctx, machine, &spec); err != nil {
+			return err
+		}
 	}
 	if spec.User == "" || spec.User == "root" {
 		spec.User = "0:0"
@@ -178,7 +188,6 @@ func (s *Server) startExec(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if spec.TTY && (spec.Cols == 0 || spec.Rows == 0) {
 		spec.Cols, spec.Rows = 80, 24
 	}
-	ctx := r.Context()
 	env := envelope(r, p, spec)
 	var err error
 	if r.Header.Get("If-Match") != "" {
@@ -235,6 +244,10 @@ func (s *Server) startExec(w http.ResponseWriter, r *http.Request, p auth.Princi
 }
 
 func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecord, spec execRequest) (execRecord, error) {
+	if x.Bundle != "" && (x.BootMode != rt.BootSystem || spec.User != "0:0") {
+		s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
+		return x, rt.ErrUnsupported
+	}
 	b, release, err := s.Access(ctx, p, x.Machine)
 	if err != nil {
 		s.saveExec(x.ID, execbridge.Snapshot{State: "failed"})
@@ -253,16 +266,28 @@ func (s *Server) dispatchExec(ctx context.Context, p auth.Principal, x execRecor
 	}
 	stream := execbridge.New(0, "starting")
 	s.execStreams.Store(x.ID, stream)
-	if _, err := s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state='starting' WHERE id=? AND state='reserved'", x.ID); err != nil {
+	updated, err := s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state='starting' WHERE id=? AND state='reserved'", x.ID)
+	if err == nil {
+		var count int64
+		count, err = updated.RowsAffected()
+		if err == nil && count != 1 {
+			err = registry.ErrGeneration
+		}
+	}
+	if err != nil {
 		s.execStreams.CompareAndDelete(x.ID, stream)
 		release()
 		return x, err
 	}
-	native, err := adapter.StartExec(ctx, x.Runtime, rt.ExecSessionRequest{
+	request := rt.ExecSessionRequest{
 		ExecRequest: rt.ExecRequest{Command: spec.Argv, Cwd: spec.Cwd, User: spec.User, Env: spec.Env, TimeoutSeconds: spec.Timeout},
 		ID:          x.Upstream, TTY: spec.TTY, Interactive: spec.Interactive, Cols: spec.Cols, Rows: spec.Rows,
 		WaitSeconds: spec.Wait, MaxBytes: 64 << 10,
-	})
+	}
+	if x.Bundle != "" {
+		return x, s.dispatchGuestExec(ctx, p, x, b, adapter, request, stream, release)
+	}
+	native, err := adapter.StartExec(ctx, x.Runtime, request)
 	if err != nil {
 		if !errors.Is(err, rt.ErrUncertain) {
 			release()
@@ -296,7 +321,7 @@ func (s *Server) saveExec(id string, o execbridge.Snapshot) {
 	}
 	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
-	_, _ = s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state=?,exit_code=?,output_start=?,output_end=?,last_observed_at=? WHERE id=?",
+	_, _ = s.DB.DB().ExecContext(ctx, "UPDATE exec_sessions SET state=?,exit_code=?,output_start=?,output_end=?,last_observed_at=? WHERE id=? AND state!='lost'",
 		state, o.ExitCode, o.RetainedFrom, o.End, time.Now().UnixMilli(), id)
 }
 
@@ -352,15 +377,22 @@ func (s *Server) execRuntime(ctx context.Context, x execRecord) (rt.Adapter, err
 
 func (s *Server) streamFor(x execRecord) *execbridge.Stream {
 	if existing, ok := s.execStreams.Load(x.ID); ok {
-		return existing.(*execbridge.Stream)
+		stream := existing.(*execbridge.Stream)
+		if x.Bundle != "" && (x.Binding != x.Current || x.State == "lost") {
+			if value, ok := s.guestExecs.Load(x.ID); ok {
+				value.(*guestExec).session.Close("Guest exec execution is no longer current")
+			}
+			stream.Lost("Guest exec execution is no longer current")
+		}
+		return stream
 	}
 	if x.State == "reserved" && x.Binding == x.Current {
 		return execbridge.New(0, "starting")
 	}
-	if x.Binding != x.Current || x.State == "lost" {
+	if x.Binding != x.Current || x.State == "lost" || x.Bundle != "" && !execTerminal(x.State) {
 		stream := execbridge.New(x.OutputEnd, "session_lost")
 		stream.Lost("native exec session is unavailable")
-		if x.Binding != x.Current && !execTerminal(x.State) {
+		if !execTerminal(x.State) {
 			s.saveExec(x.ID, execbridge.Snapshot{State: "session_lost", End: x.OutputEnd})
 		}
 		return stream
@@ -441,7 +473,15 @@ func (s *Server) execInput(w http.ResponseWriter, r *http.Request, p auth.Princi
 
 func (s *Server) applyExecInput(ctx context.Context, x execRecord, in terminalInput) (uint64, error) {
 	if x.Binding != x.Current || execTerminal(x.State) {
-		return 0, &lifecycle.Failure{Code: "SESSION_LOST", Message: "native exec session has ended or is unavailable"}
+		return 0, execLost()
+	}
+	if x.Bundle != "" {
+		session, err := s.currentGuestExec(ctx, x)
+		if err != nil {
+			return 0, err
+		}
+		seq, err := session.Input(ctx, in.Seq, in.Data, in.EOF)
+		return seq, guestExecError(err)
 	}
 	adapter, err := s.execRuntime(ctx, x)
 	if err != nil {
@@ -471,7 +511,14 @@ func (s *Server) execResize(w http.ResponseWriter, r *http.Request, p auth.Princ
 
 func (s *Server) resizeExec(ctx context.Context, x execRecord, in terminalInput) error {
 	if x.Binding != x.Current || execTerminal(x.State) {
-		return &lifecycle.Failure{Code: "SESSION_LOST", Message: "native exec session has ended or is unavailable"}
+		return execLost()
+	}
+	if x.Bundle != "" {
+		session, err := s.currentGuestExec(ctx, x)
+		if err != nil {
+			return err
+		}
+		return guestExecError(session.Resize(ctx, in.Cols, in.Rows))
 	}
 	adapter, err := s.execRuntime(ctx, x)
 	if err != nil {
@@ -486,6 +533,14 @@ func (s *Server) deleteExec(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	if x.Binding == x.Current && !execTerminal(x.State) {
+		if x.Bundle != "" {
+			if value, ok := s.guestExecs.Load(x.ID); ok {
+				value.(*guestExec).session.Close("Guest exec session terminated")
+			} else if x.State == "reserved" || x.State == "starting" {
+				return registry.ErrOperationActive
+			}
+			return s.execView(w, x, 0, 0)
+		}
 		adapter, err := s.execRuntime(r.Context(), x)
 		if err != nil {
 			return err
@@ -527,6 +582,12 @@ func (s *Server) attachExec(w http.ResponseWriter, r *http.Request) error {
 	conn.SetReadLimit(96 << 10)
 	ctx, stop := context.WithCancel(r.Context())
 	defer stop()
+	var recheck <-chan time.Time
+	if x.Bundle != "" {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		recheck = ticker.C
+	}
 	if err := wsjson.Write(ctx, conn, map[string]any{"type": "ready", "stdin_seq": initial.StdinApplied}); err != nil {
 		return nil
 	}
@@ -535,6 +596,9 @@ func (s *Server) attachExec(w http.ResponseWriter, r *http.Request) error {
 		for {
 			var frame terminalInput
 			if err := wsjson.Read(ctx, conn, &frame); err != nil {
+				return
+			}
+			if x.Bundle != "" && s.CheckAccessPrincipal(ctx, p, x.Machine) != nil {
 				return
 			}
 			live, err := s.authorizedExec(ctx, p, id, true)
@@ -556,6 +620,9 @@ func (s *Server) attachExec(w http.ResponseWriter, r *http.Request) error {
 		}
 	}()
 	for {
+		if x.Bundle != "" && s.CheckAccessPrincipal(ctx, p, x.Machine) != nil {
+			return nil
+		}
 		view, changed := stream.Read(cursor, 64<<10)
 		if view.Gap != nil {
 			if err := wsjson.Write(ctx, conn, map[string]any{"type": "gap", "from": view.Gap.From, "to": view.Gap.To}); err != nil {
@@ -586,6 +653,7 @@ func (s *Server) attachExec(w http.ResponseWriter, r *http.Request) error {
 		case <-ctx.Done():
 			return nil
 		case <-changed:
+		case <-recheck:
 		}
 	}
 }

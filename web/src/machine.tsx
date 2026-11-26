@@ -180,13 +180,15 @@ type Exec = { exec_id: string; state?: string; revision?: number; exit_code?: nu
 type ExecResult = Exec & { output?: { stream: string; data: string }[]; next?: number; gap?: unknown; error?: string }
 function Execs({ machine, actions, revision }: Context) {
   const path = machinePath(machine.machine_id) + "/execs"
+  const execFields = commandFields.map(field => field.name === "cwd" && machine.boot_mode === "system" && bundleBound(machine)
+    ? { ...field, value: "/" } : field)
   const sessions = useRemote<Page<Exec>>(path, revision)
   const deepLink = location.hash.split("/")[4]
   const [current, setCurrent] = useState<string | undefined>(deepLink)
   useEffect(()=>setCurrent(deepLink),[deepLink])
   const [result, setResult] = useState<ExecResult>()
   const open = () => actions.dialog({
-    title: "Open terminal", fields: commandFields,
+    title: "Open terminal", fields: execFields,
     act: async form => {
       const response = await actions.mutate<Exec>(path, {
         ...command(form), tty: true, interactive: true, cols: 100, rows: 28
@@ -195,7 +197,7 @@ function Execs({ machine, actions, revision }: Context) {
     }
   })
   const run = () => actions.dialog({
-    title: "Run command", fields: [...commandFields, { name: "wait_seconds", label: "Wait (seconds)", type: "number", value: 5, min: 0 }],
+    title: "Run command", fields: [...execFields, { name: "wait_seconds", label: "Wait (seconds)", type: "number", value: 5, min: 0 }],
     act: async form => setResult(await actions.mutate<ExecResult>(machinePath(machine.machine_id) + "/exec", {
       ...command(form), wait_seconds: num(form, "wait_seconds")
     }, { revision: machine.revision }))

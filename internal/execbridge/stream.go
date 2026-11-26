@@ -89,6 +89,9 @@ func (s *Stream) Applied(seq uint64) {
 func (s *Stream) Lost(message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.state.Done {
+		return
+	}
 	s.state.State, s.state.Error, s.state.Done = "session_lost", message, true
 	s.notify()
 }

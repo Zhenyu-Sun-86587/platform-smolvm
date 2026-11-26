@@ -157,7 +157,7 @@ export function WorkspaceActions({
     setOpening(true)
     try {
       const session=await actions.mutate<{exec_id:string}>("machines/"+segment(m.machine_id)+"/execs", {
-        argv:["/bin/sh"], cwd:"/workspace", user:"root", tty:true,interactive:true,cols:100,rows:28
+        argv:["/bin/sh"], cwd:m.boot_mode === "system" && bundleBound(m) ? "/" : "/workspace", user:"root", tty:true,interactive:true,cols:100,rows:28
       }, {revision:m.revision})
       location.hash=base+"/terminal/"+segment(session.exec_id)
     } catch(error) {

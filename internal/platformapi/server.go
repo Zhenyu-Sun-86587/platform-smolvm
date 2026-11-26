@@ -39,6 +39,7 @@ type Server struct {
 	loginSlots      chan struct{}
 	tickets         sync.Map
 	execStreams     sync.Map
+	guestExecs      sync.Map
 	leaseDeliveries sync.Map
 	uploadSlots     chan struct{}
 }

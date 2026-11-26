@@ -131,7 +131,7 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE machine_id=? AND binding_generation=? AND state NOT IN ('exited','completed','succeeded','failed','cancelled','interrupted')", m.ID, b.Generation).Scan(&taskCount); err == nil {
 		platform["task"] = taskCount
 	}
-	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_sessions WHERE machine_id=? AND binding_id=? AND state NOT IN ('exited','completed','closed','failed')", m.ID, b.ID).Scan(&execCount); err == nil {
+	if err := e.DB.ReadDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM exec_sessions WHERE machine_id=? AND binding_id=? AND state IN ('reserved','starting','running')", m.ID, b.ID).Scan(&execCount); err == nil {
 		platform["exec"] = execCount
 	}
 	active, _ := e.AccessCounts(m.ID)

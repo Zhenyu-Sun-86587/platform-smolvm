@@ -225,3 +225,39 @@ func (c Client) VerifyGuestTransport(ctx context.Context, execution Execution, c
 	}
 	return nil
 }
+
+// OpenGuestAgent returns the connected stream opened by the Worker after it
+// verifies the running VMM. No socket path is supplied by the caller.
+func (c Client) OpenGuestAgent(ctx context.Context, execution Execution) (*net.UnixConn, error) {
+	result, file, err := c.call(ctx, request{Method: "OpenGuestAgent", Expected: &execution, Payload: struct{}{}},
+		nil, &descriptor{ResourceID: execution.IncarnationID, Role: "guest_agent"})
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var observed struct {
+		Execution
+		Bundle    string `json:"bundle_digest"`
+		Route     string `json:"route_id"`
+		Phase     string `json:"phase"`
+		PID       int    `json:"pid"`
+		StartTime int64  `json:"pid_start_time"`
+		BootID    string `json:"host_boot_id"`
+	}
+	if err = json.Unmarshal(result, &observed); err != nil {
+		return nil, err
+	}
+	if observed.Execution != execution || observed.Bundle != c.Bundle || observed.Route != "deep" ||
+		observed.Phase != "registered" || observed.PID <= 0 || observed.StartTime <= 0 || observed.BootID == "" {
+		return nil, errors.New("Worker did not attest the requested Guest Agent execution")
+	}
+	conn, err := net.FileConn(file)
+	if err != nil {
+		return nil, err
+	}
+	if stream, ok := conn.(*net.UnixConn); ok && stream.RemoteAddr().Network() == "unix" {
+		return stream, nil
+	}
+	conn.Close()
+	return nil, errors.New("Worker did not return a connected Guest Agent stream")
+}

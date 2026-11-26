@@ -31,7 +31,8 @@ type protectionReceipt struct {
 
 const StatePointWakeFailed = "STATEPOINT_RESTORE_FAILED"
 
-func (e *Engine) checkAccessPrincipal(ctx context.Context, p auth.Principal, machine string) error {
+// CheckAccessPrincipal revalidates a live credential before continuing machine access.
+func (e *Engine) CheckAccessPrincipal(ctx context.Context, p auth.Principal, machine string) error {
 	var scope string
 	err := e.DB.ReadDB().QueryRowContext(ctx, `SELECT c.scope_json FROM credentials c JOIN principals p ON p.id=c.principal_id
         WHERE c.id=? AND p.id=? AND p.disabled=0 AND c.revoked_at IS NULL AND (c.expires_at IS NULL OR c.expires_at>?)`,
@@ -65,7 +66,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
 	reauthorize := func() error {
-		if err := e.checkAccessPrincipal(ctx, p, b.MachineID); err != nil {
+		if err := e.CheckAccessPrincipal(ctx, p, b.MachineID); err != nil {
 			return err
 		}
 		if entry.Reauthorize != nil {
