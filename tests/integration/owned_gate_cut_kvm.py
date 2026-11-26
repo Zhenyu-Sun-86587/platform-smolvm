@@ -68,7 +68,11 @@ if ($mode eq 'collect') {
         my (undef, $hostname) = uname();
         my $body = join("\t", $request, ++$sequence, $hostname, $machine) . "\n";
         my $socket = IO::Socket::INET->new(PeerAddr => $sink, PeerPort => 18093, Proto => 'udp') or die $!;
-        $socket->send($body);
+        my $bytes = $socket->send($body);
+        defined($bytes) && $bytes == length($body) or die "UDP send to $sink: $!";
+        open my $last, '>', '/run/owned-gate-last-send' or die $!;
+        print {$last} $body;
+        close $last or die $!;
         if (defined $peer) {
             $listener->send($body, 0, $peer) or die $!;
         }
@@ -333,9 +337,24 @@ def gate_case(platform, phase, with_container):
         try:
             return wait_for(received, timeout=8)
         except TimeoutError:
-            recent = [entry for entry in rows() if entry[0] == ip][-4:]
+            def observe(execution, command):
+                try:
+                    return platform.guest(execution, command).decode(errors="replace")
+                except (OSError, RuntimeError) as error:
+                    return str(error)
+
+            entries = rows()
             print("Owned loopback completed without collector receipt", json.dumps({
-                "expected": receipt, "recent_from_sender": recent,
+                "expected": receipt, "recent_from_sender": [entry for entry in entries if entry[0] == ip][-4:],
+                "last_submitted": observe(target, ["cat", "/run/owned-gate-last-send"]),
+                "sender_unit": observe(target, ["systemctl", "show", "owned-gate-workload",
+                                                "-p", "ActiveState", "-p", "ExecMainStatus"]),
+                "sender_routes": observe(target, ["ip", "-4", "route"]),
+                "sender_neighbors": observe(target, ["ip", "neigh"]),
+                "collector_unit": observe(observer_ref, ["systemctl", "show", "owned-gate-collector",
+                                                         "-p", "ActiveState", "-p", "ExecMainStatus"]),
+                "collector_bytes": observe(observer_ref, ["wc", "-c", RECEIPTS]),
+                "collector_tail": observe(observer_ref, ["tail", "-5", RECEIPTS]),
             }), flush=True)
             raise
 
