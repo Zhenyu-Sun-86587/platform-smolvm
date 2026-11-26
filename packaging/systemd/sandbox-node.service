@@ -1,8 +1,7 @@
 [Unit]
 Description=Sandbox Worker NodeGateway
-After=network-online.target smolvm-serve.service
+After=network-online.target
 Wants=network-online.target
-Requires=smolvm-serve.service
 
 [Service]
 Type=exec

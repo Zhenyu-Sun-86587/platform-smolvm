@@ -63,6 +63,21 @@ func Register(ctx context.Context, db *registry.Store, configNodes []config.Node
 	if err != nil {
 		return nil, err
 	}
+	// Registration runs before any pollers or API handlers. A route removed
+	// from configuration retains its owner and last evidence as unreachable.
+	workers, err := db.ListWorkers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, worker := range workers {
+		if worker.ID == registry.LocalWorkerID || slices.ContainsFunc(configNodes, func(n config.Node) bool { return n.ID == worker.ID }) {
+			continue
+		}
+		if _, err := db.DB().ExecContext(ctx, `UPDATE workers SET observed_status='unreachable' WHERE id=?
+			AND observed_status IN ('recovering','ready','degraded')`, worker.ID); err != nil {
+			return nil, err
+		}
+	}
 	var nodes []*Worker
 	for _, n := range configNodes {
 		name := n.Name

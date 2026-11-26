@@ -56,6 +56,11 @@ export interface PlacementReservation {
   phase: string
   attempt: number
   request_digest: string
+  native_digest?: string
+  control_epoch: string
+  resources: WorkerResources
+  native_attempt: number
+  updated_at: string
 }
 export interface RuntimeProfile {
   worker_id?: string
@@ -174,6 +179,7 @@ export interface SystemMetrics extends MetricObservation {
   used_disk_gb?: number; boot_id?: string; platform: PlatformMetrics
 }
 export interface Control {
+  installation_id?: string
   control_epoch: string
   default_boot_mode?: BootMode
   runtime_version?: string
@@ -283,6 +289,7 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
   resources?: Resources & ResourcePatch
   network?: Required<NetworkSelection>
   machine_id: string
+  worker_id?: string
   desktop_profile?: "software-vnc-v1"
   spec?: { resources?: Resources }
   revision: number
@@ -425,6 +432,7 @@ export interface VolumeSpec {
   lifecycle?: "persistent" | "ephemeral" | "machine"
 }
 export interface Volume extends VolumeSpec {
+  worker_id?: string
   volume_id: string
   owner_id: string
   runtime_bundle_id: string

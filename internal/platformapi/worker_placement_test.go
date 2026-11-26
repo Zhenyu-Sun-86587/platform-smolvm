@@ -69,6 +69,7 @@ func TestHTTPPlacementAndWorkerMaintenance(t *testing.T) {
 			Profiles: []placement.RuntimeProfile{{RuntimeInstanceID: route.InstanceID, LocalInstanceID: route.LocalInstanceID, BundleID: bundle, Ready: true, RuntimeProcessID: "serve-process",
 				Reader: "reader", Architecture: "x86_64", Hypervisor: "kvm", Capabilities: []string{rt.SystemBootCapability}, Artifacts: []string{digest}}}}
 		if id == "worker-b" {
+			sample.Budget.Capacity.HeavySlots = 2
 			sample.Profiles[0].Networks = []placement.Network{{ID: "remote-only", CIDR: "10.24.0.0/24"}}
 		}
 		if err = db.RecordWorkerSample(ctx, sample, placement.Query{Nonce: sample.QueryNonce, StartedAt: time.Now(), CompletedAt: time.Now()}); err != nil {
@@ -158,6 +159,45 @@ func TestHTTPPlacementAndWorkerMaintenance(t *testing.T) {
 	if err = json.Unmarshal(call("POST", "/v1/machines", `{"name":"automatic","template_id":"template","start":true,"network":{"mode":"native","network_id":"remote-only"},"placement":{"mode":"auto"}}`, "auto", "", 202), &other); err != nil || other.WorkerID != "worker-b" {
 		t.Fatalf("automatic %+v: %v", other, err)
 	}
+	t.Run("delegated create reserves the granted runtime", func(t *testing.T) {
+		_, err := db.DB().ExecContext(ctx, `INSERT INTO machines(id,name,template_id,worker_id,revision,binding_generation,desired_power,
+			spec_json,idle_policy_json,keep_running) VALUES('m_source','guest','template','worker-a',1,1,'running','{}','{}',0);
+			INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,worker_id,runtime_instance_id,
+			runtime_bundle_id,runtime_instance_object_id,incarnation_id,execution_epoch,power_state)
+			VALUES('g-bind','m_source',1,'guest','current','ns','spec','worker-a','global-worker-a',?,'g-vm','g-inc',1,'running');
+			UPDATE machines SET current_binding_id='g-bind' WHERE id='m_source'`, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer := auth.AttestedGuestContext{MachineID: "m_source", BindingID: "g-bind", RuntimeInstanceID: "global-worker-a",
+			RuntimeBundleID: bundle, RuntimeObjectID: "g-vm", IncarnationID: "g-inc", ExecutionEpoch: 1}
+		grant, err := server.Auth.CreateGuestGrant(ctx, p, auth.GuestGrantSpec{SourceMachineID: peer.MachineID,
+			Action: auth.GuestCreate, MaximumUses: 1, ExpiresAt: time.Now().Add(time.Minute),
+			Limits: auth.GuestLimits{MaximumChildren: 1, MaximumMemoryMiB: 512, Create: &auth.GuestCreateProfile{
+				TemplateID: "template", RuntimeInstanceID: "global-worker-b", CPUs: 1, MemoryMiB: 512, NetworkID: "remote-only"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		secret, err := server.Auth.IssueGuestCredential(ctx, p, peer, grant, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest("POST", "/v1/machines", strings.NewReader(`{"name":"guest-child"}`))
+		r.Header.Set("If-Control-Epoch", control.ControlEpoch)
+		r.Header.Set("Idempotency-Key", "guest-placement")
+		out := httptest.NewRecorder()
+		if err := server.guestCreate(out, r, peer, secret); err != nil {
+			t.Fatal(err)
+		}
+		var op registry.Operation
+		if err := json.Unmarshal(out.Body.Bytes(), &op); err != nil || op.WorkerID != "worker-b" {
+			t.Fatalf("delegated operation %+v: %v", op, err)
+		}
+		hold, err := db.GetPlacementReservation(ctx, op.ID)
+		if err != nil || hold.WorkerID != op.WorkerID || hold.Phase != placement.Reserved || hold.Resources.MemoryMiB != 512 {
+			t.Fatalf("delegated Worker reservation %+v: %v", hold, err)
+		}
+	})
 	var cordoned workerView
 	if err := json.Unmarshal(call("GET", "/v1/workers/worker-a", "", "", "", 200), &cordoned); err != nil {
 		t.Fatal(err)

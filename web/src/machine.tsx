@@ -281,7 +281,8 @@ function MachineConfiguration({ machine, actions }: Context) {
       <details className="disclosure"><summary>Runtime binding and identity</summary>      <Details value={{
         template: machine.template_id, desired_power: machine.desired_power,
         binding_generation: machine.binding_generation, revision: machine.revision,
-        binding: machine.binding?.binding_id, runtime_name: machine.runtime_name,
+        binding: machine.binding?.binding_id, runtime_name: machine.runtime_name, worker: machine.worker_id ?? machine.binding?.worker_id,
+        owner_status: machine.owner_status, last_confirmed_power: machine.last_confirmed_power_state,
         runtime_instance: machine.binding?.runtime_instance_id, runtime_bundle: machine.binding?.runtime_bundle_id,
         incarnation: machine.binding?.incarnation_id, execution_epoch: machine.binding?.execution_epoch,
         runtime_identity: machine.binding?.runtime_identity ?? machine.runtime_identity,

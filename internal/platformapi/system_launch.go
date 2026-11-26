@@ -12,6 +12,23 @@ import (
 	"sandbox-platform/internal/templates"
 )
 
+// Both management and delegated Guest creation use the same route checks
+// and reserve remote capacity inside the operation acceptance transaction.
+func (s *Server) prepareSystemCreate(ctx context.Context, input *lifecycle.Create, accept *registry.AcceptRequest, digest string) error {
+	if err := s.preparePlacement(input, accept, digest); err != nil {
+		return err
+	}
+	if accept.Placement != nil {
+		return nil
+	}
+	if input.RuntimeInstanceID == "" {
+		return rt.SystemBootUnavailable(true)
+	}
+	admission, err := s.systemCreateAdmission(ctx, input.RuntimeInstanceID)
+	accept.AdmitRuntime = admission
+	return err
+}
+
 func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (func(rt.BundleRoute, string) error, error) {
 	route, err := s.DB.GetRuntimeRoute(ctx, instanceID)
 	if errors.Is(err, rt.ErrUnsupported) {

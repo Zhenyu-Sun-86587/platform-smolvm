@@ -591,22 +591,12 @@ func (s *Server) machineRoutes() {
 		}
 		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true, RuntimeInstanceID: v.RuntimeInstanceID}
 		if boot.BootMode == rt.BootSystem {
-			if err = s.preparePlacement(&v, &req, tpl.ImageDigest); err != nil {
+			if err = s.prepareSystemCreate(r.Context(), &v, &req, tpl.ImageDigest); err != nil {
 				return err
-			}
-			if v.RuntimeInstanceID == "" && req.Placement == nil {
-				return rt.SystemBootUnavailable(true)
 			}
 			v.BootMode = rt.BootSystem
 			if err := v.ValidateSystemCreate(); err != nil {
 				return err
-			}
-			if req.Placement == nil {
-				admission, err := s.systemCreateAdmission(r.Context(), v.RuntimeInstanceID)
-				if err != nil {
-					return err
-				}
-				req.AdmitRuntime = admission
 			}
 			req.DesiredPower = "stopped"
 			if v.Start {

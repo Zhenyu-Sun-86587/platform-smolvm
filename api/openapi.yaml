@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Sandbox Platform
   version: 0.1.0
-  description: Management, execution and access API for a single-node Sandbox installation.
+  description: Management, execution and access API for a Sandbox control plane and its Workers.
 servers:
 - url: /v1
 security:
@@ -22,6 +22,7 @@ paths:
                 type: object
                 properties:
                   control_epoch: {type: string}
+                  installation_id: {type: string}
                   maintenance: {type: boolean}
                   runtime_version: {type: string}
                   build: {type: string}
@@ -133,6 +134,10 @@ paths:
                   native_digest: {type: string}
                   runtime_instance_id: {type: string}
                   bundle_id: {type: string}
+                  control_epoch: {type: string}
+                  native_attempt: {type: integer, minimum: 0}
+                  resources: {$ref: '#/components/schemas/WorkerResources'}
+                  updated_at: {type: string, format: date-time}
         default: {$ref: '#/components/responses/Error'}
   /runtime-profiles:
     get:
@@ -2877,6 +2882,7 @@ components:
         volume_id: {type: string}
         name: {type: string}
         owner_id: {type: string}
+        worker_id: {type: string}
         runtime_instance_id: {type: string}
         runtime_bundle_id: {type: string}
         revision: {type: integer, format: int64}
@@ -2942,6 +2948,14 @@ components:
     WorkerMode:
       type: string
       enum: [active, cordoned, draining, drained, decommissioned]
+    WorkerResources:
+      type: object
+      required: [vcpus, memory_mib, storage_bytes, heavy_slots]
+      properties:
+        vcpus: {type: integer, minimum: 0}
+        memory_mib: {type: integer, minimum: 0}
+        storage_bytes: {type: integer, minimum: 0}
+        heavy_slots: {type: integer, minimum: 0}
     WorkerMaintenance:
       type: object
       required: [worker_id, revision, mode, phase, coverage]
@@ -3287,6 +3301,7 @@ components:
     Machine:
       type: object
       properties:
+        worker_id: {type: string}
         lifecycle_policy: {$ref: '#/components/schemas/LifecycleStatus'}
         machine_id: {type: string, minLength: 1}
         name: {type: string, minLength: 1}
@@ -3335,6 +3350,8 @@ components:
           type: object
           properties:
             binding_id: {type: string, minLength: 1}
+            worker_id: {type: string}
+            local_instance_id: {type: string}
             runtime_instance_id: {type: string, minLength: 1}
             runtime_bundle_id: {type: string, minLength: 1}
             runtime_identity: {type: object, additionalProperties: true}

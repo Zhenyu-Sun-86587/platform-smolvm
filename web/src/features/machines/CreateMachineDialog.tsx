@@ -63,12 +63,16 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const system = selected?.system === true
   const networks = useCollection<PrivateNetwork>(system ? "networks" : "", revision)
   const [runtimeID, setRuntimeID] = useState("")
-  const hasWorkers = systemRuntimes.some(item => item.worker_id && item.worker_id !== "local-worker")
+  const remoteRuntimes = systemRuntimes.filter(item => item.worker_id && item.worker_id !== "local-worker")
+  const hasWorkers = remoteRuntimes.length > 0
   const automatic = hasWorkers && !runtimeID
   const runtime = systemRuntimes.find(profile => profile.runtime_instance_id === runtimeID) ?? systemRuntimes[0]
-  const availableNetworks = (networks.items ?? []).filter((network, index, all) => automatic
-    ? all.findIndex(item => item.network_id === network.network_id) === index
+  const canGrow = automatic ? remoteRuntimes.some(item => supports(item, "boot.live_compute_growth")) : supports(runtime, "boot.live_compute_growth")
+  const matchingNetworks = (networks.items ?? []).filter(network => automatic
+    ? remoteRuntimes.some(item => item.runtime_instance_id === network.runtime_instance_id)
     : network.runtime_instance_id === runtime?.runtime_instance_id)
+  const availableNetworks = matchingNetworks.filter((network, index) =>
+    matchingNetworks.findIndex(item => item.network_id === network.network_id) === index)
 
   const [name, setName] = useState(() =>
     fixtureScene === "36" ? "invalid name " + "x".repeat(250) : fixtureScene === "03" ? "amber-cedar" : preview ? "" : suggestName()
@@ -135,7 +139,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       }
       const mode = networkModes.find(item => item.value === networkMode)?.value
       if (network || mode) body.network = { network_id: network || undefined, mode }
-      if (growth && supports(runtime, "boot.live_compute_growth")) body.live_compute_growth = true
+      if (growth && canGrow) body.live_compute_growth = true
     } else {
       body.resources = { cpu_count: cpu, memory_mib: memory, storage_gib: storage, overlay_gib: overlay }
       if (idlePolicy !== "default") body.idle_policy = { enabled: idlePolicy === "enabled", timeout_seconds: idleTimeout }
@@ -248,14 +252,14 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
               {Boolean(availableNetworks.length) && <>
                 <label className={styles.field}><span>Private network</span><select aria-label="Private network" value={network} onChange={event => setNetwork(event.target.value)}>
                   <option value="">Use configured default</option>
-                  {availableNetworks.map(item => <option key={item.network_id} value={item.network_id}>{item.network_id} · {item.cidr}</option>)}
+                  {availableNetworks.map(item => <option key={item.network_id} value={item.network_id}>{automatic ? item.network_id : `${item.network_id} · ${item.cidr}`}</option>)}
                 </select></label>
                 <label className={styles.field}><span>Network mode</span><select aria-label="Network mode" value={networkMode} onChange={event => setNetworkMode(event.target.value)}>
                   <option value="">Use platform default</option>
                   {networkModes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select></label>
               </>}
-              {supports(runtime, "boot.live_compute_growth") && <label className={styles.checkbox}><input type="checkbox" checked={growth} onChange={event => setGrowth(event.target.checked)} />
+              {canGrow && <label className={styles.checkbox}><input type="checkbox" checked={growth} onChange={event => setGrowth(event.target.checked)} />
                 <span>Enable live CPU and RAM growth<small>This profile disables full VM snapshots, hibernation, and live fork.</small></span>
               </label>}
             </> : <>

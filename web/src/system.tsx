@@ -128,7 +128,7 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
     (item.state === "dispatching" || item.state === "observing") && item.children?.some(child => child.state === "pending") &&
     !["fork_cancel_requested", "fork_retry", "worker_fork_retry"].includes(item.stage)
   return <>
-    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition, source_lock_released: item.source_lock_released }} />
+    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, worker: item.worker_id, effect: item.effect, source_disposition: item.source_disposition, source_lock_released: item.source_lock_released }} />
     {item.error && <div className="callout" role="alert"><strong>{item.error.code}</strong><span>{item.error.message}</span><span>Effect {item.error.effect ?? item.effect}</span>{item.error.retry && <span>Retry {label(item.error.retry)}</span>}</div>}
     {item.result != null && <Records value={item.result} />}
     {Boolean(item.children?.length) && <div className="rows" aria-label="Forked machines">

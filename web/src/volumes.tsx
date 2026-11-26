@@ -63,7 +63,7 @@ export function VolumeCatalog({ machines, actions, revision }: {
   }
 
   return <>
-    <PageHeader title="Disks" icon={<HardDrive />} description="Standalone storage you can attach to a machine and move later." className={styles.stackedHeading}
+    <PageHeader title="Disks" icon={<HardDrive />} description="Attach persistent storage to machines on its owning Worker." className={styles.stackedHeading}
       actions={<><Button variant="primary" onClick={() => setCreating(true)} disabled={!runtimeProfiles.length && !demo}><Plus size={15} /> New disk</Button><DocumentationLink icon={false} /></>} />
     <Callout error={profiles.error} />
     <Callout error={catalog.error} />
@@ -77,7 +77,7 @@ export function VolumeCatalog({ machines, actions, revision }: {
       <thead><tr>{["Disk", "State", "Capacity", "Worker", "Actions"].map(column => <th scope="col" key={column}>{column}</th>)}</tr></thead>
       <tbody>{catalog.items.map(volume => <tr key={volume.volume_id}>
         <td><strong>{volume.name}</strong><small>{volume.volume_id}</small></td>
-        <td><State value={volume.state} /></td><td>{size(volume.capacity_bytes)}</td><td><code>{volume.runtime_instance_id}</code></td>
+        <td><State value={volume.state} /></td><td>{size(volume.capacity_bytes)}</td><td><code>{volume.worker_id ?? volume.runtime_instance_id}</code></td>
         <td><Button size="sm" variant="secondary" aria-expanded={selected === volume.volume_id}
           onClick={() => select(selected === volume.volume_id ? "" : volume.volume_id)}>Details</Button></td>
       </tr>)}</tbody>
@@ -179,7 +179,7 @@ function CreateDisk({ profiles, demo, actions, close }: {
   }
 
   return <Modal open busy={busy} onOpenChange={open => { if (!open) close() }} title="New disk" className={styles.smallModal}
-    description="Create a disk you can attach to a machine and move to another one later."
+    description="Create a disk on the Worker that will host its machines."
     footer={<><Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
       <Button variant="primary" type="submit" form="create-disk" disabled={busy || !valid}>{busy ? "Creating…" : "Create"}</Button></>}>
     <form id="create-disk" className={styles.form} onSubmit={submit}>
@@ -196,7 +196,7 @@ function CreateDisk({ profiles, demo, actions, close }: {
       </> : <>
         <label>Size (MiB)<input type="number" min={1} value={capacity} disabled={busy} onChange={event => setCapacity(event.target.value)} /></label>
         <label>Worker<select value={runtime?.runtime_instance_id ?? ""} disabled={busy} onChange={event => setWorker(event.target.value)}>
-          {profiles.map(profile => <option key={profile.runtime_instance_id}>{profile.runtime_instance_id}</option>)}
+          {profiles.map(profile => <option key={profile.runtime_instance_id} value={profile.runtime_instance_id}>{[profile.worker_id, profile.runtime_instance_id].filter(Boolean).join(" · ")}</option>)}
         </select></label>
       </>}
       <Callout error={error} />
