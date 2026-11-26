@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 
-from authorized_services_kvm import NETWORK, Platform, create_service, identity, machine, prepare_openssh, tls_setup, token, witness, worker_get
+from authorized_services_kvm import NETWORK, Platform, create_service, identity, machine, prepare_openssh, tls_setup, token, witness
 from managed_system_vsock import digest, wait_for
 
 
@@ -178,7 +178,8 @@ def revision_case(platform, keys, protocol, observe=False):
         for _ in range(3):
             assert platform.app(service_path)["observation"] == before["observation"]
             platform.app(machine_path + "/metrics")
-            assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "STANDBY"
+            inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")["inventory"]
+            assert inventory["source_disposition"] == "STANDBY", inventory
         # A real request wakes the source and tries a port with no listener.
         client = platform.api_connection(timeout=30)
         try:

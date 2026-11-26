@@ -23,6 +23,9 @@ def file_request(platform, method, route, data=None, key=None, length=None):
 
 
 def check_files(platform, path, ref):
+    capability = platform.wait_capability(path, "files.write")["capabilities"]["files.write"]
+    assert capability["constraints"]["transport"] == "native_agent"
+    assert capability["constraints"]["max_bytes"] == 64 << 20
     target = "/root/polish-transfer.bin"
     route = path + "/files?" + urlencode({"path": target})
     data = bytes(range(256)) * (64 * 1024 * 1024 // 256)
@@ -44,11 +47,15 @@ def check_files(platform, path, ref):
     receipt = upload(data, "polish-upload-original")
     assert platform.guest(ref, ["sha256sum", target]).decode().split()[0] == digest
     assert sha256(download()).hexdigest() == digest
+    assert platform.guest(ref, ["stat", "-c", "%a:%u:%g", target]).strip() == b"600:0:0"
+    platform.guest(ref, ["chown", "1000:1001", target])
+    platform.guest(ref, ["chmod", "0640", target])
     listing = platform.app(path + "/files/list?" + urlencode({"path": "/root"}))["items"]
     entry, = [item for item in listing if item["name"] == target.rsplit("/", 1)[1]]
     assert entry["type"] == "file" and entry["size"] == len(data), entry
     replacement = bytes.fromhex("00ff0a41")
     upload(replacement, "polish-replacement")
+    assert platform.guest(ref, ["stat", "-c", "%a:%u:%g", target]).strip() == b"640:1000:1001"
     assert upload(data, "polish-upload-original") == receipt
     assert download() == replacement, "replaying a completed intent overwrote a later write"
     status, _, raw = file_request(platform, "PUT", route, replacement, "polish-upload-original")
@@ -184,7 +191,6 @@ waitpid $pid, 0;
 
 def check_passive_metrics(platform, path, ref):
     from pathlib import Path
-    from authorized_services_kvm import worker_get
     from datetime import datetime
 
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
@@ -213,10 +219,10 @@ def check_passive_metrics(platform, path, ref):
         assert platform.app(path)["power_state"] == "standby"
         metrics = platform.app(path + "/metrics")
         assert metrics["platform"]["active_access_holds"] == 0
-        assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "STANDBY"
+        assert platform.native(f"/instances/{ref['instance_id']}/inventory")["inventory"]["source_disposition"] == "STANDBY"
     listing = platform.app(path + "/files/list?path=/root")
     assert isinstance(listing["items"], list)
-    assert worker_get(platform, "GetLifecycleStatus", ref)["power"] == "RUNNING"
+    assert platform.native(f"/instances/{ref['instance_id']}/inventory")["inventory"]["source_disposition"] == "RUNNING"
     print(json.dumps(dict(case="metrics_standby", bundle=platform.bundle_id, execution=sample["execution"],
                           observed_at=sample["observed_at"], cpu_millis=sample["cpu_millis"],
                           cpu_bracket=[low, high], memory_mb=sample["memory_mb"],
