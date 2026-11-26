@@ -474,7 +474,7 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @container (max-width: 630px) {
-  .machineContext, .usage {
+  .machineContext, .machineUsage {
     display: none;
   }
 }
@@ -502,17 +502,22 @@
     grid-template-columns: minmax(0, 1fr) auto;
     padding: 15px 16px;
     gap: 9px 12px;
-    min-height: 140px;
+    min-height: 142px;
   }
   .machineLink { grid-column: 1 / -1; }
   .machineTags { margin-left: 22px; }
   .machineContext { display: none; }
-  .machineCard .usage {
-    display: block;
+  .machineCard .machineUsage {
+    display: flex;
+    gap: 7px;
     grid-row: 3;
     grid-column: 1 / -1;
-    text-align: left;
     margin-left: 22px;
+  }
+  .machineCard .usage {
+    flex-shrink: 0;
+    min-width: 0;
+    text-align: left;
   }
   .machineActions { grid-column: 2; grid-row: 2; }
   .createModal { width: 100%; padding-inline: 20px; }
@@ -555,7 +560,7 @@
 
 @media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
   .pageHeading:global(.page-heading) {
-    padding-bottom: 20px;
+    padding-bottom: 27px;
   }
   .pageHeading :global(.page-heading-copy p) {
     max-width: 320px;
@@ -573,5 +578,46 @@
   .machineCard[data-fixture=true]:hover .machineActions :global(button[data-size="icon-sm"]),
   .machineCard[data-fixture=true]:focus-within .machineActions :global(button[data-size="icon-sm"]) {
     opacity: 1;
+  }
+}
+
+.machineUsage {
+  min-width: 0;
+}
+
+.cpuPlaceholder, .mobileLineage {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.cpuPlaceholder > span {
+  width: 49px;
+  height: 12px;
+  background: repeating-linear-gradient(to right, var(--border) 0 4px, transparent 4px 7px);
+  opacity: .4;
+}
+
+@media (min-width: 1024px) {
+  .machineCard[data-fixture=true] .cpuPlaceholder { display: inline-flex; }
+  .machineCard[data-fixture=true] .usage { display: none; }
+}
+
+@media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
+  .mobileLineage {
+    display: inline;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobileLineage svg {
+    display: inline;
+    margin-right: 5px;
+    vertical-align: middle;
   }
 }

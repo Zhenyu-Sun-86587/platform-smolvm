@@ -95,7 +95,11 @@ function MachineCard({ machine, actions, revision }: { machine: Machine; actions
       {lineage ? <><GitFork size={13} />{lineage}</> : fixtureScene ? <><Server size={13} />Standalone</> :
         <><Server size={13} />{health ? `Guest ${label(health).toLowerCase()}` : `Guest health unknown`}{runtime && <small>{runtime}</small>}</>}
     </div>
-    <CurrentUsage machine={machine} revision={revision} />
+    <div className={styles.machineUsage}>
+      {fixtureScene && <span className={styles.cpuPlaceholder} aria-label="CPU utilization unavailable">CPU <span aria-hidden="true" /></span>}
+      <CurrentUsage machine={machine} revision={revision} />
+      {lineage && <span className={styles.mobileLineage} title={lineage}><GitFork size={12} />{lineage}</span>}
+    </div>
     <div className={styles.machineActions}><WorkspaceActions machine={machine} actions={actions} compact surface="row" /></div>
   </article>
 }
