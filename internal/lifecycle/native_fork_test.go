@@ -299,6 +299,66 @@ func TestNativeForkFailedEffectsPreserveAbortedActivationAcrossRetry(t *testing.
 	}
 }
 
+func TestNativeForkValidatesOptionalActivationDecision(t *testing.T) {
+	submission := rt.ForkSubmission{OperationID: "fork", Expected: rt.ExecutionRef{InstanceID: "parent", IncarnationID: "parent-execution"}}
+	submission.Parameters.Children = []string{"child"}
+	incarnation := "child-execution"
+	for _, tc := range []struct {
+		decision    string
+		incarnation *string
+		valid       bool
+	}{
+		{"", nil, true},
+		{"none", &incarnation, true},
+		{"commit", &incarnation, true},
+		{"commit", nil, false},
+		{"commit", &submission.Expected.IncarnationID, false},
+		{"unrecognized", &incarnation, false},
+	} {
+		child := rt.ForkChildReceipt{Name: "child", InstanceID: "child-slot", OperationID: "attempt-1", Phase: "ABORTED",
+			ExecutionEpoch: 1, IncarnationID: tc.incarnation, ActivationDecision: tc.decision}
+		if err := verifyForkReceiptChildren(submission, []rt.ForkChildReceipt{child}); (err == nil) != tc.valid {
+			t.Fatal(child, err)
+		}
+	}
+}
+
+func TestNativeForkRetainsKnownActivationAfterReceiptRegression(t *testing.T) {
+	ctx := context.Background()
+	engine, worker, request := nativeForkFixture(t, ctx)
+	accepted, _, err := engine.DB.Accept(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() registry.Operation {
+		t.Helper()
+		op, err := engine.DB.GetOperation(ctx, accepted.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return op
+	}
+	if err := engine.drive(ctx, accepted); err != nil {
+		t.Fatal(err)
+	}
+	worker.forkReceipt.Fork.Children[0].Phase = "NEW"
+	worker.forkReceipt.Fork.Children[0].ActivationDecision = "commit"
+	if err := engine.drive(ctx, read()); err != nil {
+		t.Fatal(err)
+	}
+	worker.forkReceipt.Revision++
+	worker.forkReceipt.Phase, worker.forkReceipt.Fork.Stage = "COMPLETED", "complete"
+	worker.forkReceipt.Fork.Children[0].Phase = "ABORTED"
+	worker.forkReceipt.Fork.Children[0].ActivationDecision = "none"
+	worker.forkReceipt.Fork.Children[1].Phase = "ABORTED"
+	if err := engine.drive(ctx, read()); err != nil {
+		t.Fatal(err)
+	}
+	if result := read(); result.State != registry.RecoveryRequired || result.Effect != registry.EffectUnknown {
+		t.Fatal(result)
+	}
+}
+
 func TestNativeForkCancellationOwnsOnlyUncommittedTargets(t *testing.T) {
 	for _, stage := range []string{"preflight", "children", "partial"} {
 		t.Run(stage, func(t *testing.T) {

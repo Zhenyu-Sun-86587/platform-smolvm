@@ -250,6 +250,9 @@ func (j *Job) checkForkAttempts(receipt rt.OperationReceipt) error {
 			(intent.Receipt != nil && !sameForkAttempt(child, intent.Receipt.Fork.Children[ordinal])) {
 			return &Failure{"RECOVERY_REQUIRED", "Worker fork changed a child outside a recorded retry"}
 		}
+		if intent.Receipt != nil && forkActivationRegressed(child, intent.Receipt.Fork.Children[ordinal]) {
+			return &Failure{"RECOVERY_REQUIRED", "Worker fork no longer proves a recorded activation commit"}
+		}
 	}
 	return nil
 }
@@ -349,6 +352,11 @@ func verifyForkReceiptChildren(request rt.ForkSubmission, children []rt.ForkChil
 			child.Phase != "ABORTED" || child.IncarnationID != nil || child.ExecutionEpoch != 1 || child.Attempt != 0 || child.Cancelled) {
 			return &Failure{"RECOVERY_REQUIRED", "Worker fork child reports an inconsistent budget refusal"}
 		}
+		if child.ActivationDecision != "" && (!knownActivationDecision(child.ActivationDecision) ||
+			child.IncarnationID == nil || *child.IncarnationID == "" || *child.IncarnationID == request.Expected.IncarnationID ||
+			child.Phase == "RESERVED" || (child.Cancelled && child.ActivationDecision == "commit")) {
+			return &Failure{"RECOVERY_REQUIRED", "Worker fork activation decision has no matching child execution"}
+		}
 		instances[child.InstanceID], operations[child.OperationID] = true, true
 	}
 	return nil
@@ -358,6 +366,10 @@ func sameForkAttempt(a, b rt.ForkChildReceipt) bool {
 	return a.Name == b.Name && a.InstanceID == b.InstanceID && a.OperationID == b.OperationID &&
 		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt && a.AdmissionError == b.AdmissionError &&
 		(b.IncarnationID == nil || (a.IncarnationID != nil && *a.IncarnationID == *b.IncarnationID)) && (!b.Cancelled || a.Cancelled)
+}
+
+func forkActivationRegressed(current, prior rt.ForkChildReceipt) bool {
+	return prior.ActivationDecision == "commit" && current.ActivationDecision != "commit"
 }
 
 func allAdmittedTargetsCancelled(children []rt.ForkChildReceipt) bool {

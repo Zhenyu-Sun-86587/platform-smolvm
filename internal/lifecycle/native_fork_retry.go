@@ -119,7 +119,7 @@ func sameSettledFork(current, previous rt.OperationReceipt) bool {
 }
 
 func sameSettledForkChild(a, b rt.ForkChildReceipt) bool {
-	return sameForkAttempt(a, b) && sameForkAttempt(b, a) && a.Phase == b.Phase
+	return sameForkAttempt(a, b) && sameForkAttempt(b, a) && a.Phase == b.Phase && !forkActivationRegressed(a, b)
 }
 
 func (j *Job) confirmForkRetry(ctx context.Context, receipt rt.OperationReceipt) error {

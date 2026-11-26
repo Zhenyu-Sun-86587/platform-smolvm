@@ -41,11 +41,12 @@ func (n *abortedStatePointRuntime) SubmitLaunch(context.Context, rt.LaunchSubmis
 
 func TestAbortedStatePointTargetSettlesWithoutResubmission(t *testing.T) {
 	for _, tc := range []struct {
-		name, kind, decision, effect string
+		name, kind, decision, state, effect string
 	}{
-		{"independent_before_commit", rt.VMRestore, "", registry.EffectNone},
-		{"independent_after_commit", rt.VMRestore, "commit", registry.EffectUnknown},
-		{"same_machine_after_commit", "start", "commit", registry.EffectUnknown},
+		{"independent_before_commit", rt.VMRestore, "", registry.Failed, registry.EffectNone},
+		{"independent_after_commit", rt.VMRestore, "commit", registry.Failed, registry.EffectUnknown},
+		{"same_machine_after_commit", "start", "commit", registry.Failed, registry.EffectUnknown},
+		{"unknown_decision", rt.VMRestore, "unrecognized", registry.RecoveryRequired, registry.EffectUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -107,9 +108,12 @@ func TestAbortedStatePointTargetSettlesWithoutResubmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			final, replay, err := db.Accept(ctx, request)
-			if err != nil || !replay || final.ID != accepted.ID || final.State != registry.Failed ||
+			if err != nil || !replay || final.ID != accepted.ID || final.State != tc.state ||
 				final.Effect != tc.effect || worker.submissions != 0 {
 				t.Fatal(final, replay, worker.submissions, err)
+			}
+			if tc.state == registry.RecoveryRequired {
+				return
 			}
 			machine, err := db.GetMachine(ctx, final.MachineID)
 			if err != nil || machine.ActiveOperationID != "" {
