@@ -23,6 +23,7 @@ type machineHealth struct {
 }
 
 type machineView struct {
+	WebURL            string                      `json:"web_url,omitempty"`
 	PowerState        registry.PowerState         `json:"power_state"`
 	Health            machineHealth               `json:"health"`
 	BootMode          rt.BootMode                 `json:"boot_mode"`
@@ -38,10 +39,15 @@ type machineView struct {
 	TaskMetadata string                   `json:"task_metadata_status,omitempty"`
 	Blocked      []string                 `json:"blocked_reasons"`
 	Capabilities map[string]rt.Capability `json:"capabilities"`
+	managedSSH   managedSSHView
 }
 
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPolicy bool) (machineView, error) {
 	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
+	if host := machineWebHost(m.ID, s.Config.Gateway.AppsDomain); host != "" && m.DeletedAt == nil {
+		v.WebURL = "https://" + host
+	}
+	verifiedSSHKey := false
 	var spec struct {
 		Resources         json.RawMessage   `json:"resources"`
 		Network           *rt.LaunchNetwork `json:"network"`
@@ -80,6 +86,9 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 			return v, err
 		}
 		for name, decl := range raw {
+			if name == managedSSHAccessCapability {
+				continue
+			}
 			var c rt.Capability
 			if len(decl) > 0 && decl[0] == '{' && json.Unmarshal(decl, &c) == nil {
 				v.Capabilities[name] = rt.TemplateCapability(c)
@@ -133,7 +142,8 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 				if err != nil {
 					return v, err
 				}
-				if key == "" && len(b.GuestManagementEvidence) > 0 {
+				verifiedSSHKey = key != ""
+				if !verifiedSSHKey && len(b.GuestManagementEvidence) > 0 {
 					var evidence map[string]json.RawMessage
 					if err := json.Unmarshal(b.GuestManagementEvidence, &evidence); err != nil {
 						return v, err
@@ -180,6 +190,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 			v.Capabilities[rt.FullStateOperationCapability(kind)] = rt.LiveGrowthCaptureStatus()
 		}
 	}
+	v.managedSSH = s.managedSSHView(&v, boot.BootMode == rt.BootSystem && boot.ManagedSSH, spec.Network, verifiedSSHKey)
 	return v, nil
 }
 

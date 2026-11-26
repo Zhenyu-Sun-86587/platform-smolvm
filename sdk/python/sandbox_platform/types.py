@@ -108,6 +108,7 @@ class LifecycleStatus(TypedDict, total=False):
 
 
 class Machine(TypedDict, total=False):
+    web_url: str
     machine_id: str
     name: str
     template_id: str

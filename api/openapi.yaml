@@ -2232,12 +2232,16 @@ paths:
     post:
       operationId: post_services_service_preview_ticket
       summary: Issue a browser preview ticket
-      description: Submit ticket as a form field by POST to the returned action on the registered service host.
+      description: Submit ticket as a form field by POST to the returned action. The registered service host is the default.
       parameters:
       - name: service
         in: path
         required: true
         schema: {type: string, minLength: 1}
+      - name: address
+        in: query
+        schema: {const: machine}
+        description: Request a ticket for the machine's canonical web_url when the selected service handles it.
       - {$ref: '#/components/parameters/CSRF'}
       requestBody:
         required: false
@@ -2304,6 +2308,36 @@ paths:
         '101':
           description: WebSocket upgraded
         default: {$ref: '#/components/responses/Error'}
+  /machines/{machine}/ssh-certificates:
+    post:
+      operationId: issue_managed_ssh_certificate
+      summary: Issue a short-lived managed SSH user certificate
+      description: Requires manage access to the target machine and a qualified managed-SSH System template. Issuance is passive. The certificate is for the root user and the target machine only.
+      parameters:
+      - {name: machine, in: path, required: true, schema: {type: string, minLength: 1}}
+      - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key]
+              additionalProperties: false
+              properties:
+                public_key: {type: string, description: An OpenSSH-format user public key line.}
+      responses:
+        '200':
+          description: Signed OpenSSH certificate and expiration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [certificate, expires_at]
+                properties:
+                  certificate: {type: string, description: An OpenSSH-format user certificate line.}
+                  expires_at: {type: string, format: date-time}
+        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/ssh-tunnel:
     get:
       operationId: get_machines_machine_ssh_tunnel
@@ -2317,6 +2351,10 @@ paths:
         in: path
         required: true
         schema: {type: string, minLength: 1}
+      - name: managed
+        in: query
+        schema: {type: integer, const: 1}
+        description: Open the intrinsic managed SSH tunnel for a qualified System Guest using a machine-scoped manage credential.
       responses:
         '101':
           description: WebSocket upgraded
@@ -3152,6 +3190,7 @@ components:
     Machine:
       type: object
       properties:
+        web_url: {type: string, format: uri, description: Canonical HTTPS endpoint when the installation has an apps domain. Availability depends on the enabled HTTP service.}
         lifecycle_policy: {$ref: '#/components/schemas/LifecycleStatus'}
         machine_id: {type: string, minLength: 1}
         name: {type: string, minLength: 1}
@@ -3194,6 +3233,7 @@ components:
             files.write: {$ref: '#/components/schemas/GuestFileCapability'}
             files.preview: {$ref: '#/components/schemas/GuestFileCapability'}
             files.edit: {$ref: '#/components/schemas/GuestFileCapability'}
+            access.managed_ssh: {$ref: '#/components/schemas/ManagedSSHCapability'}
         binding:
           type: object
           properties:
@@ -3389,6 +3429,20 @@ components:
       required:
       - ticket
       additionalProperties: false
+    ManagedSSHCapability:
+      description: Passive configuration and host-key evidence for the intrinsic System SSH path.
+      allOf:
+      - {$ref: '#/components/schemas/Capability'}
+      - properties:
+          constraints:
+            type: object
+            required: [manage_allowed, path, host_key_status, reachability]
+            properties:
+              manage_allowed: {type: boolean, description: Whether the current principal may manage this machine.}
+              path: {enum: [configured, unavailable, unknown]}
+              host_key_status: {enum: [observed, unavailable, unknown], description: Fresh verified host-key evidence for the current execution.}
+              reachability: {enum: [unknown, unavailable], description: The passive view never probes TCP reachability.}
+              guest_port: {type: integer, enum: [2222], description: The private SSH port when the path is configured.}
     GuestFileCapability:
       allOf:
       - {$ref: '#/components/schemas/Capability'}

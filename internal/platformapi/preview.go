@@ -10,8 +10,9 @@ import (
 )
 
 type previewSession struct {
-	Target, CredentialID, PrincipalID string
-	Expiry                            time.Time
+	Target, CredentialID, PrincipalID, Host string
+	Scope                                   auth.Scope
+	Expiry                                  time.Time
 }
 
 const previewCookie = "__Host-sandbox-preview"
@@ -28,13 +29,31 @@ func (s *Server) previewRoutes() {
 		if !v.Enabled || v.PublicHost == "" || r.Header.Get("Origin") != s.Config.API.PublicOrigin {
 			return auth.ErrForbidden
 		}
+		host := v.PublicHost
+		switch r.URL.Query().Get("address") {
+		case "":
+		case "machine":
+			host = machineWebHost(v.MachineID, s.Config.Gateway.AppsDomain)
+			if host == "" {
+				return registry.ErrNotFound
+			}
+			target, err := s.httpServiceForHost(r.Context(), host)
+			if err != nil {
+				return err
+			}
+			if target.ID != v.ID {
+				return registry.ErrConflict
+			}
+		default:
+			return registry.ErrInvalid
+		}
 		key, err := registry.NewID("preview_")
 		if err != nil {
 			return err
 		}
-		s.tickets.Store(key, previewSession{v.ID, p.CredentialID, p.ID, time.Now().Add(30 * time.Second)})
+		s.tickets.Store(key, previewSession{Target: v.ID, CredentialID: p.CredentialID, PrincipalID: p.ID, Host: host, Scope: p.Scope, Expiry: time.Now().Add(30 * time.Second)})
 		time.AfterFunc(30*time.Second, func() { s.tickets.Delete(key) })
-		return write(w, 200, map[string]string{"ticket": key, "action": "https://" + v.PublicHost + "/.sandbox/session"})
+		return write(w, 200, map[string]string{"ticket": key, "action": "https://" + host + "/.sandbox/session"})
 	})
 }
 func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) (auth.Principal, bool, error) {
@@ -52,7 +71,7 @@ func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) 
 			return p, false, auth.ErrUnauthenticated
 		}
 		session, ok := t.(previewSession)
-		if !ok || session.Target != v.ID || !session.Expiry.After(time.Now()) {
+		if !ok || session.Target != v.ID || session.Host != requestHostname(r.Host) || !session.Expiry.After(time.Now()) {
 			return p, false, auth.ErrForbidden
 		}
 		key, err := registry.NewID("service_")
@@ -73,15 +92,16 @@ func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) 
 			return p, false, auth.ErrUnauthenticated
 		}
 		session, ok := stored.(previewSession)
-		if !ok || session.Target != v.ID || !session.Expiry.After(time.Now()) {
+		if !ok || session.Target != v.ID || session.Host != requestHostname(r.Host) || !session.Expiry.After(time.Now()) {
 			return p, false, auth.ErrForbidden
 		}
-		var n int
-		err = s.DB.ReadDB().QueryRowContext(r.Context(), `SELECT count(*) FROM credentials c JOIN principals p ON c.principal_id=p.id WHERE p.id=? AND p.disabled=0 AND c.id=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)`, session.PrincipalID, session.CredentialID, time.Now().UnixMilli()).Scan(&n)
-		if err != nil || n != 1 {
-			return p, false, auth.ErrUnauthenticated
+		// The preview cookie is confined to the selected service and host above.
+		// AccessAt revalidates the underlying credential's exact original scope.
+		principal := auth.Principal{ID: session.PrincipalID, CredentialID: session.CredentialID, Scope: session.Scope}
+		if err := s.CheckAccessPrincipal(r.Context(), principal, v.MachineID); err != nil {
+			return p, false, err
 		}
-		return auth.Principal{ID: session.PrincipalID, CredentialID: session.CredentialID, Scope: auth.Scope{MachineID: v.MachineID, Access: "tunnel"}}, false, nil
+		return principal, false, principal.Authorize(auth.ActionTunnel, v.MachineID)
 	}
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		p, err := s.Auth.Authenticate(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))

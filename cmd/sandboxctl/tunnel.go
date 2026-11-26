@@ -51,6 +51,7 @@ func (c *client) sshConfig() *cobra.Command {
 		return err
 	})
 	cmd.Flags().StringVar(&user, "user", "root", "Guest SSH user")
+	cmd.AddCommand(c.sshConfigSync())
 	return cmd
 }
 
@@ -61,53 +62,75 @@ func (c *client) sshHostKey() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if !safeMachineID.MatchString(id) {
-			return errors.New("invalid machine ID")
-		}
-		var details struct {
-			Binding struct {
-				Identity struct {
-					Ready bool   `json:"ssh_ready"`
-					Key   string `json:"ssh_host_key"`
-				} `json:"guest_management_evidence"`
-			} `json:"binding"`
-		}
-		if err := c.get(cmd.Context(), res("machines", id), &details); err != nil {
-			return err
-		}
-		host := details.Binding.Identity
-		if !host.Ready || host.Key == "" {
-			if ifReady {
-				return nil
-			}
-			return errors.New("Guest SSH host key is not verified")
-		}
-		key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(host.Key))
-		if err != nil || len(options) != 0 || len(rest) != 0 {
-			return errors.New("platform returned an invalid Guest SSH host key")
-		}
-		line := "sandbox-" + id + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
-		if c.jsonOutput {
-			return c.print(cmd, map[string]string{"known_hosts": line, "fingerprint": ssh.FingerprintSHA256(key)})
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), line)
-		return err
+		return c.printSSHHostKey(cmd, id, ifReady)
 	})
 	hostKey.Flags().BoolVar(&ifReady, "if-ready", false, "Return no entry if the Guest SSH identity is still unavailable")
 	return hostKey
 }
 
+func (c *client) printSSHHostKey(cmd *cobra.Command, id string, ifReady bool) error {
+	if !safeMachineID.MatchString(id) {
+		return errors.New("invalid machine ID")
+	}
+	var details struct {
+		ID      string `json:"machine_id"`
+		Binding struct {
+			Identity struct {
+				Ready bool   `json:"ssh_ready"`
+				Key   string `json:"ssh_host_key"`
+			} `json:"guest_management_evidence"`
+		} `json:"binding"`
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+	defer cancel()
+	if err := c.get(ctx, res("machines", id), &details); err != nil {
+		return err
+	}
+	if details.ID != id {
+		return errors.New("platform returned a different machine ID")
+	}
+	host := details.Binding.Identity
+	if !host.Ready || host.Key == "" {
+		if ifReady {
+			return nil
+		}
+		return errors.New("Guest SSH host key is not verified")
+	}
+	key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(host.Key))
+	if err != nil || len(options) != 0 || len(rest) != 0 {
+		return errors.New("platform returned an invalid Guest SSH host key")
+	}
+	line := "sandbox-" + id + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+	if c.jsonOutput {
+		return c.print(cmd, map[string]string{"known_hosts": line, "fingerprint": ssh.FingerprintSHA256(key)})
+	}
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), line)
+	return err
+}
+
 func (c *client) sshProxy() *cobra.Command {
 	var machineID string
+	var managed bool
 	cmd := sub("ssh-proxy", "Proxy OpenSSH over the authenticated platform tunnel", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
-		if !safeMachineID.MatchString(machineID) {
-			return errors.New("invalid machine ID")
-		}
-		return c.tunnel(cmd.Context(), res("machines", machineID)+"/ssh-tunnel", cmd.InOrStdin(), cmd.OutOrStdout(), func() error { return nil })
+		return c.proxySSH(cmd, machineID, managed)
 	})
 	cmd.Flags().StringVar(&machineID, "machine", "", "Platform machine ID")
+	cmd.Flags().BoolVar(&managed, "managed", false, "Use the managed SSH tunnel for a System Guest")
 	_ = cmd.MarkFlagRequired("machine")
 	return cmd
+}
+
+func (c *client) proxySSH(cmd *cobra.Command, machineID string, managed bool) error {
+	if !safeMachineID.MatchString(machineID) {
+		return errors.New("invalid machine ID")
+	}
+	path := res("machines", machineID) + "/ssh-tunnel"
+	budget := 15 * time.Second
+	if managed {
+		path += "?managed=1"
+		budget = 75 * time.Second
+	}
+	return c.tunnelWithDialBudget(cmd.Context(), path, cmd.InOrStdin(), cmd.OutOrStdout(), func() error { return nil }, budget)
 }
 
 func (c *client) portForward() *cobra.Command {
@@ -164,6 +187,10 @@ type tunnelControl struct {
 }
 
 func (c *client) tunnel(ctx context.Context, path string, source io.Reader, sink io.Writer, closeWrite func() error) error {
+	return c.tunnelWithDialBudget(ctx, path, source, sink, closeWrite, 15*time.Second)
+}
+
+func (c *client) tunnelWithDialBudget(ctx context.Context, path string, source io.Reader, sink io.Writer, closeWrite func() error, dialBudget time.Duration) error {
 	endpoint, err := c.endpoint(path)
 	if err != nil {
 		return err
@@ -174,7 +201,7 @@ func (c *client) tunnel(ctx context.Context, path string, source io.Reader, sink
 		endpoint.Scheme = "ws"
 	}
 	headers := http.Header{"Authorization": {"Bearer " + c.token}}
-	connect, cancelConnect := context.WithTimeout(ctx, 15*time.Second)
+	connect, cancelConnect := context.WithTimeout(ctx, dialBudget)
 	ws, response, err := websocket.Dial(connect, endpoint.String(), &websocket.DialOptions{
 		HTTPClient: c.http, HTTPHeader: headers, Subprotocols: []string{tunnelProtocol}, CompressionMode: websocket.CompressionDisabled,
 	})

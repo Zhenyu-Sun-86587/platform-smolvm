@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"time"
 
@@ -55,7 +56,10 @@ func (e *Engine) VerifiedNativeSSHKey(ctx context.Context, b registry.Binding, p
 	if !evidence.Ready || evidence.Key == "" || evidence.Execution != b.ExecutionRef() {
 		return "", nil
 	}
-	keys, err := e.authorizedSSHKeys(ctx)
+	keys, err := e.systemAuthorizedSSHKeys(ctx, b.MachineID, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
 	if err != nil || evidence.KeysetDigest != keysetDigest(keys) {
 		return "", err
 	}
@@ -99,7 +103,7 @@ func (e *Engine) observeSystemGuest(ctx context.Context, binding registry.Bindin
 	if !profile.ManagedSSH {
 		return ""
 	}
-	keys, err := e.authorizedSSHKeys(ctx)
+	keys, err := e.systemAuthorizedSSHKeys(ctx, binding.MachineID, true)
 	if err != nil {
 		return ""
 	}
@@ -173,7 +177,7 @@ func (j *Job) driveNativeSSH(ctx context.Context, routeError error) error {
 	if err != nil || inventory.Inventory.SourceDisposition != "RUNNING" {
 		return j.fail(ctx, &Failure{"STATE_CONFLICT", "managed SSH requires the current running execution"})
 	}
-	keys, err := j.authorizedSSHKeys(ctx)
+	keys, err := j.systemAuthorizedSSHKeys(ctx, j.Binding.MachineID, true)
 	if err != nil {
 		return j.fail(ctx, err)
 	}

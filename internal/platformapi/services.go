@@ -239,6 +239,16 @@ func (s *Server) serviceRoutes() {
 	})
 	s.mux.HandleFunc("GET /v1/machines/{machine}/ssh-tunnel", func(w http.ResponseWriter, r *http.Request) {
 		mid := r.PathValue("machine")
+		if managed, present := r.URL.Query()["managed"]; present {
+			if len(managed) != 1 || managed[0] != "1" {
+				fail(w, r, registry.ErrInvalid)
+				return
+			}
+			if err := s.managedSSHTunnel(w, r, mid); err != nil {
+				fail(w, r, err)
+			}
+			return
+		}
 		p, _, err := s.authenticate(r)
 		if err == nil {
 			err = p.Authorize("tunnel", mid)
@@ -528,6 +538,10 @@ func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.B
 	if v.GuestPort != lifecycle.SystemSSHPort {
 		return "", notReady
 	}
+	return s.awaitNativeSSHKey(ctx, p, b, reauthorize)
+}
+
+func (s *Server) awaitNativeSSHKey(ctx context.Context, p auth.Principal, b registry.Binding, reauthorize func(context.Context) error) (string, error) {
 	poll := time.NewTicker(250 * time.Millisecond)
 	defer poll.Stop()
 	for {
@@ -545,25 +559,40 @@ func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.B
 			m.CurrentBinding.ExecutionRef() != b.ExecutionRef() {
 			return "", registry.ErrGeneration
 		}
-		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, lifecycle.SystemSSHPort)
 		if err != nil || key != "" {
 			return key, err
 		}
 		select {
 		case <-ctx.Done():
-			return "", notReady
+			return "", &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
 		case <-poll.C:
 		}
 	}
 }
 
 func (s *Server) serviceHTTP(w http.ResponseWriter, r *http.Request, host string) {
-	v, err := readService(s.DB.ReadDB().QueryRowContext(r.Context(), "SELECT "+serviceCols+" FROM services WHERE public_host=? AND kind IN ('http','https') AND enabled=1", host))
+	if _, err := r.Cookie(previewCookie); err == http.ErrNoCookie && s.machineWebNavigation(w, r, host) {
+		return
+	}
+	v, err := s.httpServiceForHost(r.Context(), host)
 	if err != nil {
+		w.Header().Set(gateway.ForwardingHeader, "not_started")
+		// Resolve ambiguity for an authorized caller without disclosing inventory
+		// or starting a Guest for anonymous visitors.
+		if mid := s.webMachine(host); mid != "" {
+			if p, _, authErr := s.authenticate(r); authErr == nil && p.Authorize("tunnel", mid) == nil {
+				fail(w, r, err)
+				return
+			}
+		}
 		fail(w, r, auth.ErrUnauthenticated)
 		return
 	}
 	p, handled, err := s.previewAuth(w, r, v)
+	if errors.Is(err, auth.ErrUnauthenticated) && s.machineWebNavigation(w, r, host) {
+		return
+	}
 	if handled {
 		return
 	}

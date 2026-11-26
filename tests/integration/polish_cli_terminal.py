@@ -87,10 +87,10 @@ def agent_login(platform, args, mid, env, private_key):
                                   capture_output=True, timeout=65)
         native = cli("exec", "--follow", "--cwd", "/", mid, "--", "/usr/bin/id", "-u")
         assert native.returncode == 0 and native.stdout == b"0\n", native.stderr
-        denied = cli("ssh", mid, "--batch-mode", "--", "id -u")
+        denied = cli("ssh", "--legacy", mid, "--batch-mode", "--", "id -u")
         assert denied.returncode == 255 and b"Permission denied" in denied.stderr, (denied.returncode, denied.stderr)
         subprocess.run(["ssh-add", private_key], env=env, check=True, capture_output=True)
-        connected = cli("ssh", mid, "--", "id -u; exit 22")
+        connected = cli("ssh", "--legacy", mid, "--", "id -u; exit 22")
         assert connected.returncode == 22 and connected.stdout == b"0\n", (connected.returncode, connected.stderr)
         print(json.dumps(dict(case="cli-ssh-agent", machine_id=mid, native_exec_without_ssh_key=True,
                               empty_agent_exit=denied.returncode, ssh_login_without_identity_flag=True,

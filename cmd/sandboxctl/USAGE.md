@@ -1,7 +1,8 @@
 # Sandbox Platform CLI
 
-Set `SANDBOX_URL` and `SANDBOX_TOKEN`. Use `--ca-file` for a Platform CA that
-is absent from your system trust store. Use generated resource IDs in scripts
+Run `sandboxctl login --url https://PLATFORM --token-stdin` and send a
+Platform API token on stdin. The CLI can also read `SANDBOX_TOKEN`. Use
+`--ca-file` for a Platform CA missing from your system trust store. Use generated resource IDs in scripts
 and arbitrated writes. Workspace commands also accept `name:DISPLAY NAME`
 for an exact, unique display name. Quote a name containing spaces. For
 mutation replay or explicit revision or generation guards, use the original
@@ -42,6 +43,43 @@ stderr independently and exits with the Guest status on a confirmed exit.
 With `--json --follow`, exec emits one JSON result per observed output page.
 An interrupted stream may have given the recipient a prefix of the output.
 
-The SSH shortcut needs an OpenSSH version that supports `KnownHostsCommand`.
-It performs a read for the verified host key and opens an authorized tunnel.
-A manage token scoped to the machine can satisfy both checks.
+## Managed OpenSSH
+
+`sandboxctl login --url https://PLATFORM --token-stdin` verifies and saves
+the token in a private profile and installs a single Include in your
+OpenSSH config. `--no-ssh-config` saves only the profile.
+Use `--ssh-config PATH` to choose a separate OpenSSH configuration file
+and point ssh, scp or VS Code Remote SSH at that file. The default profile
+is named `default`. Select another using `--profile NAME` or `SANDBOX_PROFILE`.
+The generated aliases use the selected saved origin and credential.
+
+Use `ssh myapp.sandbox`, `scp file myapp.sandbox:/tmp/`, or select
+`myapp.sandbox` in VS Code Remote SSH. A qualified System Guest and
+an authorized private network are required. A machine-scoped manage token
+can access its permitted workspace. The local
+profile holds the Ed25519 user key and short-lived certificate. Connection
+preparation runs through an exact alias, and OpenSSH verifies the platform's
+current Guest host key. The generated configuration contains static IDs and
+paths. The token remains in the private profile.
+
+Aliases come from unique visible workspaces whose names are ASCII DNS
+labels. With the OpenSSH Include installed, successful local machine
+creation, fork, restore, rename, and deletion refresh aliases. After
+`--no-wait`, use `sandboxctl operations wait OPERATION` or
+`sandboxctl machines list` to refresh once changes are visible. Use
+`sandboxctl ssh-config sync` to refresh aliases after changes from other
+clients. An older mapping rejects a changed, deleted or ambiguous target.
+The sync command prints the generated config path for use with
+`ssh -F PATH` or an OpenSSH Include.
+
+`sandboxctl ssh myapp` resolves the display name directly and uses an
+ephemeral managed key. The direct command uses the published SSH service
+for non-root users or when the Platform confirms managed certificates
+are unsupported. Pass `--legacy` to select the published service with an
+SSH agent, or `--identity FILE` to use a registered private key. An
+explicit token uses the explicit URL or the usual localhost default.
+
+The SSH shortcut uses OpenSSH with `KnownHostsCommand` support. The host-key
+callback requires read access. Opening the managed tunnel requires manage
+access to the machine. The proxy can wake the Guest under its existing
+lifecycle policy.

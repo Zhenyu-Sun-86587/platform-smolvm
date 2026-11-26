@@ -228,6 +228,7 @@ export interface CreateMachine {
   start?: boolean
 }
 export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "network"> {
+  web_url?: string
   lifecycle_policy?: LifecycleStatus
   resources?: Resources & ResourcePatch
   network?: Required<NetworkSelection>

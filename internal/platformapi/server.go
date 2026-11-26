@@ -54,10 +54,7 @@ func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Ser
 	return s
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	host := strings.ToLower(r.Host)
-	if n, _, e := net.SplitHostPort(host); e == nil {
-		host = n
-	}
+	host := requestHostname(r.Host)
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
 		w.Header().Set("X-Sandbox-Forwarding", "not_started")
 		http.Error(w, "TLS connection belongs to another host", http.StatusMisdirectedRequest)
@@ -357,6 +354,7 @@ func list[T any](w http.ResponseWriter, r *http.Request, items []T, id func(T) s
 }
 func (s *Server) routes() {
 	s.backupRoutes()
+	s.route("POST /v1/machines/{machine}/ssh-certificates", s.issueManagedSSHCertificate)
 	s.mux.HandleFunc("POST /v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != s.Config.API.PublicOrigin {
 			fail(w, r, auth.ErrForbidden)
@@ -524,6 +522,7 @@ func (s *Server) machineRoutes() {
 				if err != nil {
 					return err
 				}
+				v.projectManagedSSHPrincipal(p)
 				visible = append(visible, v)
 			}
 		}
@@ -542,6 +541,7 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
+		v.projectManagedSSHPrincipal(p)
 		return write(w, 200, v)
 	})
 	s.route("POST /v1/machines", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
