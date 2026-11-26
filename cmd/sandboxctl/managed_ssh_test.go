@@ -108,16 +108,11 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SANDBOXCTL_CONFIG_DIR", profile)
-	authority := fixtureSSHSigner(t)
 	host := fixtureSSHSigner(t)
-	check := ssh.CertChecker{IsUserAuthority: func(key ssh.PublicKey) bool {
-		return ssh.FingerprintSHA256(key) == ssh.FingerprintSHA256(authority.PublicKey())
-	}}
-	config := &ssh.ServerConfig{PublicKeyCallback: check.Authenticate}
-	config.AddHostKey(host)
 
 	var created, failList, reassigned atomic.Bool
-	var issued, tunneled, writes atomic.Int32
+	var tunneled, writes, inventoryReads atomic.Int32
+	var firstPublicKey atomic.Pointer[string]
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			t.Errorf("wrong credentials at %s", r.URL.Path)
@@ -128,6 +123,7 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 		case "GET /v1/control":
 			_, _ = io.WriteString(w, `{"control_epoch":"epoch"}`)
 		case "GET /v1/machines":
+			inventoryReads.Add(1)
 			if failList.Load() {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
@@ -150,43 +146,38 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 		case "GET /v1/machines/m_exact":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"machine_id": "m_exact",
+				"capabilities": map[string]any{managedSSHCapabilityName: map[string]any{
+					"status": "supported", "constraints": map[string]bool{"manage_allowed": true},
+				}},
 				"binding": map[string]any{"guest_management_evidence": map[string]any{
 					"ssh_ready": true, "ssh_host_key": string(ssh.MarshalAuthorizedKey(host.PublicKey())),
 				}},
 			})
-		case "POST /v1/machines/m_exact/ssh-certificates":
-			var request struct {
-				Key string `json:"public_key"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Error(err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(request.Key))
-			if err != nil {
-				t.Error(err)
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			issued.Add(1)
-			now := time.Now().Truncate(time.Second)
-			expires := now.Add(2 * time.Minute)
-			cert := ssh.Certificate{Key: key, CertType: ssh.UserCert, ValidPrincipals: []string{"root"},
-				ValidAfter: uint64(now.Add(-time.Second).Unix()), ValidBefore: uint64(expires.Unix())}
-			if err := cert.SignCert(rand.Reader, authority); err != nil {
-				t.Error(err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(certificateReply{string(ssh.MarshalAuthorizedKey(&cert)), expires})
 		case "GET /v1/machines/m_exact/ssh-tunnel":
-			if r.URL.Query().Get("managed") != "1" {
-				t.Error("managed flag missing")
+			values := r.Header.Values(managedSSHKeyHeader)
+			if r.URL.Query().Get("managed") != "1" || len(values) != 1 {
+				t.Error("managed flag or public key header missing")
 				w.WriteHeader(http.StatusBadRequest)
 				return
+			}
+			key, comment, options, rest, err := ssh.ParseAuthorizedKey([]byte(values[0]))
+			if err != nil || key.Type() != ssh.KeyAlgoED25519 || comment != "" || len(options) != 0 || len(rest) != 0 ||
+				values[0] != strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))) {
+				t.Errorf("invalid managed public key header: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if !firstPublicKey.CompareAndSwap(nil, &values[0]) && *firstPublicKey.Load() != values[0] {
+				t.Error("direct SSH and installed aliases did not share the saved profile identity")
 			}
 			tunneled.Add(1)
+			config := &ssh.ServerConfig{PublicKeyCallback: func(conn ssh.ConnMetadata, presented ssh.PublicKey) (*ssh.Permissions, error) {
+				if conn.User() != "root" || ssh.FingerprintSHA256(key) != ssh.FingerprintSHA256(presented) {
+					return nil, errors.New("wrong key for this tunnel")
+				}
+				return nil, nil
+			}}
+			config.AddHostKey(host)
 			if err := serveManagedFixtureSSH(w, r, config); err != nil {
 				t.Error(err)
 			}
@@ -214,6 +205,20 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 	if err != nil || strings.Contains(string(checkData), token) || !strings.Contains(string(checkData), "# existing settings\n") {
 		t.Fatalf("invalid OpenSSH Include: %v\n%s", err, checkData)
 	}
+	path := filepath.Join(profile, "managed-ssh.conf")
+	data, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(data), token) || strings.Contains(string(data), "CertificateFile") || strings.Contains(string(data), "Match ") {
+		t.Fatalf("invalid managed SSH config: %v\n%s", err, data)
+	}
+	keyFiles, err := os.ReadDir(filepath.Join(profile, "profiles", "default", "ssh"))
+	if err != nil || len(keyFiles) != 2 || keyFiles[0].Name() != ".credentials.lock" || keyFiles[1].Name() != "ssh-ed25519" {
+		t.Fatalf("unexpected profile identity files: %v, %v", keyFiles, err)
+	}
+	reads := inventoryReads.Load()
+	check := exec.CommandContext(ctx, stockSSH, "-G", "-F", sshConfig, "myapp.sandbox")
+	if out, err := check.Output(); err != nil || !strings.Contains(string(out), "hostkeyalias sandbox-m_exact") || inventoryReads.Load() != reads {
+		t.Fatalf("ssh -G did not resolve passively: %v\n%s", err, out)
+	}
 	cmd := exec.CommandContext(ctx, stockSSH, "-F", sshConfig, "myapp.sandbox", "test")
 	cmd.Env = append(os.Environ(), "SANDBOX_URL=http://127.0.0.1:1", "SANDBOX_TOKEN=wrong")
 	out, err := cmd.CombinedOutput()
@@ -221,8 +226,8 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 	if !errors.As(err, &remote) || remote.ExitCode() != 17 || string(out) != "managed\n" {
 		t.Fatalf("stock OpenSSH: %v\n%s", err, out)
 	}
-	if issued.Load() != 1 || tunneled.Load() != 1 {
-		t.Fatalf("certificate issuances=%d tunnels=%d", issued.Load(), tunneled.Load())
+	if tunneled.Load() != 1 {
+		t.Fatalf("managed tunnels=%d", tunneled.Load())
 	}
 	direct, err := cli("", "ssh", "myapp", "--", "test")
 	if !errors.As(err, &remote) || remote.ExitCode() != 17 || string(direct) != "managed\n" {
@@ -232,8 +237,8 @@ func TestManagedOpenSSHAliasAfterCreate(t *testing.T) {
 	reassigned.Store(true)
 	cmd = exec.CommandContext(ctx, stockSSH, "-F", sshConfig, "myapp.sandbox", "test")
 	rejected, err := cmd.CombinedOutput()
-	if !errors.As(err, &remote) || remote.ExitCode() != 255 || !strings.Contains(string(rejected), "no longer identifies its configured machine") || issued.Load() != 2 || tunneled.Load() != 2 {
-		t.Fatalf("stale alias was accepted: err=%v out=%q issued=%d tunneled=%d", err, rejected, issued.Load(), tunneled.Load())
+	if !errors.As(err, &remote) || remote.ExitCode() != 255 || !strings.Contains(string(rejected), "no longer identifies its configured machine") || tunneled.Load() != 2 {
+		t.Fatalf("stale alias was accepted: err=%v out=%q tunneled=%d", err, rejected, tunneled.Load())
 	}
 	failList.Store(true)
 	cmd = exec.CommandContext(ctx, binary, "--json", "operations", "wait", "op_create")
@@ -265,31 +270,34 @@ func TestExplicitTokenDoesNotAdoptProfileOrigin(t *testing.T) {
 	}
 }
 
-func TestLegacySSHFallbackRequiresDefiniteEvidence(t *testing.T) {
+func TestManagedSSHSelectionRequiresDefiniteEvidence(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-		code   string
-		effect string
-		id     string
-		want   bool
+		name, body       string
+		status           int
+		managed, failure bool
 	}{
-		{"unsupported binding", 409, "NOT_SUPPORTED", "none", "", true},
-		{"unknown unsupported result", 409, "NOT_SUPPORTED", "unknown", "", false},
-		{"missing old route", 404, "", "", "m_exact", true},
-		{"missing old route without same-ID readback", 405, "", "", "m_other", false},
-		{"structured missing machine", 404, "NOT_FOUND", "none", "m_exact", false},
-		{"unauthorized", 403, "PERMISSION_DENIED", "none", "m_exact", false},
+		{"supported", `{"machine_id":"m_exact","capabilities":{"access.managed_ssh":{"status":"supported","constraints":{"manage_allowed":true}}}}`, 200, true, false},
+		{"unsupported", `{"machine_id":"m_exact","capabilities":{"access.managed_ssh":{"status":"unsupported","constraints":{"manage_allowed":true}}}}`, 200, false, false},
+		{"older machine view", `{"machine_id":"m_exact"}`, 200, false, false},
+		{"unexpected machine", `{"machine_id":"m_other"}`, 200, false, true},
+		{"support unknown", `{"machine_id":"m_exact","capabilities":{"access.managed_ssh":{"status":"unknown","constraints":{"manage_allowed":true}}}}`, 200, false, true},
+		{"permission unknown", `{"machine_id":"m_exact","capabilities":{"access.managed_ssh":{"status":"unsupported"}}}`, 200, false, true},
+		{"permission denied", `{"machine_id":"m_exact","capabilities":{"access.managed_ssh":{"status":"unsupported","constraints":{"manage_allowed":false}}}}`, 200, false, true},
+		{"unauthorized request", `{"error":{"code":"PERMISSION_DENIED","effect":"none"}}`, 403, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = fmt.Fprintf(w, `{"machine_id":%q}`, tc.id)
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/machines/m_exact" || r.Header.Get("Authorization") != "Bearer fixture" {
+					t.Errorf("unexpected machine read: %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
 			c := &client{origin: server.URL, token: "fixture"}
-			err := &apiError{Status: tc.status, Detail: apiErrorDetail{Code: tc.code, Effect: tc.effect}}
-			if got := c.canUseLegacySSH(context.Background(), "m_exact", err); got != tc.want {
-				t.Fatalf("fallback=%v, want %v", got, tc.want)
+			managed, err := c.machineManagedSSH(context.Background(), "m_exact")
+			if managed != tc.managed || (err != nil) != tc.failure {
+				t.Fatalf("managed=%v, error=%v", managed, err)
 			}
 		})
 	}

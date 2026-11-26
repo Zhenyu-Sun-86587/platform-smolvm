@@ -54,13 +54,14 @@ is named `default`. Select another using `--profile NAME` or `SANDBOX_PROFILE`.
 The generated aliases use the selected saved origin and credential.
 
 Use `ssh myapp.sandbox`, `scp file myapp.sandbox:/tmp/`, or select
-`myapp.sandbox` in VS Code Remote SSH. A qualified System Guest and
-an authorized private network are required. A machine-scoped manage token
-can access its permitted workspace. The local
-profile holds the Ed25519 user key and short-lived certificate. Connection
-preparation runs through an exact alias, and OpenSSH verifies the platform's
-current Guest host key. The generated configuration contains static IDs and
-paths. The token remains in the private profile.
+`myapp.sandbox` in VS Code Remote SSH. Managed SSH uses a qualified
+System Guest with an authenticated Guest Agent and a machine-scoped
+manage token. Your private Ed25519 key stays in the local profile.
+The proxy submits its public key for a single managed tunnel, and
+OpenSSH verifies the platform's current Guest host key. The generated
+configuration contains static IDs and paths. The token stays in the
+private profile. `ssh -G myapp.sandbox` reads the local configuration
+without contacting the Platform.
 
 Aliases come from unique visible workspaces whose names are ASCII DNS
 labels. With the OpenSSH Include installed, successful local machine
@@ -72,11 +73,12 @@ clients. An older mapping rejects a changed, deleted or ambiguous target.
 The sync command prints the generated config path for use with
 `ssh -F PATH` or an OpenSSH Include.
 
-`sandboxctl ssh myapp` resolves the display name directly and uses an
-ephemeral managed key. The direct command uses the published SSH service
-for non-root users or when the Platform confirms managed certificates
-are unsupported. Pass `--legacy` to select the published service with an
-SSH agent, or `--identity FILE` to use a registered private key. An
+`sandboxctl ssh myapp` resolves the display name directly and uses
+the saved profile key, or generates a temporary managed key when
+there is no matching profile. The direct command uses the published SSH
+service for non-root users or when the same machine's authenticated view
+confirms managed SSH is unsupported or comes from an older Platform.
+Pass `--legacy` to select the published service with an SSH agent, or `--identity FILE` to use a registered private key. An
 explicit token uses the explicit URL or the usual localhost default.
 
 The SSH shortcut uses OpenSSH with `KnownHostsCommand` support. The host-key

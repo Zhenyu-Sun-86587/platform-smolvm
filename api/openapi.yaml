@@ -2308,36 +2308,6 @@ paths:
         '101':
           description: WebSocket upgraded
         default: {$ref: '#/components/responses/Error'}
-  /machines/{machine}/ssh-certificates:
-    post:
-      operationId: issue_managed_ssh_certificate
-      summary: Issue a short-lived managed SSH user certificate
-      description: Requires manage access to the target machine and a qualified managed-SSH System template. Issuance is passive. The certificate is for the root user and the target machine only.
-      parameters:
-      - {name: machine, in: path, required: true, schema: {type: string, minLength: 1}}
-      - {$ref: '#/components/parameters/CSRF'}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [public_key]
-              additionalProperties: false
-              properties:
-                public_key: {type: string, description: An OpenSSH-format user public key line.}
-      responses:
-        '200':
-          description: Signed OpenSSH certificate and expiration
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [certificate, expires_at]
-                properties:
-                  certificate: {type: string, description: An OpenSSH-format user certificate line.}
-                  expires_at: {type: string, format: date-time}
-        default: {$ref: '#/components/responses/Error'}
   /machines/{machine}/ssh-tunnel:
     get:
       operationId: get_machines_machine_ssh_tunnel
@@ -2354,7 +2324,11 @@ paths:
       - name: managed
         in: query
         schema: {type: integer, const: 1}
-        description: Open the intrinsic managed SSH tunnel for a qualified System Guest using a machine-scoped manage credential.
+        description: Open the intrinsic SSH tunnel over the Guest Agent for a qualified System Guest. Requires a bearer credential with manage access and one X-Sandbox-SSH-Public-Key header. The supplied key is authorized for this SSH stream.
+      - name: X-Sandbox-SSH-Public-Key
+        in: header
+        schema: {type: string, pattern: '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$'}
+        description: Required exactly once with managed=1. A canonical Ed25519 OpenSSH public key line without comments or options.
       responses:
         '101':
           description: WebSocket upgraded
@@ -3430,19 +3404,19 @@ components:
       - ticket
       additionalProperties: false
     ManagedSSHCapability:
-      description: Passive configuration and host-key evidence for the intrinsic System SSH path.
+      description: Passive configuration and host-key evidence for intrinsic System SSH over the Guest Agent.
       allOf:
       - {$ref: '#/components/schemas/Capability'}
       - properties:
           constraints:
             type: object
-            required: [manage_allowed, path, host_key_status, reachability]
+            required: [manage_allowed, path, host_key_status, agent_exec_stream, reachability]
             properties:
               manage_allowed: {type: boolean, description: Whether the current principal may manage this machine.}
               path: {enum: [configured, unavailable, unknown]}
               host_key_status: {enum: [observed, unavailable, unknown], description: Fresh verified host-key evidence for the current execution.}
-              reachability: {enum: [unknown, unavailable], description: The passive view never probes TCP reachability.}
-              guest_port: {type: integer, enum: [2222], description: The private SSH port when the path is configured.}
+              agent_exec_stream: {enum: [observed, unavailable, unknown], description: Fresh Guest Agent exec-stream evidence for the current execution.}
+              reachability: {enum: [unknown, unavailable], description: The passive view never probes SSH reachability.}
     GuestFileCapability:
       allOf:
       - {$ref: '#/components/schemas/Capability'}
