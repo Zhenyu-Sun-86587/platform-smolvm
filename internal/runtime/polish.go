@@ -2,7 +2,10 @@ package runtime
 
 import "time"
 
-const SystemFileTransferCapability = "system-file-transfer-v1"
+const (
+	SystemFileTransferCapability = "system-file-transfer-v1"
+	SystemExecStreamCapability   = "system-exec-stream-v1"
+)
 
 const (
 	FileListCapability    = "files.list"
@@ -39,6 +42,12 @@ type MetricIssue struct {
 
 // GuestFileEvidence is the transfer handshake for one exact running Guest Agent.
 type GuestFileEvidence struct {
+	Execution ExecutionRef `json:"execution"`
+	Supported bool         `json:"supported"`
+}
+
+// GuestExecStreamEvidence is the streaming handshake for one exact Guest execution.
+type GuestExecStreamEvidence struct {
 	Execution ExecutionRef `json:"execution"`
 	Supported bool         `json:"supported"`
 }
