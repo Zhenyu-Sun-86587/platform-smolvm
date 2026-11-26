@@ -631,6 +631,31 @@ func (c *client) files() *cobra.Command {
 	path := func(id, target, suffix string) string {
 		return res("machines", id) + "/files" + suffix + "?" + url.Values{"path": {target}}.Encode()
 	}
+	var cursor string
+	var limit int
+	listFiles := sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		id, err := c.machineID(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		page := url.Values{}
+		if cursor != "" {
+			page.Set("cursor", cursor)
+		}
+		if cmd.Flags().Changed("limit") {
+			if limit < 1 || limit > 500 {
+				return errors.New("--limit must be between 1 and 500")
+			}
+			page.Set("limit", strconv.Itoa(limit))
+		}
+		target := path(id, args[1], "/list")
+		if len(page) != 0 {
+			target += "&" + page.Encode()
+		}
+		return c.show(cmd, target)
+	})
+	listFiles.Flags().StringVar(&cursor, "cursor", "", "Cursor from the preceding directory page")
+	listFiles.Flags().IntVar(&limit, "limit", 100, "Maximum entries in this page")
 	group.AddCommand(
 		sub("capabilities MACHINE", "Read Guest file capabilities and transfer limits", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			var m struct {
@@ -651,13 +676,7 @@ func (c *client) files() *cobra.Command {
 			}
 			return c.print(cmd, files)
 		}),
-		sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-			id, err := c.machineID(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			return c.show(cmd, path(id, args[1], "/list"))
-		}),
+		listFiles,
 		sub("get MACHINE GUEST_PATH OUTPUT", "Download a Guest file", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
 			id, err := c.machineID(cmd.Context(), args[0])
 			if err != nil {

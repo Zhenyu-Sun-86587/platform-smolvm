@@ -8,17 +8,21 @@ import (
 )
 
 func (c *client) vmSnapshotCommands() []*cobra.Command {
-	var label string
+	var label, purpose string
 	capture := sub("capture-vm MACHINE", "Capture a verified full VM state point", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if purpose != "recovery" && purpose != "clone" {
+			return errors.New("--purpose must be recovery or clone")
+		}
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
 			return err
 		}
 		return c.mutation(cmd, http.MethodPost, res("machines", m.ID)+"/snapshots", map[string]any{
-			"expected_generation": m.Generation, "capture_mode": "vm", "purpose": "recovery", "label": label,
+			"expected_generation": m.Generation, "capture_mode": "vm", "purpose": purpose, "label": label,
 		}, m.Revision)
 	})
 	capture.Flags().StringVar(&label, "label", "", "Snapshot label")
+	capture.Flags().StringVar(&purpose, "purpose", "recovery", "Snapshot purpose (recovery or clone)")
 
 	var restorePolicy, rollbackPolicy string
 	restore := sub("restore-vm SNAPSHOT NAME", "Create a machine from a verified full VM state point", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
