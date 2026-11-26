@@ -6,12 +6,13 @@ import {
   GitFork, Layers3, MapPin, MemoryStick, Plus, Search, Server, Terminal, Users, X,
 } from "lucide-react"
 import type { BootMode, Machine, MachineMetrics, Operation, Page, SystemMetrics } from "../../sdk/typescript/src/index"
-import { fixtureScene } from "./api"
+import { fixtureScene, metricAvailability, metricNumber } from "./api"
 import { Callout, label, machinePowerState, segment, time, useRemote } from "./common"
 import { terminalHref } from "./routes"
 import { WorkspaceActions } from "./workspace-actions"
 import { Button, EmptyState, PageHeader, StatusBadge } from "./ui"
 import { CreateMachineDialog } from "./features/machines/CreateMachineDialog"
+import { DocumentationLink } from "./features/catalog/DocumentationLink"
 import styles from "./features/machines/machines.module.css"
 import dashboard from "./features/dashboard/dashboard.module.css"
 import type { Actions } from "./main"
@@ -53,21 +54,18 @@ function CurrentUsage({ machine, revision }: { machine: Machine; revision: numbe
   const running = machinePowerState(machine) === "running"
   const metric = useRemote<MachineMetrics>(running ? `machines/${segment(machine.machine_id)}/metrics` : "", revision)
   const sample = metric.data
-  const execution = sample?.execution
-  const stale = sample?.availability === "stale" || Boolean(execution && (
-    execution.binding_id !== machine.binding?.binding_id || execution.incarnation_id !== machine.binding?.incarnation_id ||
-    execution.binding_generation !== machine.binding_generation || execution.execution_epoch !== machine.binding?.execution_epoch
-  ))
-  if (sample?.scope !== "machine" || stale || sample.availability === "unavailable" || !running) {
-    return <span className={styles.usage} title={stale ? `Last observation ${time(sample?.observed_at)}` : undefined}>
-      {stale ? "Metrics stale" : "Metrics unavailable"}
-    </span>
+  const availability = metricAvailability(sample, machine)
+  const observedAt = sample?.observed_at && time(sample.observed_at)
+  if (sample?.scope !== "machine" || !running || availability === "unavailable" || availability === "unknown") {
+    return <span className={styles.usage} title={metric.error instanceof Error ? metric.error.message : undefined}>Metrics unavailable</span>
   }
-  const measurements = [
-    sample.memory_mb != null && `MEM ${sample.memory_mb} MB`,
-    sample.disk_used_mb != null && `DSK ${sample.disk_used_mb} MB`,
-  ].filter(Boolean)
-  return <span className={styles.usage} title={time(sample.observed_at)}>{measurements.join(" · ") || "Metrics unavailable"}</span>
+  if (availability === "stale") return <span className={styles.usage} title={observedAt}>Metrics stale</span>
+  const measurements = [[sample.memory_mb, "MEM"], [sample.disk_used_mb, "DSK"]] as const
+  const formatted = measurements.flatMap(([value, title]) => {
+    const measured = metricNumber(value)
+    return measured === undefined ? [] : [`${title} ${measured} MB`]
+  })
+  return <span className={styles.usage} title={observedAt}>{formatted.join(" · ") || "Metrics unavailable"}</span>
 }
 
 function MachineCard({ machine, actions, revision }: { machine: Machine; actions: Actions; revision: number }) {
@@ -97,7 +95,7 @@ function MachineCard({ machine, actions, revision }: { machine: Machine; actions
         <><Server size={13} />{health ? `Guest ${label(health).toLowerCase()}` : `Guest health unknown`}{runtime && <small>{runtime}</small>}</>}
     </div>
     <CurrentUsage machine={machine} revision={revision} />
-    <div className={styles.machineActions}><WorkspaceActions machine={machine} actions={actions} compact /></div>
+    <div className={styles.machineActions}><WorkspaceActions machine={machine} actions={actions} compact surface="row" /></div>
   </article>
 }
 
@@ -151,8 +149,8 @@ export function MachineList({ rows, error, actions, revision, defaultBoot, creat
   const otherRegion = data.filter(machine => referenceRegion(machine) !== region).length
 
   return <>
-    <PageHeader title="Machines" icon={<Server />} description="Live and stopped environments across your workspace."
-      actions={<Button variant="primary" onClick={dialog.show}><Plus size={15} /> New machine</Button>} />
+    <PageHeader title="Machines" className={styles.pageHeading} icon={<Server />} description="Live and stopped environments across your workspace."
+      actions={<><DocumentationLink className={styles.docsLink} /><Button variant="primary" onClick={dialog.show}><Plus size={15} /> New machine</Button></>} />
     <Callout error={error} />
     <div className={styles.toolbar}>
       <div className={styles.scopes} aria-label="Machine scope">
@@ -222,7 +220,12 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
   const now = fixtureScene ? new Date("2026-11-26T12:00:00Z") : new Date()
   const date = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric", ...(fixtureScene ? { timeZone: "UTC" } : {}) }).format(now)
   const observation = metrics.data
-  const measured = (value: number | null | undefined, unit: string) => value != null && observation?.availability !== "unavailable" ? `${value.toLocaleString()} ${unit}` : "Unavailable"
+  const availability = metricAvailability(observation)
+  const measured = (value: number | null | undefined, unit: string) => {
+    const number = metricNumber(value)
+    return number !== undefined && availability !== "unknown" && availability !== "unavailable"
+      ? `${number.toLocaleString()} ${unit}` : "Unavailable"
+  }
   return <div className={dashboard.page}>
     {intro && <section className={dashboard.intro}>
       <button type="button" aria-label="Dismiss example shortcuts" onClick={() => setIntro(false)}><X size={16} /></button>
@@ -242,6 +245,7 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
         <a href="#/machines"><Server size={14} /> All machines</a>
         <a href="#/snapshots"><Layers3 size={14} /> Snapshots</a>
         <a href="#/operations"><Activity size={14} /> Operations</a>
+        <DocumentationLink />
       </div>
     </section>
     <section className={dashboard.fleet}>
@@ -273,7 +277,7 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
         {allocation.disks < allocation.reported && <p>Guest storage capacity reported by {allocation.disks} of {machines.length} machines.</p>}
       </section>
       <section>
-        <header><h2>Runtime usage</h2>{observation?.availability && <StatusBadge value={observation.availability} />}</header>
+        <header><h2>Runtime usage</h2>{observation && <StatusBadge value={availability} />}</header>
         <Callout error={metrics.error} />
         {observation ? <>
           <p>{observation.scope ? label(observation.scope) : "Scope unavailable"}{observation.source && ` · ${label(observation.source)}`}{observation.observed_at && ` · ${time(observation.observed_at)}`}</p>

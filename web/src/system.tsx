@@ -9,7 +9,7 @@ import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
-import { fixtureScene, useCollection } from "./api"
+import { fixtureScene, metricAvailability, metricNumber, useCollection } from "./api"
 import type { Actions } from "./main"
 
 export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups" | "api-keys"
@@ -47,17 +47,17 @@ function Backups({ actions, revision }: Omit<Props,"tab">) {
   return <>
     <Section title="Backup policies"><Callout error={policies.error} />
       {!policies.items && !policies.error && <p role="status">Loading backup policies…</p>}
-      {policies.items.length === 0 && <p className="empty">Configure a backup policy in platformd to schedule backups.</p>}
-      <div className="rows">{policies.items.map(policy => <div className="row" key={policy.policy_id}>
+      {policies.items?.length === 0 && <p className="empty">Configure a backup policy in platformd to schedule backups.</p>}
+      <div className="rows">{policies.items?.map(policy => <div className="row" key={policy.policy_id}>
         <strong>{policy.policy_id}</strong><span>{label(policy.scope)}</span><span>Every {policy.interval_seconds} seconds</span><span>Keep {policy.retain}</span>
-        <Button variant="outline" disabled={runs.items.some(run => run.policy_id === policy.policy_id && run.state === "running")}
+        <Button variant="secondary" disabled={!runs.items || runs.items.some(run => run.policy_id === policy.policy_id && run.state === "running")}
           onClick={() => actions.dialog({title:"Run backup",act:() => actions.mutate("backups/policies/" + segment(policy.policy_id) + "/runs")})}>Run now</Button>
       </div>)}</div>
     </Section>
     <Section title="Backup history"><Callout error={runs.error} />
       {!runs.items && !runs.error && <p role="status">Loading backup runs…</p>}
-      {runs.items.length === 0 && <p className="empty">No backups yet.</p>}
-      <div className="rows">{runs.items.map(run => <div className="row" key={run.backup_id}>
+      {runs.items?.length === 0 && <p className="empty">No backups yet.</p>}
+      <div className="rows">{runs.items?.map(run => <div className="row" key={run.backup_id}>
         <strong>{run.policy_id}</strong><State value={run.state}/><span>{time(run.started_at)}</span><code>{run.backup_id}</code>
         {run.failure_code && <span>{label(run.failure_code)}</span>}
       </div>)}</div>
@@ -134,6 +134,8 @@ function Diagnostics({ revision }: { revision: number }) {
   const status = useRemote<Record<string, unknown>>("control", revision)
   const profiles = useCollection<RuntimeProfile>("runtime-profiles", revision)
   const metrics = useRemote<SystemMetrics>("system/metrics", revision)
+  const availability = metricAvailability(metrics.data)
+  const measured = (value?: number) => availability !== "unknown" && availability !== "unavailable" ? metricNumber(value) : undefined
   const diagnostic = useRemote<Record<string, unknown>>("system/diagnostics", revision)
   const [machineId, setMachineId] = useState("")
   const [operationId, setOperationId] = useState("")
@@ -144,8 +146,8 @@ function Diagnostics({ revision }: { revision: number }) {
     <Section title="Control status"><Callout error={status.error} />{status.data && <Details value={details} />}</Section>
     <Section title="Registered runtime profiles">
       <Callout error={profiles.error} />
-      {profiles.items.length === 0 && <p className="empty">No deep runtime profiles registered.</p>}
-      {profiles.items.map(profile => <details className="disclosure" key={profile.runtime_instance_id}>
+      {profiles.items?.length === 0 && <p className="empty">No deep runtime profiles registered.</p>}
+      {profiles.items?.map(profile => <details className="disclosure" key={profile.runtime_instance_id}>
         <summary>{profile.runtime_instance_id} · {profile.boot_profiles.join(", ") || label(profile.status)}</summary>
         <Details value={{
           bundle: profile.runtime_bundle_id, state_reader: profile.state_reader_id,
@@ -159,15 +161,15 @@ function Diagnostics({ revision }: { revision: number }) {
     <Section title="Runtime metrics">
       <Callout error={metrics.error} />
       {metrics.data ? <Details value={{
-        availability: metrics.data.availability ?? "Unknown",
+        availability: label(availability),
         scope: metrics.data.scope,
         source: metrics.data.source,
         observed: time(metrics.data.observed_at),
-        cpu_allocation: metrics.data.allocated_cpus,
-        memory_allocation_mb: metrics.data.allocated_memory_mb,
-        cpu_used: metrics.data.used_cpus,
-        memory_used_mb: metrics.data.used_memory_mb,
-        disk_used_gb: metrics.data.used_disk_gb,
+        cpu_allocation: measured(metrics.data.allocated_cpus),
+        memory_allocation_mb: measured(metrics.data.allocated_memory_mb),
+        cpu_used: measured(metrics.data.used_cpus),
+        memory_used_mb: measured(metrics.data.used_memory_mb),
+        disk_used_gb: measured(metrics.data.used_disk_gb),
         issues: metrics.data.issues,
       }} /> : !metrics.error && <p role="status">Loading runtime metrics…</p>}
     </Section>

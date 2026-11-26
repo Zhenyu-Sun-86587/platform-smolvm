@@ -183,3 +183,7 @@
   .intro { display: none; }
   .command kbd { display: none; }
 }
+
+.page {
+  padding-top: 40px;
+}

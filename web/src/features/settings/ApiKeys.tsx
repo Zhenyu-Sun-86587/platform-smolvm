@@ -6,6 +6,7 @@ import { useCollection } from "../../api"
 import { Callout, label, segment, time } from "../../common"
 import type { Actions } from "../../main"
 import { Button, Modal, PageHeader } from "../../ui"
+import { DocumentationLink } from "../catalog/DocumentationLink"
 import catalog from "../catalog/catalog.module.css"
 import styles from "./settings.module.css"
 
@@ -27,7 +28,7 @@ export function ApiKeys({ actions, revision, create }: { actions: Actions; revis
   }
   return <>
     <PageHeader title="API keys" icon={<KeyRound />} description="Programmatic credentials for the platform API and CLI."
-      actions={<Button variant="primary" onClick={() => setNewKey(true)}><Plus size={15} /> Create key</Button>} />
+      actions={<><DocumentationLink /><Button variant="primary" onClick={() => setNewKey(true)}><Plus size={15} /> Create key</Button></>} />
     <Callout error={keys.error} />
     {!keys.items && !keys.error && <div className={catalog.skeleton} role="status" aria-label="Loading API keys" />}
     {keys.items?.length === 0 && <section className={catalog.featurePanel} data-split="true">
