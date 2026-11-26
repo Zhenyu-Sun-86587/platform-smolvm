@@ -43,6 +43,12 @@ def check(platform, args, keys):
         # The harness has a private mount namespace and discards everything at exit.
         subprocess.run(["mount", "--bind", directory, "/root"], check=True)
         cleanup.callback(subprocess.run, ["umount", "/root"], check=True)
+        # Use a stock empty system configuration as well: the development
+        # host has cluster-only Include files outside this isolated account.
+        system_config = platform.root / "system-ssh-config"
+        system_config.write_text("# Disposable OpenSSH client defaults\n")
+        subprocess.run(["mount", "--bind", system_config, "/etc/ssh/ssh_config"], check=True)
+        cleanup.callback(subprocess.run, ["umount", "/etc/ssh/ssh_config"], check=True)
         assert not Path("/root/.ssh").exists()
         configured = run(args.sandboxctl, "login", "--token-stdin", "--url", platform.origin,
                          "--ca-file", str(keys / "ca.pem"), data=(credential + "\n").encode())
