@@ -51,11 +51,11 @@ func managedSSHTunnelFixture(t *testing.T) (*Server, auth.Principal) {
 		t.Fatal(err)
 	}
 	if _, err = db.DB().ExecContext(ctx, `INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
-		VALUES ('machine','Machine','system',1,1,'running','{}','{}',0);
+		VALUES ('m_managed_ssh','Machine','system',1,1,'running','{}','{}',0);
 		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,
 			runtime_instance_id,runtime_bundle_id,runtime_instance_object_id,execution_epoch,incarnation_id,power_state)
-		VALUES ('binding','machine',1,'vm','current','task-ns','digest','serve','bundle','native-vm',4,'vmm-4','hibernated');
-		UPDATE machines SET current_binding_id='binding' WHERE id='machine'`); err != nil {
+		VALUES ('binding','m_managed_ssh',1,'vm','current','task-ns','digest','serve','bundle','native-vm',4,'vmm-4','hibernated');
+		UPDATE machines SET current_binding_id='binding' WHERE id='m_managed_ssh'`); err != nil {
 		t.Fatal(err)
 	}
 	return s, owner
@@ -69,7 +69,7 @@ func managedSSHTunnelToken(t *testing.T, s *Server, owner auth.Principal, label,
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	_, token, err := s.Auth.IssueTokenTx(ctx, tx, owner, label, auth.Scope{Access: scope, MachineID: "machine"}, nil)
+	_, token, err := s.Auth.IssueTokenTx(ctx, tx, owner, label, auth.Scope{Access: scope, MachineID: "m_managed_ssh"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing
 	s, owner := managedSSHTunnelFixture(t)
 	manage := managedSSHTunnelToken(t, s, owner, "manage", auth.AccessManage)
 	tunnel := managedSSHTunnelToken(t, s, owner, "tunnel", auth.AccessTunnel)
-	const path = "/v1/machines/machine/ssh-tunnel"
+	const path = "/v1/machines/m_managed_ssh/ssh-tunnel"
 	call := func(query, bearer string, upgrade bool, status int, reason string) {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodGet, path+query, nil)
@@ -101,18 +101,18 @@ func TestManagedSSHTunnelIsExplicitScopedAndIndependentOfPublications(t *testing
 		}
 	}
 	call("?managed=1", "", true, http.StatusUnauthorized, "UNAUTHENTICATED")
-	call("?managed=1", tunnel, true, http.StatusForbidden, "FORBIDDEN")
+	call("?managed=1", tunnel, true, http.StatusForbidden, "PERMISSION_DENIED")
 	call("?managed=1&managed=0", manage, true, http.StatusBadRequest, "INVALID_ARGUMENT")
 	call("?managed=1", manage, true, http.StatusConflict, "MANAGED_SSH_PRIVATE_NETWORK_REQUIRED")
 	call("", tunnel, false, http.StatusNotFound, "NOT_FOUND")
 
 	ctx := context.Background()
 	if _, err := s.DB.DB().ExecContext(ctx, `INSERT INTO services(id,machine_id,name,revision,kind,guest_port,readiness_json,access_json,enabled)
-		VALUES ('published','machine','Published SSH',1,'ssh',2201,'{}','{"private":true}',1)`); err != nil {
+		VALUES ('published','m_managed_ssh','Published SSH',1,'ssh',2201,'{}','{"private":true}',1)`); err != nil {
 		t.Fatal(err)
 	}
 	call("", tunnel, false, http.StatusBadRequest, "INVALID_ARGUMENT")
-	call("?managed=1", tunnel, true, http.StatusForbidden, "FORBIDDEN")
+	call("?managed=1", tunnel, true, http.StatusForbidden, "PERMISSION_DENIED")
 	call("?managed=1", manage, true, http.StatusConflict, "MANAGED_SSH_PRIVATE_NETWORK_REQUIRED")
 	if _, err := s.DB.DB().ExecContext(ctx, "UPDATE services SET enabled=0,revision=2 WHERE id='published'"); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestManagedSSHStreamRejectsChangedExecutionAndRevokedCredential(t *testing.
 	if _, err = s.DB.DB().ExecContext(ctx, "UPDATE runtime_bindings SET power_state='running' WHERE id='binding'"); err != nil {
 		t.Fatal(err)
 	}
-	before, err := s.ManagedSystemSSHBinding(ctx, "machine")
+	before, err := s.ManagedSystemSSHBinding(ctx, "m_managed_ssh")
 	if err != nil {
 		t.Fatal(err)
 	}
