@@ -263,6 +263,7 @@ type EgressUpdate struct {
 }
 
 type Capacity struct {
+	*MetricObservation
 	AllocatedCPUs         uint32  `json:"allocated_cpus"`
 	AllocatedMemoryMB     uint64  `json:"allocated_memory_mb"`
 	UsedCPUs              float64 `json:"used_cpus"`
@@ -287,6 +288,7 @@ type Pressure struct {
 }
 
 type Metrics struct {
+	*MetricObservation
 	Name           string    `json:"name"`
 	At             string    `json:"at"`
 	State          string    `json:"state"`

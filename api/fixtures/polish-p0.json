@@ -1,0 +1,59 @@
+{
+  "power_states": ["running", "standby", "hibernated", "stopped", "unknown"],
+  "machine_health": {
+    "vm": "running", "guest_management": "ready", "workload": "starting",
+    "network_identity": "ready", "services": "unknown"
+  },
+  "capabilities": {
+    "state.independent_fork": {"status":"supported","supported":true,"verified_profile":"native-v1"},
+    "files.list": {"status":"supported","supported":true,"constraints":{"transport":"native_agent"}},
+    "files.read": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":67108864}},
+    "files.write": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":67108864}},
+    "files.preview": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":262144}},
+    "files.edit": {"status":"supported","supported":true,"constraints":{"transport":"native_agent","max_bytes":262144}}
+  },
+  "unavailable_files": {
+    "unsupported": {"status":"unsupported","supported":false,"reason_code":"GUEST_FILE_TRANSFER_UNSUPPORTED"},
+    "unknown": {"status":"unknown","supported":false,"reason_code":"GUEST_FILE_TRANSFER_UNVERIFIED"}
+  },
+  "files": {
+    "empty":{"items":[]},
+    "list":{"items":[{"name":"sample.bin","type":"file","size":4}]},
+    "download_base64":"AP8KQQ==",
+    "uploaded":{"upload_id":"upload_1","state":"uploaded","path":"/workspace/sample.bin","size":4,"sha256":"8fc3156c066463c772e9493b112bec494bc8d5ba3f9a1198837a2e404ee793fd"},
+    "too_large":{"error":{"code":"FILE_TOO_LARGE","effect":"none","retry":"after_precondition"}},
+    "old_execution":{"error":{"code":"GENERATION_CONFLICT","effect":"none","retry":"after_precondition"}},
+    "unknown":{"error":{"code":"OUTCOME_UNKNOWN","effect":"unknown","retry":"verify_original_intent"}}
+  },
+  "metrics": {
+    "partial": {"availability":"partial","source":"official_runtime","scope":"machine","observed_at":"2026-11-26T00:00:00Z","cpu_millis":0,"memory_mb":null,"issues":{"memory_mb":{"code":"NOT_SAMPLED","message":"No memory measurement was returned."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "unavailable": {"availability":"unavailable","source":"worker","scope":"machine","issues":{"runtime":{"code":"METRICS_UNAVAILABLE","message":"No measurement for this execution."}},"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "stale": {"availability":"stale","source":"worker","scope":"machine","observed_at":"2026-11-26T00:00:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":3},"cpu_millis":240,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "counter_reset": {"availability":"partial","source":"worker","scope":"machine","observed_at":"2026-11-26T00:01:00Z","execution":{"binding_id":"bind_a","binding_generation":2,"incarnation_id":"inc_a","execution_epoch":4},"cpu_millis":12,"platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}},
+    "system": {"availability":"unavailable","source":"worker","scope":"worker","platform":{"active_access_holds":0,"wake_waiters":0,"operations_by_state":{}}}
+  },
+  "capture": {
+    "verified":{"capture_mode":"vm","configuration":{"status":"verified","schema_version":1,"source_machine_revision":9,"capture_id":"capture_1","manifest_digest":"sha256:fixture","template_id":"template_1","spec":{"boot_mode":"system","resources":{"cpu_count":2,"memory_mib":1024}}},"ram":"included","disks":[{"role":"root"},{"role":"data","volume_id":"vol_1","generation_id":"gen_1","read_only":false}],"restore_policies":["exact","clone_conflicts"]},
+    "historical":{"capture_mode":"vm","configuration":{"status":"unknown","reason_code":"CAPTURE_CONFIGURATION_UNRECORDED"},"ram":"unknown"},
+    "restore_result":{"volume_map":{"vol_1":"vol_clone_1"}}
+  },
+  "services": {
+    "configured":{"status":"unknown","stage":"configuration","scope":"configuration","service_revision":1},
+    "upstream_failed":{"status":"unavailable","stage":"worker_upstream","scope":"worker_upstream","service_revision":1,"binding_generation":4,"execution_epoch":2,"observed_at":"2026-11-26T00:00:00Z","reason_code":"UPSTREAM_UNAVAILABLE"},
+    "upstream_ready_public_unverified":{"status":"ready","stage":"worker_upstream","scope":"worker_upstream","service_revision":1,"binding_generation":4,"execution_epoch":3,"observed_at":"2026-11-26T00:01:00Z"},
+    "hibernated_stale_revision":{"status":"stale","stage":"worker_upstream","scope":"worker_upstream","service_revision":1,"binding_generation":4,"execution_epoch":3,"observed_at":"2026-11-26T00:01:00Z"}
+  },
+  "operations": {
+    "accepted":{"operation_id":"op_fork","kind":"fork_batch","state":"queued","stage":"accepted","effect":"none","revision":1},
+    "single_success":{"operation_id":"op_one","kind":"independent_fork","state":"succeeded","stage":"complete","effect":"applied","revision":4},
+    "partial":{"operation_id":"op_fork","kind":"fork_batch","state":"failed","stage":"complete","effect":"partial","revision":3,"children":[{"ordinal":0,"machine_id":"m1","binding_id":"b1","state":"succeeded","attempt":1,"resource_independence":"verified"},{"ordinal":1,"machine_id":"m2","binding_id":"b2","state":"failed","attempt":1,"error_code":"RESOURCE_EXHAUSTED"}]},
+    "retry_slot":{"operation_id":"op_retry","kind":"fork_batch_retry","state":"queued","stage":"accepted","effect":"none","revision":1,"children":[{"ordinal":1,"machine_id":"m2","binding_id":"b3","state":"queued","attempt":2}]},
+    "recovery":{"operation_id":"op_restore","kind":"vm_restore","state":"recovery_required","stage":"observing","effect":"unknown","revision":4}
+  },
+  "lifecycle": {
+    "inherited":{"source":"default","desired_revision":1,"applied_revision":1,"default_revision":1,"effective_status":"applied"},
+    "pending_override":{"source":"override","desired_revision":3,"applied_revision":2,"default_revision":1,"effective_status":"pending","overrides":{"auto_hibernate":true}},
+    "protected":{"supported":true,"effective_status":"blocked","effective_blockers":["RUNNING_LEASE"],"worker":{"power":"running","blockers":["RUNNING_LEASE"],"controlled_suspended":false,"collectors":{"connections":{"fresh":false}}}},
+    "lease":{"lease_id":"lease_1","machine_id":"machine_1","principal_id":"principal_1","binding_generation":4,"semantics_version":2,"execution_epoch":3,"state":"active","revision":1,"reason":"Waiting for model response","expires_at":"2026-11-26T00:05:00Z"}
+  }
+}

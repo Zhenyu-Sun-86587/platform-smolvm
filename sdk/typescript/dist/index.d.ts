@@ -82,6 +82,12 @@ export interface OperationChild {
 }
 export interface Operation {
     operation_id: string;
+    control_epoch: string;
+    source_machine_id?: string;
+    binding_id?: string;
+    runtime_name?: string;
+    created_at: string;
+    updated_at: string;
     revision: number;
     state: OperationState;
     machine_id?: string;
@@ -103,6 +109,78 @@ export interface Capability {
     reason_code?: string | null;
     message?: string;
     verified_profile?: string;
+}
+export type GuestFileCapability = "files.list" | "files.read" | "files.write" | "files.preview" | "files.edit";
+export interface GuestFileConstraints {
+    max_bytes?: number;
+    transport?: "native_agent" | "official_runtime";
+}
+export interface GuestFileEntry {
+    name: string;
+    type: string;
+    size: number;
+}
+export interface GuestFileUpload {
+    upload_id: string;
+    state: "uploaded";
+    path: string;
+    size: number;
+    sha256: string;
+}
+export interface MetricExecution {
+    binding_id: string;
+    binding_generation: number;
+    incarnation_id: string;
+    execution_epoch: number;
+}
+export interface MetricObservation {
+    availability?: "available" | "partial" | "unavailable" | "stale";
+    source?: string;
+    scope?: "machine" | "worker" | "official_runtime";
+    observed_at?: string;
+    execution?: MetricExecution;
+    issues?: Record<string, {
+        code: string;
+        message: string;
+    }>;
+}
+export interface PlatformMetrics {
+    active_access_holds: number;
+    wake_waiters: number;
+    operations_by_state: Record<string, number>;
+}
+export interface PressureSample {
+    someAvg10: number;
+    someAvg60: number;
+    fullAvg10: number;
+    fullAvg60: number;
+}
+export interface MachineMetrics extends MetricObservation {
+    name?: string;
+    at?: string;
+    state?: string;
+    vcpus?: number;
+    memory_limit_mb?: number;
+    cpu_millis?: number | null;
+    cpu_limit_millicpus?: number | null;
+    memory_mb?: number | null;
+    rss_mb?: number | null;
+    disk_used_mb?: number | null;
+    disk_gb?: number | null;
+    egress_bytes?: number | null;
+    pressure?: Record<"cpu" | "memory" | "io", PressureSample> | null;
+    platform: PlatformMetrics;
+}
+export interface SystemMetrics extends MetricObservation {
+    allocated_cpus?: number;
+    allocated_memory_mb?: number;
+    used_cpus?: number;
+    used_memory_mb?: number;
+    host_memory_total_mb?: number | null;
+    host_memory_available_mb?: number | null;
+    used_disk_gb?: number;
+    boot_id?: string;
+    platform: PlatformMetrics;
 }
 export interface Control {
     control_epoch: string;
@@ -212,6 +290,7 @@ export type LifecyclePolicyPatch = Partial<Omit<LifecyclePolicy, "wake_condition
 };
 export interface LifecycleStatus {
     supported: boolean;
+    operation_id?: string;
     effective_status?: "pending" | "applied" | "disabled" | "blocked";
     effective_blockers?: string[];
     desired_revision: number;
@@ -257,6 +336,8 @@ export interface RunningLease {
     machine_id: string;
     semantics_version: number;
     execution_epoch?: number;
+    binding_generation: number;
+    principal_id: string;
     revision: number;
     state: string;
     reason: string;
@@ -377,7 +458,19 @@ export interface ServiceSpec {
     readiness?: unknown;
     auth?: unknown;
 }
+export interface ServiceObservation {
+    status: "unknown" | "ready" | "unavailable" | "stale";
+    stage: "configuration" | "wake" | "guest_management" | "worker_upstream" | "public_dns" | "public_tls";
+    scope: "configuration" | "worker_upstream" | "public_ingress";
+    service_revision: number;
+    binding_generation?: number;
+    execution_epoch?: number;
+    observed_at?: string;
+    reason_code?: string;
+    operation_id?: string;
+}
 export interface Service extends ServiceSpec {
+    observation?: ServiceObservation;
     service_id: string;
     machine_id: string;
     revision: number;
@@ -386,7 +479,37 @@ export interface Service extends ServiceSpec {
     enabled?: boolean;
     [key: string]: unknown;
 }
+export interface CaptureConfiguration {
+    status: "verified" | "unknown";
+    schema_version?: number;
+    source_machine_revision?: number;
+    capture_id?: string;
+    manifest_digest?: string;
+    template_id?: string;
+    spec?: {
+        boot_mode?: BootMode;
+        resources?: Resources;
+        network?: NetworkSelection;
+        live_compute_growth?: boolean;
+        desktop_profile?: string;
+    };
+    reason_code?: string;
+}
+export interface CaptureSummary {
+    capture_mode: CaptureMode;
+    configuration: CaptureConfiguration;
+    ram: "included" | "excluded" | "unknown";
+    disks?: {
+        role: string;
+        volume_id?: string;
+        generation_id?: string;
+        read_only?: boolean;
+    }[];
+    restore_policies?: VolumeRestorePolicy[];
+    reason_code?: string;
+}
 export interface Snapshot {
+    capture_summary?: CaptureSummary;
     snapshot_id: string;
     capture_mode?: CaptureMode;
     vm_provenance?: {
@@ -608,6 +731,8 @@ export declare class Client {
         machine_id: string;
         semantics_version: number;
         execution_epoch?: number;
+        binding_generation: number;
+        principal_id: string;
         revision: number;
         state: string;
         reason: string;
