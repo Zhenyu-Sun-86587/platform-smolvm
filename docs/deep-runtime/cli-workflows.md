@@ -73,6 +73,30 @@ sandboxctl snapshots delete "$sid"
 
 跨资源 Machine Spec 事务、完整 AgentSession、商业功能及内核 syscall 后置。多节点有独立设计、分支与验收。boxd E25 的 Agent 回合认证失败，E27 的域名继承和 E28 的黑屏截图也各有证据边界。
 
+### 从新电脑连接机器
+
+假设机器名为 `myapp`，管理员已给你平台地址和拥有该机器 `manage` 权限的 token。用匹配版本的 CLI 登录一次。登录会校验平台 TLS，把凭据存入当前用户的私有配置，并安装 OpenSSH 的 Include。使用自签证书的安装另传 `--ca-file /path/to/ca.pem`。
+
+```bash
+sandboxctl login --url "$SANDBOX_URL" --token-stdin < /path/to/platform-token
+ssh myapp.sandbox
+scp ./report.csv myapp.sandbox:/tmp/report.csv
+sandboxctl ssh myapp -- id -u
+```
+
+VS Code Remote SSH 使用同一个 `myapp.sandbox` 主机。可用 `--no-ssh-config` 只保存登录，再用 `sandboxctl ssh myapp`。安装时已存在的、名称唯一且能映射到 DNS 标签的 System 机器会生成别名。本地 CLI 完成创建或改名会更新已安装的别名，其他客户端的改动可用 `sandboxctl ssh-config sync` 同步。旧别名指向的机器身份发生变化时，客户端会拒绝连接。
+
+托管 SSH 需要开启 managed SSH 的 Native/System 模板和已配置的 Worker 私网。平台给客户端公钥签发该机器的短期 root 证书，私钥保留在本机。证书限制来源为经 Worker 核对的路由器地址。每次连接仍经过带权限复核的隧道和 Guest 主机密钥校验。机器睡眠时，显式连接遵循已有的唤醒策略。已有公钥可继续用 `sandboxctl ssh --legacy MACHINE` 或 `--identity FILE` 登录已发布的 SSH 服务。
+
+配置 `apps_domain`、通配 DNS 和匹配的 TLS 证书后，机器详情会返回稳定的 `web_url`。在 Guest 启动 Web 应用后，发布对应端口即可使用。机器改名后地址继续有效。
+
+```bash
+sandboxctl services create name:myapp web --protocol http --guest-port 3000
+sandboxctl --json machines get name:myapp | jq -r .web_url
+```
+
+在浏览器打开该地址会经过控制台登录，再以限时预览凭据打开服务。脚本可在同一地址使用获准的 Bearer 凭据。已启用的 HTTP(S) 服务中，名称为 `web` 的服务优先，只有一个候选时可直接选用。多个候选缺少 `web` 时返回歧义错误，各服务自己的地址仍可单独使用。机器和服务详情中的地址只表示入口已分配，实际可访问状态来自授权连接的观察。
+
 ### 复现验收
 
 命令映射、脚本退出码与错误信封在 Go 测试中验证。真实 Guest 验收使用相同构建的两个二进制、匹配的 Runtime Bundle 和 System 镜像。需要 Linux/KVM、root、systemd、隔离网络和足够的临时空间。下列命令在平台仓库根目录运行，`WORK` 应是短路径的专用临时目录；若与其他验收共用主机，先按协调约定取得构建锁和 Worker 实验锁。
@@ -85,6 +109,9 @@ args=(--platformd "$PLATFORMD" --sandboxctl "$SANDBOXCTL" --bundle "$BUNDLE"
       --system-image "$SYSTEM_IMAGE" --work-dir "$WORK")
 sudo python3 -B tests/integration/polish_cli_kvm.py "${args[@]}"
 sudo python3 -B tests/integration/authorized_services_kvm.py "${args[@]}" --case cli-terminal --use-installation
+for mode in native fixed_internal; do
+  sudo python3 -B tests/integration/authorized_services_kvm.py "${args[@]}" --case managed-ssh --mode "$mode" --use-installation
+done
 ```
 
 工作流输出每次受理和完成的 operation ID，以及实际文件 SHA、Fork 子项、捕获和恢复身份、HTTPS 回执、休眠执行代际及清理结果。终端用例另记 PTY 的输入、尺寸、退出码，SSH 验证的身份，以及主动电源操作和运行租约的 Worker 观察。
