@@ -25,8 +25,53 @@ import (
 // an identity only after the lifecycle operation has fenced the old execution.
 func (e *Engine) SSHHostKey(mid string) ([]byte, []byte, error) {
 	dir := filepath.Join(e.Config.StateDir, "secrets", "ssh")
-	raw, err := readOrCreateSSHKey(dir, mid)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, nil, err
+	}
+	path := filepath.Join(dir, mid)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, nil, err
+		}
+		block, err := ssh.MarshalPrivateKey(priv, mid)
+		if err != nil {
+			return nil, nil, err
+		}
+		raw = pem.EncodeToMemory(block)
+		f, err := os.CreateTemp(dir, ".new-")
+		if err != nil {
+			return nil, nil, err
+		}
+		defer os.Remove(f.Name())
+		if _, err = f.Write(raw); err == nil {
+			err = f.Sync()
+		}
+		closeErr := f.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+		if closeErr != nil {
+			return nil, nil, closeErr
+		}
+		err = os.Link(f.Name(), path)
+		if errors.Is(err, os.ErrExist) {
+			raw, err = os.ReadFile(path)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		d, err := os.Open(dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		err = d.Sync()
+		d.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+	} else if err != nil {
 		return nil, nil, err
 	}
 	signer, err := ssh.ParsePrivateKey(raw)
@@ -34,50 +79,6 @@ func (e *Engine) SSHHostKey(mid string) ([]byte, []byte, error) {
 		return nil, nil, err
 	}
 	return raw, ssh.MarshalAuthorizedKey(signer.PublicKey()), nil
-}
-
-func readOrCreateSSHKey(dir, id string) ([]byte, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, id)
-	raw, err := os.ReadFile(path)
-	if !errors.Is(err, os.ErrNotExist) {
-		return raw, err
-	}
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	block, err := ssh.MarshalPrivateKey(priv, id)
-	if err != nil {
-		return nil, err
-	}
-	raw = pem.EncodeToMemory(block)
-	f, err := os.CreateTemp(dir, ".new-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(raw); err == nil {
-		err = f.Sync()
-	}
-	if err := errors.Join(err, f.Close()); err != nil {
-		return nil, err
-	}
-	err = os.Link(f.Name(), path)
-	if errors.Is(err, os.ErrExist) {
-		raw, err = os.ReadFile(path)
-	}
-	if err != nil {
-		return nil, err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer d.Close()
-	return raw, d.Sync()
 }
 func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, error) {
 	adapter, err := e.ForBinding(b)
@@ -110,16 +111,12 @@ func (e *Engine) InstallSSH(ctx context.Context, b registry.Binding) (string, er
 	if err != nil {
 		return "", err
 	}
-	if guest != nil {
-		authorized, err := e.systemAuthorizedSSHKeys(ctx, b.MachineID, true)
-		if err != nil {
-			return "", err
-		}
-		return installSystemSSH(ctx, b.ExecutionRef(), guest, private, public, authorized)
-	}
 	authorized, err := e.authorizedSSHKeys(ctx)
 	if err != nil {
 		return "", err
+	}
+	if guest != nil {
+		return installSystemSSH(ctx, b.ExecutionRef(), guest, private, public, authorized)
 	}
 	mode := uint32(0600)
 	for _, v := range []struct {
