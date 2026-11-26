@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import { CircleHelp, RefreshCw } from "lucide-react"
 import { operation, PlatformError } from "../../../../sdk/typescript/src/index"
-import type { BootMode, Control, CreateMachine, Machine, Mutation, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
+import type { BootMode, Control, CreateMachine, Machine, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
 import { api, fixtureScene, useCollection } from "../../api"
 import { Callout, label, machinePowerState, networkModes, segment, useRemote } from "../../common"
 import type { Actions } from "../../main"
@@ -88,24 +88,25 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const [growth, setGrowth] = useState(false)
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
-  const retry = useRef<{ body: string; intent: Mutation } | undefined>(undefined)
+  const [retry, setRetry] = useState<CreateMachine>()
   const [issue, setIssue] = useState<unknown>()
   const [receipt, setReceipt] = useState<Operation>()
-  const observation = useRemote<Operation>(receipt ? operation(receipt.operation_id) : "", revision)
+  const issueDetail = issue instanceof PlatformError ? issue.detail : undefined
+  const operationID = receipt?.operation_id ?? issueDetail?.operation_id
+  const observation = useRemote<Operation>(operationID ? operation(operationID) : "", revision)
   const current = observation.data ?? receipt
   const machine = useRemote<Machine>(
     current?.state === "succeeded" && current.machine_id ? "machines/" + segment(current.machine_id) : "", revision,
   )
   const ready = machine.data && machinePowerState(machine.data) === "running" &&
     (machine.data.health?.guest_management ?? machine.data.guest_management_status) === "ready"
-  const lostReceipt = issue instanceof PlatformError ? issue.detail : undefined
   const nameIssue = nameError(name)
   const loading = (!templates.items && !templates.error) || (system && !networks.items && !networks.error)
   const valid = !nameIssue && !suggesting && !loading && Boolean(selected && (!system || runtime)) &&
     positiveInteger(cpu) && positiveInteger(memory) &&
     (system || (positiveInteger(storage) && positiveInteger(overlay) && (idlePolicy !== "enabled" || idleTimeout >= 60)))
   const formId = "new-machine-form"
-  const uncertain = lostReceipt?.effect === "unknown" || lostReceipt?.effect === "partial" || lostReceipt?.code === "OUTCOME_UNKNOWN"
+  const uncertain = Boolean(retry)
 
   function suggest() {
     setSuggesting(true)
@@ -113,9 +114,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
     timer.current = setTimeout(() => { setName(suggestName()); setSuggesting(false) }, 180)
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (inFlight.current || !valid || receipt || !selected) return
+  function request(): CreateMachine | undefined {
+    if (!valid || !selected) return
     const body: CreateMachine = {
       name,
       boot_mode: system ? "system" : "oci",
@@ -132,16 +132,27 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       body.resources = { cpu_count: cpu, memory_mib: memory, storage_gib: storage, overlay_gib: overlay }
       if (idlePolicy !== "default") body.idle_policy = { enabled: idlePolicy === "enabled", timeout_seconds: idleTimeout }
     }
-    const key = JSON.stringify(body)
-    if (uncertain && retry.current?.body !== key) return
+    return body
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (inFlight.current || receipt) return
+    const body = retry ?? request()
+    if (!body) return
     setBusy(true)
     inFlight.current = true
     setIssue(undefined)
     try {
-      if (retry.current?.body !== key) retry.current = { body: key, intent: await api.intent() }
-      setReceipt(await actions.mutate("machines", body, { intent: retry.current.intent }))
+      setReceipt(await actions.mutate("machines", body))
+      setRetry(undefined)
     } catch (error) {
       setIssue(error)
+      const detail = error instanceof PlatformError ? error.detail : undefined
+      const unconfirmed = !(error instanceof PlatformError) || error.status >= 500 || error.status === 408 ||
+        detail?.effect === "unknown" || detail?.effect === "partial" || detail?.retry === "verify_original_intent" ||
+        Boolean(detail?.operation_id)
+      setRetry(unconfirmed ? body : undefined)
     } finally {
       inFlight.current = false
       setBusy(false)
@@ -151,7 +162,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   return <Modal open onOpenChange={open => { if (!open && !busy) close() }} title="New machine" busy={busy} className={styles.createModal}
     footer={current ? <Button variant="secondary" onClick={close}>Done</Button> : <>
       <Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
-      <Button variant="primary" type="submit" form={formId} disabled={!valid || busy}>
+      <Button variant="primary" type="submit" form={formId} disabled={(!valid && !retry) || busy}>
         {busy ? "Creating…" : uncertain ? "Check original request" : "Create"}
       </Button>
     </>}>
@@ -170,7 +181,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       <div className={styles.createLinks}>
         <a href={"#/operations/" + segment(current.operation_id)}>View operation</a>
         {machine.data && <a href={"#/machines/" + segment(machine.data.machine_id)}>{ready ? "Open machine" : "View machine"}</a>}
-        {current.state === "failed" && current.effect === "none" && <Button variant="secondary" onClick={() => { retry.current = undefined; setReceipt(undefined) }}>Edit request</Button>}
+        {current.state === "failed" && current.effect === "none" && <Button variant="secondary" onClick={() => { setRetry(undefined); setIssue(undefined); setReceipt(undefined) }}>Edit request</Button>}
       </div>
     </div> : <form id={formId} className={styles.createForm} onSubmit={submit}>
       <label className={styles.field}><span>Name</span>
@@ -186,7 +197,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       </label>
 
       {preview ? <label className={styles.field}><span className={styles.fieldCaption}>Region <CircleHelp size={12} aria-hidden="true" /></span>
-        <select value={region} onChange={event => setRegion(event.target.value)}><option value="fra">Frankfurt (fra)</option><option value="nyc">New York (nyc)</option></select>
+        <select value={region} disabled={busy || uncertain} onChange={event => setRegion(event.target.value)}><option value="fra">Frankfurt (fra)</option><option value="nyc">New York (nyc)</option></select>
       </label> : <label className={styles.field}><span>Template</span>
         <select aria-label="Template" value={selected?.id ?? ""} disabled={busy || uncertain} onChange={event => setTemplateID(event.target.value)}>
           <option value="" disabled>{templates.items ? "Select a template" : "Loading templates…"}</option>
@@ -213,8 +224,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       </div>}
 
       {preview ? <>
-        <label className={styles.checkbox}><input type="checkbox" checked={isolated} onChange={event => setIsolated(event.target.checked)} /> Isolated <CircleHelp size={12} aria-hidden="true" /></label>
-        <label className={styles.field}><span className={styles.fieldCaption}>Labels <CircleHelp size={12} aria-hidden="true" /></span><textarea value={labels} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
+        <label className={styles.checkbox}><input type="checkbox" checked={isolated} disabled={busy || uncertain} onChange={event => setIsolated(event.target.checked)} /> Isolated <CircleHelp size={12} aria-hidden="true" /></label>
+        <label className={styles.field}><span className={styles.fieldCaption}>Labels <CircleHelp size={12} aria-hidden="true" /></span><textarea value={labels} disabled={busy || uncertain} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
       </> : selected && <div className={styles.advanced}>
         {system && <label className={styles.field}><span>Runtime</span>
           <select aria-label="Runtime" value={runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>
@@ -254,7 +265,9 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
         </details>
         <label className={styles.checkbox}><input type="checkbox" checked={start} disabled={busy || uncertain} onChange={event => setStart(event.target.checked)} /> Start after creation</label>
       </div>}
-      {uncertain && <p>Check the original request to recover its receipt.</p>}
+      {uncertain && <p>Check the original request to recover its receipt.
+        {operationID && <> <a href={"#/operations/" + segment(operationID)}>View operation</a></>}
+      </p>}
       {!preview && <><Callout error={templates.error} /><Callout error={profiles.error} /><Callout error={networks.error} /></>}
       <Callout error={issue} />
     </form>}
