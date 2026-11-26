@@ -9,7 +9,7 @@
 | 平台、CLI 和控制台 | `polish/integration@4e1ba470ed66`，schema 1019。此提交通过 Go 全量、宿主原生 OpenSSH、Vite、Darwin arm64/amd64 CLI 构建。最后一轮真实 SSH/HTTPS KVM 验收绑定 `0f35c613d14d`。更早的 J01–J10 与 J11 各有记录，以其各自 SHA 为准。 | 以当前集成分支为起点，生成一套包含平台、CLI 和控制台的冻结制品。用最终候选补同版 J01–J11 核心链路。确认发布目标后合并，保留源提交、版本、构建和回退凭据。 |
 | Runtime / Guest | `polish/runtime-candidate@cb31d6c`，测量 Bundle `sha256:3de1c4f1a848edd37b8bc5c94b944e0dd5c18ab3d90874a1348ecc0529710a3c`。同期还留有 `polish/native-files@2b172e8`、`polish/runtime-glue@b724f99`。 | 按发布源和最终候选比较切片差异，核对实测文件权限、Agent 版本、Runtime 及 reader。确认成果和证据已被候选包含后再收源分支和工作树。 |
 | 多节点 | `feat/multi-node-v1@1c039e3791f1`，实际发布包源码 `53fefd0`，schema 1025。同一台主机真实跑过一个平台和两个回环 mTLS Node，N01–N18 的 41 个具名测试通过。 | 从两条稳定线建临时合并候选，解决 API、CLI、网关、机器视图和生成产物冲突后重建。逐项核对仍有历史提交的 `feat/multi-node-gateway`、`feat/multi-node-owner`、`feat/multi-node-placement`，按实际差异决定是否回收。先在独立部署验证 1019→1025、兼容性和回退，再考虑进入共同发布候选。 |
-| 内核 | 独立仓库 `feat/kernel-cow-v1@8d181b563459`。双 Guest 冷读及写隔离两次 AMD 嵌套 KVM 通过。 | 保留独立交付与证据。需要纳入某个 Runtime 时另起候选并用对应内核、libkrun 和 Runtime 完整验收。 |
+| 内核 CoW | 独立候选 `feat/kernel-cow-runtime`，Linux `f68cfa9`、libkrun `c13c9c5`、smolvm `e2b6066`。跨 UID 导入、降权、seccomp 与新内核 KVM 套件 6/6 通过。 | 在隔离 Worker 补 resourced 授权和 managed Launch 接线，再验真实磁盘、网络和 anchor 生命周期。生产候选继续使用 Native Live Fork。 |
 | 已回收开发分支 | 已回收 31 个工作树，删除 10 个已合并本地分支，`archive/polish-closeout/` 保留 7 个开发切片或诊断引用。 | 按记录核对。已集成的切片无需重合；`polish/backend`、`polish/frontend` 可在发布提交与交接记录对齐后按需收尾。 |
 
 [平台验收记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/.git/polish-coordination/integration-status.md) · [SSH / HTTPS 实测清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/final-0f35c613d14d/managed-access-verification.json) · [分支归档清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/git-closeout/branches.tsv) · [多节点实现和验收](../../../multi-node/docs/deep-runtime/multi-node-v1.md) · [内核验证](/home/dev/workspace/deepfork-smolvm/kernel-cow-k1/linux-patches/evidence/anchor-exit-2026-11-26/README.md)
@@ -75,9 +75,48 @@ Mac 真机、Developer ID 与公证凭据未就绪时，可以验证内部包，
 
 [多节点 N01–N18](../../../multi-node/docs/deep-runtime/multi-node-v1.md) · [多节点登记与换证](../../../multi-node/docs/deep-runtime/WORKER-ENROLLMENT.md) · [多节点开发计划](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/04_multi_node/reference/MULTI_NODE_IMPLEMENTATION_PLAN.md) · [压力准入和恢复](ACCEPTANCE_AND_OPERATIONS.md#123-故障和压力操作)
 
+## 6. Live Fork 性能、Worker 内核与 Agent 接续
+
+### 性能基线
+
+在开发机的 AMD 嵌套 KVM 上，用常规内核和 1 vCPU、512 MiB 的轻量 VM 运行两轮试验，每轮三次单子机 `smolvm machine branch`。内存里的标记在子机首次 `exec` 可读，最后清空了测试资源。
+
+| 本地计时口径 | 样本范围 | 中位数 |
+|---|---:|---:|
+| 源机 RAM 捕获内部阶段 | 24–39 ms | 35 ms |
+| 从 RAM 捕获开始到子机 VMM 完成 vCPU 恢复 | 136–170 ms | 155 ms |
+| 从 CLI 启动到子机 VMM 完成 vCPU 恢复 | 232–312 ms | 304 ms |
+| 从 CLI 启动到 `branch` 返回 | 394–506 ms | 441 ms |
+| 从 CLI 启动到子机首次 `exec` 读到继承标记 | 464–579 ms | 516 ms |
+
+136–170 ms 包含捕获开始后的本地子机准备和恢复，源机准备阶段更早发生。历史受管环境约 13 秒的数据来自 512 MiB、两块可写盘的另一条流程。Boxd 官方示例打印 `boot: 160ms`，技术文章描述运行中 VM 到子机恢复运行。字段的精确起止点、统计分位和公网可用边界未公布。我们的 Boxd 云端样本中，同一次 Fork 打印 `boot=1.3s`，从 Mac 计时为 3.57 秒。
+
+明天在固定候选、同一源负载下，同时记录请求受理、源 vCPU 停顿、子 vCPU 恢复、首次 Guest `exec`、首次 SSH 和 HTTPS 业务响应。用子机身份与继承值核对 HTTP 响应，记录是否走热连接。优先复测受管 Native 路径，单独量化 Worker 轮询、盘切层和 Guest 身份激活。现有启动派发每 600 ms 扫一次，评估事件触发后再谈亚 200 ms 的受管目标。小样本列实际范围，规模上来后再报告分位。
+
+[本地 CLI 样本](/home/dev/workspace/deepfork-smolvm/.build/local-live-fork-timing/samples.json) · [VMM 恢复样本](/home/dev/workspace/deepfork-smolvm/.build/local-live-fork-boot-timing/samples.json) · [历史受管实测](performance-wp22.md) · [Boxd 官方 Fork 指南](https://docs.boxd.sh/guides/fork) · [Boxd 云端实测](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/reference/experiments/boxd-cli-product-experience-report-2026-11-26.md:83)
+
+### Worker 内核候选
+
+隔离 KVM 用例验证普通目标 UID 被拒绝，授权启动阶段可以导入，随后关闭源 pidfd、永久降权、清空能力并由 seccomp 拦截后续 CoW syscall。子 VM 能恢复运行，源退出后仍能首次读冷页并保持各自写入隔离。下一步由 resourced 签发绑定捕获点、源执行和目标操作的一次性许可，交给 managed 启动路径在降权前消费，再验受管磁盘、服务网络、anchor 丢失与同点重试。
+
+部署沿用 Boxd 自托管的顺序。校验固定 Kernel/Runtime 制品，给专用 KVM Worker 安装候选并保留旧启动项，在重启后验 KVM、CoW 和真实 Fork，再注册接流量。在 PVE 场景，启动的补丁内核位于运行 Worker 的那台 PVE VM，业务 Guest 继续使用自身内核。已有 Guest 启用新路径需要以匹配的 Runtime 内存配置启动或恢复。当前只有测试包和临时 Worker 引导证据，发行版内核包、签名、GRUB 安装和回退仍待专用 Worker 验收。
+
+[CoW 集成报告](/home/dev/workspace/deepfork-smolvm/worktrees/kernel-cow-platform/docs/deep-runtime/kernel-cow-runtime-integration.md) · [跨 UID KVM 日志](/home/dev/workspace/deepfork-smolvm/.build/kernel-cow-worker/kvm-worker-serial.log) · [Boxd 自托管安装](https://github.com/boxd-sh/self-host/blob/main/docs/INSTALL.md#install-on-bare-metal)
+
+### Agent Session 接续
+
+Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。源机继续当前轮，子机保留会话并等待下一条指令。我们此前的真实模型测试在登录或认证阶段失败，尚无进行中的模型流在子机延续的实测证据。
+
+把平台托管的 Codex / Claude Code 接续列为独立后续项，可先复用现有 Native Live Fork、Guest gate 和运行租约。第一版原型需要在持久化的轮次边界复制已完成对话，子会话从 `idle` 开始。子机放行前隔离继承的旧执行与队列，避免重发模型请求或工具写入。工作区仍来自原 VM 捕获点，可能包含源机本轮已经写入的文件。手动启动的任意 Guest Agent 仍遵循普通 VM Fork，待产品测试验证其各自的重连行为。
+
+验收用一段无外部副作用、可以故意延迟的流式模型请求。先完成若干轮，然后在下一轮流式响应或工具执行期间 Fork。核对父轮只执行一次、子会话空闲等待、子机接到新指令时能使用已完成的历史。复测断线、请求去重、未知效果和保持运行租约。Agent 接续和内核 CoW 可独立交付，均沿用已有生产验收版本边界。
+
+[Boxd Sessions 文档](https://docs.boxd.sh/guides/agents/sessions) · [Agent 实验记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/reference/experiments/boxd-supplement-2026-11-26/SUPPLEMENT_REPORT.md:51) · [后端范围](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/BACKEND_RESEARCH_AND_PLAN.md:93)
+
 ## 当日结束留档
 
 - 生产候选 Git 提交、版本、制品及校验结果，环境和回退基线。
 - J01–J11 证据编号；Mac 下载、签名、公证、真机验收和 UI 截图。
 - OAuth/OIDC 的 provider 与完成边界，双 Worker 拓扑与 N01–N18 实机证据，高并发各档结果。
+- Fork 各阶段计时和负载说明，实验 CoW 的 Bundle 与授权边界，以及托管 Agent 接续的模型或测试替身证据。
 - 每个未通过项的重现条件、负责人、是否阻塞生产和验证后需要收尾的分支。
