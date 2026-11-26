@@ -23,7 +23,9 @@ Run the corresponding fixture on a Linux systemd host with KVM and a local Debia
 sudo python3 -B tests/integration/component_restart_kvm.py \
   --bundle "$BUNDLE" --platformd "$PLATFORMD" --system-image "$SYSTEM_IMAGE" \
   --work-dir /dev/shm --scope-cuts
-sudo python3 -B tests/integration/worker_network_recovery_kvm.py \
+sudo python3 -B tests/integration/worker_network_recovery_kvm.py --authorized-only \
   --bundle "$BUNDLE" --platformd "$PLATFORMD" --system-image "$SYSTEM_IMAGE" \
   --work-dir /dev/shm
 ```
+
+For a Worker host reboot, the fixture starts a fresh owner session on the second boot. It compares the retained control epoch and resumes the same saved cut. The temporary host observation stores the epoch, instance references and StatePoint. The two sessions come from separate logins.

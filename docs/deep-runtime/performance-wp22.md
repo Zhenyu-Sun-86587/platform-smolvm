@@ -71,7 +71,7 @@
 
 2026-11-26，Linux Worker 的本地 ext4 上，固定一个宿主逻辑 CPU，保留同机后台活动。实验程序取自 smolvm `7d7246b` 的 `scripts/deep/bench-layered-ram.rs`，编译器为 Rust 1.100.0、优化级别 3。实际链接 libkrun `9246cbb` 的 release 库，其中 `layered_restore.rs` 与冻结源码 `0d02553` 同为 SHA-256 `578e0ba8a78ae1805a7476d40dee6a7115db91fa9cfe861348d2ea08b476cfb0`。
 
-每组 12 次，奇偶轮交换顺序。表中单位为微秒，每格为中位数 / 最近秩 p95。16 MiB 原镜像包含 4096 个 4 KiB 页；写脏组每 31 页改一处，共复制 133 页、544768 字节。捕获与源重映射均在写入停止后执行。实验组仅在复制量为零、两代同时持有原文件描述符且序列化的进程、地址、长度、文件描述符和偏移逐字节相同时跳过重映射。目标首任务按相同乱序访问 512 个页首标记。每次计时后逐页核对源、目标和原代兄弟各自的 4096 个标记。
+每组 12 次，奇偶轮交换顺序。表中单位为微秒，每格为中位数 / 最近秩 p95。16 MiB 原镜像包含 4096 个 4 KiB 页。写脏组每 31 页改一处，共复制 133 页、544768 字节。捕获与源重映射均在写入停止后执行。实验组仅在复制量为零、两代同时持有原文件描述符且序列化的进程、地址、长度、文件描述符和偏移逐字节相同时跳过重映射。目标首任务按相同乱序访问 512 个页首标记。每次计时后逐页核对源、目标和原代兄弟各自的 4096 个标记。
 
 | 内存 | rebase | 预读 512 页 | 捕获 | rebase 判定及执行 | 目标映射至首任务完成 |
 | --- | --- | --- | ---: | ---: | ---: |
@@ -96,3 +96,6 @@
 | `layered-rebase-correctness.log` | `8f7d4c5cdc66f6858e50cdef6418ba4fbeef9914a827f07e903bb7e04685946b` |
 
 在一个临时 libkrun 工作树中，将实验源文件复制到 `src/vmm/examples/layered_ram.rs`，然后执行 `cargo build --locked --release -p krun-vmm --features blk --example layered_ram`。在本地 ext4 设置 `TMPDIR` 后运行 `target/release/examples/layered_ram`，用 `--shared-cache` 选择两次恢复的文件缓存对照，用 `--mixed-writers` 选择有 KVM 权限的 vCPU 和设备写试验。
+
+
+同一文件缓存试验又在私有网络命名空间通过 TCP 连接 QEMU 导出的 2 GiB 测试盘。Linux NBD 客户端在该盘挂载 ext4，两端运行在同一 Worker，QEMU 使用直接存储 I/O。12 次独立 inode 在任务开始前均为 0 页驻留，读取校验 2 MiB 的 p50/p95 为 54.873 / 58.896 ms。12 次共享已热 inode 均为 4096 页驻留，用时为 0.942 / 1.220 ms。本次私有回环接口累计发送 640482150 字节。24 条记录见 `.build/wp22/private-tcp-restore-shared-cache-v2.csv`（SHA-256 `32e1cd84dc782f3dce94cabbb99df1d8fbe6369b975d42bd9602d3c45f330575`），设备读写计数见 `private-tcp-restore-measurement-v2.log`（`c04bec281769b793d4c01720f23c10a468018d12302b68c638bf598d8ab4d387`）。

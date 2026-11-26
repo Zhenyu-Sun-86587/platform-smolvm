@@ -118,7 +118,7 @@ class Platform:
             return HTTPSConnection("127.0.0.1", self.port, context=self.tls[2], timeout=timeout)
         return HTTPConnection("127.0.0.1", self.port, timeout=timeout)
 
-    def start(self):
+    def start(self, *, owner_password=None):
         root = self.root
         for name in ("var-lib", "ipc", "runtime"):
             (root / name).mkdir(mode=0o755)
@@ -146,7 +146,7 @@ class Platform:
             "SMOLVM_LIB_DIR": str(self.bundle / "lib"),
             "SMOLVM_GUEST_RELAY_DIR": str(self.relay_dir),
         }
-        password = os.urandom(24).hex()
+        password = owner_password or os.urandom(24).hex()
         secret = root / "owner-password"
         secret.touch(mode=0o600)
         secret.write_text(password + "\n")
@@ -215,13 +215,16 @@ class Platform:
         )))
         self.platform_command = [self.args.platformd, "--config", config]
         self.platform = self.spawn(self.platform_command, "platform.log")
+        self.login_owner(password)
+        secret.unlink()
+
+    def login_owner(self, password):
         session, cookie = wait_for(lambda: request(
             self.api_connection(), "POST", "/v1/auth/login",
             dict(username="owner", password=password), {"Origin": self.origin},
         ), retry=(OSError,))
         self.cookie = cookie.split(";", 1)[0]
         self.csrf = session["csrf_token"]
-        secret.unlink()
         self.epoch = self.app("control")["control_epoch"]
 
     def spawn(self, command, log):

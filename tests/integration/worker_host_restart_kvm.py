@@ -78,7 +78,11 @@ def verify_timer(platform, execution, timer):
 
 
 def first_boot(platform):
-    platform.start()
+    password = os.urandom(24).hex()
+    secret = platform.root / "reboot-owner-password"
+    with open(secret, "x", opener=lambda name, flags: os.open(name, flags, 0o600)) as f:
+        f.write(password)
+    platform.start(owner_password=password)
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     print("Worker host", boot_id, "launched bundle", platform.bundle_id, flush=True)
     sleepy, saved_ref = create_system(platform, "saved")
@@ -115,7 +119,7 @@ def first_boot(platform):
         active_grants.append(original[4])
         print("Active before host cut", execution["incarnation_id"], original)
     record = dict(old_boot=boot_id, volatile=[row[0] for row in volatile], old=old, active_grants=active_grants,
-                  control=platform.epoch, csrf=platform.csrf, cookie=platform.cookie, port=platform.port,
+                  control=platform.epoch, port=platform.port,
                   bundle=platform.bundle_id, serve=platform.serve_id, sleeping=sleepy, saved_ref=saved_ref,
                   point=point, nonce=nonce, timer=timer, manifest_sha=digest(platform.bundle / "runtime-bundle.json"))
     file = platform.root / "observation"
@@ -200,9 +204,11 @@ def next_boot(platform):
     assert (handshake["runtime_instance_id"], handshake["bundle_digest"]) == (platform.serve_id, platform.bundle_id)
     platform.port = record["port"]
     platform.origin = f"http://127.0.0.1:{platform.port}"
-    platform.cookie, platform.csrf, platform.epoch = record["cookie"], record["csrf"], record["control"]
     platform.spawn([platform.args.platformd, "--config", root / "platform.json"], "platform.log")
-    assert wait_for(lambda: platform.app("control"))["control_epoch"] == platform.epoch
+    secret = root / "reboot-owner-password"
+    platform.login_owner(secret.read_text())
+    secret.unlink()
+    assert platform.epoch == record["control"]
     path = record["sleeping"]
     def saved_view():
         view = platform.app(path)
