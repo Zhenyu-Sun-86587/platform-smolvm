@@ -302,6 +302,9 @@ func managedSSHConfig(binary, dir, profile, keyDir string, aliases []sshAlias) (
     ConnectTimeout 90
     BatchMode yes
     CanonicalizeHostname no
+    ControlMaster no
+    ControlPath none
+    ControlPersist no
     IdentityAgent none
     IdentitiesOnly yes
     IdentityFile %s
