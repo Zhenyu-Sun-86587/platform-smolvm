@@ -60,8 +60,9 @@
 
 ## 发行验证范围
 
-- Go 全仓测试、`go vet ./...` 及 NodeGateway、Node 轮询、registry、生命周期、服务网关和管理 API 的竞态检测。
+- 发布包与测试均取自代码提交 `53fefd0`。`go test -count=1 ./...`、`go test -race -count=1 ./...` 和 `go vet ./...` 全部通过。上表 N01–N18 的 41 个具名测试另行逐项复跑，均通过。
 - TypeScript SDK 编译、Web 的 TypeScript/Vite 构建、内嵌源码与工作树内容比对。Chromium 打开生产构建，使用模拟管理 API 检查 Worker 预算、覆盖级别、CAS 维护请求和状态刷新。Python 和 TypeScript SDK 使用模拟 HTTP 校验 Worker 查询、维护和撤证的路径、方法、body 及条件头。
+- 发布包内的 `sandboxctl` 对接模拟管理 API，验证指定和自动创建请求、候选排除原因的文本与 JSON 输出、操作落点查询，以及维护和撤证的条件更新。
 - 在本机启动一个独立 `platformd` 和两个 `sandbox-node` OS 进程，以各自的临时 PKI 和 journal 走真实登记/CSR API。两个 Node 使用同一个本地 Serve 名，均缺少底层 Runtime socket。验证两次登记、相同 CSR 重取同一证书、缺预算拒绝就绪，以及关停其中一个进程后另一个保持原状态。
-- 以本地小型合成 Docker-save 归档制作 Linux/amd64 发布包。检查三份二进制、Node unit、配置样例和发布清单，再执行安装脚本的只读 `--plan`。此项验证检验打包和校验流程。
+- 以本地小型合成 Docker-save 归档制作 Linux/amd64 发布包。清单包含三份二进制、Node unit、配置样例等 16 项。安装脚本的只读 `--plan` 核验全部文件，报告 schema 1025、Runtime 1.37.1。
 - 待实机验收包括两个独立 Worker 的真实资源准入和同时重启、跨主机 Guest/PTY/服务及桌面、Hibernate 和备份恢复、磁盘预热与大流并发时的心跳延迟。本轮未做生产部署，也未运行双 Worker 压测。
