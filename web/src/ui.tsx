@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
-import { useRef, useSyncExternalStore } from "react"
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import type { ComponentProps, ReactNode, TouchEvent } from "react"
 import { State } from "./common"
 import { Skeleton } from "./daytona/skeleton"
@@ -77,6 +77,9 @@ export function Modal({ open, onOpenChange, title, description, children, busy, 
   const started = useRef<{ y: number; milliseconds: number } | null>(null)
   const previousFocus = useRef<HTMLElement | null>(null)
   const mobile = useMobile()
+  useLayoutEffect(() => {
+    if (open && document.activeElement instanceof HTMLElement) previousFocus.current = document.activeElement
+  }, [open])
   const close = (open: boolean) => { if (open || !busy) onOpenChange(open) }
   const startSwipe = (event: TouchEvent) => {
     if (event.touches.length !== 1) return
@@ -97,7 +100,6 @@ export function Modal({ open, onOpenChange, title, description, children, busy, 
         className={["console-modal", className].filter(Boolean).join(" ")}
         data-size={size}
         {...(description ? {} : { "aria-describedby": undefined })}
-        onOpenAutoFocus={() => { previousFocus.current = document.activeElement as HTMLElement | null }}
         onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(previousFocus.current) }}
         onEscapeKeyDown={event => { if (busy) event.preventDefault() }}
         onInteractOutside={event => { if (busy) event.preventDefault() }}
@@ -127,7 +129,9 @@ export function DetailDrawer({ open, onOpenChange, title, children, className }:
         onCloseAutoFocus={event => { event.preventDefault(); restoreFocus(previousFocus.current) }}
       >
         <Dialog.Title className="sr-only">{title}</Dialog.Title>
-        <Dialog.Close asChild><IconButton className="console-detail-close" aria-label="Close machine details"><X size={18} /></IconButton></Dialog.Close>
+        <div className="console-detail-controls">
+          <Dialog.Close asChild><IconButton aria-label="Close machine details"><X size={18} /></IconButton></Dialog.Close>
+        </div>
         {children}
       </Dialog.Content>
     </Dialog.Portal>
