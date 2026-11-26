@@ -11,12 +11,23 @@ func (s *Server) requireStatePointProfile(ctx context.Context, binding registry.
 	if binding.RuntimeInstanceID == "" || binding.RuntimeBundleID == "" {
 		return rt.FullStateUnavailable(kind, true)
 	}
-	var advertised bool
-	if err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT COALESCE(json_extract(manifest_json,'$.contracts.managed_statepoint'),0)=1
-		FROM runtime_bundles WHERE id=?`, binding.RuntimeBundleID).Scan(&advertised); err != nil {
+	var legacyProfile, authorizedScope bool
+	if err := s.DB.ReadDB().QueryRowContext(ctx, `SELECT COALESCE(json_extract(manifest_json,'$.contracts.managed_statepoint'),0)=1,
+		COALESCE(json_extract(manifest_json,'$.contracts.managed_authorized_scope'),0)=1
+		FROM runtime_bundles WHERE id=?`, binding.RuntimeBundleID).Scan(&legacyProfile, &authorizedScope); err != nil {
 		return err
 	}
-	if !advertised {
+	if authorizedScope {
+		// The scoped release assigns each operation its own measured capability.
+		// The live adapter checks that evidence against this Bundle and its Worker.
+		capability, err := s.StatePointCapability(ctx, binding, kind)
+		if err != nil {
+			return err
+		}
+		if !capability.Supported {
+			return &rt.CapabilityError{Capability: rt.FullStateOperationCapability(kind), Status: capability}
+		}
+	} else if !legacyProfile {
 		return rt.FullStateUnavailable(kind, false)
 	}
 	return s.AdmitRuntime(rt.BundleRoute{InstanceID: binding.RuntimeInstanceID, BundleID: binding.RuntimeBundleID}, kind)
