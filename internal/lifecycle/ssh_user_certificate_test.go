@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,7 +66,7 @@ func TestManagedSystemSSHResyncsCertificateTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, _, err := e.SignManagedSSHCertificate(binding.MachineID, subject)
+	reply, _, err := e.SignManagedSSHCertificate(binding.MachineID, subject, netip.MustParsePrefix("10.40.0.1/32"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,8 +91,8 @@ func (e *Engine) systemAuthorizedSSHKeys(ctx context.Context, mid string, create
 
 // SignManagedSSHCertificate signs one key for root in the selected logical
 // machine. Authorization and profile qualification precede this call.
-func (e *Engine) SignManagedSSHCertificate(mid string, key ssh.PublicKey) (string, time.Time, error) {
-	if key == nil {
+func (e *Engine) SignManagedSSHCertificate(mid string, key ssh.PublicKey, source netip.Prefix) (string, time.Time, error) {
+	if key == nil || source.Bits() != 32 || !source.Addr().Is4() || !source.Addr().IsPrivate() {
 		return "", time.Time{}, registry.ErrInvalid
 	}
 	if _, certificate := key.(*ssh.Certificate); certificate {
@@ -111,7 +112,10 @@ func (e *Engine) SignManagedSSHCertificate(mid string, key ssh.PublicKey) (strin
 		Key: key, Serial: binary.BigEndian.Uint64(serial[:]), CertType: ssh.UserCert,
 		KeyId: mid, ValidPrincipals: []string{"root"},
 		ValidAfter: uint64(now.Unix()), ValidBefore: uint64(expires.Unix()),
-		Permissions: ssh.Permissions{Extensions: map[string]string{"permit-pty": "", "permit-port-forwarding": ""}},
+		Permissions: ssh.Permissions{
+			CriticalOptions: map[string]string{"source-address": source.String()},
+			Extensions:      map[string]string{"permit-pty": "", "permit-port-forwarding": ""},
+		},
 	}
 	if err := cert.SignCert(rand.Reader, ca); err != nil {
 		return "", time.Time{}, err
