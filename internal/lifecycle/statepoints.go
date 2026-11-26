@@ -166,7 +166,7 @@ func (j *Job) prepareStatePoint(ctx context.Context, control rt.StatePointContro
 		var instance, bundle, machine, manifest, manifestDigest string
 		var bindingID, raw sql.NullString
 		err := j.DB.ReadDB().QueryRowContext(ctx, `SELECT v.runtime_capture_id,v.runtime_instance_id,v.runtime_bundle_id,s.source_machine_id,
-			o.binding_id,json_extract(o.dispatch_json,'$.source_task_binding'),s.manifest_json,s.sha256 FROM vm_snapshot_provenance v
+			o.binding_id,json_extract(o.dispatch_json,'$.source_task_binding'),COALESCE(s.manifest_json,'{}'),COALESCE(s.sha256,'') FROM vm_snapshot_provenance v
 			JOIN snapshots s ON s.id=v.snapshot_id LEFT JOIN operations o ON o.id=v.operation_id
 			WHERE v.snapshot_id=? AND s.state='ready'`, v.SnapshotID).
 			Scan(&request.Parameters.CaptureID, &instance, &bundle, &machine, &bindingID, &raw, &manifest, &manifestDigest)
@@ -484,14 +484,16 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 				}
 			}
 			if rescue != nil {
+				// Preserve identity, boot selector, and current authorization. A
+				// historical rollback has no proof of its mutable VM settings.
+				spec := json.RawMessage(`{}`)
 				if configuration != nil {
-					// Snapshot configuration changes with promotion. Preserve all
-					// non-VM settings and the machine's current identity and policy.
-					if _, err := tx.ExecContext(ctx, `UPDATE machines SET spec_json=json_patch(
-						json_remove(spec_json,'$.boot_mode','$.live_compute_growth','$.network','$.resources'), ?)
-						WHERE id=? AND template_id=?`, string(configuration.Spec), j.Op.MachineID, configuration.TemplateID); err != nil {
-						return err
-					}
+					spec = configuration.RestoreMachineSpec()
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE machines SET spec_json=json_patch(
+					json_remove(spec_json,'$.live_compute_growth','$.network','$.resources'), ?) WHERE id=?`,
+					string(spec), j.Op.MachineID); err != nil {
+					return err
 				}
 				return j.recordStatePoint(ctx, tx, *rescue, rescue.RescueCaptureID, "rollback_rescue")
 			}

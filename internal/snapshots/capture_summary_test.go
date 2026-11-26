@@ -27,7 +27,7 @@ func TestCaptureConfigurationAndScopeProjection(t *testing.T) {
 		{"device_id":"data","virtio_type":2,"block":{"capacity_bytes":512,"read_only":true,
 		"managed_attachment":{"device_id":"data","role":"data","volume_id":"data-v","generation_id":"data-seal",
 		"execution_epoch":7,"capacity_bytes":512}}}],"disk_generations":["root-seal","data-seal"]}}`)
-	config, err := CaptureSpec(json.RawMessage(`{"resources":{"memory_mib":512,"cpu_count":1},"boot_mode":"system",
+	config, err := CaptureSpec(json.RawMessage(`{"resources":{"memory_mib":512,"cpu_count":1,"cpu_limit_millicpus":750,"balloon_target_mib":0},"boot_mode":"system",
 		"network":{"mode":"native","network_id":"private-a","credential":"secret"},"grant":"secret","idle_policy":{"enabled":true}}`), "template-a", 4, capture)
 	if err != nil {
 		t.Fatal(err)
@@ -41,9 +41,15 @@ func TestCaptureConfigurationAndScopeProjection(t *testing.T) {
 	snapshot := Snapshot{CaptureMode: CaptureVM, State: "ready", Hash: digest, VM: &VMProvenance{RuntimeCaptureID: capture}, Closure: &now, Manifest: manifest}
 	summary := SummarizeCapture(snapshot)
 	if summary.Configuration.Status != "verified" || summary.Configuration.SourceMachineRevision != 4 ||
-		!strings.Contains(string(summary.Configuration.Spec), `"memory_mib":512`) || strings.Contains(string(summary.Configuration.Spec), "secret") ||
+		!strings.Contains(string(summary.Configuration.Spec), `"memory_mib":512`) ||
+		!strings.Contains(string(summary.Configuration.Spec), `"cpu_limit_millicpus":750`) ||
+		!strings.Contains(string(summary.Configuration.Spec), `"balloon_target_mib":0`) || strings.Contains(string(summary.Configuration.Spec), "secret") ||
 		strings.Contains(string(summary.Configuration.Spec), "idle_policy") {
 		t.Fatalf("invalid captured configuration: %+v", summary.Configuration)
+	}
+	if restore := string(summary.Configuration.RestoreMachineSpec()); !strings.Contains(restore, `"memory_mib":512`) ||
+		strings.Contains(restore, `cpu_limit_millicpus`) || strings.Contains(restore, `balloon_target_mib`) {
+		t.Fatalf("initial restore settings include policy targets: %s", restore)
 	}
 	if summary.RAM != "included" || summary.RAMBytes == nil || *summary.RAMBytes != 12288 || len(summary.Disks) != 2 ||
 		summary.Disks[0].GenerationID != "root-seal" || summary.Disks[0].ReadOnly || summary.Disks[1].GenerationID != "data-seal" ||
