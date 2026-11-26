@@ -3,6 +3,7 @@
 from contextlib import closing
 from hashlib import sha256
 import json
+import sqlite3
 from urllib.parse import urlencode
 
 from managed_system_vsock import wait_for
@@ -61,6 +62,23 @@ def check_files(platform, path, ref):
             "Content-Type": "application/octet-stream", "If-Control-Epoch": platform.epoch,
             "Idempotency-Key": "polish-disconnected"})
     assert download() == replacement
+    # Fail only persistence of the real post-rename receipt, in this fixture's own DB.
+    key = "polish-lost-receipt"
+    with closing(sqlite3.connect(platform.root / "platform/platform.db", timeout=5)) as db:
+        db.execute("""CREATE TRIGGER polish_receipt_fault BEFORE UPDATE OF response_json ON idempotency
+                   WHEN OLD.key = 'polish-lost-receipt'
+                   BEGIN SELECT RAISE(ABORT, 'injected receipt loss'); END""")
+        try:
+            status, _, raw = file_request(platform, "PUT", route, b"committed", key)
+            error = json.loads(raw)["error"]
+            assert status == 409 and error["code"] == "OUTCOME_UNKNOWN" and error["effect"] == "unknown", error
+            assert error["retry"] == "verify_original_intent" and download() == b"committed"
+        finally:
+            db.execute("DROP TRIGGER polish_receipt_fault")
+    upload(replacement, "polish-after-unknown")
+    status, _, raw = file_request(platform, "PUT", route, b"committed", key)
+    assert status == 409 and json.loads(raw)["error"]["effect"] == "unknown"
+    assert download() == replacement, "a retry of an uncertain upload rewrote the path"
     print(json.dumps(dict(case="files", bundle=platform.bundle_id, bytes=len(data), sha256=digest,
                           upload_id=receipt["upload_id"], execution=ref["incarnation_id"],
                           replay_preserved_later_bytes=replacement.hex())), flush=True)
