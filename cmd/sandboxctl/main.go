@@ -29,6 +29,7 @@ import (
 type client struct {
 	origin, token, caFile string
 	jsonOutput, noWait    bool
+	strictResult          bool
 	waitTimeout           time.Duration
 	epoch, key            string
 	revision, generation  int64
@@ -113,7 +114,11 @@ func reportError(w io.Writer, jsonOutput bool, err error) int {
 			return code
 		}
 	}
-	_, _ = fmt.Fprintln(w, err)
+	if jsonOutput {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": apiErrorDetail{Code: "CLI_ERROR", Message: err.Error()}})
+	} else {
+		_, _ = fmt.Fprintln(w, err)
+	}
 	return code
 }
 
@@ -129,6 +134,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().StringVar(&api.caFile, "ca-file", os.Getenv("SANDBOX_CA_FILE"), "Additional trusted server CA PEM file")
 	root.PersistentFlags().BoolVar(&api.jsonOutput, "json", false, "Write compact JSON where applicable")
 	root.PersistentFlags().BoolVar(&api.noWait, "no-wait", false, "Print accepted operations without polling")
+	root.PersistentFlags().BoolVar(&api.strictResult, "strict-result", false, "Return nonzero for partial or unknown operation effects")
 	root.PersistentFlags().DurationVar(&api.waitTimeout, "wait-timeout", 3*time.Minute, "Maximum time to observe an operation")
 	root.PersistentFlags().StringVar(&api.epoch, "control-epoch", "", "Original control epoch for replaying a mutation")
 	root.PersistentFlags().StringVar(&api.key, "idempotency-key", "", "Idempotency key for the mutation")
@@ -250,15 +256,25 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 type apiErrorDetail = struct {
-	Code        string `json:"code"`
-	Message     string `json:"message"`
-	OperationID string `json:"operation_id"`
-	Effect      string `json:"effect"`
-	Retry       string `json:"retry"`
-	Capability  string `json:"capability,omitempty"`
-	ReasonCode  string `json:"reason_code,omitempty"`
-	Stage       string `json:"stage,omitempty"`
-	Scope       string `json:"scope,omitempty"`
+	Code        string          `json:"code"`
+	Message     string          `json:"message"`
+	OperationID string          `json:"operation_id"`
+	Effect      string          `json:"effect"`
+	Retry       string          `json:"retry"`
+	Capability  string          `json:"capability,omitempty"`
+	ReasonCode  string          `json:"reason_code,omitempty"`
+	Stage       string          `json:"stage,omitempty"`
+	Scope       string          `json:"scope,omitempty"`
+	Intent      *mutationIntent `json:"intent,omitempty"`
+}
+
+type mutationIntent struct {
+	ControlEpoch   string `json:"control_epoch"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Revision       int64  `json:"revision,omitempty"`
+	Generation     int64  `json:"generation,omitempty"`
+	Method         string `json:"method"`
+	Path           string `json:"path"`
 }
 
 func (c *client) get(ctx context.Context, path string, dest any) error {
@@ -339,11 +355,7 @@ func (c *client) mutation(cmd *cobra.Command, method, path string, payload any, 
 func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, headers http.Header, generation int64) error {
 	resp, err := c.request(cmd.Context(), method, path, body, headers)
 	if err != nil {
-		var api *apiError
-		if !errors.As(err, &api) || api.Detail.Effect == "unknown" || api.Status >= 500 && api.Detail.Effect != "none" {
-			c.printIntent(cmd, headers, generation)
-		}
-		return err
+		return c.mutationError(cmd, method, path, headers, generation, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNoContent {
@@ -351,15 +363,14 @@ func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, 
 	}
 	var raw json.RawMessage
 	if err = json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		c.printIntent(cmd, headers, generation)
-		return err
+		return c.mutationError(cmd, method, path, headers, generation, err)
 	}
 	var op operation
 	if json.Unmarshal(raw, &op) == nil && op.ID != "" && op.State != "" {
-		if op.terminal() {
+		if op.terminal() && (!c.noWait || c.strictResult) {
 			return c.operationResult(cmd, raw, op)
 		}
-		if !c.noWait {
+		if !op.terminal() && !c.noWait {
 			if !c.jsonOutput {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Observing operation %s\n", op.ID)
 			}
@@ -367,6 +378,34 @@ func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, 
 		}
 	}
 	return c.print(cmd, raw)
+}
+
+func (c *client) mutationError(cmd *cobra.Command, method, path string, headers http.Header, generation int64, err error) error {
+	var upstream *apiError
+	received := errors.As(err, &upstream)
+	if received && upstream.Detail.Effect != "unknown" && (upstream.Status < 500 || upstream.Detail.Effect == "none") {
+		return err
+	}
+	failure := &apiError{Detail: apiErrorDetail{
+		Code: "OUTCOME_UNKNOWN", Message: "could not verify the mutation response: " + err.Error(),
+		Effect: "unknown", Retry: "verify_original_intent",
+	}}
+	if received && upstream.Detail.Code != "" {
+		*failure = *upstream
+		failure.Detail.Effect = "unknown"
+		if failure.Detail.Retry == "" {
+			failure.Detail.Retry = "verify_original_intent"
+		}
+	}
+	revision, _ := strconv.ParseInt(strings.Trim(headers.Get("If-Match"), `"`), 10, 64)
+	failure.Detail.Intent = &mutationIntent{
+		ControlEpoch: headers.Get("If-Control-Epoch"), IdempotencyKey: headers.Get("Idempotency-Key"),
+		Revision: revision, Generation: generation, Method: method, Path: path,
+	}
+	if !c.jsonOutput {
+		c.printIntent(cmd, headers, generation)
+	}
+	return failure
 }
 
 func (c *client) printIntent(cmd *cobra.Command, h http.Header, generation int64) {
@@ -394,7 +433,7 @@ func (c *client) operationResult(cmd *cobra.Command, raw json.RawMessage, op ope
 	if err := c.print(cmd, raw); err != nil {
 		return err
 	}
-	if op.State != "succeeded" || op.Effect == "partial" || op.Effect == "unknown" {
+	if op.State != "succeeded" || c.strictResult && (op.Effect == "partial" || op.Effect == "unknown") {
 		return exitStatus(1)
 	}
 	return nil
@@ -434,7 +473,7 @@ func (c *client) waitOperation(cmd *cobra.Command, id, effect string) error {
 }
 
 func operationObservationError(ctx context.Context, id, effect string, err error) error {
-	if effect == "" {
+	if effect == "" || effect == "none" {
 		effect = "unknown"
 	}
 	failure := &apiError{Detail: apiErrorDetail{

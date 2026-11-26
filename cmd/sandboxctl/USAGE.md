@@ -21,13 +21,17 @@ machine ID.
 
 A waited mutation writes its terminal operation to stdout. Exit status 0
 means success, including an accepted mutation when using `--no-wait`.
-Terminal failures, cancellation, recovery-required operations, partial or
-unknown effects and API errors use exit status 1. The operation's stage, effect and child results are
+Terminal failures, cancellation, recovery-required operations and API errors
+use exit status 1. A succeeded operation retains exit status 0 when its effect
+is partial. Pass `--strict-result` to require a confirmed complete result and
+return 1 for partial or unknown effects. The operation's stage, effect and child results are
 preserved in its output. A local operation wait timeout uses exit status
 124 and reports the original operation ID. Resume with
 `operations wait OPERATION`. When the server cannot confirm a mutation
 effect, keep the original control epoch, idempotency key, revision, request
-and target. The CLI prints the intent flags for a lost or uncertain reply.
+and target. The CLI prints the intent flags for a lost or uncertain reply. In JSON mode,
+the single error object contains the original intent. Verify the original
+effect before deciding what to do next.
 
 `--json` emits compact JSON for management results. API errors and wait
 timeouts retain structured fields on stderr. Guest binary downloads,
