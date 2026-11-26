@@ -22,3 +22,5 @@ sudo python3 -B tests/integration/owned_gate_cut_kvm.py \
 ```
 
 传入已安装 Bundle 时使用 `--use-installation`，夹具通过只读 bind 挂载原件。
+
+在代表切点传入 `--container` 可同时检查 OCI 容器。夹具取同一 Bundle 的 OCI 模板内 crun、musl 和依赖，为 System 源启动一个新的 PID 和 mount namespace。容器进程持续写本地计数，并在自有工作负载提交正常请求后向同一个接收器发送数据。夹具核对源和成功子机的容器 PID 1、继承的 namespace 与计数，以及成功子机第一次业务发送的真实来源地址、hostname 和 machine ID。

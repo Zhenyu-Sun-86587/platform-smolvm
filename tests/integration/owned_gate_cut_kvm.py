@@ -2,7 +2,9 @@
 """Verify an owned System target's activation interruption with real KVM I/O."""
 
 import argparse
+import base64
 from contextlib import ExitStack, closing
+import hashlib
 import ipaddress
 import json
 import os
@@ -12,6 +14,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -22,6 +25,14 @@ PHASES = ("authority_prepared", "offered", "applying", "identity_ready", "commit
 TARGET_ORDINAL = 0
 PROGRAM = "/run/owned-gate.pl"
 RECEIPTS = "/run/owned-gate-receipts"
+CONTAINER = "/run/owned-gate-container"
+CONTAINER_RUNTIME = {
+    "crun": "./usr/bin/crun",
+    "ld-musl-x86_64.so.1": "./lib/ld-musl-x86_64.so.1",
+    "libseccomp.so.2": "./usr/lib/libseccomp.so.2",
+    "libcap.so.2": "./usr/lib/libcap.so.2",
+    "libjson-c.so.5": "./usr/lib/libjson-c.so.5",
+}
 APPLICATION = r"""
 use strict;
 use warnings;
@@ -71,6 +82,37 @@ if ($mode eq 'collect') {
     print $body;
 } else {
     die "unknown fixture command";
+}
+"""
+CONTAINER_APPLICATION = r"""
+use strict;
+use warnings;
+use IO::Select;
+use IO::Socket::INET;
+use POSIX qw(uname);
+
+my ($sink) = @ARGV;
+my $namespace = readlink '/proc/self/ns/pid' or die $!;
+die "expected OCI PID 1" unless $$ == 1;
+open my $commands, '+<', '/work/commands' or die $!;
+my $poll = IO::Select->new($commands);
+my $sequence = 0;
+while (1) {
+    my $input = '';
+    sysread($commands, $input, 64) if $poll->can_read(0.35);
+    ++$sequence;
+    if ($input =~ /\Acontainer-[0-9a-f]{24}\z/) {
+        open my $id, '<', '/guest-identity/machine-id' or die $!;
+        chomp(my $machine = <$id>);
+        close $id;
+        my (undef, $hostname) = uname();
+        my $socket = IO::Socket::INET->new(PeerAddr => $sink, PeerPort => 18093, Proto => 'udp') or die $!;
+        $socket->send(join("\t", $input, $sequence, $hostname, $machine) . "\n") or die $!;
+    }
+    open my $status, '>', '/work/status.new' or die $!;
+    print {$status} "$$ $namespace $sequence\n";
+    close $status or die $!;
+    rename '/work/status.new', '/work/status' or die $!;
 }
 """
 
@@ -155,6 +197,82 @@ def run_program(platform, ref, unit, *args):
     platform.guest(ref, ["/usr/bin/systemd-run", "--unit=" + unit, "/usr/bin/perl", PROGRAM, *args])
 
 
+def copy_runtime_file(platform, ref, destination, data):
+    paths = []
+    chunk_size = 256 * 1024
+    for offset in range(0, len(data), chunk_size):
+        chunk = data[offset:offset + chunk_size]
+        path = f"{destination}.part-{offset}"
+        result = platform.native(f"/instances/{ref['instance_id']}/guest/upload", {
+            "expected": ref,
+            "request": {"path": path, "data": base64.b64encode(chunk).decode("ascii"), "mode": 0o600},
+        })["result"]
+        assert result["bytes_written"] == len(chunk), result
+        paths.append(path)
+    observed = platform.guest(ref, ["/bin/sh", "-ec", """
+        dest=$1
+        shift
+        cat "$@" > "$dest"
+        chmod 0755 "$dest"
+        for part in "$@"; do unlink "$part"; done
+        sha256sum "$dest"
+    """, "owned", destination, *paths]).split()[0]
+    assert observed.decode() == hashlib.sha256(data).hexdigest(), destination
+
+
+def start_container(platform, ref, sink):
+    runtime, bundle, work = (f"{CONTAINER}/{name}" for name in ("runtime", "bundle", "work"))
+    rootfs = bundle + "/rootfs"
+    mounts = [
+        {"destination": "/proc", "type": "proc", "source": "proc", "options": ["nosuid", "noexec", "nodev"]},
+        {"destination": "/dev", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "mode=755", "size=1m"]},
+    ]
+    for path in ("/usr", "/lib", "/lib64"):
+        mounts.append({"destination": path, "type": "bind", "source": path, "options": ["rbind", "ro"]})
+    mounts.extend((
+        {"destination": "/guest-identity", "type": "bind", "source": "/etc", "options": ["rbind", "ro"]},
+        {"destination": "/work", "type": "bind", "source": work, "options": ["rbind", "rw"]},
+    ))
+    platform.guest(ref, ["mkdir", "-p", runtime + "/state", work,
+                         *(rootfs + mount["destination"] for mount in mounts)])
+    with tarfile.open(platform.bundle / "guest/oci-rootfs.tar.gz", "r:gz") as archive:
+        for name, member in CONTAINER_RUNTIME.items():
+            with archive.extractfile(member) as stream:
+                copy_runtime_file(platform, ref, runtime + "/" + name, stream.read())
+    platform.guest(ref, ["ln", "-s", "ld-musl-x86_64.so.1", runtime + "/libc.musl-x86_64.so.1"])
+    crun = [runtime + "/ld-musl-x86_64.so.1", "--library-path", runtime, runtime + "/crun"]
+    assert b"crun version" in platform.guest(ref, [*crun, "--version"])
+    platform.guest(ref, ["mkfifo", work + "/commands"])
+    config = {"ociVersion": "1.0.2", "root": {"path": "rootfs", "readonly": True},
+              "process": {"terminal": False, "cwd": "/", "user": {"uid": 0, "gid": 0}, "noNewPrivileges": True,
+                          "args": ["/usr/bin/perl", "/work/container.pl", sink], "env": ["LANG=C"]},
+              "mounts": mounts, "linux": {"namespaces": [{"type": kind} for kind in ("pid", "mount", "ipc")]}}
+    for path, body in ((bundle + "/config.json", json.dumps(config)), (work + "/container.pl", CONTAINER_APPLICATION)):
+        platform.guest(ref, ["/bin/sh", "-ec", 'cat > "$1"', "owned", path], stdin=body)
+    platform.guest(ref, ["/usr/bin/systemd-run", "--unit=owned-gate-container", *crun,
+                         "--root", runtime + "/state", "--cgroup-manager=disabled", "run", "--bundle", bundle, "owned-gate"])
+
+
+def container_status(platform, ref):
+    pid, namespace, counter = platform.guest(ref, ["cat", CONTAINER + "/work/status"]).decode().split()
+    assert pid == "1" and namespace.startswith("pid:["), (pid, namespace, counter)
+    return namespace, int(counter)
+
+
+def container_message(platform, ref, ip, expected, rows):
+    token = "container-" + os.urandom(12).hex()
+    platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" > "$2"', "owned", token, CONTAINER + "/work/commands"])
+
+    def received():
+        matches = [entry for entry in rows() if entry[1] == token]
+        if matches:
+            (entry,) = matches
+            assert entry[0] == ip and tuple(entry[3:]) == expected, entry
+            return entry
+
+    return wait_for(received, timeout=8)
+
+
 def endpoint(platform, mid):
     return wait_for(lambda: (row if (row := platform.app(f"machines/{mid}/network"))["state"] == "published" else None))
 
@@ -165,7 +283,7 @@ def guest_identity(platform, ref):
     return tuple(output)
 
 
-def gate_case(platform, phase):
+def gate_case(platform, phase, with_container):
     observer, _, observer_ref = machine(platform, "collector", "native")
     collector = endpoint(platform, observer)["private_ipv4"]
     run_program(platform, observer_ref, "owned-gate-collector", "collect")
@@ -189,6 +307,18 @@ def gate_case(platform, phase):
 
     wait_for(lambda: any(row[0] == source_ip for row in rows()), retry=(RuntimeError, OSError))
     before = round_trip(ref, source_ip, old_identity)
+    container_proof = {}
+    if with_container:
+        start_container(platform, ref, collector)
+        try:
+            original = wait_for(lambda: container_status(platform, ref), timeout=20, retry=(RuntimeError, OSError))
+        except TimeoutError as error:
+            detail = platform.guest(ref, ["journalctl", "-u", "owned-gate-container.service", "-n", "20", "--no-pager"])
+            raise RuntimeError(detail.decode(errors="replace")) from error
+        system_namespace = platform.guest(ref, ["readlink", "/proc/1/ns/pid"]).decode().strip()
+        assert original[0] != system_namespace
+        first = container_message(platform, ref, source_ip, old_identity, rows)
+        container_proof = {"pid_namespace": original[0], "source_before": first}
     source_pid = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]["pid"]
     def fork_one(name, key):
         return platform.change(path + "/fork-batches", key, {
@@ -212,6 +342,10 @@ def gate_case(platform, phase):
     assert guest_identity(platform, ref) == old_identity
     parent = round_trip(ref, source_ip, old_identity)
     assert int(parent[2]) > int(before[2]), (before, parent)
+    if with_container:
+        status = container_status(platform, ref)
+        assert status[0] == original[0] and status[1] > original[1], (original, status)
+        container_proof["source_after_failure"] = container_message(platform, ref, source_ip, old_identity, rows)
     if not cut["hit"]:
         print("Requested cut was not proved.", flush=True)
         return False
@@ -243,12 +377,20 @@ def gate_case(platform, phase):
     received = round_trip(target, child_ip, new_identity)
     first_child = next(row for row in rows() if row[0] == child_ip)
     assert tuple(first_child[3:]) == new_identity and int(first_child[2]) > 1, first_child
+    if with_container:
+        status = container_status(platform, target)
+        assert status[0] == original[0] and status[1] > original[1], (original, status)
+        first = container_message(platform, target, child_ip, new_identity, rows)
+        assert first == next(row for row in rows() if row[0] == child_ip and row[1].startswith("container-"))
+        assert int(first[2]) > int(container_proof["source_before"][2]), (first, container_proof)
+        container_proof["child_first_external"] = first
     print("Owned activation witness", json.dumps({
         "phase": phase, "bundle_digest": platform.bundle_id, "effect": finished["effect"],
         "operation_id": accepted["operation_id"], "positive_operation_id": completed["operation_id"],
         "source": identity(ref), "child": identity(target),
         "source_loopback": parent, "child_loopback": received, "child_first_external": first_child,
         "failed_address": cut_ip, "failed_activation": failed["phase"], "failed_receipts": 0,
+        **({"container": container_proof} if with_container else {}),
     }, sort_keys=True), flush=True)
     return True
 
@@ -259,6 +401,7 @@ def main():
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(), required=True)
     parser.add_argument("--phase", choices=PHASES, required=True)
     parser.add_argument("--use-installation", action="store_true")
+    parser.add_argument("--container", action="store_true", help="run an owned OCI workload in the System Guest")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("local KVM requires an isolated privileged fixture")
@@ -280,7 +423,7 @@ def main():
         platform = Platform(args, root, stack, (NETWORK,), use_installation=args.use_installation)
         try:
             platform.start()
-            succeeded = gate_case(platform, args.phase)
+            succeeded = gate_case(platform, args.phase, args.container)
             peak = Path("/sys/fs/cgroup") / slice_name / "memory.peak"
             if peak.is_file():
                 print("Owned fixture slice memory peak", peak.read_text().strip(), flush=True)
