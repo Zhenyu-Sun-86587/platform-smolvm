@@ -37,7 +37,8 @@ func TestFileUploadUnknownPreservesOriginalIntent(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Detail.Effect != "unknown" {
 		t.Fatalf("upload returned %v", err)
 	}
-	if !strings.Contains(stderr.String(), "--control-epoch original-epoch --idempotency-key original-key --revision 2") {
+	if !strings.Contains(stderr.String(), "--control-epoch original-epoch --idempotency-key original-key --revision 2") ||
+		!strings.Contains(stderr.String(), "Original mutation target PUT machines/m/files?path=/tmp/file") {
 		t.Fatalf("original intent absent: %s", stderr.String())
 	}
 }
