@@ -29,6 +29,7 @@ import { Modal } from "./ui"
 import { desktopHref, machineHref, terminalHref } from "./routes"
 import { fixtureScene, useCollection } from "./api"
 import consoleStyles from "./features/console/console.module.css"
+import { MachineWebAddress } from "./features/machine/MachineWebAddress"
 import { PreviewQR } from "./features/console/PreviewQR"
 import {
   DropdownMenu,
@@ -120,38 +121,53 @@ export function forkBatchDialog(m: Machine, actions: Actions) {
     }, { revision: m.revision }),
   })
 }
+export function hasManagedSSH(machine: Machine) {
+  const access = machine.capabilities?.["access.managed_ssh"]
+  return access?.status === "supported" && access.supported === true && access.constraints?.manage_allowed === true &&
+    access.constraints.path === "configured"
+}
+
 export function hasVerifiedSSHHostKey(machine: Machine) {
   const evidence = machine.binding?.guest_management_evidence
   return evidence?.ssh_ready === true && Boolean(evidence.ssh_host_key?.trim())
 }
 
-function SSHInfo({ machine }: { machine: Machine }) {
+function ConnectionInfo({ machine }: { machine: Machine }) {
   const { items, error } = useCollection<Service>("machines/" + segment(machine.machine_id) + "/services", machine.revision)
-  const [copied, setCopied] = useState(false),
+  const [copiedCommand, setCopiedCommand] = useState(""),
     [copyError, setError] = useState<unknown>()
   const service = items?.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
   const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
+  const managed = hasManagedSSH(machine)
   const direct = hasVerifiedSSHHostKey(machine)
   const manual = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
-  const commands = direct ? "sandboxctl ssh " + machine.machine_id : fixtureScene === "30" ? cmd : manual
-  return <section aria-label="SSH with sandboxctl">
+  let commands = fixtureScene === "30" ? cmd : manual
+  if (managed) commands = "sandboxctl ssh " + machine.machine_id
+  else if (direct) commands = "sandboxctl ssh --legacy " + machine.machine_id
+  const copied = commands === copiedCommand
+  return <><section aria-label="SSH with sandboxctl">
     <div className={consoleStyles.connectionLabel}><h3>CLI</h3><span>Connect using OpenSSH</span></div>
     <Callout error={error || copyError} />
-    {!items && !error ? <p role="status">Checking published services…</p> : service ? <>
+    {managed || service ? <>
       <div className={consoleStyles.commands}>
         <pre>{fixtureScene === "30" ? "$ " + commands : commands}</pre>
         <Button size="sm" variant="outline" className={consoleStyles.copyCommand} aria-label={copied ? "SSH commands copied" : "Copy SSH commands"}
-          onClick={() => navigator.clipboard.writeText(commands).then(() => setCopied(true)).catch(setError)}>
+          onClick={() => navigator.clipboard.writeText(commands).then(() => setCopiedCommand(commands)).catch(setError)}>
           {copied ? <><Check /> Copied</> : <><Copy /> Copy</>}
         </Button>
       </div>
-      {direct && <p className={consoleStyles.sshHint}>Use a public key authorized for your Guest SSH user.</p>}
-      {direct ? <details className={consoleStyles.sshHint}><summary>Manual OpenSSH setup</summary>
+      {managed ? <p className={consoleStyles.sshHint}>Managed SSH is configured. The CLI requests a short-lived root certificate and checks the private connection when you connect.
+        {machine.capabilities?.["access.managed_ssh"]?.constraints?.host_key_status === "observed" && " The platform has observed the host key for this execution."}
+        {" "}After CLI login, OpenSSH and editors can use the generated <code>NAME.sandbox</code> alias for a unique eligible name.</p>
+        : direct && <p className={consoleStyles.sshHint}>Use a public key authorized for your Guest SSH user.</p>}
+      {service && (managed || direct) ? <details className={consoleStyles.sshHint}><summary>Manual OpenSSH setup</summary>
+        <p>With an enrolled key, use <code>sandboxctl ssh --legacy {machine.machine_id}</code> or select one with <code>--identity FILE</code>.</p>
         <p>Add the output of <code>{hostKey}</code> to <code>~/.ssh/sandbox_known_hosts</code> and the output of <code>{cmd}</code> to your SSH configuration. Then run <code>ssh sandbox-{machine.machine_id}</code>.</p>
-      </details> : !fixtureScene && <p className={consoleStyles.sshHint}>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>}
-    </> : items ? <p className={consoleStyles.sshHint}><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
+      </details> : !managed && !fixtureScene && <p className={consoleStyles.sshHint}>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>}
+    </> : !items && !error ? <p role="status">Checking published services…</p> : items ? <p className={consoleStyles.sshHint}><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
   </section>
+    <MachineWebAddress machine={machine} services={items} /></>
 }
 
 function useTerminalLaunch(machine: Machine, actions: Actions, onOpened?: () => void) {
@@ -189,7 +205,7 @@ export function ConnectDialog({ machine, actions, open, onOpenChange }: {
   return <Modal open={open} onOpenChange={onOpenChange} busy={opening} size="md" className={consoleStyles.connectDialog}
     title={`Open ${machine.name}`} description="Pick how you want to get into this machine.">
     <div className={consoleStyles.connectBody}>
-      <SSHInfo machine={machine} />
+      <ConnectionInfo machine={machine} />
       <section aria-label="Web">
       <div className={consoleStyles.connectionLabel}><h3>Web</h3></div>
       <div className={consoleStyles.connectionLinks}>
