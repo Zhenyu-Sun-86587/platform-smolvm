@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
@@ -96,10 +98,14 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 	if st.Execution() != scope || scope.IncarnationID == "" {
 		return
 	}
-	session := e.activitySession()
-	if session == "" {
+	owner := e.activitySession()
+	if owner == "" {
 		return
 	}
+	// The Worker retires a collector session when its execution changes.
+	// Keep the same ID for retries within this incarnation.
+	digest := sha256.Sum256([]byte(owner + "\x00" + scope.IncarnationID))
+	session := "collector-" + hex.EncodeToString(digest[:16])
 	publish := func(name string, counts map[string]any) {
 		previous := st.Collectors[name]
 		seq := previous.Seq + 1
