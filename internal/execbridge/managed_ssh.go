@@ -63,7 +63,7 @@ func OpenManagedSSHD(ctx context.Context, socket net.Conn, publicKey ssh.PublicK
 		"-o", "Subsystem=sftp internal-sftp",
 	}
 	if err := startGuestCommand(ctx, socket, rt.ExecSessionRequest{
-		ID: hex.EncodeToString(random[:]), Command: command, Cwd: "/", Interactive: true,
+		ID: hex.EncodeToString(random[:]), ExecRequest: rt.ExecRequest{Command: command, Cwd: "/"}, Interactive: true,
 	}); err != nil {
 		return nil, err
 	}
