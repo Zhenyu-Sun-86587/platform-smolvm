@@ -4,6 +4,7 @@
 import argparse
 import base64
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -107,6 +108,83 @@ def prepare_restore_disk(root, stack):
     return disk
 
 
+def verify_guest_cpu_contract(machine, root, archive, binary, image, stack):
+    media = root / "checkpoint-reader"
+    media.mkdir()
+    shutil.copy2(archive, media / archive.name)
+    (media / archive.name).chmod(0o444)
+    shutil.copy2(binary, media / "smolvm-bin")
+    linked = subprocess.run(["ldd", binary], text=True, capture_output=True, check=True).stdout
+    for line in linked.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split()
+        path = Path(fields[2] if len(fields) > 2 and fields[1] == "=>" else fields[0])
+        if path.is_absolute():
+            shutil.copy2(path, media / path.name)
+    assert (media / "ld-linux-x86-64.so.2").is_file()
+    name = "cpu-reader"
+    machine("create", "--cpus", "1", "--mem", "384", "--storage", "1", "--overlay", "1",
+            "--volume", str(media) + ":/reader:ro", "--image", image, "--", "/probe", "run", "reader", name=name)
+    stack.callback(machine, "stop", name=name, check=False)
+    machine("start", name=name)
+    target = Path(machine("data-dir", name=name)) / "agent.sock"
+    fingerprint = guest(target, ["/bin/sh", "-ec", "grep -m 1 '^flags' /proc/cpuinfo | sha256sum"]).split()[0]
+    physical_flags = next(line for line in Path("/proc/cpuinfo").read_bytes().splitlines(keepends=True) if line.startswith(b"flags"))
+    physical = hashlib.sha256(physical_flags).hexdigest()
+    assert physical != fingerprint, physical
+    assert guest(target, ["/bin/sh", "-ec", 'sha256sum "$1"', "archive", "/reader/" + archive.name]).split()[0] == digest(archive)[7:]
+    options = ["/reader/ld-linux-x86-64.so.2", "--library-path", "/reader", "/reader/smolvm-bin",
+               "--state-dir", "/tmp/a19-reader-state", "machine"]
+    diagnosis = guest(target, ["/bin/sh", "-ec", 'if output=$("$@" 2>&1); then exit 2; fi; printf "%s\n" "$output"',
+        "check", *options, "create", "--name", "cpu-incompatible", "--from", "/reader/" + archive.name])
+    assert "checkpoint CPU feature contract does not match this host" in diagnosis, diagnosis
+    assert "cpu-incompatible" not in guest(target, [*options, "list"])
+    print(f"Host CPU flags {physical}, KVM Guest CPU flags {fingerprint}. The Guest read the original archive. {diagnosis}", flush=True)
+    machine("stop", name=name)
+
+
+def portable_history(machine, root, source, marker, stack, cpu_reader):
+    original = guest_identity(source, marker)
+    registry = workload_registry(source)
+    store = root / "history-store"
+    cuts = []
+    for index in range(2):
+        label = f"history-{index}-{secrets.token_hex(8)}"
+        guest(source, ["/bin/sh", "-ec", 'printf "%s\n" "$1" > /run/a19-portable-marker', "mark", label])
+        capture = root / f"point-{index}.checkpoint"
+        recorded = machine("checkpoint", "--store", store, "--output", capture)
+        cuts.append((label, capture))
+        print(recorded, flush=True)
+    archive = root / "a19-history.smolcheckpoint"
+    machine("checkpoint", "--export-from", cuts[-1][1], "--history", "1", "--output", archive, name=None)
+    records = machine("checkpoint-log", archive, name=None)
+    assert "~0" in records and "~1" in records, records
+    print(f"Portable archive {digest(archive)} holds two generations.\n{records}", flush=True)
+    machine("create", "--from", archive, "--cpus", "2", name="wrong-cpu-count",
+            expected_error="cpus cannot be set when restoring a live checkpoint")
+    machine("create", "--from", archive, "--mem", "768", name="wrong-ram-size",
+            expected_error="memory cannot be set when restoring a live checkpoint")
+    listing = machine("list", name=None)
+    assert "wrong-cpu-count" not in listing and "wrong-ram-size" not in listing, listing
+    for (label, _), selector in zip(cuts, ("~1", "~0"), strict=True):
+        name = "portable-generation-" + selector[1:]
+        stack.callback(machine, "stop", name=name, check=False)
+        machine("create", "--from", archive, "--at", selector, name=name)
+        machine("start", name=name)
+        target = Path(machine("data-dir", name=name)) / "agent.sock"
+        active = wait_for(lambda: guest_identity(target, marker), retry=(OSError, ValueError, AssertionError))
+        assert active[3] == original[3] and workload_registry(target) == registry, active
+        assert guest(target, ["/bin/cat", "/run/a19-portable-marker"]) == label
+        result = machine("exec", "/probe", "observe", name=name).split()
+        assert result[0] == marker and int(result[2]) > 1, result
+        print(f"Restored {selector} with distinct RAM marker {label}, original crun PID/start {active[3]}, "
+              f"and task progress {result[2]}.", flush=True)
+        machine("stop", name=name)
+    if cpu_reader is not None:
+        verify_guest_cpu_contract(machine, root, archive, *cpu_reader, stack)
+
+
 def restore_registry(machine, root, source, marker, args, stack):
     kind = args.end
     checksum = workload_registry(source)
@@ -175,11 +253,16 @@ def test(args, root, stack):
            "SMOLVM_AGENT_ROOTFS": str(root / "guest"), "SMOLVM_LIB_DIR": str(bundle / "lib"),
            "XDG_RUNTIME_DIR": str(root / "runtime"), "TMPDIR": str(root)}
 
-    def machine(action, *flags, name="a17-oci", check=True, trace_restore=False):
+    def machine(action, *flags, name="a17-oci", check=True, trace_restore=False, expected_error=None):
         command_env = ({**env, "SMOLVM_LOG_FORMAT": "json", "RUST_LOG": "smolvm::portable_checkpoint=info"}
                        if trace_restore else env)
-        result = subprocess.run([bundle / "smolvm", "--state-dir", root / "state", "machine", action,
-                                 "--name", name, *flags], env=command_env, text=True, capture_output=True, timeout=60)
+        named = () if name is None else ("--name", name)
+        result = subprocess.run([bundle / "smolvm", "--state-dir", root / "state", "machine", action, *named, *flags],
+                                env=command_env, text=True, capture_output=True, timeout=60)
+        if expected_error is not None:
+            assert result.returncode == 1 and expected_error in result.stderr, result
+            print(result.stderr.strip(), flush=True)
+            return
         if check and result.returncode != 0:
             raise RuntimeError((action, result.returncode, result.stdout, result.stderr))
         if trace_restore:
@@ -193,12 +276,12 @@ def test(args, root, stack):
 
     marker = secrets.token_hex(12)
     policy = ("--stop-on-exit",) if args.end == "workload" else ()
-    recovers = args.end in ("branch", "snapshot", "resume")
+    recovers = args.end in ("branch", "snapshot", "resume", "history")
     volumes = () if recovers else ("--volume", str(root / "witness") + ":/witness")
     machine("create", "--cpus", "1", "--mem", "384", "--storage", "1", "--overlay", "1",
             *volumes, "--image", image, "--stop-signal", "SIGUSR1",
             *policy, "--", "/probe", "run", marker)
-    if args.end in ("snapshot", "resume"):
+    if args.end in ("snapshot", "resume", "history"):
         if args.without_restore_tmpfs:
             assert not restore_tmpfs_path(root).exists()
         else:
@@ -210,6 +293,10 @@ def test(args, root, stack):
     measured_agent = digest(args.agent or bundle / "guest/agent").removeprefix("sha256:")
     assert guest(agent, ["/bin/sh", "-ec", 'sha256sum "/proc/$PPID/exe"']).split()[0] == measured_agent
     print("Guest Agent version", guest(agent, ["/usr/local/bin/smolvm-agent", "--version"]), flush=True)
+    if args.end == "history":
+        cpu_reader = (bundle / "smolvm-bin", image) if args.verify_guest_cpu_contract else None
+        portable_history(machine, root, agent, marker, stack, cpu_reader)
+        return
     if recovers:
         restore_registry(machine, root, agent, marker, args, stack)
         return
@@ -301,13 +388,16 @@ def main():
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     parser.add_argument("--expect-legacy-exit", action="store_true")
     parser.add_argument("--agent-signal", choices=("KILL", "TERM"), default="KILL")
-    parser.add_argument("--end", choices=("manual", "workload", "supervisor", "branch", "snapshot", "resume"), default="manual")
+    parser.add_argument("--end", choices=("manual", "workload", "supervisor", "branch", "snapshot", "resume", "history"), default="manual")
     parser.add_argument("--without-restore-tmpfs", action="store_true", help="stage a portable restore on a private ext4 filesystem")
+    parser.add_argument("--verify-guest-cpu-contract", action="store_true", help="test the intact archive with a different AMD KVM CPU profile")
     args = parser.parse_args()
     if args.agent is not None and args.expect_legacy_exit:
         parser.error("historical control uses the original OCI Agent")
     if args.without_restore_tmpfs and args.end != "snapshot":
         parser.error("--without-restore-tmpfs requires --end snapshot")
+    if args.verify_guest_cpu_contract and (args.end != "history" or "AuthenticAMD" not in Path("/proc/cpuinfo").read_text()):
+        parser.error("--verify-guest-cpu-contract requires --end history and an AMD Linux host")
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
         parser.error("requires root and KVM")
     if os.environ.get("OCI_AGENT_TEST_NAMESPACE") != "1":
@@ -315,7 +405,7 @@ def main():
                               sys.executable, __file__, *sys.argv[1:]], {**os.environ, "OCI_AGENT_TEST_NAMESPACE": "1"})
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="a17o-") as directory, ExitStack() as stack:
         root = Path(directory)
-        capacity = "1500M" if args.end in ("snapshot", "resume") else "512M"
+        capacity = "1500M" if args.end in ("snapshot", "resume", "history") else "512M"
         subprocess.run(["mount", "-t", "tmpfs", "-o", f"size={capacity},mode=0755,nosuid,nodev",
                         "tmpfs", root], check=True)
         stack.callback(subprocess.run, ["umount", "--lazy", root], check=True)
