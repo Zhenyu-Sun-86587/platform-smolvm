@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import {
   Cable,
   Check,
@@ -6,10 +6,12 @@ import {
   Ellipsis,
   GitFork,
   Layers2,
+  Monitor,
   Moon,
   Play,
   Power,
   SquareTerminal,
+  Waypoints,
   Trash2,
   Zap,
 } from "lucide-react"
@@ -17,6 +19,10 @@ import type { Machine, Service, Page } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
 import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str, useRemote } from "./common"
 import { Button } from "./daytona/button"
+import { Modal } from "./ui"
+import { desktopHref, machineHref, terminalHref } from "./routes"
+import { fixtureScene } from "./api"
+import consoleStyles from "./features/console/console.module.css"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -110,59 +116,91 @@ function SSHInfo({ machine }: { machine: Machine }) {
   const service = data?.items.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
   const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
-  return (
-    <div className="ssh-info">
-      <Callout error={error || copyError} />
-      {!data && !error ? (
-        "Checking published services…"
-      ) : service ? (
-        <>
-          <p>Use the authenticated CLI for this platform. Add the verified key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>
-          <pre className="ssh-commands">{hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id}</pre>
-          <div className="copy-line">
-            <span>Copy setup commands</span>
-            <Button
-              size="icon-sm"
-              variant="outline"
-              aria-label="Copy SSH command"
-              onClick={() =>
-                navigator.clipboard
-                  .writeText(hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id)
-                  .then(() => setCopied(true))
-                  .catch(setError)
-              }
-            >
-              {copied ? <Check /> : <Copy />}
-            </Button>
-          </div>
-        </>
-      ) : data ? (
-        <p>Publish an SSH service for guest port 22 in Networking to connect as root.</p>
-      ) : null}
-    </div>
-  )
+  const commands = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
+  return <div className={consoleStyles.ssh}>
+    <div className={consoleStyles.connectionLabel}><Cable size={15} /><h3>SSH with sandboxctl</h3></div>
+    <Callout error={error || copyError} />
+    {!data && !error ? <p role="status">Checking published services…</p> : service ? <>
+      <p>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>
+      <div className={consoleStyles.commands}>
+        <pre>{commands}</pre>
+        <Button size="icon-sm" variant="outline" aria-label={copied ? "SSH commands copied" : "Copy SSH commands"}
+          onClick={() => navigator.clipboard.writeText(commands).then(() => setCopied(true)).catch(setError)}>
+          {copied ? <Check /> : <Copy />}
+        </Button>
+      </div>
+    </> : data ? <p><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
+  </div>
 }
+
+export function ConnectDialog({ machine, actions, open, onOpenChange }: {
+  machine: Machine; actions: Actions; open: boolean; onOpenChange: (open: boolean) => void
+}) {
+  const [opening, setOpening] = useState(false)
+  const pending = useRef(false)
+  const [error, setError] = useState<unknown>()
+  const desktop = machine.desktop_profile === "software-vnc-v1"
+  async function openTerminal() {
+    if (pending.current) return
+    pending.current = true
+    setOpening(true)
+    setError(undefined)
+    try {
+      const session = await actions.mutate<{ exec_id: string }>("machines/" + segment(machine.machine_id) + "/execs", {
+        argv: ["/bin/sh"], cwd: machine.boot_mode === "system" && bundleBound(machine) ? "/" : "/workspace",
+        user: "root", tty: true, interactive: true, cols: 100, rows: 28,
+      }, { revision: machine.revision })
+      if (!session?.exec_id) throw new Error("The terminal response did not include a session.")
+      onOpenChange(false)
+      location.hash = terminalHref(machine.machine_id, session.exec_id)
+    } catch (error) {
+      setError(error)
+    } finally {
+      pending.current = false
+      setOpening(false)
+    }
+  }
+  return <Modal open={open} onOpenChange={onOpenChange} busy={opening} size="md" title={`Connect to ${machine.name}`}
+    description="Open a browser session or connect using your SSH client.">
+      <div className={consoleStyles.connectionLinks}>
+        <Button className={consoleStyles.connectionLink} onClick={() => void openTerminal()} disabled={opening}>
+          <SquareTerminal size={18}/><span><strong>{opening ? "Opening…" : "Web terminal"}</strong><small>Interactive guest shell</small></span>
+        </Button>
+        {desktop && <Button className={consoleStyles.connectionLink} variant="outline" asChild>
+          <a href={desktopHref(machine.machine_id)} onClick={event => {
+            if (opening) { event.preventDefault(); return }
+            onOpenChange(false)
+          }} aria-disabled={opening || undefined}>
+            <Monitor size={18}/><span><strong>Desktop</strong><small>Guest display via VNC</small></span>
+          </a>
+        </Button>}
+      </div>
+      <Callout error={error} />
+      <SSHInfo machine={machine} />
+      <a className={consoleStyles.sessionsLink} href={machineHref(machine.machine_id, "terminal")} onClick={event => {
+        if (opening) { event.preventDefault(); return }
+        onOpenChange(false)
+      }}><Waypoints size={15} /> Browse existing sessions</a>
+  </Modal>
+}
+
 export function WorkspaceActions({
   machine: m,
   actions,
   compact = false,
+  surface,
 }: {
   machine: Machine
   actions: Actions
   compact?: boolean
+  surface?: "row" | "detail"
 }) {
   const base = "#/machines/" + segment(m.machine_id)
-  const [opening,setOpening]=useState(false)
-  async function openTerminal() {
-    setOpening(true)
-    try {
-      const session=await actions.mutate<{exec_id:string}>("machines/"+segment(m.machine_id)+"/execs", {
-        argv:["/bin/sh"], cwd:m.boot_mode === "system" && bundleBound(m) ? "/" : "/workspace", user:"root", tty:true,interactive:true,cols:100,rows:28
-      }, {revision:m.revision})
-      location.hash=base+"/terminal/"+segment(session.exec_id)
-    } catch(error) {
-      actions.dialog({title:"Open terminal",content:<Callout error={error}/>,submit:"View sessions",act:async()=>{location.hash=base+"/terminal"}})
-    } finally {setOpening(false)}
+  const [connect, setConnect] = useState(fixtureScene === "30" && surface === "detail")
+  const connectButton = useRef<HTMLButtonElement>(null)
+  const changeConnect = (open: boolean) => {
+    setConnect(open)
+    if (!open) requestAnimationFrame(() => connectButton.current?.focus())
   }
   const power = machinePowerState(m)
   const deep = bundleBound(m)
@@ -176,34 +214,14 @@ export function WorkspaceActions({
     { key: "state.independent_fork", name: "Independent Fork", icon: GitFork, available: canCapture, act: () => copyDialog(m, actions, true, true) },
     { key: "state.fork_batch", name: "Fork batch", icon: GitFork, available: canCapture, act: () => forkBatchDialog(m, actions) },
   ]
-  const ssh = () =>
-    actions.dialog({
-      title: "SSH connection",
-      content: <SSHInfo machine={m} />,
-      submit: "Open networking",
-      act: async () => {
-        location.hash = base + "/networking"
-      },
-    })
   return (
-    <div className="machine-actions">
-      {!compact && (
-        <Button variant="outline" size="sm" onClick={ssh}>
-          <Cable />
-          SSH
-        </Button>
-      )}
-      <Button
-        variant={compact ? "ghost" : "default"}
-        size={compact ? "icon-sm" : "sm"}
-        aria-label={"Terminal for " + m.name}
-        title="Open terminal"
-        onClick={openTerminal}
-        disabled={opening}
-      >
-        <SquareTerminal />
-        {!compact && (opening?"Opening…":"Terminal")}
+    <div className={consoleStyles.workspaceActions}>
+      <Button ref={connectButton} variant={compact && !surface ? "ghost" : "default"} size={compact && !surface ? "icon-sm" : "sm"}
+        aria-label={"Open " + m.name} onClick={() => changeConnect(true)}>
+        <SquareTerminal />{(!compact || surface) && "Open"}
       </Button>
+      {surface === "detail" && <Button variant="outline" size="sm" asChild><a href={base + "/checkpoints"}>Checkpoints</a></Button>}
+      <ConnectDialog machine={m} actions={actions} open={connect} onOpenChange={changeConnect} />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button size="icon-sm" variant={compact ? "ghost" : "outline"} aria-label={"Actions for " + m.name}>
@@ -211,9 +229,9 @@ export function WorkspaceActions({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-48">
-          <DropdownMenuItem onSelect={ssh}>
+          <DropdownMenuItem onSelect={() => changeConnect(true)}>
             <Cable />
-            Connect via SSH
+            Connection options
           </DropdownMenuItem>
           {!deep && <DropdownMenuItem
             disabled={!running || m.capabilities?.live_fork?.supported === false}
@@ -254,10 +272,12 @@ export function WorkspaceActions({
               Cold start
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem disabled={deep && (power !== "standby" || Boolean(fullStateBlock(m, "lifecycle.standby_wake")))} onSelect={() => powerDialog(m, actions, "wake")}>
-            <Zap />
-            Wake
-          </DropdownMenuItem>
+          {(power === "standby" || power === "hibernated") && <DropdownMenuItem
+            disabled={deep && power === "standby" && Boolean(fullStateBlock(m, "lifecycle.standby_wake"))}
+            title={deep && power === "standby" ? fullStateBlock(m, "lifecycle.standby_wake") : undefined}
+            onSelect={() => powerDialog(m, actions, "wake")}>
+            <Zap />Wake
+          </DropdownMenuItem>}
           {running && (
             <DropdownMenuItem disabled={deep && Boolean(fullStateBlock(m, "lifecycle.stop"))} title={deep ? fullStateBlock(m, "lifecycle.stop") : undefined} onSelect={() => powerDialog(m, actions, "stop")}>
               <Power />
