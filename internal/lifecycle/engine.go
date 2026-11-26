@@ -22,6 +22,7 @@ import (
 
 type Engine struct {
 	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.Client)
+	ReleaseDesktopLeases  func(context.Context)
 	collectorSession      string
 	DB                    *registry.Store
 	runtimes              *rt.Resolver

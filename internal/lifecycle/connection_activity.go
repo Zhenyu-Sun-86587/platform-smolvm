@@ -104,6 +104,9 @@ func (e *Engine) recoverConnections(ctx context.Context) {
 	defer tick.Stop()
 	for {
 		e.retryClosedConnections(ctx)
+		if e.DB.ExpireDesktopLeases(ctx, time.Now()) == nil && e.ReleaseDesktopLeases != nil {
+			e.ReleaseDesktopLeases(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
