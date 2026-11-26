@@ -117,3 +117,18 @@
 16 和 0 通道的端到端中位吞吐均为 6.55 单元/s。后者每 VMM 少 48 个线程，随机读尾部从 119.45 ms 增至 131.53 ms。这组小样本沿用当前默认。回环接口发送 344,943,022 字节，NBD 设备本次共读 168 个扇区、写 657,856 个扇区。多数 Guest 读取由宿主页缓存或稀疏块满足，跨物理主机的时延需单独测量。
 
 复测使用 smolvm `97dccc5` 的 `scripts/deep/bench-managed-runtime.py`，参数为 `--guest-vcpus 1 --fanout 3 --samples 2 --modes clean --depth 0 --read-lanes 16 4 0 --compile-workload`，同时指定 Bundle、含静态编译器的 Guest、专属 NBD 挂载目录和 JSON 输出。`.build/wp22/private-tcp-fanout-compile-v2.json` 的 SHA-256 为 `1f519297819e39a63b0a85d00e4526d5329557c4fe2810d3fb1476bd5170a5cd`，同名 `.log` 为 `d41a5c50125a258c4dfb5b8b2b8d19cc6f69bdef27a0ef0d51ed463c44729341`。
+
+## 两种私网模式上的应用流量
+
+在同一正式安装 `1eb5104` 上，为每种模式各建两台同一所有者的 Debian Guest，每台 1 vCPU、512 MiB，MTU 1500。Native 和 FixedInternal 分别串行测量两个方向，接收端核对对端的实际私网地址。每方向在一个 TCP 连接上用 4 笔预热，再测 48 笔 32 字节回显。随后用三个独立连接各发送 4 MiB，在接收端逐 64 KiB 核对内容、块序号和样本序号。源端以 Guest 单调时钟测量发送到收到完整回显或接收确认的时间。宿主负载平均值（1/5/15 分钟）在 Native 组起始为 0.88/1.15/1.67，在 FixedInternal 组起始为 0.99/1.16/1.67。[KVM 复测入口](../../tests/integration/private_network_performance_kvm.py) · [Guest 流量探针](../../tests/fixtures/private-network-performance.c)
+
+每行取该方向 48 笔回显的最近秩 p50/p95 和三笔传输的最近秩 p50/p95。吞吐是 12 MiB 除以三次传输时间之和。CPU 指标取两台 VMM 的 cgroup `cpu.stat:usage_usec` 增量之和，除以接收 Guest 对应网卡的 RX 与 TX 包数增量。这个窗口包含 Guest 工具启动和同一 VMM 内的其他工作。各方向的单次采样保留在日志中。
+
+| 模式与私网地址尾号 | 32 B 回显 RTT µs | 4 MiB 到确认 ms | 应用吞吐 MiB/s | 两 VMM CPU µs/包（回显 / 大流） |
+| --- | ---: | ---: | ---: | ---: |
+| Native .2 → .3 | 243.60 / 378.15 | 36.71 / 36.73 | 117.41 | 356.84 / 29.69 |
+| Native .3 → .2 | 235.92 / 396.81 | 31.73 / 44.21 | 114.74 | 352.14 / 27.70 |
+| FixedInternal .2 → .3 | 227.11 / 333.48 | 44.88 / 52.20 | 90.04 | 333.17 / 34.84 |
+| FixedInternal .3 → .2 | 251.66 / 561.34 | 29.12 / 36.91 | 126.78 | 366.49 / 31.03 |
+
+两种模式共校验 192 笔计时回显与 48 MiB 大流。收包、发包、两个 cgroup 的时间及单笔延迟均来自嵌套 KVM。复测夹具为平台 `a848f85`，静态探针 SHA-256 为 `e377138370575cab525be9aae354fc407f19edae8e561581be130bd10410fc4f`。`.build/wp22/private-network-1eb5104-native-v2.log` 的 SHA-256 为 `293f0a72acec86bcdd2aa7a3a84f44b209038d302fd60d3dea33215d12129706`，`private-network-1eb5104-fixed_internal-v2.log` 为 `f2eaec1ab85a832fdb4c7f31f91f751cbb14407285944d809851efc7cec31090`。

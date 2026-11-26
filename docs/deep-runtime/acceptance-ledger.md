@@ -140,7 +140,7 @@
 | A24 | 最终平台锁 `c095c4f`，迁移中断、升级和回退通过 | `0.1.6` 向 schema 1019 迁移写入未提交 WAL 时终止，19 张旧表及全部行保持一致。完成升级后旧二进制拒绝打开新 schema。两版本分别恢复备份，原 owner 新登录，继续读取原暂停记录及各自新的 control epoch。锁定平台包在 Ubuntu 24.04 KVM 中通过正式安装器升级，官方 Serve 在升级期间连续运行。跨 schema 回退被拒绝，整机断电后系统服务、原数据库、owner 和两份备份再次核验。[最终平台锁及实机](platform-upgrade-a24.md)、[此前发行件](#a24-历史发行件升级与回退) | 旧控制代次的写入子项按要求跳过，且不计通过。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
-| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | 本地及 NBD 文件缓存、KVM/设备写并集和网络盘三子机编译已验证。36 份 Guest 任务编译 1,152 个目标文件。两种私网模式的双向小包与大流测量进行中。 |
+| A27 | 冻结安装与同机对照完成 | 本地 KVM 实测冷启动、递归、并发、dirty、源 vCPU 停顿和持久恢复。96 次 rebase 与预取、两类盘各 24 次文件缓存、KVM 与设备写并集均核对数据。网络盘三子机比较 16/4/0 读通道，36 份 Guest 任务编译 1,152 个目标文件。两种私网模式在两个方向各测 48 次回显和三次 4 MiB 大流，记录 RTT、吞吐及每包 VMM CPU。[WP-22 数据、环境与复测方法](performance-wp22.md) | — |
 
 ### A21 正式安装的并发服务唤醒
 
