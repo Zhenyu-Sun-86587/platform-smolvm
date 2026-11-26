@@ -45,6 +45,8 @@
 
 Mac 真机、Developer ID 与公证凭据未就绪时，可以验证内部包，并把公开下载发布标记为待验证。CLI 与 App 是否必须同批对外发布，以签名和干净设备验收结果决定。
 
+明天单开一轮 [外观与首次使用体验验收](boxd-visual-handoff-2026-11-27.md)。先定自有 Web/CLI/Mac 标识和主要页面层级，再从干净账户记录下载、登录、首台机器、首次连接。历史 Chromium 和 PTY 样本用于对照，签名 Mac 包的图标、菜单状态和可访问性从真机留证。
+
 [macOS 构建和品牌入口](../../packaging/macos/README.md) · [首次启动样例](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/cli-onboarding-macos/final-5c153be/prototype/README.md) · [Apple 公证文档](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 
 ## 4. 浏览器 OAuth / OIDC 登录
@@ -183,6 +185,7 @@ OSS 核对清单含 TanStack AI、Flue、Bindu、Harbor、Crabbox、Zuse、Omnar
 
 - 生产候选 Git 提交、版本、制品及校验结果，环境和回退基线。
 - J01–J11 证据编号；Mac 下载、签名、公证、真机验收和 UI 截图。
+- 自有素材清单、桌面与移动视觉矩阵、首次使用录屏，并登记真实数据与参考样本所用版本。
 - OAuth/OIDC 的 provider 与完成边界，双 Worker 拓扑与 N01–N18 实机证据，高并发各档结果。
 - Fork 各阶段计时和负载说明，实验 CoW 的 Bundle 与授权边界，以及托管 Agent 接续的模型或测试替身证据。
 - Boxd 外围功能按已有、预览、缺口和待实机验证登记；既有入口附验收结果，扩展项附当前缺失环节。
