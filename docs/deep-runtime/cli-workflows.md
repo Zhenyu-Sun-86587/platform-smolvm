@@ -34,6 +34,7 @@ printf '%s\n' 'from sandboxctl' >"$dir/input"
 sandboxctl files put "$mid" "$dir/input" /root/cli-demo.txt
 sandboxctl files get "$mid" /root/cli-demo.txt "$dir/output"
 cmp "$dir/input" "$dir/output"
+sandboxctl machines stop "$mid"
 sandboxctl machines delete "$mid" --yes
 rm -f "$dir/input" "$dir/output"
 rmdir "$dir"
@@ -61,6 +62,7 @@ sid=$(sandboxctl --json snapshots capture-vm "$MID" --label cli-test | jq -er .r
 sandboxctl snapshots rollback-vm "$MID" "$sid" --volume-restore-policy clone_conflicts
 restored=$(sandboxctl --json snapshots restore-vm "$sid" "cli-restored-$$" | jq -er .machine_id)
 sandboxctl exec --follow --cwd / "$restored" -- /usr/bin/id
+sandboxctl machines stop "$restored"
 sandboxctl machines delete "$restored" --yes
 sandboxctl snapshots delete "$sid"
 ```
