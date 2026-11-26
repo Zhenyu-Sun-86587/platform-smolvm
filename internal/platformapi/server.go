@@ -258,6 +258,9 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	if rt.IsNativeFork(req.Kind) {
 		req.AdmitNative = s.AdmitNativeFork
 	}
+	if req.Kind == "delete" {
+		req.AdmitNative = s.AdmitNativeDelete
+	}
 	if req.MachineID != "" {
 		rev, err := revision(r)
 		if err != nil {

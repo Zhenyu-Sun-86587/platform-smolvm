@@ -421,7 +421,7 @@ def task_wake_case(platform, source, ref):
         print(f"A public task woke {state}, returned live output and was cancelled on confirmed epoch {live['execution_epoch']}.", flush=True)
 
 
-def native_task_case(platform, source, ref, case):
+def native_task_case(platform, source, ref, case, volume=None):
     initial = wait_for(lambda: (v if (v := platform.app(source)).get("task_metadata_status") == "complete" else None))
     source_id = initial["machine_id"]
     command = """set -eu
@@ -444,6 +444,7 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
             name="Restored task", volume_restore_policy="clone_conflicts")))
         target_id = target["machine_id"]
     else:
+        wait_for(lambda: platform.app(source)["capabilities"]["state.fork_batch"]["status"] == "supported")
         stop_agent_for_capture(platform, ref)
         accepted_view = platform.wait_capability(source, "state.fork_batch")
         assert agent_unavailable(platform, ref)
@@ -464,12 +465,15 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
         assert agent_unavailable(platform, child_ref)
         assert platform.app("machines/" + target_id)["task_metadata_status"] == "unavailable"
         assert platform.app("machines/" + target_id + "/tasks")["items"] == []
-    vm = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
-    with os.fdopen(os.pidfd_open(vm["pid"]), "rb", buffering=0) as original_vmm:
-        assert int(Path(f"/proc/{vm['pid']}/stat").read_text().rsplit(")", 1)[1].split()[19]) == vm["pid_start_time"]
-        signal.pidfd_send_signal(original_vmm.fileno(), signal.SIGKILL)
-        assert select.select([original_vmm], [], [], 10)[0]
-    platform.restart()
+    if case == "task-adoption-delete":
+        retire_task_parent(platform, source, ref)
+    else:
+        vm = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
+        with os.fdopen(os.pidfd_open(vm["pid"]), "rb", buffering=0) as original_vmm:
+            assert int(Path(f"/proc/{vm['pid']}/stat").read_text().rsplit(")", 1)[1].split()[19]) == vm["pid_start_time"]
+            signal.pidfd_send_signal(original_vmm.fileno(), signal.SIGKILL)
+            assert select.select([original_vmm], [], [], 10)[0]
+        platform.restart()
     machine = "machines/" + target_id
     _, child_ref = platform.context(target_id)
     def adopted():
@@ -485,6 +489,84 @@ printf '%s %s %s\\n' "$$" "$nonce" "$reply"
     assert ended["exit_code"] == 0 and data == marker + b" child", (ended, data)
     print(f"{case}: after source VMM exit and platform restart, public task {child['id']} retained run {child['run_id']} "
           f"and returned the original process identity {data.decode()}.", flush=True)
+    if volume is not None:
+        verify_volume_after_retirement(platform, volume, child_ref)
+
+
+def retire_task_parent(platform, source, ref):
+    parent = platform.app(source)
+    assert parent["power_state"] == "running", parent
+    denied = platform.change(source, "reject-live-delete", {}, parent, method="DELETE", status=409)
+    assert denied["error"]["code"] == "STATE_CONFLICT", denied
+    stopped = platform.complete(platform.change(source + "/stop", "fence-delete-source", {}, parent))
+    assert stopped["source_disposition"] == "EXITED", stopped
+    parent = platform.app(source)
+    accepted = platform.change(source, "retire-original-source", {}, parent, method="DELETE")
+    scope = dict(route_id="deep", bundle_digest=platform.bundle_id, operation_id=accepted["operation_id"])
+    wait_for(lambda: worker(platform.worker, "QueryOperation", **scope), retry=(OSError, RuntimeError))
+    platform.restart()
+    retired = platform.complete(accepted)
+    assert retired["source_disposition"] == "EXITED" and retired["result"]["execution_epoch"] == ref["execution_epoch"], retired
+    assert platform.change(source, "retire-original-source", {}, parent, method="DELETE") == retired
+    tombstone = platform.app(source)
+    assert tombstone["desired_power"] == "deleted" and tombstone["deleted_at"] and not tombstone.get("binding"), tombstone
+    empty = {**ref, "incarnation_id": None}
+    try:
+        worker(platform.worker, "RequestWake", dict(protection_id="access-retired-source", principal="fixture-owner",
+            trigger="service_access", expected_binding_revision=2 * ref["execution_epoch"], authorization_revision=1,
+            endpoint_revision=1), **{**scope, "operation_id": "old-source-wake", "expected": empty, "request_digest": "sha256:" + "1" * 64})
+    except RuntimeError as error:
+        assert error.args[0]["code"] == "E_STALE_EXECUTION", error
+    else:
+        raise AssertionError("deleted source admitted a wake demand")
+    with sqlite3.connect(platform.root / "catalog/catalog.sqlite") as catalog:
+        assert catalog.execute("SELECT count(*) FROM instance_bindings WHERE instance_id=?", (ref["instance_id"],)).fetchone() == (0,)
+        assert catalog.execute("SELECT count(*) FROM network_attachments WHERE instance_id=? AND state<>'released'", (ref["instance_id"],)).fetchone() == (0,)
+        stop_op, raw_heads = catalog.execute("SELECT stop_operation_id,private_heads_json FROM managed_retirements WHERE operation_id=?",
+            (accepted["operation_id"],)).fetchone()
+        (head,) = json.loads(raw_heads)
+        assert stop_op == stopped["operation_id"], (stop_op, stopped)
+        assert catalog.execute("SELECT count(*) FROM volume_heads WHERE volume_id=?", (head["volume_id"],)).fetchone() == (0,)
+
+    def collected():
+        with sqlite3.connect(platform.root / "catalog/catalog.sqlite") as catalog:
+            return catalog.execute("SELECT state FROM resources WHERE resource_id=?", (head["head_resource_id"],)).fetchone() == ("deleted",)
+
+    wait_for(collected, timeout=12)
+    assert not (platform.root / "catalog/objects" / head["head_resource_id"]).exists(), head
+    print("Manual Stop plus public Delete retired the parent across platform restart. Same-key replay returned the original receipt, and the old Worker scope could no longer wake.", flush=True)
+
+
+def attach_for_retirement(platform, machine, volume, key):
+    platform.complete(platform.change(machine + "/volume-attachments", "attach-" + key,
+        dict(volume_id=volume["volume_id"], expected_volume_revision=volume["revision"], device_key="retained", mode="rw"),
+        platform.app(machine)))
+    return platform.complete(platform.change(machine + "/start", "boot-" + key, {}, platform.app(machine)))
+
+
+def verify_volume_after_retirement(platform, volume, child_ref):
+    marker = b"persistent-before-delete"
+    read = ["/bin/dd", "if=/dev/vdb", "bs=1", f"count={len(marker)}", "status=none"]
+    assert platform.guest(child_ref, read) == marker
+    platform.guest(child_ref, ["/bin/sh", "-ec", "printf child-private-disk-only | dd of=/dev/vdb bs=1 conv=fsync status=none"])
+    retained = platform.app("volumes/" + volume["volume_id"])
+    assert retained["state"] == "available" and not retained.get("attachments"), retained
+    choice = platform.complete(platform.change("machines", "replacement-for-retired-volume", dict(name="Detached volume consumer",
+        template_id="t_system", boot_mode="system", runtime_instance_id=platform.serve_id, start=False,
+        resources=dict(cpu_count=2, memory_mib=512))))
+    target = choice["result"]["machine_id"]
+    attach_for_retirement(platform, "machines/" + target, retained, "replacement")
+    _, ref = platform.context(target)
+    assert wait_for(lambda: platform.guest(ref, read), retry=(OSError, RuntimeError)) == marker
+    print("The retained persistent volume attached to a new KVM guest with its original bytes. A write to the surviving child’s independent disk stayed private.", flush=True)
+    unused = platform.complete(platform.change("machines", "never-started-delete", dict(name="Unused System slot",
+        template_id="t_system", boot_mode="system", runtime_instance_id=platform.serve_id, start=False,
+        resources=dict(cpu_count=1, memory_mib=256))))
+    unused_path = "machines/" + unused["result"]["machine_id"]
+    empty = platform.app(unused_path)
+    removed = platform.complete(platform.change(unused_path, "retire-unused", {}, empty, method="DELETE"))
+    assert removed["result"]["execution_epoch"] == 0 and platform.app(unused_path)["desired_power"] == "deleted"
+    print("An unstarted System slot also retired at epoch zero without allocating an execution.", flush=True)
 
 
 def statepoint_case(platform, source, ref, probe, seen_cids):
@@ -1156,10 +1238,11 @@ def policy_case(platform, source, machine_id, execution):
 
 
 def test(args, root, stack, case):
-    if case == "task-adoption":
+    retirement = case == "task-adoption-delete"
+    if case in ("task-adoption", "task-adoption-delete"):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
-    networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case else ()
+    networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
     platform = Platform(args, root, stack, networks)
     platform.start()
     intent = dict(
@@ -1171,18 +1254,28 @@ def test(args, root, stack, case):
     if packet_case:
         intent["network"] = dict(network_id="packet-net", mode="fixed_internal" if case.endswith("-native") else "native")
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
+    if retirement:
+        intent.update(start=False, network=dict(network_id="packet-net", mode="native"),
+                      lifecycle_policy=dict(keep_running=True, wake_conditions=dict(allow_cold_start=True)))
     created = platform.change("machines", "create", intent)
     platform.complete(created)
     machine_id = created["machine_id"]
     source = "machines/" + machine_id
+    volume = None
+    if retirement:
+        volume = platform.complete(platform.change("volumes", "retained-volume", dict(name="Independent persistent volume",
+            runtime_instance_id=platform.serve_id, capacity_bytes=32 << 20)))["result"]["volume"]
+        attach_for_retirement(platform, source, volume, "source")
     _, ref = platform.context(machine_id)
     wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
              retry=(RuntimeError, OSError))
     if case in ("live-resources", "live-resources-hot"):
         live_resources_case(platform, source, ref, case == "live-resources-hot")
         return
-    if case in ("task-adoption", "task-restore"):
-        native_task_case(platform, source, ref, case)
+    if retirement:
+        platform.guest(ref, ["/bin/sh", "-ec", "printf persistent-before-delete | dd of=/dev/vdb bs=1 status=none"])
+    if case in ("task-adoption", "task-adoption-delete", "task-restore"):
+        native_task_case(platform, source, ref, case, volume)
         return
     if case == "task-wake":
         task_wake_case(platform, source, ref)
@@ -1237,7 +1330,7 @@ def main():
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
-                        "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-restore", "task-wake"), action="append")
+                        "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete", "task-restore", "task-wake"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

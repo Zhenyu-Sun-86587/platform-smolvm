@@ -267,6 +267,8 @@ export function WorkspaceActions({
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive-foreground"
+            disabled={deep && (m.boot_mode !== "system" || power !== "stopped")}
+            title={deep && m.boot_mode === "system" && power !== "stopped" ? "Stop the System machine before deleting it" : undefined}
             onSelect={() => powerDialog(m, actions, "delete")}
           >
             <Trash2 />
