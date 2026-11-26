@@ -216,6 +216,9 @@ func (s *Store) BeginNativeForkRetryTx(ctx context.Context, tx *sql.Tx, id strin
 	if !retryable {
 		return Operation{}, ErrOperationState
 	}
+	if err := reserveForkRetry(ctx, tx, op); err != nil {
+		return Operation{}, err
+	}
 	op.State, op.Stage, op.Dispatch, op.Error = Observing, "fork_retry", dispatch, nil
 	op.Version++
 	op.UpdatedAt = time.Now().UTC()

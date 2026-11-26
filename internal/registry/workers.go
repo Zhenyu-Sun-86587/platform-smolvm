@@ -149,7 +149,15 @@ func (s *Store) EnrollWorker(ctx context.Context, enrollment WorkerEnrollment) e
 		return err
 	}
 	if enrollment.Generation != latest+1 {
-		return fmt.Errorf("%w: Worker enrollment generation must advance", ErrConflict)
+		var restoring bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_authority_recovery
+			WHERE worker_id=? AND control_epoch=? AND rebound_enrollment_generation IS NULL)`,
+			enrollment.WorkerID, control.ControlEpoch).Scan(&restoring); err != nil {
+			return err
+		}
+		if !control.Maintenance || !restoring || enrollment.Generation <= latest {
+			return fmt.Errorf("%w: Worker enrollment generation must advance", ErrConflict)
+		}
 	}
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `UPDATE worker_enrollments SET status='revoked',revoked_at=?

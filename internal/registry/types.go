@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"sandbox-platform/internal/placement"
 	rt "sandbox-platform/internal/runtime"
 )
 
@@ -276,6 +277,10 @@ type AcceptRequest struct {
 	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
 	// On replay it receives the original machine ID for authorization even if the object is gone.
 	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)
+	// Placement describes stable caller intent. ResolvePlacement derives any
+	// requirements that depend on the accepted defaults in this transaction.
+	Placement        *placement.Request
+	ResolvePlacement func(context.Context, *sql.Tx, json.RawMessage) (*placement.Request, error)
 }
 
 type TransitionRequest struct {

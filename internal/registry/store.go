@@ -199,6 +199,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1018, "1018_native_backup_selection.sql"},
 		{1019, "1019_legacy_idle_pressure.sql"},
 		{1020, "1020_multi_worker.sql"},
+		{1021, "1021_worker_placement.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0
@@ -333,6 +334,9 @@ func (s *Store) BeginRecovery(ctx context.Context, reason string) (Control, erro
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "UPDATE meta SET control_epoch = ?, maintenance = 1, recovery_reason = ? WHERE id = 1", epoch, reason); err != nil {
+		return Control{}, err
+	}
+	if err := beginWorkerAuthorityRecovery(ctx, tx, epoch); err != nil {
 		return Control{}, err
 	}
 	if err := AppendEvent(ctx, tx, "maintenance", "", "", map[string]any{"maintenance": true, "recovery_reason": reason}, true); err != nil {

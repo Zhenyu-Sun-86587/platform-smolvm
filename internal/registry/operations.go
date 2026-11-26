@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"sandbox-platform/internal/placement"
 	rt "sandbox-platform/internal/runtime"
 )
 
@@ -188,11 +189,12 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		IdlePolicy                                      json.RawMessage
 		KeepRunning, Heavy, Allocate                    bool
 		Locks                                           []Lock
-		RuntimeInstanceID                               string   `json:",omitempty"`
-		ForkChildren                                    []string `json:",omitempty"`
-		WorkerID                                        string   `json:",omitempty"`
+		RuntimeInstanceID                               string             `json:",omitempty"`
+		ForkChildren                                    []string           `json:",omitempty"`
+		WorkerID                                        string             `json:",omitempty"`
+		Placement                                       *placement.Request `json:",omitempty"`
 	}{r.Kind, r.MachineID, r.Name, r.TemplateID, r.DesiredPower, idleCanonical,
-		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.WorkerID}
+		r.KeepRunning, r.Heavy, r.AllocateBinding, r.Locks, r.RuntimeInstanceID, r.ForkChildren, r.WorkerID, r.Placement}
 	fingerprint, err := mutationFingerprint(ctx, tx, envelope, target)
 	if err != nil {
 		return Operation{}, false, err
@@ -282,6 +284,29 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			route = pinned
 		} else if route.Key() != pinned.Key() {
 			return Operation{}, false, fmt.Errorf("%w: StatePoint requires its original Worker route and Bundle", ErrConflict)
+		}
+	}
+	reservation, err := operationPlacementRequest(ctx, tx, r, prior, route, op.Request)
+	if err != nil {
+		return Operation{}, false, err
+	}
+	if reservation != nil {
+		route, err = selectPlacement(ctx, tx, op.ControlEpoch, op.Kind, *reservation, now)
+		if err != nil {
+			return Operation{}, false, err
+		}
+		if r.Kind == "create" {
+			var resolved map[string]json.RawMessage
+			if err := json.Unmarshal(op.Request, &resolved); err != nil || resolved == nil {
+				return Operation{}, false, ErrInvalid
+			}
+			resolved["runtime_instance_id"], _ = json.Marshal(route.InstanceID)
+			op.Request, err = json.Marshal(resolved)
+			if err != nil {
+				return Operation{}, false, err
+			}
+			request = string(op.Request)
+			bindingSpec = request
 		}
 	}
 	if r.WorkerID != "" && r.WorkerID != route.Owner() || prior.ID != "" && prior.WorkerID != route.Owner() {
@@ -419,6 +444,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		op.WorkerID, nullable(op.RuntimeInstanceID), nullable(op.RuntimeBundleID))
 	if err != nil {
 		return Operation{}, false, err
+	}
+	if reservation != nil {
+		if err := insertPlacementReservation(ctx, tx, op, route, *reservation, 1); err != nil {
+			return Operation{}, false, err
+		}
 	}
 	if rt.IsNativeFork(op.Kind) {
 		if err := allocateForkChildren(ctx, tx, &op, prior, r.ForkChildren, route, locks); err != nil {
@@ -653,6 +683,9 @@ func (s *Store) TransitionTx(ctx context.Context, tx *sql.Tx, id string, r Trans
 		op.State, op.Stage, op.Effect, rawValue(op.Dispatch), rawValue(op.Result), rawValue(op.Error),
 		op.UpdatedAt.UnixMilli(), op.Version, op.WakePending, nullable(string(op.SourceDisposition)), op.SourceLockReleased, op.ID)
 	if err != nil {
+		return Operation{}, err
+	}
+	if err := transitionPlacement(ctx, tx, op, r); err != nil {
 		return Operation{}, err
 	}
 	if r.State == RecoveryRequired && binding.Status == "candidate" {
