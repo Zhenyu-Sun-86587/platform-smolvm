@@ -270,7 +270,27 @@ async function observations() {
   }
   await screenshot("live-checkpoint")
   return { availability: sample.availability, scope: sample.scope, source: sample.source, execution_epoch: sample.execution.execution_epoch,
-    snapshot: snapshot.snapshot_id, cpu_count: captured.cpu_count, memory_mib: captured.memory_mib, capture: "verified" }
+    snapshot: snapshot.snapshot_id, cpu_count: captured.cpu_count, memory_mib: captured.memory_mib, capture: "verified", volume: await volume() }
+}
+
+async function volume() {
+  await page.goto(origin + "/#/volumes")
+  await page.getByRole("button", { name: "New disk" }).click()
+  const dialog = page.getByRole("dialog", { name: "New disk" })
+  const name = "console-test-data"
+  await dialog.getByLabel("Name", { exact: true }).fill(name)
+  await dialog.getByLabel("Size (MiB)").fill("16")
+  const receipt = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/volumes")
+  await dialog.getByRole("button", { name: "Create", exact: true }).click()
+  const response = await receipt
+  assert.equal(response.status(), 202)
+  const op = await response.json()
+  const row = page.getByRole("row").filter({ has: page.getByText(name, { exact: true }) })
+  await row.getByText("Available", { exact: true }).waitFor({ timeout: 30000 })
+  await row.getByText("16 MiB", { exact: true }).waitFor()
+  assert.equal((await get("/v1/operations/" + op.operation_id)).state, "succeeded")
+  await screenshot("live-volume")
+  return { name, capacityMiB: 16, operation: op.operation_id }
 }
 
 try {
