@@ -23,12 +23,13 @@ type machineHealth struct {
 }
 
 type machineView struct {
-	PowerState     registry.PowerState         `json:"power_state"`
-	Health         machineHealth               `json:"health"`
-	BootMode       rt.BootMode                 `json:"boot_mode"`
-	DesktopProfile string                      `json:"desktop_profile,omitempty"`
-	Network        *rt.LaunchNetwork           `json:"network,omitempty"`
-	Lifecycle      *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
+	PowerState        registry.PowerState         `json:"power_state"`
+	Health            machineHealth               `json:"health"`
+	BootMode          rt.BootMode                 `json:"boot_mode"`
+	LiveComputeGrowth bool                        `json:"live_compute_growth,omitempty"`
+	DesktopProfile    string                      `json:"desktop_profile,omitempty"`
+	Network           *rt.LaunchNetwork           `json:"network,omitempty"`
+	Lifecycle         *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -41,8 +42,9 @@ type machineView struct {
 func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineView, error) {
 	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
 	var spec struct {
-		Resources json.RawMessage   `json:"resources"`
-		Network   *rt.LaunchNetwork `json:"network"`
+		Resources         json.RawMessage   `json:"resources"`
+		Network           *rt.LaunchNetwork `json:"network"`
+		LiveComputeGrowth bool              `json:"live_compute_growth"`
 	}
 	if err := json.Unmarshal(m.Spec, &spec); err != nil {
 		return v, err
@@ -60,6 +62,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		}
 	}
 	v.Resources = spec.Resources
+	v.LiveComputeGrowth = spec.LiveComputeGrowth
 	if spec.Network != nil {
 		v.Network = &rt.LaunchNetwork{NetworkID: spec.Network.NetworkID, Mode: spec.Network.Mode}
 	}
@@ -157,6 +160,11 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		v.Blocked = append(v.Blocked, "guest_management_"+v.GuestStatus)
 		for _, k := range []string{"persistent_task", "clean_checkpoint", "independent_clone", "active_recovery", "automatic_idle"} {
 			v.Capabilities[k] = rt.Capability{Status: "unknown", Supported: false, ReasonCode: "GUEST_MANAGEMENT_UNAVAILABLE", Message: "Guest Task Manager handshake required"}
+		}
+	}
+	if !official && v.LiveComputeGrowth {
+		for _, kind := range []string{rt.Hibernate, rt.VMSnapshot, rt.IndependentFork, rt.ForkBatch} {
+			v.Capabilities[rt.FullStateOperationCapability(kind)] = rt.LiveGrowthCaptureStatus()
 		}
 	}
 	return v, nil

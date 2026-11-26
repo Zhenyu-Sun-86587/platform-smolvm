@@ -31,6 +31,16 @@ func FullStateOperationCapability(kind string) string {
 	}
 }
 
+// These operations take a new full-state cut of the source execution.
+func CapturesLiveState(kind string) bool {
+	return kind == VMSnapshot || kind == Hibernate || IsNativeFork(kind)
+}
+
+func LiveGrowthCaptureStatus() Capability {
+	return Capability{Status: "unsupported", ReasonCode: "STATE_READER_TOPOLOGY_UNSUPPORTED",
+		Message: "the current StatePoint reader cannot preserve the live compute growth topology"}
+}
+
 // CapabilityError records the missing admission evidence before any effect.
 type CapabilityError struct {
 	Capability string
@@ -57,6 +67,7 @@ func fullStateCapability(official bool) Capability {
 func FullStateCapabilities(official bool) map[string]Capability {
 	c := fullStateCapability(official)
 	result := map[string]Capability{
+		LiveComputeGrowthCapability: c,
 		NativePowerCapability(Wake): c,
 		SystemBootCapability:        c,
 		"state.live_fork":           c,

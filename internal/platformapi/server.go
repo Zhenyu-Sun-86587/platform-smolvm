@@ -419,8 +419,9 @@ func (s *Server) routes() {
 			return err
 		}
 		for _, profile := range profiles {
-			capability, _ := s.SystemBootCapability(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
-			profile.Capabilities[rt.SystemBootCapability] = capability
+			boot, growth, _ := s.SystemLaunchCapabilities(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
+			profile.Capabilities[rt.SystemBootCapability] = boot
+			profile.Capabilities[rt.LiveComputeGrowthCapability] = growth
 		}
 		return list(w, r, profiles, func(profile registry.RuntimeProfile) string { return profile.RuntimeInstanceID })
 	})
@@ -579,6 +580,9 @@ func (s *Server) machineRoutes() {
 				req.DesiredPower = "running"
 			}
 		} else {
+			if v.LiveComputeGrowth {
+				return fmt.Errorf("%w: live compute growth requires a System template", registry.ErrInvalid)
+			}
 			if v.Network != nil {
 				return registry.ErrInvalid
 			}

@@ -3,9 +3,8 @@ package platformapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
+
 	"sandbox-platform/internal/lifecycle"
-	"sandbox-platform/internal/registry"
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
@@ -26,18 +25,14 @@ func managedCPULimit(ctx context.Context, j *lifecycle.Job, limit *uint32) (work
 	}
 	client := workerclient.Client{Socket: privateServiceWorker(j.Runtime), Bundle: j.Binding.RuntimeBundleID}
 	receipt, err := client.SetManagedCPULimit(ctx, j.Op.ID+"-cpu-limit", scope, limit)
-	var fault *workerclient.Fault
-	if errors.As(err, &fault) {
-		switch fault.Code {
-		case "E_CAPABILITY_UNSUPPORTED", "E_METHOD_UNSUPPORTED", "E_PROTOCOL_UNSUPPORTED":
-			return receipt, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "the selected Worker does not provide managed CPU quotas"}
-		case "E_INVALID_REQUEST", "E_RESOURCE_LIMIT":
-			return receipt, registry.ErrInvalid
-		case "E_STALE_EXECUTION", "E_FENCE_UNPROVEN":
-			return receipt, registry.ErrGeneration
-		case "E_IDEMPOTENCY_CONFLICT":
-			return receipt, registry.ErrIdempotency
+	if err != nil {
+		if workerclient.RetryDelivery(err) {
+			return receipt, err
 		}
+		if failure := resourceFault(err); failure != nil {
+			return receipt, failure
+		}
+		j.Written = true
 	}
 	return receipt, err
 }

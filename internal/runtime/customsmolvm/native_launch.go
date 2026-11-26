@@ -41,19 +41,31 @@ func systemBootCapability(handshake Handshake) rt.Capability {
 }
 
 func (a *Adapter) SystemBoot(ctx context.Context) (rt.Capability, error) {
+	boot, _, err := a.SystemLaunchCapabilities(ctx)
+	return boot, err
+}
+
+func (a *Adapter) SystemLaunchCapabilities(ctx context.Context) (rt.Capability, rt.Capability, error) {
+	unknown := rt.FullStateCapabilities(false)[rt.LiveComputeGrowthCapability]
 	system, err := a.manifestSystemBoot()
 	if err != nil {
-		return rt.Capability{}, err
+		return unknown, unknown, err
 	}
 	if !system {
-		return rt.Capability{Status: "unsupported", ReasonCode: "BUNDLE_BOOT_PROFILE_UNAVAILABLE"}, nil
+		missing := rt.Capability{Status: "unsupported", ReasonCode: "BUNDLE_BOOT_PROFILE_UNAVAILABLE"}
+		return missing, missing, nil
 	}
 	endpoint, handshake, err := a.connect(ctx)
 	if err != nil {
-		return rt.Capability{}, err
+		return unknown, unknown, err
 	}
 	defer endpoint.CloseIdleConnections()
-	return systemBootCapability(handshake), nil
+	boot := systemBootCapability(handshake)
+	growth := handshake.Capabilities[rt.LiveComputeGrowthCapability]
+	if !boot.Supported || growth.Status != "supported" || !growth.Supported || growth.ContractVersion != 1 || growth.VerifiedProfile != rt.LiveComputeGrowthProfile {
+		growth = unknown
+	}
+	return boot, growth, nil
 }
 
 func (a *Adapter) DiscoverLaunchBinding(ctx context.Context, name string) (rt.LaunchBinding, error) {

@@ -10,9 +10,11 @@ const (
 )
 
 const (
-	SystemBootCapability = "boot.system"
-	SystemBootProfile    = "system-debian-v1"
-	Launch               = "launch"
+	SystemBootCapability        = "boot.system"
+	SystemBootProfile           = "system-debian-v1"
+	LiveComputeGrowthCapability = "boot.live_compute_growth"
+	LiveComputeGrowthProfile    = "managed-live-compute-v1"
+	Launch                      = "launch"
 )
 
 func SystemBootUnavailable(official bool) error {
@@ -35,14 +37,15 @@ type LaunchSubmission struct {
 }
 
 type LaunchParameters struct {
-	Name        string         `json:"name"`
-	BootProfile string         `json:"boot_profile"`
-	CPUs        uint8          `json:"cpus"`
-	MemoryMiB   uint32         `json:"memory_mib"`
-	Disks       []LaunchDisk   `json:"disks"`
-	Init        string         `json:"init"`
-	Args        []string       `json:"args"`
-	Network     *LaunchNetwork `json:"network,omitempty"`
+	Name              string         `json:"name"`
+	BootProfile       string         `json:"boot_profile"`
+	LiveComputeGrowth bool           `json:"live_compute_growth,omitempty"`
+	CPUs              uint8          `json:"cpus"`
+	MemoryMiB         uint32         `json:"memory_mib"`
+	Disks             []LaunchDisk   `json:"disks"`
+	Init              string         `json:"init"`
+	Args              []string       `json:"args"`
+	Network           *LaunchNetwork `json:"network,omitempty"`
 }
 
 // LaunchNetwork combines the public selection with topology from trusted runtime configuration.

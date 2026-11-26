@@ -86,6 +86,25 @@ class ManagedEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(BundleError, "different runtime artifacts"):
             self.verify()
 
+    def test_v3_binds_parked_and_growth_evidence_to_the_same_release(self):
+        measured = managed.measurement_manifest(self.inventory(), self.evidence["build_record_sha256"],
+                                                self.profile["contracts"])["bundle_digest"]
+        runs = {}
+        for case, profile in managed.RESOURCE_PROFILES.items():
+            label = f"Resource measurement {profile} on {measured}."
+            runs[case] = {**self.log(case, (*managed.RESOURCE_MARKERS[case], label)), "profile": profile}
+        self.evidence.update(schema=managed.SCHEMA_V3, live_resources={
+            "runs": runs, "measurement_bundle_digest": measured,
+            "system_template_sha256": checksum((self.root / managed.SYSTEM_TEMPLATE).read_bytes())})
+        self.profile["contracts"][managed.LIVE_RESOURCES] = 1
+        self.verify()
+        self.add_network()
+        self.evidence["schema"] = managed.SCHEMA_V3
+        self.verify()
+        runs["live-resources-hot"]["profile"] = "parked-capture"
+        with self.assertRaisesRegex(BundleError, "wrong execution profile"):
+            self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()

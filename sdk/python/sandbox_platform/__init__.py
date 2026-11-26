@@ -257,6 +257,20 @@ class Client:
     def get_machine(self, id):
         return self.get(_item("machines", id))
 
+    def get_machine_resources(self, machine_id):
+        return self.get(_item("machines", machine_id) + "/resources")
+
+    def configure_resources(self, machine_id, resources, *, revision=None, generation=None, intent=None):
+        if revision is None or generation is None:
+            current = self.get_machine(machine_id)
+            if revision is None:
+                revision = current["revision"]
+            if generation is None:
+                generation = current["binding_generation"]
+        return self.mutate(_item("machines", machine_id), {
+            "resources": resources, "expected_generation": generation,
+        }, method="PATCH", revision=revision, intent=intent)
+
     def list_private_networks(self, *, limit=100):
         return self.pages("networks", limit=limit)
 

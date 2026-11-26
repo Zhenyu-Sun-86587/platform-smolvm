@@ -51,6 +51,7 @@ func (s *Server) readSettings(ctx context.Context, db interface {
 var imageRef = regexp.MustCompile(`^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$`)
 
 func (s *Server) settingsRoutes() {
+	s.machineResourceRoutes()
 	s.policyApplicationRoutes()
 	s.route("GET /v1/system/diagnostics", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize("admin", ""); err != nil {
@@ -231,6 +232,31 @@ type machineResourcePatch struct {
 	Storage uint64          `json:"storage_gib,omitempty"`
 	Overlay uint64          `json:"overlay_gib,omitempty"`
 	Limit   json.RawMessage `json:"cpu_limit_millicpus,omitempty"`
+	Balloon *uint32         `json:"balloon_target_mib,omitempty"`
+}
+
+func (r *machineResourcePatch) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for field, raw := range fields {
+		switch field {
+		case "cpu_limit_millicpus":
+			if string(raw) == "null" {
+				continue
+			}
+		case "cpu_count", "memory_mib", "storage_gib", "overlay_gib", "balloon_target_mib":
+		default:
+			return fmt.Errorf("unknown resource setting %q", field)
+		}
+		var n *uint64
+		if err := json.Unmarshal(raw, &n); err != nil || n == nil || (*n == 0 && field != "balloon_target_mib") {
+			return fmt.Errorf("invalid integer for %s", field)
+		}
+	}
+	type wire machineResourcePatch
+	return json.Unmarshal(data, (*wire)(r))
 }
 
 func (r machineResourcePatch) cpuLimit() (*uint32, error) {
@@ -261,7 +287,8 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 	if err := json.Unmarshal(j.Op.Request, &v); err != nil {
 		return err
 	}
-	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) && j.Intent.Stage != "managed_resource_cpu_limit" {
+	resourceDispatch := j.Intent.Stage == "managed_resource_cpu_limit" || j.Intent.Stage == "managed_resources"
+	if client, ok := lifecycle.PolicyClient(j.Runtime, j.Binding); ok && (v.Policy != nil || v.Idle != nil || v.Keep != nil) && !resourceDispatch {
 		if j.Intent.Stage != "apply_lifecycle_policy" {
 			if err := j.Stage(ctx, "apply_lifecycle_policy", ""); err != nil {
 				return err
@@ -285,7 +312,7 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 		if _, err = s.Engine.ApplyMachinePolicy(ctx, j.Binding, client); err != nil {
 			return policyDeliveryError(err)
 		}
-	} else if v.Policy != nil && j.Intent.Stage != "managed_resource_cpu_limit" {
+	} else if v.Policy != nil && !resourceDispatch {
 		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "this binding has no Worker lifecycle controller"}
 	}
 	var obs *registry.Observation
@@ -299,10 +326,21 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 			return err
 		}
 	}
-	if r != nil && !r.resizesMachine() && len(r.Limit) != 0 && privateServiceWorker(j.Runtime) != "" {
+	socket := privateServiceWorker(j.Runtime)
+	if r != nil && socket != "" && (r.resizesMachine() || r.Balloon != nil) {
+		report, err := s.configureManagedResources(ctx, j, *r, limit, socket)
+		if err != nil || report == nil {
+			return managedSettingsError(ctx, j, err)
+		}
+		for k, val := range report {
+			result[k] = val
+		}
+	} else if r != nil && r.Balloon != nil {
+		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "the selected runtime does not support managed memory ballooning"}
+	} else if r != nil && len(r.Limit) != 0 && socket != "" {
 		receipt, err := managedCPULimit(ctx, j, limit)
 		if err != nil {
-			return policyDeliveryError(err)
+			return managedSettingsError(ctx, j, err)
 		}
 		result["cpu_limit"] = receipt
 		j.Written = true
