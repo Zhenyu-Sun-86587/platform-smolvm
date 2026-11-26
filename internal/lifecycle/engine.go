@@ -86,10 +86,11 @@ type IdlePolicy struct {
 	Timeout int  `json:"timeout_seconds"`
 }
 type Action struct {
-	ExpectedGeneration int64  `json:"expected_generation"`
-	Reason             string `json:"reason,omitempty"`
-	AllowActive        bool   `json:"allow_active_tasks,omitempty"`
-	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
+	ExpectedPowerState registry.PowerState `json:"expected_power_state,omitempty"`
+	ExpectedGeneration int64               `json:"expected_generation"`
+	Reason             string              `json:"reason,omitempty"`
+	AllowActive        bool                `json:"allow_active_tasks,omitempty"`
+	CancelTasks        bool                `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
 	SourceTaskBinding *tasks.Binding                  `json:"source_task_binding,omitempty"`
@@ -352,6 +353,17 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	if op.State != registry.Queued || len(op.Dispatch) > 0 && (op.Kind == "task_start" || op.Kind == "task_cancel") {
 		if err = json.Unmarshal(op.Dispatch, &j.Intent); err != nil {
 			return err
+		}
+	}
+	if (op.Kind == "start" || op.Kind == rt.Wake) && (op.State == registry.Queued || j.Intent.Stage == "preflight") {
+		var action Action
+		if err := json.Unmarshal(op.Request, &action); err != nil {
+			return err
+		}
+		if action.ExpectedPowerState != "" {
+			if err := registry.RequirePowerState(&j.Binding, action.ExpectedPowerState); err != nil {
+				return j.fail(ctx, &Failure{"STATE_CONFLICT", err.Error()})
+			}
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)

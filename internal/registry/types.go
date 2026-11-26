@@ -20,6 +20,7 @@ var (
 	ErrIdempotency      = errors.New("idempotency key reused for a different request")
 	ErrRevision         = errors.New("object revision changed")
 	ErrGeneration       = errors.New("binding generation changed")
+	ErrPowerState       = errors.New("machine power state changed")
 	ErrInvalid          = errors.New("invalid request")
 	ErrOperationActive  = errors.New("machine has an active operation")
 	ErrOperationState   = errors.New("operation state changed")
@@ -238,6 +239,7 @@ type AcceptRequest struct {
 	TemplateID            string
 	ExpectedRevision      int64
 	ExpectedGeneration    int64
+	ExpectedPowerState    PowerState
 	Request               json.RawMessage
 	ResolveCreateDefaults func(context.Context, *sql.Tx) (spec, idle json.RawMessage, err error)
 	IdlePolicy            json.RawMessage

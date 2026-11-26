@@ -1,0 +1,77 @@
+{
+  "p0_revision": "e0ee13721e9d848910ded7c9e9c83f843ac06bbf",
+  "operation_wait_timeout": {
+    "exit": 124,
+    "stderr": {
+      "error": {
+        "code": "OPERATION_WAIT_TIMEOUT",
+        "message": "wait deadline exceeded; use operations wait to resume observing",
+        "operation_id": "op_original",
+        "effect": "unknown",
+        "retry": "poll_operation"
+      }
+    }
+  },
+  "file_upload_outcome_unknown": {
+    "exit": 1,
+    "stderr": {
+      "status": 409,
+      "error": {
+        "request_id": "req_upload",
+        "code": "OUTCOME_UNKNOWN",
+        "message": "guest upload outcome needs verification at the original path",
+        "operation_id": "",
+        "effect": "unknown",
+        "retry": "verify_original_intent",
+        "intent": {
+          "control_epoch": "epoch_original",
+          "idempotency_key": "upload_original",
+          "revision": 3,
+          "method": "PUT",
+          "path": "machines/m_guest/files?path=%2Fworkspace%2Fnote.bin"
+        }
+      }
+    }
+  },
+  "partial_fork": {
+    "exit": 0,
+    "strict_exit": 1,
+    "stdout": {
+      "operation_id": "op_fork",
+      "state": "succeeded",
+      "effect": "partial",
+      "children": [
+        {"ordinal": 0, "state": "ready"},
+        {"ordinal": 1, "state": "quarantined"}
+      ]
+    }
+  },
+  "capture_mode_conflict": {
+    "exit": 1,
+    "stderr": {
+      "status": 409,
+      "error": {
+        "request_id": "req_mode",
+        "code": "CAPTURE_MODE_CONFLICT",
+        "message": "this action requires a full VM state point",
+        "operation_id": "",
+        "effect": "none",
+        "retry": "after_precondition"
+      }
+    }
+  },
+  "power_state_conflict": {
+    "exit": 1,
+    "stderr": {
+      "status": 409,
+      "error": {
+        "request_id": "req_power",
+        "code": "STATE_CONFLICT",
+        "message": "machine power state changed: expected stopped, observed hibernated",
+        "operation_id": "",
+        "effect": "none",
+        "retry": "after_precondition"
+      }
+    }
+  }
+}

@@ -170,6 +170,8 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, status = "REVISION_CONFLICT", 409
 	case errors.Is(err, registry.ErrGeneration):
 		code, status = "GENERATION_CONFLICT", 409
+	case errors.Is(err, registry.ErrPowerState):
+		code, status = "STATE_CONFLICT", 409
 	case errors.Is(err, registry.ErrOperationActive), errors.Is(err, registry.ErrOperationState):
 		code, status = "OPERATION_IN_PROGRESS", 409
 	case errors.Is(err, registry.ErrConflict):
@@ -661,7 +663,14 @@ func (s *Server) machineRoutes() {
 			if err := decode(r, &v); err != nil {
 				return err
 			}
-			req.ExpectedGeneration = v.ExpectedGeneration
+			if v.ExpectedPowerState != "" {
+				allowed := kind == "start" && (v.ExpectedPowerState == registry.PowerStopped || v.ExpectedPowerState == registry.PowerHibernated) ||
+					kind == rt.Wake && v.ExpectedPowerState == registry.PowerStandby
+				if !allowed || v.ExpectedGeneration < 1 {
+					return registry.ErrInvalid
+				}
+			}
+			req.ExpectedGeneration, req.ExpectedPowerState = v.ExpectedGeneration, v.ExpectedPowerState
 			return s.accept(w, r, p, v, req)
 		})
 	}

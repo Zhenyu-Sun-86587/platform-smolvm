@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,22 @@ func (c *client) volumes() *cobra.Command {
 		}
 		return c.mutation(cmd, "PATCH", res("volumes", args[0]), map[string]any{"capacity_bytes": capacity}, revision)
 	}))
-	group.AddCommand(c.volumeSnapshots(), c.volumeAttachments())
+	var capacity int64
+	var runtimeInstance, lifecycle string
+	create := sub("new NAME", "Create an independent block volume", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if capacity < 512 || capacity%512 != 0 {
+			return fmt.Errorf("capacity must be a positive whole number of 512-byte sectors")
+		}
+		return c.mutation(cmd, http.MethodPost, "volumes", map[string]any{
+			"name": args[0], "capacity_bytes": capacity, "runtime_instance_id": runtimeInstance, "lifecycle": lifecycle,
+		}, 0)
+	})
+	create.Flags().Int64Var(&capacity, "capacity-bytes", 0, "Volume capacity in bytes")
+	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
+	create.Flags().StringVar(&lifecycle, "lifecycle", "persistent", "persistent, ephemeral or machine")
+	_ = create.MarkFlagRequired("capacity-bytes")
+	_ = create.MarkFlagRequired("runtime-instance")
+	group.AddCommand(create, c.volumeSnapshots(), c.volumeAttachments())
 	return group
 }
 
@@ -81,13 +97,17 @@ func (c *client) volumeAttachments() *cobra.Command {
 	var mode, snapshot, fork, capture string
 	var attachRevision, detachRevision int64
 	attach := sub("attach MACHINE VOLUME DEVICE", "Reserve a volume on a stopped machine", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
-		scope, revision, err := c.attachmentScope(cmd.Context(), args[0], args[1], attachRevision)
+		id, err := c.machineID(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		scope, revision, err := c.attachmentScope(cmd.Context(), id, args[1], attachRevision)
 		if err != nil {
 			return err
 		}
 		scope["volume_id"], scope["device_key"], scope["mode"] = args[1], args[2], mode
 		scope["snapshot_id"], scope["fork_policy"], scope["capture_policy"] = snapshot, fork, capture
-		return c.mutation(cmd, "POST", res("machines", args[0])+"/volume-attachments", scope, revision)
+		return c.mutation(cmd, "POST", res("machines", id)+"/volume-attachments", scope, revision)
 	})
 	attach.Flags().StringVar(&mode, "mode", "rw", "Volume access mode")
 	attach.Flags().StringVar(&snapshot, "snapshot", "", "Immutable snapshot ID for read-only access")

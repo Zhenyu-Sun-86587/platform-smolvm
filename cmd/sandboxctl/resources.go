@@ -24,6 +24,9 @@ func sub(use, short string, args cobra.PositionalArgs, run func(*cobra.Command, 
 
 func (c *client) showItem(resource string) *cobra.Command {
 	return sub("get ID", "Get resource details", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if resource == "machines" {
+			return c.showMachine(cmd, args[0], "")
+		}
 		return c.show(cmd, res(resource, args[0]))
 	})
 }
@@ -38,7 +41,11 @@ func (c *client) list(use, path string, machineScoped bool) *cobra.Command {
 	command := sub(use, "List resources", args, func(cmd *cobra.Command, args []string) error {
 		endpoint := path
 		if machineScoped {
-			endpoint = res("machines", args[0]) + "/" + path
+			var err error
+			endpoint, err = c.machinePath(cmd.Context(), args[0], "/"+path)
+			if err != nil {
+				return err
+			}
 		}
 		query := url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}}
 		return c.show(cmd, endpoint+"?"+query.Encode())
@@ -70,7 +77,14 @@ func (c *client) update(use, path, method string, scoped bool) *cobra.Command {
 		target := path
 		var rev int64
 		if scoped {
-			target = res(path, args[0])
+			if path == "machines" {
+				target, err = c.machinePath(cmd.Context(), args[0], "")
+				if err != nil {
+					return err
+				}
+			} else {
+				target = res(path, args[0])
+			}
 		}
 		if c.revision == 0 && (method == "PATCH" || method == "DELETE") {
 			var obj struct {
@@ -136,22 +150,23 @@ func (c *client) machineResize() *cobra.Command {
 }
 
 func (c *client) machines() *cobra.Command {
-	group := &cobra.Command{Use: "machines", Short: "Manage persistent workspaces"}
+	group := &cobra.Command{Use: "machines", Aliases: []string{"machine"}, Short: "Manage persistent workspaces"}
+	group.AddCommand(c.machineProductCommands()...)
 	group.AddCommand(c.list("list", "machines", false), c.showItem("machines"), c.update("patch MACHINE", "machines", "PATCH", true))
 	group.AddCommand(sub("dependencies MACHINE", "List lineage and native dependencies", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/dependencies")
+		return c.showMachine(cmd, args[0], "/dependencies")
 	}))
 	group.AddCommand(sub("metrics MACHINE", "Read runtime resource metrics", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/metrics")
+		return c.showMachine(cmd, args[0], "/metrics")
 	}))
 	group.AddCommand(sub("resources MACHINE", "Read resource settings, capabilities and measured allocation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/resources")
+		return c.showMachine(cmd, args[0], "/resources")
 	}), c.machineResize())
 	group.AddCommand(sub("network MACHINE", "Read the current private network attachment", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/network")
+		return c.showMachine(cmd, args[0], "/network")
 	}))
 
-	var template, bootMode, runtimeInstance, networkID, networkMode string
+	var template, bootMode, runtimeInstance, networkID, networkMode, lifecycleJSON string
 	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -185,11 +200,23 @@ func (c *client) machines() *cobra.Command {
 		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
-		if cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds") {
+		legacyIdle := cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds")
+		if cmd.Flags().Changed("lifecycle-policy") {
+			if legacyIdle {
+				return errors.New("--lifecycle-policy cannot be combined with --idle or --idle-seconds")
+			}
+			policy, err := jsonBody(strings.TrimSpace(lifecycleJSON))
+			if err != nil {
+				return err
+			}
+			body["lifecycle_policy"] = policy
+		}
+		if legacyIdle {
 			body["idle_policy"] = map[string]any{"enabled": idle, "timeout_seconds": idleSeconds}
 		}
 		return c.mutation(cmd, "POST", "machines", body, 0)
 	})
+	create.Aliases = []string{"new"}
 	create.Flags().StringVar(&template, "template", "", "Registered template ID")
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
@@ -204,6 +231,7 @@ func (c *client) machines() *cobra.Command {
 	create.Flags().BoolVar(&start, "start", true, "Start the workspace after creating it")
 	create.Flags().BoolVar(&idle, "idle", true, "Automatically pause on idle")
 	create.Flags().IntVar(&idleSeconds, "idle-seconds", 1800, "Automatic pause timeout")
+	create.Flags().StringVar(&lifecycleJSON, "lifecycle-policy", "", "Worker lifecycle policy JSON override")
 	group.AddCommand(create)
 
 	for _, act := range []string{"start", "stop", "pause", "resume", "wake", "delete"} {
@@ -245,6 +273,7 @@ func (c *client) machines() *cobra.Command {
 		}
 		group.AddCommand(power)
 	}
+	group.AddCommand(c.guardedPower()...)
 	for _, act := range []string{"standby", "hibernate"} {
 		var allow bool
 		power := sub(act+" MACHINE", "Apply a verified full-state machine action", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -261,29 +290,10 @@ func (c *client) machines() *cobra.Command {
 		power.Flags().BoolVar(&allow, "allow-active-tasks", false, "Permit the action with active tasks")
 		group.AddCommand(power)
 	}
-	for _, mode := range []string{"fork", "clone"} {
-		mode := mode
-		var independent bool
-		child := sub(mode+" MACHINE CHILD_NAME", "Create a child machine", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-			m, err := c.machine(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			body := map[string]any{"child_name": args[1], "expected_generation": m.Generation}
-			if mode == "clone" {
-				body["copy_policy"] = "managed_clean"
-			}
-			if independent {
-				body["require_independent"] = true
-			}
-			return c.mutation(cmd, "POST", res("machines", m.ID)+"/"+mode+"s", body, m.Revision)
-		})
-		if mode == "fork" {
-			child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
-		}
-		group.AddCommand(child)
+	for _, name := range []string{"fork", "clone", "live-fork"} {
+		group.AddCommand(c.machineFork(name))
 	}
-	var admission string
+	var admission, volumePolicy string
 	batch := sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
@@ -297,13 +307,53 @@ func (c *client) machines() *cobra.Command {
 			"children": children, "expected_generation": m.Generation, "require_independent": true,
 		}
 		if admission != "" {
+			if admission != "all_or_reject" && admission != "best_effort" {
+				return errors.New("--admission must be all_or_reject or best_effort")
+			}
 			body["admission"] = admission
+		}
+		if volumePolicy != "" {
+			if volumePolicy != "clone" {
+				return errors.New("--volume-policy must be clone")
+			}
+			body["volume_policy"] = map[string]string{"default": volumePolicy}
 		}
 		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", body, m.Revision)
 	})
-	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject or best_effort)")
+	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject by default, or best_effort)")
+	batch.Flags().StringVar(&volumePolicy, "volume-policy", "", "Explicit default volume policy (clone)")
 	group.AddCommand(batch)
 	return group
+}
+
+func (c *client) machineFork(name string) *cobra.Command {
+	independent := name == "live-fork"
+	suffix := "/forks"
+	if name == "clone" {
+		suffix = "/clones"
+	}
+	short := "Create a child machine through the compatibility path"
+	if independent {
+		short = "Create a native full-state child with verified resource independence"
+	}
+	child := sub(name+" MACHINE CHILD_NAME", short, cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"child_name": args[1], "expected_generation": m.Generation}
+		if name == "clone" {
+			body["copy_policy"] = "managed_clean"
+		}
+		if independent {
+			body["require_independent"] = true
+		}
+		return c.mutation(cmd, "POST", res("machines", m.ID)+suffix, body, m.Revision)
+	})
+	if name == "fork" {
+		child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
+	}
+	return child
 }
 
 func commandArgs(args []string, cwd, user string) map[string]any {
@@ -508,6 +558,7 @@ func (c *client) snapshots() *cobra.Command {
 	rollback.Flags().StringVar(&oldState, "old-state-policy", "export_then_delete_on_paused", "Old state policy")
 	rollback.Flags().StringVar(&rollbackVolumes, "volume-restore-policy", "", "VM volume policy: exact or clone_conflicts")
 	group.AddCommand(capture, verify, restore, rollback, c.list("restores", "restores", false))
+	group.AddCommand(c.vmSnapshotCommands()...)
 	group.AddCommand(sub("export SNAPSHOT OUTPUT", "Download a snapshot archive", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
 		return c.download(cmd, res("snapshots", args[0])+"/export", args[1])
 	}))
@@ -572,7 +623,7 @@ func (c *client) upload(cmd *cobra.Command, source, method, path string, revisio
 	if size.Size() == 0 {
 		body = http.NoBody
 	}
-	return c.write(cmd, method, path, body, headers)
+	return c.write(cmd, method, path, body, headers, 0)
 }
 
 func (c *client) files() *cobra.Command {
@@ -580,12 +631,41 @@ func (c *client) files() *cobra.Command {
 	path := func(id, target, suffix string) string {
 		return res("machines", id) + "/files" + suffix + "?" + url.Values{"path": {target}}.Encode()
 	}
+	var cursor string
+	var limit int
+	listFiles := sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
+		id, err := c.machineID(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		page := url.Values{}
+		if cursor != "" {
+			page.Set("cursor", cursor)
+		}
+		if cmd.Flags().Changed("limit") {
+			if limit < 1 || limit > 500 {
+				return errors.New("--limit must be between 1 and 500")
+			}
+			page.Set("limit", strconv.Itoa(limit))
+		}
+		target := path(id, args[1], "/list")
+		if len(page) != 0 {
+			target += "&" + page.Encode()
+		}
+		return c.show(cmd, target)
+	})
+	listFiles.Flags().StringVar(&cursor, "cursor", "", "Cursor from the preceding directory page")
+	listFiles.Flags().IntVar(&limit, "limit", 100, "Maximum entries in this page")
 	group.AddCommand(
 		sub("capabilities MACHINE", "Read Guest file capabilities and transfer limits", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			var m struct {
 				Capabilities map[string]json.RawMessage `json:"capabilities"`
 			}
-			if err := c.get(cmd.Context(), res("machines", args[0]), &m); err != nil {
+			target, err := c.machinePath(cmd.Context(), args[0], "")
+			if err != nil {
+				return err
+			}
+			if err := c.get(cmd.Context(), target, &m); err != nil {
 				return err
 			}
 			files := map[string]json.RawMessage{}
@@ -596,11 +676,13 @@ func (c *client) files() *cobra.Command {
 			}
 			return c.print(cmd, files)
 		}),
-		sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-			return c.show(cmd, path(args[0], args[1], "/list"))
-		}),
+		listFiles,
 		sub("get MACHINE GUEST_PATH OUTPUT", "Download a Guest file", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
-			return c.download(cmd, path(args[0], args[1], ""), args[2])
+			id, err := c.machineID(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return c.download(cmd, path(id, args[1], ""), args[2])
 		}),
 		sub("put MACHINE LOCAL_FILE GUEST_PATH", "Upload a local file to the Guest", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
 			m, err := c.machine(cmd.Context(), args[0])
@@ -615,6 +697,7 @@ func (c *client) files() *cobra.Command {
 
 func (c *client) services() *cobra.Command {
 	group := &cobra.Command{Use: "services", Short: "Manage stable service endpoints"}
+	group.AddCommand(c.serviceProductCommands()...)
 	group.AddCommand(c.list("list MACHINE", "services", true), c.showItem("services"),
 		c.update("patch SERVICE", "services", "PATCH", true), c.update("delete SERVICE", "services", "DELETE", true))
 	var protocol, body string
@@ -760,8 +843,9 @@ func (c *client) settings() *cobra.Command {
 
 func (c *client) lifecyclePolicy() *cobra.Command {
 	group := &cobra.Command{Use: "lifecycle", Short: "Manage Worker lifecycle policies"}
+	group.AddCommand(c.lifecycleDefaults())
 	group.AddCommand(sub("status MACHINE", "Show effective policy, revisions and activity blockers", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/lifecycle")
+		return c.showMachine(cmd, args[0], "/lifecycle")
 	}), c.update("apply-default", "lifecycle-policy-applications", http.MethodPost, false),
 		sub("application ID", "Show results for each selected machine", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			return c.show(cmd, res("lifecycle-policy-applications", args[0]))
@@ -834,79 +918,6 @@ type execOutput struct {
 	} `json:"output"`
 }
 
-func (c *client) exec() *cobra.Command {
-	var cwd, user string
-	var timeout, wait int
-	exec := sub("exec MACHINE -- COMMAND [ARG...]", "Run a native Guest command", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
-		m, err := c.machine(cmd.Context(), args[0])
-		if err != nil {
-			return err
-		}
-		body := commandArgs(args[1:], cwd, user)
-		body["timeout_seconds"], body["wait_seconds"] = timeout, wait
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		headers, err := c.intent(cmd.Context(), m.Revision)
-		if err != nil {
-			return err
-		}
-		headers.Set("Content-Type", "application/json")
-		resp, err := c.request(cmd.Context(), "POST", res("machines", m.ID)+"/exec", strings.NewReader(string(raw)), headers)
-		if err != nil {
-			var api *apiError
-			if !errors.As(err, &api) || api.Status >= 500 || api.Detail.Code == "OUTCOME_UNKNOWN" {
-				c.printIntent(cmd, headers)
-			}
-			return err
-		}
-		defer resp.Body.Close()
-		var result json.RawMessage
-		if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			c.printIntent(cmd, headers)
-			return err
-		}
-		var output execOutput
-		if err = json.Unmarshal(result, &output); err != nil {
-			return err
-		}
-		if c.jsonOutput {
-			if err = c.print(cmd, result); err != nil {
-				return err
-			}
-			return execExit(output)
-		}
-		if err = c.writeExecOutput(cmd, output); err != nil {
-			return err
-		}
-		if !output.Done {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Native exec %s at byte %d\n", output.ID, output.Next)
-			return nil
-		}
-		id := output.ID
-		for output.Next < output.End {
-			cursor := output.Next
-			output = execOutput{}
-			if err = c.get(cmd.Context(), res("execs", id)+"/output?cursor="+strconv.FormatUint(cursor, 10), &output); err != nil {
-				return err
-			}
-			if output.Next <= cursor && output.End > cursor {
-				return errors.New("server did not advance native output cursor")
-			}
-			if err = c.writeExecOutput(cmd, output); err != nil {
-				return err
-			}
-		}
-		return execExit(output)
-	})
-	exec.Flags().StringVar(&cwd, "cwd", "/workspace", "Guest working directory")
-	exec.Flags().StringVar(&user, "user", "root", "Guest user")
-	exec.Flags().IntVar(&timeout, "timeout-seconds", 300, "Native command timeout")
-	exec.Flags().IntVar(&wait, "wait-seconds", 10, "Wait for a short command before returning its native session ID")
-	return exec
-}
-
 func execExit(output execOutput) error {
 	if output.Error != "" {
 		return errors.New(output.Error)
@@ -918,7 +929,7 @@ func execExit(output execOutput) error {
 }
 
 func (c *client) writeExecOutput(cmd *cobra.Command, output execOutput) error {
-	if output.Gap != nil {
+	if output.Gap != nil && !c.jsonOutput {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Native output gap from byte %d to %d\n", output.Gap.From, output.Gap.To)
 	}
 	for _, entry := range output.Output {
