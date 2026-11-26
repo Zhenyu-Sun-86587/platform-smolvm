@@ -171,6 +171,14 @@ OSS 核对清单含 TanStack AI、Flue、Bindu、Harbor、Crabbox、Zuse、Omnar
 
 明天先验已有的下载与登录、SSH/IDE、私有 HTTPS、已发布服务就绪、SDK/CLI 文件和操作、备份恢复。按 §3–§5 单列需要真机、生产权限和独立 Worker 的验证。最贴近现有底座的后续集成是浏览器登录、可安装的客户端，以及一条 GitHub PR 预览链路。后者可先用现有 API/SDK 串起创建、就绪、评论和关闭清理，再评估 GitHub App、凭据代理、cron/webhook 与 Agent 会话。全应用目录、完整 Machine Spec、客户端设备桥、公网和多区域产品化及商业功能继续独立排期。外围对照不改变 J01–J11 与生产候选范围。
 
+## 8. 明天的外围与双 SDK 验收
+
+官方博客、X 线索和官方 GitHub 的新增发现已转成[外围差距、SDK 方法与验收表](boxd-peripheral-handoff-2026-11-27.md)。其中列出六个有公开源码的官方适配器、Mac 菜单与手机 SSH、默认 URL 自动选端口、休眠作业、连接权限和 GitHub PR/CI 的交付边界。
+
+- [ ] **先验当前制品。** 从同一候选打包 Python wheel 和 npm tarball，在干净环境安装，两套 SDK 各走一次建机、等原 operation、确认 Guest 可执行、文件校哈希、观察服务就绪和清理。若使用低层 API 或 CLI，准确记录缺失的具名 SDK 方法。超时通过原 operation 对账。
+- [ ] **先补已有 API 的 SDK 封装。** 盘点原生 Exec/PTY、机器改名/删除、Service 修改/撤销，以及 Guest 与 Service 就绪等待。两语言合同明确退出码、取消、状态与效果，再评估 Python 异步、事件重连封装、浏览器与边缘运行时。
+- [ ] **登记两个独立样板。** GitHub PR 预览从同一 PR 更新和关闭清理起步。定时任务从 Hibernate 后按时唤醒、相同运行槽位只执行一次起步。两者分别记录外部测试仓库、权限和隔离 Worker 等依赖与完成条件。
+
 ## 当日结束留档
 
 - 生产候选 Git 提交、版本、制品及校验结果，环境和回退基线。
@@ -178,4 +186,5 @@ OSS 核对清单含 TanStack AI、Flue、Bindu、Harbor、Crabbox、Zuse、Omnar
 - OAuth/OIDC 的 provider 与完成边界，双 Worker 拓扑与 N01–N18 实机证据，高并发各档结果。
 - Fork 各阶段计时和负载说明，实验 CoW 的 Bundle 与授权边界，以及托管 Agent 接续的模型或测试替身证据。
 - Boxd 外围功能按已有、预览、缺口和待实机验证登记；既有入口附验收结果，扩展项附当前缺失环节。
+- 双 SDK 干净安装记录、具名方法覆盖、PR 预览及定时任务的负责人、首个样板和验证证据。
 - 每个未通过项的重现条件、负责人、是否阻塞生产和验证后需要收尾的分支。
