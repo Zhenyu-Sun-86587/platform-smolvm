@@ -58,16 +58,16 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 	}
 	if _, err := db.DB().ExecContext(ctx, `
 		INSERT INTO machines(id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
-		VALUES ('parent','parent','system',1,1,'running','{}','{}',0),
-		       ('child','child','system',1,1,'stopped','{}','{}',0),
-		       ('old','old','legacy',1,1,'running','{}','{}',0),
-		       ('deleted','deleted','system',1,1,'stopped','{}','{}',0);
+		VALUES ('m_parent','parent','system',1,1,'running','{}','{}',0),
+		       ('m_child','child','system',1,1,'stopped','{}','{}',0),
+		       ('m_old','old','legacy',1,1,'running','{}','{}',0),
+		       ('m_deleted','deleted','system',1,1,'stopped','{}','{}',0);
 		INSERT INTO runtime_bindings(id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,runtime_instance_id,
 			runtime_bundle_id,runtime_instance_object_id,incarnation_id,execution_epoch,power_state)
-		VALUES ('parent-b','parent',1,'parent','current','parent','digest','serve','bundle','parent-object','parent-inc',1,'standby'),
-		       ('child-b','child',1,'child','current','child','digest','serve','bundle','child-object',NULL,NULL,'stopped');
-		UPDATE machines SET current_binding_id=id||'-b' WHERE id IN ('parent','child');
-		UPDATE machines SET deleted_at=1 WHERE id='deleted';`); err != nil {
+		VALUES ('m_parent-b','m_parent',1,'parent','current','parent','digest','serve','bundle','parent-object','parent-inc',1,'standby'),
+		       ('m_child-b','m_child',1,'child','current','child','digest','serve','bundle','child-object',NULL,NULL,'stopped');
+		UPDATE machines SET current_binding_id=id||'-b' WHERE id IN ('m_parent','m_child');
+		UPDATE machines SET deleted_at=1 WHERE id='m_deleted';`); err != nil {
 		t.Fatal(err)
 	}
 	issueToken := func(scope auth.Scope) (auth.Token, string) {
@@ -86,10 +86,10 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 		}
 		return token, secret
 	}
-	parentToken, parent := issueToken(auth.Scope{Access: auth.AccessManage, MachineID: "parent"})
+	parentToken, parent := issueToken(auth.Scope{Access: auth.AccessManage, MachineID: "m_parent"})
 	_, global := issueToken(auth.Scope{Access: auth.AccessManage})
-	_, read := issueToken(auth.Scope{Access: auth.AccessRead, MachineID: "parent"})
-	_, tunnel := issueToken(auth.Scope{Access: auth.AccessTunnel, MachineID: "parent"})
+	_, read := issueToken(auth.Scope{Access: auth.AccessRead, MachineID: "m_parent"})
+	_, tunnel := issueToken(auth.Scope{Access: auth.AccessTunnel, MachineID: "m_parent"})
 	session, err := s.Auth.Session(ctx, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -131,17 +131,17 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 		}
 		return w
 	}
-	post("parent", "", body(plain), false, false, http.StatusUnauthorized)
-	post("parent", "", body(plain), true, false, http.StatusForbidden)
-	post("parent", read, body(plain), false, false, http.StatusForbidden)
-	post("parent", tunnel, body(plain), false, false, http.StatusForbidden)
-	post("child", parent, body(plain), false, false, http.StatusForbidden)
-	post("old", global, body(plain), false, false, http.StatusConflict)
-	post("deleted", global, body(plain), false, false, http.StatusNotFound)
+	post("m_parent", "", body(plain), false, false, http.StatusUnauthorized)
+	post("m_parent", "", body(plain), true, false, http.StatusForbidden)
+	post("m_parent", read, body(plain), false, false, http.StatusForbidden)
+	post("m_parent", tunnel, body(plain), false, false, http.StatusForbidden)
+	post("m_child", parent, body(plain), false, false, http.StatusForbidden)
+	post("m_old", global, body(plain), false, false, http.StatusConflict)
+	post("m_deleted", global, body(plain), false, false, http.StatusNotFound)
 	for _, bad := range []string{
 		"malformed", "cert-authority " + plain, plain + plain, strings.Repeat(" ", managedSSHCertificateRequestLimit) + plain,
 	} {
-		post("parent", parent, body(bad), false, false, http.StatusBadRequest)
+		post("m_parent", parent, body(bad), false, false, http.StatusBadRequest)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "secrets", "ssh-user-ca")); !os.IsNotExist(err) {
 		t.Fatalf("rejected requests created a signing authority: %v", err)
@@ -185,16 +185,16 @@ func TestManagedSSHCertificateAuthorizationAndBinding(t *testing.T) {
 		}
 		return cert
 	}
-	cert := readCertificate(post("parent", parent, body(plain), false, false, http.StatusOK), "parent")
-	child := readCertificate(post("child", global, body(plain), false, false, http.StatusOK), "child")
-	renewed := readCertificate(post("parent", "", body(plain), true, true, http.StatusOK), "parent")
+	cert := readCertificate(post("m_parent", parent, body(plain), false, false, http.StatusOK), "m_parent")
+	child := readCertificate(post("m_child", global, body(plain), false, false, http.StatusOK), "m_child")
+	renewed := readCertificate(post("m_parent", "", body(plain), true, true, http.StatusOK), "m_parent")
 	if bytes.Equal(cert.SignatureKey.Marshal(), child.SignatureKey.Marshal()) ||
 		!bytes.Equal(cert.SignatureKey.Marshal(), renewed.SignatureKey.Marshal()) {
 		t.Fatal("signing authority was not persisted per machine")
 	}
-	post("parent", parent, body(string(ssh.MarshalAuthorizedKey(cert))), false, false, http.StatusBadRequest)
+	post("m_parent", parent, body(string(ssh.MarshalAuthorizedKey(cert))), false, false, http.StatusBadRequest)
 	if _, err := db.DB().ExecContext(ctx, "UPDATE credentials SET revoked_at=1 WHERE id=?", parentToken.ID); err != nil {
 		t.Fatal(err)
 	}
-	post("parent", parent, body(plain), false, false, http.StatusUnauthorized)
+	post("m_parent", parent, body(plain), false, false, http.StatusUnauthorized)
 }
