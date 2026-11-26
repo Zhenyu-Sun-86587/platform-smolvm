@@ -193,35 +193,45 @@ func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 	if err != nil {
 		return err
 	}
+	return tunnelConn(ctx, ws, conn, check, controlFrames)
+}
+
+// TunnelConn serves the tunnel protocol on an already admitted stream and owns it.
+func TunnelConn(ctx context.Context, ws *websocket.Conn, conn net.Conn, check func(context.Context) error) error {
+	return tunnelConn(ctx, ws, conn, check, true)
+}
+
+func tunnelConn(ctx context.Context, ws *websocket.Conn, conn net.Conn, check func(context.Context) error, controlFrames bool) error {
 	defer conn.Close()
 	defer ws.CloseNow()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ws.SetReadLimit(1 << 20)
 	if controlFrames {
-		if err = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"ready"}`)); err != nil {
+		if err := ws.Write(ctx, websocket.MessageText, []byte(`{"type":"ready"}`)); err != nil {
 			return err
 		}
 	}
-	result := make(chan error, 2)
-	go recheckWhileActive(ctx, check, func(err error) {
+	result := make(chan error, 1)
+	report := func(err error) {
 		select {
 		case result <- err:
 		case <-ctx.Done():
 		}
-	})
+	}
+	go recheckWhileActive(ctx, check, report)
 	clientHalf, backendHalf := make(chan struct{}), make(chan struct{})
 	go func() {
 		half := false
 		for {
 			kind, msg, e := ws.Read(ctx)
 			if e != nil {
-				result <- e
+				report(e)
 				return
 			}
 			if kind == websocket.MessageBinary && !half {
 				if _, e = conn.Write(msg); e != nil {
-					result <- e
+					report(e)
 					return
 				}
 				continue
@@ -230,16 +240,20 @@ func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 				Type string `json:"type"`
 			}
 			if !controlFrames || kind != websocket.MessageText || json.Unmarshal(msg, &control) != nil || control.Type != "close_write" || half {
-				result <- errors.New("invalid tunnel frame")
+				report(errors.New("invalid tunnel frame"))
+				return
+			}
+			writer, ok := conn.(interface{ CloseWrite() error })
+			if !ok {
+				report(errors.New("tunnel backend does not support closing its write side"))
+				return
+			}
+			if e = writer.CloseWrite(); e != nil {
+				report(e)
 				return
 			}
 			half = true
 			close(clientHalf)
-			e = conn.(*net.TCPConn).CloseWrite()
-			if e != nil {
-				result <- e
-				return
-			}
 		}
 	}()
 	go func() {
@@ -248,14 +262,14 @@ func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 			n, e := conn.Read(buf)
 			if n > 0 {
 				if we := ws.Write(ctx, websocket.MessageBinary, buf[:n]); we != nil {
-					result <- we
+					report(we)
 					return
 				}
 			}
 			if e != nil {
 				if e == io.EOF {
 					if !controlFrames {
-						result <- nil
+						report(nil)
 						return
 					}
 					e = ws.Write(ctx, websocket.MessageText, []byte(`{"type":"close_write"}`))
@@ -264,7 +278,7 @@ func (b Backend) tunnel(ctx context.Context, ws *websocket.Conn, check func(cont
 						return
 					}
 				}
-				result <- e
+				report(e)
 				return
 			}
 		}
