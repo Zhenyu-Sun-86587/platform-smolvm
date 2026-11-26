@@ -78,10 +78,10 @@ func (s *Server) readDesktopIntent(ctx context.Context, id string) (desktopLease
 	return intent, err
 }
 
-func (s *Server) desktopWorker(binding registry.Binding) (workerclient.Client, bool, error) {
+func (s *Server) desktopWorker(binding registry.Binding) (workerclient.LifecycleControl, bool, error) {
 	adapter, err := s.ForBinding(binding)
 	if err != nil {
-		return workerclient.Client{}, false, err
+		return nil, false, err
 	}
 	client, managed := lifecycle.PolicyClient(adapter, binding)
 	return client, managed, nil
@@ -194,7 +194,7 @@ func (s *Server) upgradeDesktop(ctx context.Context, id string, binding registry
 	return s.driveDesktopIntent(ctx, id, p)
 }
 
-func desktopProtectionStatus(ctx context.Context, client workerclient.Client, scope workerclient.Execution, lease, principal string) (desktopProtection, error) {
+func desktopProtectionStatus(ctx context.Context, client workerclient.LifecycleControl, scope workerclient.Execution, lease, principal string) (desktopProtection, error) {
 	var ack desktopProtection
 	err := client.Lifecycle(ctx, "QueryProtection", "", scope,
 		map[string]string{"protection_id": lease, "principal": principal}, &ack)

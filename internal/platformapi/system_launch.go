@@ -63,6 +63,21 @@ func (s *Server) createDefaults(input lifecycle.Create, boot templates.Spec, use
 }
 
 func (s *Server) systemNetwork(input lifecycle.Create, defaults settings) (*rt.LaunchNetwork, error) {
+	if input.Placement != nil || s.remoteRuntime(input.RuntimeInstanceID) {
+		if input.Network == nil && defaults.NetworkID == "" {
+			return nil, nil
+		}
+		network := rt.LaunchNetwork{NetworkID: defaults.NetworkID, Mode: defaults.NetworkMode}
+		if input.Network != nil {
+			if input.Network.NetworkID != "" {
+				network.NetworkID = input.Network.NetworkID
+			}
+			if input.Network.Mode != "" {
+				network.Mode = input.Network.Mode
+			}
+		}
+		return &network, nil
+	}
 	for _, route := range s.Config.Runtime.Custom {
 		if route.InstanceID != input.RuntimeInstanceID {
 			continue

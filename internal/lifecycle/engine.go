@@ -22,7 +22,7 @@ import (
 )
 
 type Engine struct {
-	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.Client)
+	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.LifecycleControl)
 	ReleaseDesktopLeases  func(context.Context)
 	collectorSession      string
 	DB                    *registry.Store
@@ -64,7 +64,13 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 	return e.runtimes.Admit(route, kind)
 }
 
+type Placement struct {
+	Mode     string `json:"mode"`
+	WorkerID string `json:"worker_id,omitempty"`
+}
+
 type Create struct {
+	Placement         *Placement        `json:"placement,omitempty"`
 	LifecyclePolicy   json.RawMessage   `json:"lifecycle_policy,omitempty"`
 	Name              string            `json:"name"`
 	TemplateID        string            `json:"template_id"`

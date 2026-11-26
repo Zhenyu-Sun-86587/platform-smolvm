@@ -16,7 +16,9 @@ import (
 )
 
 type packetWakeContext struct {
-	client     workerclient.Client
+	client     workerclient.BindingControl
+	workerID   string
+	routeID    string
 	execution  workerclient.Execution
 	endpoint   workerclient.PacketWakeEndpoint
 	revision   int64
@@ -40,8 +42,8 @@ func (s *Server) packetWakeEndpoint(ctx context.Context, machineID string) (pack
 	launcher, ok := adapter.(interface {
 		DiscoverLaunchBinding(context.Context, string) (rt.LaunchBinding, error)
 	})
-	socket := privateServiceWorker(adapter)
-	if !ok || socket == "" {
+	client := workerclient.ForAdapter(adapter, binding.RuntimeBundleID)
+	if !ok || client == nil {
 		return result, rt.ErrUnsupported
 	}
 	observed, err := launcher.DiscoverLaunchBinding(ctx, binding.RuntimeName)
@@ -51,7 +53,7 @@ func (s *Server) packetWakeEndpoint(ctx context.Context, machineID string) (pack
 	if observed.InstanceID != binding.RuntimeInstanceObjectID || observed.ExecutionEpoch < binding.ExecutionEpoch {
 		return result, registry.ErrGeneration
 	}
-	result.client = workerclient.Client{Socket: socket, Bundle: binding.RuntimeBundleID}
+	result.client, result.workerID, result.routeID = client, binding.WorkerID, binding.RuntimeInstanceID
 	result.revision = machine.Revision
 	result.generation = machine.BindingGeneration
 	result.execution = workerclient.Execution{InstanceID: observed.InstanceID, Epoch: observed.ExecutionEpoch}
@@ -156,10 +158,15 @@ func (s *Server) privatePacketWakeRule(w http.ResponseWriter, r *http.Request, p
 	if err != nil {
 		return err
 	}
-	if source.client.Socket != target.client.Socket || source.endpoint.NetworkID != target.endpoint.NetworkID {
+	if source.workerID != target.workerID || source.routeID != target.routeID || source.endpoint.NetworkID != target.endpoint.NetworkID {
 		return auth.ErrForbidden
 	}
 	if r.Method == http.MethodPut {
+		if *change.Enabled {
+			if err = s.DB.CheckWorkerEntrance(ctx, target.workerID, "packet_wake_enable"); err != nil {
+				return err
+			}
+		}
 		if change.ExpectedGeneration != target.generation {
 			return registry.ErrGeneration
 		}

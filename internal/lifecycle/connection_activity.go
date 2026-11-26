@@ -29,7 +29,7 @@ func (e *Engine) registerConnection(ctx context.Context, b registry.Binding, id,
 	return connection, err
 }
 
-func (a connectionActivity) end(ctx context.Context, client workerclient.Client) error {
+func (a connectionActivity) end(ctx context.Context, client workerclient.LifecycleControl) error {
 	args := map[string]any{"protection_id": a.id, "principal": a.principal}
 	var ack protectionReceipt
 	err := client.Lifecycle(ctx, "CloseAccessProtection", a.id+"-end", a.execution, args, &ack)
@@ -64,14 +64,14 @@ func (a connectionActivity) end(ctx context.Context, client workerclient.Client)
 	return err
 }
 
-func (e *Engine) closeConnection(ctx context.Context, a connectionActivity, client workerclient.Client) {
+func (e *Engine) closeConnection(ctx context.Context, a connectionActivity, client workerclient.LifecycleControl) {
 	_, err := e.DB.DB().ExecContext(ctx, "UPDATE connection_activity SET closing=1,last_attempt=? WHERE id=?", time.Now().UnixMilli(), a.id)
 	if err == nil && a.end(ctx, client) == nil {
 		_, _ = e.DB.DB().ExecContext(ctx, "DELETE FROM connection_activity WHERE id=? AND closing=1", a.id)
 	}
 }
 
-func (e *Engine) connectionRelease(a connectionActivity, client workerclient.Client) func() {
+func (e *Engine) connectionRelease(a connectionActivity, client workerclient.LifecycleControl) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		defer cancel()
@@ -81,7 +81,7 @@ func (e *Engine) connectionRelease(a connectionActivity, client workerclient.Cli
 
 // HoldConnectionActivity protects work forwarded over a live, authenticated
 // platform connection. Explicit running leases have their own owner and TTL.
-func (e *Engine) HoldConnectionActivity(ctx context.Context, b registry.Binding, client workerclient.Client, principal, reason string) (func(), error) {
+func (e *Engine) HoldConnectionActivity(ctx context.Context, b registry.Binding, client workerclient.LifecycleControl, principal, reason string) (func(), error) {
 	id, err := registry.NewID("access-")
 	if err != nil {
 		return nil, err

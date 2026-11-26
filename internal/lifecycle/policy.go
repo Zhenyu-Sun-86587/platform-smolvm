@@ -37,10 +37,16 @@ type WorkerLifecycleStatus struct {
 	} `json:"last_decision"`
 }
 
-func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.Client, bool) {
+func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.LifecycleControl, bool) {
+	if b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
+		return nil, false
+	}
+	if remote, ok := adapter.(workerclient.LifecycleControl); ok {
+		return remote, true
+	}
 	p, ok := adapter.(interface{ LifecycleWorkerSocket() string })
-	if !ok || p.LifecycleWorkerSocket() == "" || b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
-		return workerclient.Client{}, false
+	if !ok || p.LifecycleWorkerSocket() == "" {
+		return nil, false
 	}
 	return workerclient.Client{Socket: p.LifecycleWorkerSocket(), Bundle: b.RuntimeBundleID}, true
 }

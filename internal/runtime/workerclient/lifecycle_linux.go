@@ -9,6 +9,16 @@ import (
 	"net"
 )
 
+// LifecycleControl is the binding-scoped lifecycle and Guest Agent boundary.
+type LifecycleControl interface {
+	Lifecycle(context.Context, string, string, Execution, any, any) error
+	OpenScopedGuest(context.Context, Execution) (net.Conn, error)
+}
+
+func (c Client) OpenScopedGuest(ctx context.Context, execution Execution) (net.Conn, error) {
+	return c.OpenGuestAgent(ctx, execution)
+}
+
 func lifecycleMethod(name string) bool {
 	switch name {
 	case "QueryLifecycleEvents", "QueryHostActivity", "GetLifecycleStatus", "ApplyLifecyclePolicy", "ReportActivity", "AcquireActivityHold", "ReleaseActivityHold",

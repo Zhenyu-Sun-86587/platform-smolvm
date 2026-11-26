@@ -8,7 +8,7 @@ import (
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
-func managedCPULimit(ctx context.Context, j *lifecycle.Job, limit *uint32) (workerclient.CPULimitReceipt, error) {
+func managedCPULimit(ctx context.Context, j *lifecycle.Job, limit *uint32, client workerclient.BindingControl) (workerclient.CPULimitReceipt, error) {
 	var receipt workerclient.CPULimitReceipt
 	scope := lifecycle.WorkerExecution(j.Binding)
 	if j.Intent.Stage == "managed_resource_cpu_limit" {
@@ -23,7 +23,6 @@ func managedCPULimit(ctx context.Context, j *lifecycle.Job, limit *uint32) (work
 			return receipt, err
 		}
 	}
-	client := workerclient.Client{Socket: privateServiceWorker(j.Runtime), Bundle: j.Binding.RuntimeBundleID}
 	receipt, err := client.SetManagedCPULimit(ctx, j.Op.ID+"-cpu-limit", scope, limit)
 	if err != nil {
 		if workerclient.RetryDelivery(err) {

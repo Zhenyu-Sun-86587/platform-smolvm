@@ -374,12 +374,11 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 // The durable receipt authorizes publication even if this optional detailed
 // readback is unavailable (for example with a historical Worker).
 func (j *Job) observeCapturedScope(ctx context.Context, point rt.StatePointProgress) *snapshots.CapturedScope {
-	runtime, ok := j.Runtime.(interface{ WorkerSocket() string })
+	client := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID)
 	request := j.Intent.StatePoint
-	if !ok || runtime.WorkerSocket() == "" || request == nil || request.Expected.IncarnationID == nil {
+	if client == nil || request == nil || request.Expected.IncarnationID == nil {
 		return nil
 	}
-	client := workerclient.Client{Socket: runtime.WorkerSocket(), Bundle: j.Binding.RuntimeBundleID}
 	ref := workerclient.Execution{InstanceID: request.Expected.InstanceID, IncarnationID: *request.Expected.IncarnationID,
 		Epoch: request.Expected.ExecutionEpoch}
 	raw, err := client.StatePointCapture(ctx, ref, request.OperationID, request.RequestDigest, point.CaptureID)

@@ -41,7 +41,7 @@ type leaseWork struct {
 	AcceptedPower     string     `json:"accepted_power,omitempty"`
 }
 
-func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Principal, b registry.Binding, client workerclient.Client, id string, revision int64, v leaseRequest) error {
+func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Principal, b registry.Binding, client workerclient.LifecycleControl, id string, revision int64, v leaseRequest) error {
 	if v.Version < 0 || v.Version > 2 {
 		return registry.ErrInvalid
 	}
@@ -145,7 +145,7 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 	return write(w, 200, lease)
 }
 
-func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
+func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.LifecycleControl, id string, disclose bool) (Lease, error) {
 	// HTTP replays and the recovery monitor share the durable intent. Only its
 	// owner acquires a temporary access hold. Each waiter then reads the receipt
 	// and applies its own one-time token disclosure rule.
@@ -175,7 +175,7 @@ func (s *Server) lockLeaseDelivery(ctx context.Context, id string) (func(), erro
 	}
 }
 
-func (s *Server) driveWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
+func (s *Server) driveWorkerLease(ctx context.Context, client workerclient.LifecycleControl, id string, disclose bool) (Lease, error) {
 	var l Lease
 	var machine, bindingID, principal, credential, state, raw, scopeRaw string
 	var rejected *string
@@ -393,7 +393,7 @@ func (s *Server) driveWorkerLease(ctx context.Context, client workerclient.Clien
 	return l, err
 }
 
-func (s *Server) recoverWorkerLeases(ctx context.Context, b registry.Binding, client workerclient.Client) {
+func (s *Server) recoverWorkerLeases(ctx context.Context, b registry.Binding, client workerclient.LifecycleControl) {
 	rows, err := s.DB.ReadDB().QueryContext(ctx, "SELECT id FROM lifecycle_lease_intents WHERE binding_id=? AND state='pending' ORDER BY created_at", b.ID)
 	if err != nil {
 		return

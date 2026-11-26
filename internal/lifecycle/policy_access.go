@@ -99,7 +99,7 @@ func (w accessPolicyWorker) Lifecycle(ctx context.Context, method, key string, e
 	}
 }
 
-func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b registry.Binding, client workerclient.Client, entry AccessEndpoint) (registry.Binding, func(), error) {
+func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b registry.Binding, client workerclient.LifecycleControl, entry AccessEndpoint) (registry.Binding, func(), error) {
 	var none registry.Binding
 	ctx, cancel := context.WithTimeout(parent, time.Duration(e.Config.Gateway.WaitSeconds)*time.Second)
 	defer cancel()

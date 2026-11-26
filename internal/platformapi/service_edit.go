@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sandbox-platform/internal/runtime/workerclient"
 	"strings"
 	"time"
 
@@ -122,8 +123,8 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 	if req.Edit.Readiness != nil {
 		v.Readiness = *req.Edit.Readiness
 	}
-	if req.Edit.GuestPort != 0 && privateServiceWorker(j.Runtime) != "" {
-		if _, _, err := workerServiceAttachment(ctx, privateServiceWorker(j.Runtime), j.Binding); err != nil {
+	if worker := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID); req.Edit.GuestPort != 0 && worker != nil {
+		if _, err := workerServiceAttachment(ctx, worker, j.Binding); err != nil {
 			return err
 		}
 		v.GuestPort = req.Edit.GuestPort
@@ -175,7 +176,7 @@ func (s *Server) updateService(ctx context.Context, j *lifecycle.Job) error {
 		v.GuestPort = req.Edit.GuestPort
 	}
 	return j.Done(ctx, registry.TransitionRequest{Effect: "applied", Result: lifecycle.JSON(map[string]any{"service_id": v.ID, "revision": v.Revision + 1}), Apply: func(ctx context.Context, tx *sql.Tx) error {
-		if req.Edit.GuestPort != 0 && privateServiceWorker(j.Runtime) != "" {
+		if worker := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID); req.Edit.GuestPort != 0 && worker != nil {
 			var present bool
 			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM services WHERE machine_id=? AND guest_port=? AND id<>?)", v.MachineID, v.GuestPort, v.ID).Scan(&present); err != nil {
 				return err

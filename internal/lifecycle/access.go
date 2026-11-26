@@ -48,6 +48,9 @@ func (e *Engine) AccessAt(ctx context.Context, p auth.Principal, id string, entr
 	m, err := e.DB.GetMachine(ctx, id)
 	if err == nil && m.CurrentBinding != nil {
 		adapter, routeErr := e.ForBinding(*m.CurrentBinding)
+		if routeErr == nil {
+			routeErr = e.DB.CheckWorkerEntrance(ctx, m.CurrentBinding.WorkerID, "access")
+		}
 		if routeErr != nil {
 			err = routeErr
 		} else if client, ok := PolicyClient(adapter, *m.CurrentBinding); ok {

@@ -3,6 +3,7 @@ package platformapi
 import (
 	"encoding/json"
 	"net/http"
+	"sandbox-platform/internal/runtime/workerclient"
 
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/registry"
@@ -72,8 +73,8 @@ func (s *Server) networkRoutes() {
 		endpoint := privateEndpoint{NetworkID: spec.Network.NetworkID, Mode: spec.Network.Mode, State: "unavailable"}
 		if binding := machine.CurrentBinding; binding != nil {
 			adapter, err := s.ForBinding(*binding)
-			if err == nil && privateServiceWorker(adapter) != "" {
-				_, attachment, err := workerServiceAttachment(ctx, privateServiceWorker(adapter), *binding)
+			if worker := workerclient.ForAdapter(adapter, binding.RuntimeBundleID); err == nil && worker != nil {
+				attachment, err := workerServiceAttachment(ctx, worker, *binding)
 				if err == nil && (attachment.NetworkID == "" || attachment.NetworkID == spec.Network.NetworkID) && attachment.Lease.Attachment.Mode == endpoint.Mode {
 					lease := attachment.Lease
 					endpoint.State = "published"

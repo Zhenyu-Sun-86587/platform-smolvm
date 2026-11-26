@@ -85,7 +85,7 @@ func Open(ctx context.Context, adapter rt.Adapter, binding registry.Binding, rea
 	if !ok || binding.PowerState != registry.PowerRunning || execution.IncarnationID == "" || execution.Epoch <= 0 {
 		return nil, rt.ErrUnsupported
 	}
-	conn, err := client.OpenGuestAgent(ctx, execution)
+	conn, err := client.OpenScopedGuest(ctx, execution)
 	if err != nil {
 		return nil, workerError(err)
 	}
