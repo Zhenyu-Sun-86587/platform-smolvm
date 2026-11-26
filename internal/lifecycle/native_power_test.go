@@ -17,10 +17,21 @@ type nativePowerRuntime struct {
 	submissions    int
 	receipt        rt.OperationReceipt
 	inventoryError error
+	stopBarrier    bool
 }
 
 func (n *nativePowerRuntime) DiscoverExecution(context.Context, string) (rt.ExecutionRef, error) {
 	return n.execution, nil
+}
+
+func (n *nativePowerRuntime) NativeStopContract() bool { return true }
+
+func (n *nativePowerRuntime) DiscoverLaunchBinding(context.Context, string) (rt.LaunchBinding, error) {
+	ref := rt.LaunchBinding{InstanceID: n.execution.InstanceID, ExecutionEpoch: n.execution.ExecutionEpoch}
+	if n.disposition != "EXITED" {
+		ref.IncarnationID = &n.execution.IncarnationID
+	}
+	return ref, nil
 }
 
 func (n *nativePowerRuntime) NativeInventory(_ context.Context, ref rt.ExecutionRef) (rt.NativeInventory, error) {
@@ -36,6 +47,7 @@ func (n *nativePowerRuntime) NativeInventory(_ context.Context, ref rt.Execution
 	result.Inventory.Protocol = rt.ManagedStandbyContract
 	result.Inventory.SourceDisposition = n.disposition
 	result.Inventory.MeasuredHelper = true
+	result.Inventory.StopBarrier = n.stopBarrier
 	result.Inventory.StandbyBlocker = []byte("null")
 	result.Inventory.Devices = []rt.NativeDevice{{VirtioType: 2}}
 	return result, nil
@@ -49,6 +61,8 @@ func (n *nativePowerRuntime) SubmitNative(_ context.Context, request rt.NativeSu
 	n.disposition = "RUNNING"
 	if request.Kind == rt.Standby {
 		n.disposition = "STANDBY"
+	} else if request.Kind == "stop" {
+		n.disposition = "EXITED"
 	}
 	n.receipt = rt.OperationReceipt{
 		OperationID: request.OperationID, Kind: request.Kind, RequestDigest: request.RequestDigest,
@@ -57,7 +71,7 @@ func (n *nativePowerRuntime) SubmitNative(_ context.Context, request rt.NativeSu
 		Phase: "COMPLETED", Decision: "NONE", Revision: 5,
 		Native: &rt.NativeProgress{Stage: "complete", Mode: "managed", SourceDisposition: n.disposition},
 	}
-	if request.Kind == rt.Standby {
+	if request.Kind == rt.Standby || request.Kind == "stop" {
 		return rt.OperationReceipt{}, rt.ErrUnavailable
 	}
 	return n.receipt, nil
@@ -159,5 +173,47 @@ func TestNativePowerReconcilesOriginalWorkerOperationAfterRestart(t *testing.T) 
 	wrong.IncarnationID = "foreign-execution"
 	if err := db.ObserveMachine(ctx, binding.ID, nativeObservation(binding, wrong, registry.PowerStandby, binding.CapabilityProfileID)); !errors.Is(err, registry.ErrStaleObservation) {
 		t.Fatalf("foreign observation admitted: %v", err)
+	}
+	stop := request
+	stop.Kind, stop.Key, stop.Scope = "stop", "try-stop", "POST /v1/machines/m_native/stop"
+	stop.ExpectedRevision = 3
+	if _, _, err := db.Accept(ctx, stop); !errors.As(err, &capability) || capability.Status.Supported {
+		t.Fatalf("stop without a negotiated write barrier = %v", err)
+	}
+	worker.stopBarrier = true
+	if !engine.observeNativePower(ctx, binding, worker) {
+		t.Fatal("could not confirm the native stop barrier")
+	}
+	machine, err := db.GetMachine(ctx, stop.MachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop.ExpectedRevision = machine.Revision
+	exit, _, err := db.Accept(ctx, stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.drive(ctx, exit); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err = db.GetOperation(ctx, exit.ID)
+	if err != nil || dispatched.State != registry.Observing || worker.submissions != 3 {
+		t.Fatal(dispatched, worker.submissions, err)
+	}
+	engine = New(db, engine.runtimes, engine.Config)
+	if err := engine.drive(ctx, dispatched); err != nil {
+		t.Fatal(err)
+	}
+	replayed, found, err = db.Accept(ctx, stop)
+	if err != nil || !found || replayed.ID != exit.ID || replayed.State != registry.Succeeded ||
+		replayed.SourceDisposition != registry.SourceExited || worker.submissions != 3 {
+		t.Fatal(replayed, worker.submissions, found, err)
+	}
+	machine, err = db.GetMachine(ctx, stop.MachineID)
+	if err != nil || machine.DesiredPower != "stopped" || machine.CurrentBinding == nil ||
+		machine.CurrentBinding.PowerState != registry.PowerStopped || machine.CurrentBinding.IncarnationID != execution.IncarnationID ||
+		WorkerExecution(*machine.CurrentBinding).IncarnationID != "" ||
+		machine.CurrentBinding.ExecutionEpoch != execution.ExecutionEpoch {
+		t.Fatal(machine, err)
 	}
 }

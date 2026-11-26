@@ -118,6 +118,8 @@ type NativeObservation struct {
 	VerifiedLaunch         bool
 	ForkCapabilities       map[string]rt.Capability
 	VerifiedRestore        bool
+	VerifiedStop           bool
+	StopBarrier            *bool
 	HibernatedCapture      string
 }
 

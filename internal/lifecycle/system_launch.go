@@ -245,6 +245,7 @@ func (j *Job) promoteSystemExecution(ctx context.Context, launcher rt.NativeLaun
 	}
 	observation := nativeObservation(j.Binding, ref, registry.PowerRunning, profile)
 	observation.Native.VerifiedLaunch = true
+	observation.Native.StopBarrier = &inventory.Inventory.StopBarrier
 	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	return j.Done(ctx, registry.TransitionRequest{
 		Observation: &observation, Effect: registry.EffectApplied, PromoteBinding: j.Op.Kind == "create", DesiredPower: "running",

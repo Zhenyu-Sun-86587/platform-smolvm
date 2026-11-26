@@ -27,6 +27,7 @@ import {
 
 export function powerDialog(m: Machine, actions: Actions, kind: string) {
   const deleting = kind === "delete"
+  const managed = Boolean(m.binding?.runtime_instance_id && m.binding?.runtime_bundle_id)
   actions.dialog({
     title: (kind === "stop" ? "Cold stop" : kind === "pause" ? "Hibernate" : label(kind)) + " machine",
     submit: label(kind),
@@ -42,7 +43,7 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
     fields:
       kind === "pause"
         ? [{ name: "allow_active_tasks", label: "Include active persistent tasks", type: "checkbox" }]
-        : kind === "stop"
+        : kind === "stop" && !managed
           ? [{ name: "cancel_tasks", label: "Cancel active persistent tasks first", type: "checkbox" }]
           : [],
     act: (f) =>
@@ -258,7 +259,7 @@ export function WorkspaceActions({
             Wake
           </DropdownMenuItem>
           {running && (
-            <DropdownMenuItem onSelect={() => powerDialog(m, actions, "stop")}>
+            <DropdownMenuItem disabled={deep && Boolean(fullStateBlock(m, "lifecycle.stop"))} title={deep ? fullStateBlock(m, "lifecycle.stop") : undefined} onSelect={() => powerDialog(m, actions, "stop")}>
               <Power />
               Cold stop
             </DropdownMenuItem>

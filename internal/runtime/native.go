@@ -32,6 +32,7 @@ type NativeInventory struct {
 		Protocol          string          `json:"protocol"`
 		SourceDisposition string          `json:"source_disposition"`
 		MeasuredHelper    bool            `json:"measured_helper"`
+		StopBarrier       bool            `json:"stop_barrier"`
 		StandbyBlocker    json.RawMessage `json:"standby_blocker"`
 		Devices           []NativeDevice  `json:"devices"`
 	} `json:"inventory"`
@@ -101,12 +102,20 @@ type NativeControl interface {
 	QueryOperation(context.Context, string) (OperationReceipt, error)
 }
 
+type NativeStopControl interface {
+	NativeControl
+	DiscoverLaunchBinding(context.Context, string) (LaunchBinding, error)
+	NativeStopContract() bool
+}
+
 func NativePowerCapability(kind string) string {
 	switch kind {
 	case Standby:
 		return "lifecycle.standby"
 	case Wake:
 		return "lifecycle.standby_wake"
+	case "stop":
+		return "lifecycle.stop"
 	default:
 		return ""
 	}

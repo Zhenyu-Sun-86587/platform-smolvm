@@ -48,6 +48,12 @@ func (r *Resolver) Admit(route BundleRoute, kind string) error {
 	}
 	if route != (BundleRoute{}) && NativePowerCapability(kind) != "" {
 		adapter, err := r.ForBinding(BindingRuntime{BundleRoute: route})
+		if kind == "stop" {
+			if stop, ok := adapter.(NativeStopControl); err == nil && ok && stop.NativeStopContract() {
+				return nil
+			}
+			return NativePowerUnavailable(kind)
+		}
 		if _, ok := adapter.(NativeControl); err == nil && ok {
 			return nil
 		}

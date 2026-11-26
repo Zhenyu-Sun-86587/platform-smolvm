@@ -20,10 +20,21 @@ func (e *Engine) NativePowerCapability(binding registry.Binding, kind string) rt
 		e.AdmitRuntime(bindingRuntime(binding).BundleRoute, kind) != nil {
 		return capability
 	}
+	if kind == "stop" {
+		var evidence struct {
+			StopBarrier bool `json:"native_stop_barrier"`
+		}
+		if json.Unmarshal(binding.Health, &evidence) != nil || !evidence.StopBarrier {
+			return capability
+		}
+	}
 	return rt.Capability{Status: "supported", Supported: true, ContractVersion: 1, VerifiedProfile: binding.CapabilityProfileID}
 }
 
 func (e *Engine) AdmitNativePower(binding registry.Binding, kind string) error {
+	if kind == "stop" && binding.PowerState != registry.PowerRunning {
+		return &Failure{"STATE_CONFLICT", "cold stop requires a running System execution"}
+	}
 	capability := e.NativePowerCapability(binding, kind)
 	if !capability.Supported {
 		return &rt.CapabilityError{Capability: rt.NativePowerCapability(kind), Status: capability}
@@ -83,6 +94,7 @@ func (e *Engine) observeNativePower(ctx context.Context, binding registry.Bindin
 		profile = binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
 	}
 	observation := nativeObservation(binding, ref, power, profile)
+	observation.Native.StopBarrier = &inventory.Inventory.StopBarrier
 	observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
 	digest := e.observeSystemGuest(ctx, binding, adapter, &observation)
 	if err := e.DB.ObserveMachine(ctx, binding.ID, observation); err != nil {
@@ -104,7 +116,14 @@ func (j *Job) nativePower(ctx context.Context, control rt.NativeControl) error {
 		return rt.NativePowerUnavailable(j.Op.Kind)
 	}
 	parameters := rt.NativeParameters{}
-	if j.Op.Kind == rt.Standby {
+	if j.Op.Kind == "stop" {
+		if !inventory.Inventory.StopBarrier {
+			return rt.NativePowerUnavailable(j.Op.Kind)
+		}
+		if inventory.Inventory.SourceDisposition != "RUNNING" {
+			return &Failure{"STATE_CONFLICT", "cold stop requires a running System execution"}
+		}
+	} else if j.Op.Kind == rt.Standby {
 		if inventory.Inventory.SourceDisposition != "RUNNING" {
 			return &Failure{"STATE_CONFLICT", "native execution is not running"}
 		}
@@ -121,10 +140,26 @@ func (j *Job) nativePower(ctx context.Context, control rt.NativeControl) error {
 	if err := j.Stage(ctx, "worker_submission", ""); err != nil {
 		return err
 	}
+	return j.submitNative(ctx, control)
+}
+
+func (j *Job) submitNative(ctx context.Context, control rt.NativeControl) error {
+	request := *j.Intent.Native
 	receipt, err := control.SubmitNative(ctx, request)
 	if err != nil {
 		if refusal := nativeRefusal(err); refusal != nil {
-			return refusal
+			if request.Kind != "stop" {
+				return refusal
+			}
+			known, queryErr := control.QueryOperation(ctx, request.OperationID)
+			if queryErr == nil {
+				j.Written = true
+				return j.recordNativeReceipt(ctx, known)
+			}
+			if launchReceiptMissing(queryErr) {
+				j.Written = false
+				return refusal
+			}
 		}
 		// Observe the original operation after a lost response. The Worker owns
 		// an accepted transition independently of the Submit connection.
@@ -196,6 +231,16 @@ func nativeRefusal(err error) error {
 func (j *Job) reconcileNative(ctx context.Context, control rt.NativeControl) error {
 	j.Written = true
 	receipt, err := control.QueryOperation(ctx, j.Op.ID)
+	if j.Op.Kind == "stop" && launchReceiptMissing(err) {
+		if j.Intent.Native == nil || j.Intent.Native.Expected != j.Binding.ExecutionRef() {
+			return j.fail(ctx, registry.ErrStaleObservation)
+		}
+		err = j.submitNative(ctx, control)
+		if err != nil && !errors.Is(err, registry.ErrOperationState) && !errors.Is(err, rt.ErrUnavailable) {
+			return j.fail(ctx, err)
+		}
+		return err
+	}
 	if err != nil {
 		if errors.Is(err, rt.ErrUnavailable) {
 			return err
@@ -203,7 +248,7 @@ func (j *Job) reconcileNative(ctx context.Context, control rt.NativeControl) err
 		return j.fail(ctx, err)
 	}
 	err = j.recordNativeReceipt(ctx, receipt)
-	if err != nil && !errors.Is(err, registry.ErrOperationState) {
+	if err != nil && !errors.Is(err, registry.ErrOperationState) && (j.Op.Kind != "stop" || !errors.Is(err, rt.ErrUnavailable)) {
 		return j.fail(ctx, err)
 	}
 	return err
@@ -229,6 +274,9 @@ func (j *Job) recordNativeReceipt(ctx context.Context, receipt rt.OperationRecei
 		result.State, result.Stage = registry.Observing, progress.Stage
 		return j.transition(ctx, result)
 	case "COMPLETED":
+		if request.Kind == "stop" {
+			return j.confirmNativeStop(ctx, receipt)
+		}
 		want, power := registry.SourceStandby, registry.PowerStandby
 		if request.Kind == rt.Wake {
 			want, power = registry.SourceRunning, registry.PowerRunning

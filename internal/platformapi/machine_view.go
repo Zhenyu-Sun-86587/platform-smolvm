@@ -115,6 +115,9 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 			for _, kind := range []string{rt.Standby, rt.Wake} {
 				v.Capabilities[rt.NativePowerCapability(kind)] = s.NativePowerCapability(*b, kind)
 			}
+			if boot.BootMode == rt.BootSystem {
+				v.Capabilities[rt.NativePowerCapability("stop")] = s.NativePowerCapability(*b, "stop")
+			}
 			for _, kind := range []string{rt.VMSnapshot, rt.Hibernate, rt.VMRestore, rt.VMRollback} {
 				if capability, err := s.StatePointCapability(ctx, *b, kind); err == nil {
 					v.Capabilities[rt.FullStateOperationCapability(kind)] = capability

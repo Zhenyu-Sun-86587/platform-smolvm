@@ -397,7 +397,7 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 	if err == nil || parent.Err() != nil {
 		return err
 	}
-	if useNative && j.Intent.Native == nil && errors.Is(err, rt.ErrUnavailable) {
+	if useNative && (j.Intent.Native == nil || op.Kind == "stop") && errors.Is(err, rt.ErrUnavailable) {
 		// The preflight has issued no operation. A restarted Worker may need
 		// another observation before the original intent can be dispatched.
 		return err

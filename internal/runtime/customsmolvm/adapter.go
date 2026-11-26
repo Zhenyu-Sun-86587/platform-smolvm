@@ -65,6 +65,8 @@ func (a *Adapter) LifecycleWorkerSocket() string {
 	return ""
 }
 
+func (a *Adapter) NativeStopContract() bool { return a.lifecyclePolicy }
+
 func (a *Adapter) Admit(kind string) error {
 	if kind == "configure" && a.LifecycleWorkerSocket() != "" {
 		return nil
