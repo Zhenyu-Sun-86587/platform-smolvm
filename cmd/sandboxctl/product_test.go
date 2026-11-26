@@ -9,13 +9,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/spf13/cobra"
 )
 
 func runCLI(t *testing.T, handler http.Handler, args []string, stdin io.Reader) (string, string, int) {
@@ -37,8 +40,50 @@ func runCLI(t *testing.T, handler http.Handler, args []string, stdin io.Reader) 
 	return stdout.String(), stderr.String(), code
 }
 
+type cliExample struct {
+	Exit       int             `json:"exit"`
+	StrictExit int             `json:"strict_exit"`
+	Stdout     json.RawMessage `json:"stdout"`
+	Stderr     json.RawMessage `json:"stderr"`
+}
+
+func cliExamples(t *testing.T) map[string]cliExample {
+	t.Helper()
+	raw, err := os.ReadFile("../../api/fixtures/polish-cli.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases map[string]cliExample
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		t.Fatal(err)
+	}
+	delete(all, "p0_revision")
+	cases = make(map[string]cliExample, len(all))
+	for name, value := range all {
+		var example cliExample
+		if err := json.Unmarshal(value, &example); err != nil {
+			t.Fatal(err)
+		}
+		cases[name] = example
+	}
+	return cases
+}
+
+func equalJSON(t *testing.T, got string, want json.RawMessage) {
+	t.Helper()
+	var left, right any
+	if err := json.Unmarshal([]byte(got), &left); err != nil {
+		t.Fatalf("result is not a single JSON object: %q, %v", got, err)
+	}
+	if err := json.Unmarshal(want, &right); err != nil || !reflect.DeepEqual(left, right) {
+		t.Fatalf("JSON %s differs from fixture %s (%v)", got, want, err)
+	}
+}
+
 func TestOperationPartialCompatibilityAndStrictResult(t *testing.T) {
-	const receipt = `{"operation_id":"op_fork","state":"succeeded","effect":"partial","children":[{"ordinal":0,"state":"ready"},{"ordinal":1,"state":"quarantined"}]}`
+	example := cliExamples(t)["partial_fork"]
+	receipt := string(example.Stdout)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/operations/op_fork" {
 			t.Errorf("unexpected request: %s", r.URL)
@@ -47,14 +92,15 @@ func TestOperationPartialCompatibilityAndStrictResult(t *testing.T) {
 	})
 	for _, strict := range []bool{false, true} {
 		args := []string{"--json", "operations", "wait", "op_fork"}
-		expected := 0
+		expected := example.Exit
 		if strict {
-			args, expected = append(args, "--strict-result"), 1
+			args, expected = append(args, "--strict-result"), example.StrictExit
 		}
 		out, stderr, code := runCLI(t, handler, args, nil)
-		if code != expected || stderr != "" || strings.TrimSpace(out) != receipt {
+		if code != expected || stderr != "" {
 			t.Fatalf("strict=%v exit=%d stdout=%q stderr=%q", strict, code, out, stderr)
 		}
+		equalJSON(t, out, example.Stdout)
 	}
 }
 
@@ -66,12 +112,11 @@ func TestOperationTimeoutKeepsAcceptedID(t *testing.T) {
 		_, _ = io.WriteString(w, `{"operation_id":"op_original","state":"observing","effect":"none"}`)
 	})
 	out, stderr, code := runCLI(t, handler, []string{"--json", "--wait-timeout", "100ms", "operations", "wait", "op_original"}, nil)
-	var response struct{ Error apiErrorDetail }
-	if err := json.Unmarshal([]byte(stderr), &response); err != nil || code != 124 || out != "" ||
-		response.Error.OperationID != "op_original" || response.Error.Code != "OPERATION_WAIT_TIMEOUT" ||
-		response.Error.Retry != "poll_operation" || response.Error.Effect != "unknown" {
-		t.Fatalf("exit=%d stdout=%q stderr=%q, %v", code, out, stderr, err)
+	example := cliExamples(t)["operation_wait_timeout"]
+	if code != example.Exit || out != "" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
 	}
+	equalJSON(t, stderr, example.Stderr)
 }
 
 func TestDifferentMachineIDsWithExactNameAreAmbiguous(t *testing.T) {
@@ -231,5 +276,46 @@ func TestJSONMutationUncertaintyKeepsSingleEnvelopeAndRequestID(t *testing.T) {
 			(status == http.StatusConflict && response.Error.RequestID != "req_test") {
 			t.Fatalf("HTTP %d exit=%d stdout=%q stderr=%q, %v", status, code, out, stderr, err)
 		}
+	}
+}
+
+func TestCLIConflictExamplesSurviveHTTPMapping(t *testing.T) {
+	examples := cliExamples(t)
+	for _, name := range []string{"file_upload_outcome_unknown", "capture_mode_conflict", "power_state_conflict"} {
+		t.Run(name, func(t *testing.T) {
+			example := examples[name]
+			var expected struct {
+				Status int            `json:"status"`
+				Error  apiErrorDetail `json:"error"`
+			}
+			if err := json.Unmarshal(example.Stderr, &expected); err != nil {
+				t.Fatal(err)
+			}
+			intent := expected.Error.Intent
+			expected.Error.Intent = nil
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(expected.Status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": expected.Error})
+			}))
+			defer server.Close()
+			client := &client{origin: server.URL, token: "fixture", jsonOutput: true}
+			var stderr bytes.Buffer
+			var err error
+			if intent != nil {
+				cmd := &cobra.Command{}
+				cmd.SetContext(context.Background())
+				cmd.SetErr(&stderr)
+				err = client.write(cmd, intent.Method, intent.Path, strings.NewReader("data"), http.Header{
+					"If-Control-Epoch": {intent.ControlEpoch}, "Idempotency-Key": {intent.IdempotencyKey},
+					"If-Match": {fmt.Sprintf("%q", strconv.FormatInt(intent.Revision, 10))},
+				}, intent.Generation)
+			} else {
+				_, err = client.request(context.Background(), http.MethodPost, "machines/m_guest/start", strings.NewReader("{}"), nil)
+			}
+			if err == nil || reportError(&stderr, true, err) != example.Exit {
+				t.Fatalf("expected exit %d for %v", example.Exit, err)
+			}
+			equalJSON(t, stderr.String(), example.Stderr)
+		})
 	}
 }
