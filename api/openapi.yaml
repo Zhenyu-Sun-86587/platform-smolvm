@@ -384,6 +384,7 @@ paths:
     delete:
       operationId: delete_machines_machine
       summary: Delete the machine
+      description: A managed System machine must be stopped. The Worker retains detached persistent volumes and independent fork descendants.
       parameters:
       - name: machine
         in: path

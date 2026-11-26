@@ -270,13 +270,16 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 			return Operation{}, false, err
 		}
 	}
-	if route != (rt.BundleRoute{}) && (rt.NativePowerCapability(r.Kind) != "" || rt.IsNativeFork(r.Kind)) {
+	if route != (rt.BundleRoute{}) && (rt.NativePowerCapability(r.Kind) != "" || rt.IsNativeFork(r.Kind) || r.Kind == "delete") {
 		if r.ExpectedGeneration < 1 {
 			return Operation{}, false, fmt.Errorf("%w: native operation requires an expected binding generation", ErrInvalid)
 		}
 		if prior.CurrentBinding == nil || r.AdmitNative == nil {
 			if rt.IsNativeFork(r.Kind) {
 				return Operation{}, false, rt.FullStateUnavailable(r.Kind, false)
+			}
+			if r.Kind == "delete" {
+				return Operation{}, false, rt.ErrUnsupported
 			}
 			return Operation{}, false, rt.NativePowerUnavailable(r.Kind)
 		}
