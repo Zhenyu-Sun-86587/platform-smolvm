@@ -4,6 +4,7 @@
 
 | 证据名称 | 构建与运行范围 |
 | --- | --- |
+| d8cc5d5 冻结安装 | 七组 KVM 测量随包发布。安装目录通过双 OCI 启动、真实 Worker 与 Serve 能力握手、公共 Guest 连接崩溃恢复。[安装输入、日志摘要和能力](candidate-d8cc5d5.md) |
 | 冻结安装 | 已安装的 smolvm `91e2c72`，Bundle `sha256:512366a367c3f424d20c787b2144d81b1719128468212b69ef4db078e1821ffc`。安装路径为 `/var/tmp/deepfork-smolvm-build-cache/release-91e2c72/installed`。安装后用分发 wrapper 启动了两个 KVM OCI Guest，重测的 OCI 证据与打包前逐字节相同。另从安装目录启动了 Serve 并核对 reader 和 Bundle 摘要。握手使用无 Worker 配置，Worker 依赖的能力返回 `WORKER_NOT_CONFIGURED`。本地记录为 `.build/release-91e2c72/install.log`、`.build/release-91e2c72/installed-smoke.log` 和同安装目录旁的 `installed-handshake.json`。 |
 | 冻结测量 | 同一冻结构建锁和产物打包前的五组真机测量。下文的 `managed/*.log` 位于该安装目录的 `metadata` 下，五份日志的 SHA-256 均与 `managed-acceptance.json` 相符。测量元数据记录平台验收代码 `b2b387a` 和 smolvm 验收代码 `9eba0db`，与 Bundle 的源码修订分别登记。生命周期实验通过 Worker IPC 注入受控制的活动报告，A29 的开发真机另使用实际收集器。 |
 | 开发实机 | `.build/` 下以工作区为根的具名 KVM 记录。各实验使用当时的开发 Bundle 或 stock runtime。 |
