@@ -78,7 +78,7 @@
 | A20 | 冻结 VMM、开发 Worker，部分 | 平台重启保留绑定与回执，私有 Serve 重启保持 VMM。broker 重启后重新核对原 PID、FD 和 OFD。冻结 `d8cc5d5` 的运行中 reader 能在替换 Worker 上重新绑定到原 RAM 与同一租约，旧 `91e2c72` 的租约如实保持 unknown。另验证 CPU 配额丢 ACK 后重启 Worker 的幂等重放。[持久 reader 记录](managed-recovery.md#运行中的-statepoint-reader-跨-worker-重启)、[CPU 配额记录](native-power.md#wp-21-运行中调整-cpu内存和-balloon)、`.build/wp23/tracked-coexistence-kvm.log` | 在同一安装批次分开记录每个组件的重启、scope 迁移中断、运行中的网络与 writer。宿主断电耐久性仍待独立场景。 |
 | A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
 | A22 | 冻结安装、开发实机、本地测试，部分 | 桌面单次票据交付真实 framebuffer。Worker 确认原生运行租约后 API 才返回会话；延迟确认、丢失确认、授权撤回、到期和平台进程重启均实测。休眠后旧会话受围栏，新授权请求经现有服务唤醒策略连接原 Xvfb，Chromium noVNC 显示原画面。Guest grant 撤销立即截断进行中的 SSE。 `.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log`、`TestDesktopSessionFencesCredentialsAndExpiresLease` | 服务 revision 和证书撤销与活流进展同时发生时，分别核对新旧 HTTP、mTLS、SSH 后端以及旧 epoch。 |
-| A23 | 开发实机，发布与保留中断通过，Native 并发待验 | Native 与 FixedInternal 的真实 StatePoint 备份均在暂存时持有实际根 pin。错误密钥、缺块和等长篡改被拒。隔离的新 Worker 加载原 reader，恢复 RAM、所有盘、服务 PID 与 tmpfs 标记。旧源保持原执行。缺少、未知或重叠的目标私网均返回 `E_NETWORK_RECOVERY_UNAVAILABLE`。实际非管理员 UID 注册路由时被拒。回执区分新旧路由域和地址，Guest 确认 Native 的新 `/32` 和 Fixed 的原内部地址。平台备份在六种 ext4 故障场景中按同一运行 ID 恢复，损坏的新归档保住了上一份可恢复备份。[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | Native 备份选定对象与建立 Worker 引用期间的并发 GC、Worker 重启、缺 Bundle 与隔离恢复组合。 |
+| A23 | 开发实机，原生引用、并发与发布恢复通过 | Native 用同一 run 跨 Worker 和 platformd 中断备份原 checkpoint、休眠点与独立卷。并发公开删除后 Worker 引用继续保护原数据。暂存缺块和原 reader 缺失均保留已验证备份。关闭及删除旧源后在新 Worker 恢复原 RAM、根盘、独立卷和 Native `/32`。1017 在途备份升级到 1018 后保持两路原选择。六组 ext4 发布和保留中断已通过。既有 Native、FixedInternal 实测还覆盖错误密钥、等长篡改、服务 PID、隔离网络与非管理员注册拒绝。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[发布中断记录](#a23-备份发布与保留中断)、`.build/platform-networked-backup-native-v3.log`、`.build/platform-networked-backup-fixed-v3.log` | 在下一冻结包分别复跑 Native 与 FixedInternal 的交接中断。 |
 | A24 | 历史 0.1.6 到 schema 1017、1018、1019，迁移中断与回退通过 | 三个候选迁移中被 SIGKILL 后，19 张旧表及全部行一致。旧二进制拒绝打开新 schema。新旧发行件分别用匹配的备份恢复，原 owner 可登录，旧 control epoch 的公开写入返回 409。另在隔离的 Ubuntu 24.04 KVM 整机上通过安装器分别从 0.1.6 升到 1018 和 1019，整机断电重启后 systemd、owner 和两个版本的备份再次验证。[发行件与整机记录](#a24-历史发行件升级与回退)、[事务夹具](../../internal/registry/deep_migration_test.go) | 最终发行锁确定后按该版本复跑。 |
 | A25 | 开发实机，部分 | 两路 Serve 共用实际 cgroup slice 和 Worker 预算，六路并发启动被拒，受保护 VM 保持。混合 Bundle 另核对两个真实 VMM scope 与共用 writer/IPAM。 `.build/worker-pressure-kvm-v5.log`、`.build/wp23/tracked-coexistence-kvm.log` | 反向启动顺序、并发 Fork/Restore 风暴和各 Bundle 的共享/私有内存统计。 |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
@@ -89,6 +89,20 @@
 公开 API 提交第二次备份时，第一份已用发行版 sandboxctl 校验。夹具在私有 ext4 备份目录订阅 Linux fanotify 打开事件。它用 pidfd 在指定文件操作途中终止 platformd，并通过正常启动入口重启。每日策略保留一份归档。旧平台 c011476 在目录改名后留下暂存标记，在新回执已提交后中断则要等下一个备份周期才会继续回收旧目录。
 
 当前平台在公布已验证回执前同步父目录，重启时重新验证已发布的归档。备份保留流程在启动时核查待处理的回执，并在删除上一份归档前确认保留份数有足够的可验证副本。六组复测覆盖暂存、已改名但回执未提交、已验证但尚未开始清理、旧目录进入清理、旧目录已删除但回执尚未更新，以及重启时最新归档遭到单字节篡改。每次恢复均保留同一运行 ID、暂存数据库 inode 和内容摘要。损坏场景先独立验证上一份仍可恢复，修复最新副本再完成保留处理。六组 ext4 实测日志 `.build/wp23/a23-publication-ext4.log` 的 SHA-256 为 `f21203617b6c7d3bd0cc7068ef4f2c538c8e43882bfb8e4ecc0ad01ec1ab5bf7`。[备份中断夹具](../../tests/integration/backup_publication_crash.py)
+
+### A23 原生备份选择与中断恢复
+
+在真实 Debian KVM 上，认证的公开请求选定 checkpoint、当前 Hibernate 点和独立卷代际。Worker 离线时，平台先持久保存选定的目录快照。已有休眠点的公开 Delete 和显式释放受围栏。公开 Wake 及再次 Hibernate 更新了当前恢复点，原休眠根继续阻止 GC，原 run 保持选定此前的点。Worker 确认引用后，暂存阶段成功删除公开 checkpoint 和独立卷快照，四次直接 GC 仍被拒绝。
+
+在第一个原生归档成员打开前终止 platformd，并在其重启前终止 Worker。平台等到同一 Worker 重启后才能继续。Worker 仍为 `recovering` 时，备份以原 run、原目录 SHA-256 `a23e3d8756048661138b8ee224d2b7f253c4c50b8d23a186419e05e4475cdf82` 和原 closure SHA-256 `1fd2ab42e7281abd2df673e66e8a00d95c704eec2dc1af4ca5e4a44ab0b0b7e0` 完成。随后分别在 Worker 已确认引用的暂存阶段隐藏一个盘文件，以及在准备阶段隐藏原 reader 清单。两次运行均返回 `NATIVE_CLOSURE_UNAVAILABLE`，先前两份备份的清单摘要保持不变，原合格备份再次通过校验。
+
+公开 Stop、Delete 确认源 VMM 退出后终止旧 Worker。用归档初始化独立 Worker 与 Serve，从原 checkpoint 启动另一个 Debian 执行。新执行在 epoch 1 读回原 tmpfs 和根盘标记 `26532ec1137b1a30f4939ac5505996af900d`。独立卷在 4096 字节偏移的内容与原 Guest 写入相等。目标网络使用新路由域和 attachment，Guest 实测 `10.194.0.2/32`。
+
+开发 Bundle 为 `sha256:99509478496eb4d6711c96bdbff8bf08fb44f525e602865e1b152efc65b51399`，Worker 和 platformd 的 SHA-256 分别为 `f37f8ecab855c8eb178d27b59750bc17c3519fa41cfd396a3976b395d9a0f9e1` 与 `c512bcbee37bb5d8c20c53853532ae65a3a68dd08d707a0c98eeeabbe546a1f3`。备份输出和 Worker 目录使用私有 tmpfs，保留正常存储准入。原始 KVM 记录 `.build/release-d8cc5d5/native-backup-restart-a23-v6.log` 的 SHA-256 为 `9efa60802ec756c8f36122873dada76dfc7563dd9fa5db35c488003fb22f88ab`。[原生备份复现夹具](../../tests/integration/native_backup_restart_kvm.py)
+
+两个真实 Serve 共用一个 Worker，各自保存一份独立卷代际。schema 1017 的平台在第一路 Worker 提交备份引用后被终止。schema 1018 随后接续同一公开 run，以 SHA-256 `b3775d658ee910bb342412791592c4611a0a34ce799468e71854fd16e6b6d6b5` 的原 schema 1017 数据库验证两路归档。第一路 Worker 的原 closure 字节相等，完成验证后两路引用均已释放。
+
+同一安装随后公开提交卷快照删除并使其停在已 dispatch 的状态。并发备份保持 `running`，目录快照没有提交标记，Worker 没有建立备份引用。恢复 Worker 后，原删除成功；同一备份运行选定仍保留的两个代际并通过核验。日志 `.build/release-d8cc5d5/native-backup-legacy-two-routes-a23-v1.log` 的 SHA-256 为 `e864b875cc3978c0b0091cf14854bd322fee8c25aba6b041d4974b58f283a4d5`。[双路及卷删除夹具](../../tests/integration/native_backup_restart_kvm.py)
 
 ### A24 历史发行件升级与回退
 
