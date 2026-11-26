@@ -44,7 +44,7 @@ rmdir "$dir"
 
 ### 进入 Guest 时的凭据
 
-`sandboxctl exec --tty --cwd / MACHINE -- /bin/sh` 使用平台 token 和 Guest Agent，适合只想打开交互 shell 的场景。`sandboxctl ssh MACHINE` 使用 OpenSSH，平台凭据授权隧道并读取已验证的 Guest 主机密钥，Guest 使用已授权的用户公钥认证。私钥在 ssh-agent 或 OpenSSH 默认位置时可直接连接，需要指定特定文件时用 `--identity`。受管的 System SSH 还需启用对应服务和密钥同步。
+`sandboxctl exec --tty --cwd / MACHINE -- /bin/sh` 使用平台 token 和 Guest Agent，适合只需要交互 shell 的场景。`sandboxctl ssh MACHINE` 使用 OpenSSH，通过平台隧道连接。具备托管 SSH 能力时，CLI 自动准备本地身份；Guest 原有的授权公钥及 SSH agent 继续用于 `--legacy` 或 `--identity` 指定的已发布服务。
 
 ### 脚本如何判断下一步
 
@@ -86,7 +86,7 @@ sandboxctl ssh myapp -- id -u
 
 VS Code Remote SSH 使用同一个 `myapp.sandbox` 主机。可用 `--no-ssh-config` 只保存登录，再用 `sandboxctl ssh myapp`。安装时已存在的、名称唯一且能映射到 DNS 标签的 System 机器会生成别名。本地 CLI 完成创建或改名会更新已安装的别名，其他客户端的改动可用 `sandboxctl ssh-config sync` 同步。旧别名指向的机器身份发生变化时，客户端会拒绝连接。
 
-托管 SSH 需要开启 managed SSH 的 Native/System 模板和已配置的 Worker 私网。平台给客户端公钥签发该机器的短期 root 证书，私钥保留在本机。证书限制来源为经 Worker 核对的路由器地址。每次连接仍经过带权限复核的隧道和 Guest 主机密钥校验。机器睡眠时，显式连接遵循已有的唤醒策略。已有公钥可继续用 `sandboxctl ssh --legacy MACHINE` 或 `--identity FILE` 登录已发布的 SSH 服务。
+托管 SSH 需要启用 managed SSH 的 Native/System 模板、支持双向执行流的 Guest Agent，以及当前机器的 `manage` 权限。本机保管 Ed25519 私钥。每次连接通过带权限复核的 Worker 通道，客户端校验 Guest 的主机密钥，Guest 中仅服务于本次连接的 OpenSSH 进程校验客户端的持钥证明。显式连接遵循已有唤醒策略，休眠恢复后的时钟由 Guest 原有策略管理。已有公钥仍可通过 `sandboxctl ssh --legacy MACHINE` 或 `--identity FILE` 使用已发布的 SSH 服务。
 
 配置 `apps_domain`、通配 DNS 和匹配的 TLS 证书后，机器详情会返回稳定的 `web_url`。在 Guest 启动 Web 应用后，发布对应端口即可使用。机器改名后地址继续有效。
 

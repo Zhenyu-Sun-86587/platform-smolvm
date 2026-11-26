@@ -154,7 +154,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
 		api.files(), api.leases(), api.desktops(), api.credentials(), api.templates(), api.settings(), api.lifecyclePolicy(), api.events(),
 		api.exec(), api.execs(), api.ssh(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward(),
-		api.login(), api.managedSSHPrepare(), api.managedSSHProxy(), api.managedSSHHostKey(), missingSSHAlias())
+		api.login(), api.managedSSHProxy(), api.managedSSHHostKey(), missingSSHAlias())
 	profiles := api.list("runtime-profiles", "runtime-profiles", false)
 	profiles.Short = "List registered runtime profiles and bundle references"
 	networks := api.networks()
