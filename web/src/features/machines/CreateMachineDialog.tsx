@@ -150,8 +150,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       setIssue(error)
       const detail = error instanceof PlatformError ? error.detail : undefined
       const unconfirmed = !(error instanceof PlatformError) || error.status >= 500 || error.status === 408 ||
-        detail?.effect === "unknown" || detail?.effect === "partial" || detail?.retry === "verify_original_intent" ||
-        Boolean(detail?.operation_id)
+        detail?.effect === "unknown" || detail?.effect === "partial" || detail?.effect === "applied" ||
+        detail?.retry === "verify_original_intent" || Boolean(detail?.operation_id)
       setRetry(unconfirmed ? body : undefined)
     } finally {
       inFlight.current = false
