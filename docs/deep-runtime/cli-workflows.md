@@ -66,3 +66,19 @@ sandboxctl snapshots delete "$sid"
 ```
 
 跨资源 Machine Spec 事务、完整 AgentSession、商业功能及内核 syscall 后置。多节点有独立设计、分支与验收。boxd E25 的 Agent 回合认证失败，E27 的域名继承和 E28 的黑屏截图也各有证据边界。
+
+### 复现验收
+
+命令映射、脚本退出码与错误信封在 Go 测试中验证。真实 Guest 验收使用相同构建的两个二进制、匹配的 Runtime Bundle 和 System 镜像。需要 Linux/KVM、root、systemd、隔离网络和足够的临时空间。下列命令在平台仓库根目录运行，`WORK` 应是短路径的专用临时目录；若与其他验收共用主机，先按协调约定取得构建锁和 Worker 实验锁。
+
+```bash
+set -eu
+go test -p 1 ./cmd/sandboxctl ./internal/lifecycle ./internal/registry ./internal/platformapi
+: "${PLATFORMD:?}" "${SANDBOXCTL:?}" "${BUNDLE:?}" "${SYSTEM_IMAGE:?}" "${WORK:?}"
+args=(--platformd "$PLATFORMD" --sandboxctl "$SANDBOXCTL" --bundle "$BUNDLE"
+      --system-image "$SYSTEM_IMAGE" --work-dir "$WORK")
+sudo python3 -B tests/integration/polish_cli_kvm.py "${args[@]}"
+sudo python3 -B tests/integration/authorized_services_kvm.py "${args[@]}" --case cli-terminal --use-installation
+```
+
+工作流输出每次受理和完成的 operation ID，以及实际文件 SHA、Fork 子项、捕获和恢复身份、HTTPS 回执、休眠执行代际及清理结果。终端用例另记 PTY 的输入、尺寸、退出码，SSH 验证的身份，以及主动电源操作和运行租约的 Worker 观察。
