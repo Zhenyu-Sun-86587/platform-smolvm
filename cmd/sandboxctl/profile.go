@@ -155,6 +155,13 @@ func (c *client) login() *cobra.Command {
 			}
 			c.token = strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
 		}
+		if !stdin && c.token == "" && !c.jsonOutput {
+			if input, output, ok := commandTerminal(cmd); ok {
+				if err := c.promptLogin(cmd, newLineEditor(cmd.Context(), input, output), output); err != nil {
+					return err
+				}
+			}
+		}
 		if !validPlatformToken(c.token) {
 			return errors.New("provide one Platform API token via --token-stdin or SANDBOX_TOKEN")
 		}
