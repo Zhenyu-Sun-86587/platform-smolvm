@@ -37,6 +37,10 @@ func (a *Adapter) PlacementProfile(ctx context.Context) (placement.RuntimeProfil
 		}
 	}
 	slices.Sort(p.Capabilities)
+	for _, network := range a.route.PrivateNetworks {
+		p.Networks = append(p.Networks, placement.Network{ID: network.ID, CIDR: network.CIDR})
+	}
+	p.DefaultNetwork = a.route.DefaultNetworkID
 	p.Ready = true
 	return p, nil
 }

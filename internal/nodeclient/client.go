@@ -136,8 +136,6 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 		timeout = 35 * time.Second
 	case nodeproto.GuestPingPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
 		timeout = 135 * time.Second
-	case nodeproto.WorkerPath + "resize", nodeproto.WorkerPath + "resources":
-		timeout = 25 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

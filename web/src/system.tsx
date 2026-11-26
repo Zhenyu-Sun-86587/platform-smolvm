@@ -49,15 +49,24 @@ function Workers({ actions, revision }: Pick<Props, "actions" | "revision">) {
       <strong>{worker.name}</strong><code>{worker.worker_id}</code>
       <span>{label(worker.observed_status)}</span><span>{label(worker.maintenance.phase)}</span>
       <span>{worker.fresh_budget ? "Fresh budget" : "No fresh budget"}</span>
+      {worker.sample && <details className="disclosure">
+        <summary>Worker allocation</summary>
+        <dl>
+          <dt>vCPU</dt><dd>{worker.sample.budget.allocated.vcpus} / {worker.sample.budget.capacity.vcpus}</dd>
+          <dt>Memory</dt><dd>{worker.sample.budget.allocated.memory_mib} / {worker.sample.budget.capacity.memory_mib} MiB</dd>
+          <dt>Storage</dt><dd>{(worker.sample.budget.allocated.storage_bytes / 2**30).toFixed(1)} / {(worker.sample.budget.capacity.storage_bytes / 2**30).toFixed(1)} GiB</dd>
+          <dt>Sample</dt><dd>{worker.sampled_at}</dd>
+        </dl>
+      </details>}
       <span>{worker.maintenance.coverage === "known_only" ? "Inventory covers known objects" : label(worker.maintenance.coverage)}</span>
       {!!worker.maintenance.blockers?.length && <span>{worker.maintenance.blockers.map(label).join(", ")}</span>}
-      <Button variant="secondary" onClick={() => actions.dialog({
+      {worker.worker_id === "local-worker" ? <span>In-process runtime</span> : <Button variant="secondary" onClick={() => actions.dialog({
         title: "Worker maintenance", submit: "Apply", fields: [
           {name: "mode", label: "Desired mode", value: worker.desired_mode, options: ["active", "cordoned", "draining"].map(value => ({value, label: label(value)}))},
           {name: "reason", label: "Reason", required: true},
         ], act: form => actions.mutate("workers/" + segment(worker.worker_id) + "/maintenance",
           {mode: str(form, "mode"), reason: str(form, "reason")}, {method:"PATCH", revision:worker.revision}),
-      })}>Change mode</Button>
+      })}>Change mode</Button>}
     </div>)}</div>
   </Section>
 }

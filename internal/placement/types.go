@@ -65,18 +65,24 @@ func (s Session) Valid() bool {
 	return s.HostBootID != "" && s.BrokerSessionID != "" && s.NodeSessionID != ""
 }
 
+type Network struct {
+	ID   string `json:"network_id"`
+	CIDR string `json:"cidr"`
+}
 type RuntimeProfile struct {
-	RuntimeInstanceID string   `json:"runtime_instance_id"`
-	LocalInstanceID   string   `json:"local_instance_id"`
-	BundleID          string   `json:"bundle_id"`
-	Reader            string   `json:"reader,omitempty"`
-	Architecture      string   `json:"architecture"`
-	Hypervisor        string   `json:"hypervisor"`
-	RuntimeProcessID  string   `json:"runtime_process_id"`
-	Ready             bool     `json:"ready"`
-	Capabilities      []string `json:"capabilities,omitempty"`
-	Artifacts         []string `json:"artifacts,omitempty"`
-	CachedArtifacts   []string `json:"cached_artifacts,omitempty"`
+	Networks          []Network `json:"networks,omitempty"`
+	DefaultNetwork    string    `json:"default_network,omitempty"`
+	RuntimeInstanceID string    `json:"runtime_instance_id"`
+	LocalInstanceID   string    `json:"local_instance_id"`
+	BundleID          string    `json:"bundle_id"`
+	Reader            string    `json:"reader,omitempty"`
+	Architecture      string    `json:"architecture"`
+	Hypervisor        string    `json:"hypervisor"`
+	RuntimeProcessID  string    `json:"runtime_process_id"`
+	Ready             bool      `json:"ready"`
+	Capabilities      []string  `json:"capabilities,omitempty"`
+	Artifacts         []string  `json:"artifacts,omitempty"`
+	CachedArtifacts   []string  `json:"cached_artifacts,omitempty"`
 }
 
 type Sample struct {
@@ -132,20 +138,22 @@ func (s Sample) Validate(q Query, now time.Time) error {
 // Request combines caller intent and placement requirements derived by the
 // platform. EligibleRuntimeIDs is nil when there is no additional route filter.
 type Request struct {
-	Mode               string        `json:"mode"`
-	WorkerID           string        `json:"worker_id,omitempty"`
-	OwnerWorkerID      string        `json:"-"`
-	RuntimeInstanceID  string        `json:"runtime_instance_id,omitempty"`
-	BundleID           string        `json:"bundle_id,omitempty"`
-	Reader             string        `json:"reader,omitempty"`
-	Architecture       string        `json:"architecture,omitempty"`
-	Hypervisor         string        `json:"hypervisor,omitempty"`
-	Capabilities       []string      `json:"capabilities,omitempty"`
-	ArtifactDigest     string        `json:"artifact_digest,omitempty"`
-	Resources          Resources     `json:"resources"`
-	Headroom           Resources     `json:"headroom"`
-	MaxSampleAge       time.Duration `json:"-"`
-	EligibleRuntimeIDs []string      `json:"-"`
+	NetworkID           string        `json:"network_id,omitempty"`
+	NeedsDefaultNetwork bool          `json:"needs_default_network,omitempty"`
+	Mode                string        `json:"mode"`
+	WorkerID            string        `json:"worker_id,omitempty"`
+	OwnerWorkerID       string        `json:"-"`
+	RuntimeInstanceID   string        `json:"runtime_instance_id,omitempty"`
+	BundleID            string        `json:"bundle_id,omitempty"`
+	Reader              string        `json:"reader,omitempty"`
+	Architecture        string        `json:"architecture,omitempty"`
+	Hypervisor          string        `json:"hypervisor,omitempty"`
+	Capabilities        []string      `json:"capabilities,omitempty"`
+	ArtifactDigest      string        `json:"artifact_digest,omitempty"`
+	Resources           Resources     `json:"resources"`
+	Headroom            Resources     `json:"headroom"`
+	MaxSampleAge        time.Duration `json:"-"`
+	EligibleRuntimeIDs  []string      `json:"-"`
 	// StorageByRuntimeID holds verified writable capacities for runtime routes
 	// that can report different local disk sizes for the same artifact.
 	StorageByRuntimeID map[string]int64 `json:"-"`
@@ -231,6 +239,8 @@ func (r Request) ProfileRejection(p RuntimeProfile) string {
 	switch {
 	case !p.Ready:
 		return "runtime_not_ready"
+	case r.NeedsDefaultNetwork && p.DefaultNetwork == "" || r.NetworkID != "" && !slices.ContainsFunc(p.Networks, func(n Network) bool { return n.ID == r.NetworkID }):
+		return "network_unavailable"
 	case r.Architecture != "" && p.Architecture != r.Architecture,
 		r.Hypervisor != "" && p.Hypervisor != r.Hypervisor:
 		return "hardware_incompatible"

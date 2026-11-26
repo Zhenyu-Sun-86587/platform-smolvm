@@ -68,6 +68,9 @@ func TestHTTPPlacementAndWorkerMaintenance(t *testing.T) {
 			Pressure: &placement.Pressure{AvailableMemoryMiB: 8192, DiskFreeBytes: 1 << 38}, Budget: placement.Budget{Capacity: placement.Resources{VCPUs: 8, MemoryMiB: 8192, StorageBytes: 1 << 38, HeavySlots: 1}},
 			Profiles: []placement.RuntimeProfile{{RuntimeInstanceID: route.InstanceID, LocalInstanceID: route.LocalInstanceID, BundleID: bundle, Ready: true, RuntimeProcessID: "serve-process",
 				Reader: "reader", Architecture: "x86_64", Hypervisor: "kvm", Capabilities: []string{rt.SystemBootCapability}, Artifacts: []string{digest}}}}
+		if id == "worker-b" {
+			sample.Profiles[0].Networks = []placement.Network{{ID: "remote-only", CIDR: "10.24.0.0/24"}}
+		}
 		if err = db.RecordWorkerSample(ctx, sample, placement.Query{Nonce: sample.QueryNonce, StartedAt: time.Now(), CompletedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -113,6 +116,12 @@ func TestHTTPPlacementAndWorkerMaintenance(t *testing.T) {
 		t.Fatalf("worker %+v: %v", worker, err)
 	}
 	pinned := `{"name":"pinned","template_id":"template","start":true,"placement":{"mode":"pinned","worker_id":"worker-a"}}`
+	if !strings.Contains(string(call("GET", "/v1/networks", "", "", "", 200)), "remote-only") {
+		t.Fatal("remote network missing from catalog")
+	}
+	withNetwork := strings.Replace(pinned, `"start":true`, `"start":true,"network":{"mode":"native","network_id":"remote-only"}`, 1)
+	call("POST", "/v1/machines", withNetwork, "network-missing", "", 409)
+	call("PATCH", "/v1/workers/local-worker/maintenance", `{"mode":"cordoned","reason":"test"}`, "local-gate", `"1"`, 409)
 	var op registry.Operation
 	if err = json.Unmarshal(call("POST", "/v1/machines", pinned, "pin", "", 202), &op); err != nil || op.WorkerID != "worker-a" {
 		t.Fatalf("pinned %+v: %v", op, err)
@@ -146,7 +155,7 @@ func TestHTTPPlacementAndWorkerMaintenance(t *testing.T) {
 	}
 	call("POST", "/v1/machines", strings.Replace(pinned, `"name":"pinned"`, `"name":"refused"`, 1), "cordoned-create", "", 409)
 	var other registry.Operation
-	if err = json.Unmarshal(call("POST", "/v1/machines", `{"name":"automatic","template_id":"template","start":true,"placement":{"mode":"auto"}}`, "auto", "", 202), &other); err != nil || other.WorkerID != "worker-b" {
+	if err = json.Unmarshal(call("POST", "/v1/machines", `{"name":"automatic","template_id":"template","start":true,"network":{"mode":"native","network_id":"remote-only"},"placement":{"mode":"auto"}}`, "auto", "", 202), &other); err != nil || other.WorkerID != "worker-b" {
 		t.Fatalf("automatic %+v: %v", other, err)
 	}
 	var cordoned workerView

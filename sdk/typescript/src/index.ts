@@ -22,6 +22,19 @@ export interface WorkerMaintenance {
   reason?: string
   blockers?: string[]
 }
+export interface WorkerResources {
+  vcpus: number
+  memory_mib: number
+  storage_bytes: number
+  heavy_slots: number
+}
+export interface WorkerSample {
+  sequence: number
+  source: string
+  session: { host_boot_id: string; broker_session_id: string; node_session_id: string }
+  budget: { capacity: WorkerResources; allocated: WorkerResources }
+  profiles: { runtime_instance_id: string; local_instance_id: string; ready: boolean }[]
+}
 export interface Worker {
   worker_id: string
   name: string
@@ -31,6 +44,7 @@ export interface Worker {
   observed_status: string
   revision: number
   fresh_budget: boolean
+  sample?: WorkerSample
   sampled_at?: string
   maintenance: WorkerMaintenance
 }

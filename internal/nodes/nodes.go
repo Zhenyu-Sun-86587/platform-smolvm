@@ -19,6 +19,7 @@ import (
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/customsmolvm"
+	wc "sandbox-platform/internal/runtime/workerclient"
 )
 
 type Worker struct {
@@ -210,8 +211,15 @@ func (n *Worker) refresh(ctx context.Context) error {
 	if err = s.Validate(window, time.Now()); err != nil {
 		return err
 	}
-	if s.WorkerID != n.Authority.WorkerID || s.ControlEpoch != n.Authority.ControlEpoch || s.EnrollmentGeneration != n.Authority.EnrollmentGeneration ||
-		s.Session.NodeSessionID != hello.NodeSession || s.Session.HostBootID != hello.HostBootID || len(s.Profiles) != len(n.routes) {
+	if s.WorkerID != n.Authority.WorkerID || s.ControlEpoch != n.Authority.ControlEpoch || s.EnrollmentGeneration != n.Authority.EnrollmentGeneration {
+		return errors.New("Worker sample authority mismatch")
+	}
+	if s.Session != n.lastSession {
+		if err = n.DB.CheckWorkerSampleSession(ctx, s, window); err != nil {
+			return err
+		}
+	}
+	if s.Session.NodeSessionID != hello.NodeSession || s.Session.HostBootID != hello.HostBootID || len(s.Profiles) != len(n.routes) {
 		return errors.New("Worker sample differs from its handshake")
 	}
 	processes := make(map[string]string, len(s.Profiles))
@@ -223,9 +231,6 @@ func (n *Worker) refresh(ctx context.Context) error {
 		}
 	}
 	if changed {
-		if err = n.DB.CheckWorkerSampleSession(ctx, s, window); err != nil {
-			return err
-		}
 		if err = n.reconcile(ctx, pending); err != nil {
 			return err
 		}
@@ -299,22 +304,23 @@ func pageChecks[T any](rows []T, offset *int, limit int) []T {
 // Hibernate generation or a foreign journal entry holds the Worker in recovery.
 func (n *Worker) reconcile(ctx context.Context, pending []placement.Reservation) error {
 	for _, r := range n.routes {
-		rows, err := n.DB.ReadDB().QueryContext(ctx, `SELECT runtime_name,runtime_instance_object_id,COALESCE(execution_epoch,0),COALESCE(incarnation_id,'') FROM runtime_bindings
+		rows, err := n.DB.ReadDB().QueryContext(ctx, `SELECT runtime_name,runtime_instance_object_id,COALESCE(execution_epoch,0),COALESCE(incarnation_id,''),power_state,COALESCE(last_capture_id,'') FROM runtime_bindings
 			WHERE worker_id=? AND runtime_instance_id=? AND status='current' AND COALESCE(runtime_instance_object_id,'')<>'' ORDER BY id`, n.config.ID, r.RuntimeInstanceID)
 		if err != nil {
 			return err
 		}
 		type binding struct {
-			instance    string
-			epoch       int64
-			incarnation string
+			instance       string
+			epoch          int64
+			incarnation    string
+			power, capture string
 		}
 		known := make(map[string]binding)
 		var names []string
 		for rows.Next() {
 			var name string
 			var b binding
-			if err = rows.Scan(&name, &b.instance, &b.epoch, &b.incarnation); err != nil {
+			if err = rows.Scan(&name, &b.instance, &b.epoch, &b.incarnation, &b.power, &b.capture); err != nil {
 				rows.Close()
 				return err
 			}
@@ -352,6 +358,19 @@ func (n *Worker) reconcile(ctx context.Context, pending []placement.Reservation)
 					b.Binding.ExecutionEpoch == p.epoch && b.Binding.IncarnationID != nil && p.incarnation != "" && *b.Binding.IncarnationID != p.incarnation {
 					return errors.New("known binding differs from Worker evidence")
 				}
+				if p.power == string(registry.PowerHibernated) {
+					execution := wc.Execution{InstanceID: b.Binding.InstanceID, Epoch: b.Binding.ExecutionEpoch}
+					if b.Binding.IncarnationID != nil {
+						execution.IncarnationID = *b.Binding.IncarnationID
+					}
+					var status lifecycle.WorkerLifecycleStatus
+					if err := a.Lifecycle(ctx, "GetLifecycleStatus", "", execution, struct{}{}, &status); err != nil {
+						return err
+					}
+					if err := checkHibernatedBinding(execution, p.capture, status); err != nil {
+						return err
+					}
+				}
 			}
 			for _, op := range got.Operations {
 				digest, ok := ops[op.OperationID]
@@ -388,6 +407,13 @@ func (n *Worker) reconcile(ctx context.Context, pending []placement.Reservation)
 			}
 			after = got.NextJournalAfter
 		}
+	}
+	return nil
+}
+
+func checkHibernatedBinding(expected wc.Execution, capture string, status lifecycle.WorkerLifecycleStatus) error {
+	if capture == "" || status.Instance != expected.InstanceID || status.Epoch != expected.Epoch || status.Power != "HIBERNATED" || status.StatePoint != capture {
+		return errors.New("Worker cannot confirm the saved Hibernate capture for its binding")
 	}
 	return nil
 }

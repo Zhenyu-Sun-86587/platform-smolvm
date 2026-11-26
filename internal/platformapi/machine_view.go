@@ -166,7 +166,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 		if b.PowerState != registry.PowerUnknown {
 			v.LastConfirmedPower = b.PowerState
 		}
-		if owner.ObservedStatus != "ready" && owner.ObservedStatus != "degraded" {
+		if owner.ObservedStatus != "ready" {
 			v.PowerState, v.Availability = registry.PowerUnknown, "unknown"
 			v.Health = machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}
 			v.GuestStatus = "unknown"

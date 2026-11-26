@@ -186,8 +186,12 @@ type commandScope struct {
 }
 
 func (s commandScope) verifies(id string, receipt rt.OperationReceipt) bool {
+	kind := s.Kind
+	if kind == rt.VMRestore {
+		kind = "restore_target"
+	}
 	if receipt.OperationID != id || receipt.InstanceID != s.InstanceID || receipt.ExpectedExecutionEpoch != s.Epoch ||
-		receipt.Kind != s.Kind || receipt.RequestDigest != s.Native ||
+		receipt.Kind != kind || receipt.RequestDigest != s.Native ||
 		receipt.BundleDigest != s.Route.BundleDigest || receipt.RouteID != "deep" || receipt.Revision < 1 {
 		return false
 	}

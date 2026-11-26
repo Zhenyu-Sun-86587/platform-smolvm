@@ -575,3 +575,18 @@ func TestJournalRequiresPrivateStateDirectory(t *testing.T) {
 		t.Fatal("Node opened publicly shared state directory")
 	}
 }
+
+func TestRestoreVerifiesNativeTargetReceipt(t *testing.T) {
+	expected := rt.LaunchBinding{InstanceID: "pinned-slot", ExecutionEpoch: 3}
+	c := bindingCommand(expected, rt.VMRestore, testDigest)
+	c.Route = testRoute
+	r := rt.OperationReceipt{OperationID: "op", Kind: "restore_target", InstanceID: expected.InstanceID, ExpectedExecutionEpoch: 3,
+		RequestDigest: testDigest, BundleDigest: testRoute.BundleDigest, RouteID: "deep", Revision: 1}
+	if !c.verifies("op", r) {
+		t.Fatal("original native restore target was not recognized")
+	}
+	r.Kind = rt.Launch
+	if c.verifies("op", r) {
+		t.Fatal("cold launch impersonated saved restore target")
+	}
+}

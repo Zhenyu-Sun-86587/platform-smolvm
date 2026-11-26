@@ -72,5 +72,5 @@ func (a *Adapter) StatePointCapture(ctx context.Context, expected wc.Execution, 
 }
 func (a *Adapter) ReleaseStatePoint(ctx context.Context, capture, digest, operation string) error {
 	_, err := workerCall[nodeproto.ReleaseCapture, nodeproto.Empty](ctx, a, "release-statepoint", nodeproto.ReleaseCapture{CaptureID: capture, Digest: digest, OperationID: operation})
-	return uncertainWorkerMutation(err)
+	return err
 }

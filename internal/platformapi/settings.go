@@ -136,8 +136,14 @@ func (s *Server) settingsRoutes() {
 				v.NetworkMode = *body.NetworkMode
 			}
 			if body.NetworkID != nil {
-				if *body.NetworkID != "" && !s.hasPrivateNetwork(*body.NetworkID) {
-					return registry.MutationResult{}, registry.ErrInvalid
+				if *body.NetworkID != "" {
+					found, err := s.hasPrivateNetwork(ctx, *body.NetworkID)
+					if err != nil {
+						return registry.MutationResult{}, err
+					}
+					if !found {
+						return registry.MutationResult{}, registry.ErrInvalid
+					}
 				}
 				v.NetworkID = *body.NetworkID
 			}

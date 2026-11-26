@@ -71,7 +71,11 @@ if [[ $mode == rollback ]]; then
     [[ -f $target/release-manifest.json && $current != "$target" ]] || fail "Choose a different installed release"
     [[ $(jq -er '.schema_version' "$current/release-manifest.json") == $(jq -er '.schema_version' "$target/release-manifest.json") ]] || fail "Rollback would cross registry schema versions"
     [[ $(jq -er '.runtime_version' "$current/release-manifest.json") == $(jq -er '.runtime_version' "$target/release-manifest.json") ]] || fail "Rollback would cross runtime versions"
-    for binary in platformd sandboxctl; do
+    binaries=(platformd sandboxctl)
+    if [[ $(jq -er '.schema_version' "$target/release-manifest.json") -ge 1023 ]]; then
+        binaries+=(sandbox-node)
+    fi
+    for binary in "${binaries[@]}"; do
         expected=$(jq -er --arg member "bin/$binary" '.files[] | select(.path == $member) | .sha256' "$target/release-manifest.json")
         [[ $(sha256sum "$target/$binary" | cut -d ' ' -f 1) == "$expected" ]] || fail "Rollback binary checksum mismatch"
     done
@@ -105,6 +109,11 @@ file_list=(bin/platformd bin/sandboxctl runtime-manifest.json systemd/platformd.
     systemd/smolvm-serve.service systemd/smolvm-status.socket systemd/smolvm-status@.service
     systemd/grant-runtime-socket systemd/read-runtime-status install.sh config.example.yaml
     managed-template.tar templates.json)
+binaries=("$src/bin/platformd" "$src/bin/sandboxctl")
+if [[ $schema -ge 1023 ]]; then
+    file_list+=(bin/sandbox-node systemd/sandbox-node.service systemd/sandbox-node.example.yaml)
+    binaries+=("$src/bin/sandbox-node")
+fi
 [[ $(jq -er '.files | length' "$manifest") -eq ${#file_list[@]} ]] || fail "Invalid manifest file count"
 for member in "${file_list[@]}"; do
     expected=$(jq -er --arg member "$member" '.files[] | select(.path == $member) | .sha256' "$manifest")
@@ -238,7 +247,7 @@ fi
 install -d -o root -g root -m 0755 "$base/libexec" "$base/releases" "$images"
 chmod 0755 "$base"
 install -d -m 0755 "$work/new"
-install -m 0755 "$src/bin/platformd" "$src/bin/sandboxctl" "$work/new/"
+install -m 0755 "${binaries[@]}" "$work/new/"
 install -m 0644 "$manifest" "$runtime_manifest" "$src/templates.json" "$work/new/"
 if [[ -e $images/$template_name ]]; then
     cmp -s "$src/managed-template.tar" "$images/$template_name" || fail "Existing template differs from the verified release"

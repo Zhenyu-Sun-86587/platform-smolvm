@@ -85,9 +85,6 @@ func RetryDelivery(err error) bool {
 		}
 		return false
 	}
-	if errors.Is(err, rt.ErrUnavailable) || errors.Is(err, rt.ErrUncertain) {
-		return true
-	}
 	var transport net.Error
 	return errors.As(err, &transport) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }

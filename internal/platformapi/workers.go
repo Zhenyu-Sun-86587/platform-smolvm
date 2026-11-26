@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -54,8 +55,21 @@ func (s *Server) preparePlacement(input *lifecycle.Create, accept *registry.Acce
 	accept.Placement = &req
 	// Candidate exclusions and local root sizes are observed facts. Exclude them
 	// from the request fingerprint so a replay can recover its original owner.
-	accept.ResolvePlacement = func(ctx context.Context, tx *sql.Tx, _ json.RawMessage) (*placement.Request, error) {
+	accept.ResolvePlacement = func(ctx context.Context, tx *sql.Tx, accepted json.RawMessage) (*placement.Request, error) {
 		resolved := req
+		var spec struct {
+			Network *rt.LaunchNetwork `json:"network"`
+		}
+		if err := json.Unmarshal(accepted, &spec); err != nil {
+			return nil, err
+		}
+		if spec.Network != nil {
+			if spec.Network.Mode != "" && spec.Network.Mode != rt.NativeNetwork && spec.Network.Mode != rt.FixedInternalNetwork {
+				return nil, registry.ErrInvalid
+			}
+			resolved.NetworkID = spec.Network.NetworkID
+			resolved.NeedsDefaultNetwork = spec.Network.NetworkID == ""
+		}
 		resolved.EligibleRuntimeIDs = []string{}
 		if start {
 			resolved.StorageByRuntimeID = map[string]int64{}
@@ -161,6 +175,9 @@ func (s *Server) workerRoutes() {
 	s.route("PATCH /v1/workers/{worker}/maintenance", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		if err := p.Authorize(auth.ActionAdmin, ""); err != nil {
 			return err
+		}
+		if r.PathValue("worker") == rt.LocalWorkerID {
+			return fmt.Errorf("%w: Worker maintenance requires a NodeGateway gate", rt.ErrUnsupported)
 		}
 		var change struct {
 			Mode   string `json:"mode"`

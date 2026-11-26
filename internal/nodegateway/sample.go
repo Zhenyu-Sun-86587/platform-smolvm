@@ -175,7 +175,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 				!slices.ContainsFunc(receipt.Fork.Children, func(c rt.ForkChildReceipt) bool { return c.Attempt == q.NativeAttempt && c.AdmissionError == "" }) {
 				continue
 			}
-		case "vm_restore":
+		case "restore_target":
 			if receipt.Phase != "COMPLETED" || receipt.StatePoint == nil || receipt.StatePoint.ActivationDecision != "commit" || receipt.StatePoint.Stage != "released" {
 				continue
 			}
@@ -199,7 +199,7 @@ func (s *Server) collectSample(ctx context.Context, req nodeproto.SampleRequest,
 		}
 		receipt, err := native.QueryOperation(ctx, q.OperationID)
 		if err == nil && receipt.OperationID == q.OperationID && receipt.Phase == "COMPLETED" &&
-			(receipt.Kind == "launch" || receipt.Kind == rt.VMRestore) && receipt.BundleDigest == route.Worker.Bundle {
+			(receipt.Kind == "launch" || receipt.Kind == "restore_target") && receipt.BundleDigest == route.Worker.Bundle {
 			reply.AccessWakes = append(reply.AccessWakes, nodeproto.AccessWakeAdmission{AccessWakeQuery: q, Receipt: receipt})
 		}
 	}

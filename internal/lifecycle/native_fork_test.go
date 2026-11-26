@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
@@ -457,5 +458,41 @@ func TestNativeForkCancellationOwnsOnlyUncommittedTargets(t *testing.T) {
 				t.Fatal(err, replay, string(last))
 			}
 		})
+	}
+}
+
+// Waiting for a remote model response may use no CPU. The running lease and
+// active connection still protect sleep, while manual Fork gets its own checks.
+func TestLongRequestProtectsSleepAndAllowsOwnerFork(t *testing.T) {
+	ctx := t.Context()
+	engine, worker, request := nativeForkWorkerFixture(t, ctx, "worker-b")
+	b, err := engine.DB.GetBinding(ctx, "source-bind")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := Job{Engine: engine, Runtime: worker, Op: registry.Operation{MachineID: "source", Request: json.RawMessage(`{}`)}, Binding: b}
+	engine.holds["source"] = 1
+	if err = job.checkNativeStandbyActivity(ctx); err == nil {
+		t.Fatal("sleep allowed during active model request")
+	}
+	delete(engine.holds, "source")
+	if _, err = engine.DB.DB().ExecContext(ctx, `INSERT INTO leases(id,machine_id,binding_generation,principal_id,token_hash,reason,expires_at,state,revision,
+			semantics_version,execution_epoch,incarnation_id,worker_revision)
+		VALUES('model-lease','source',1,?,'hash','waiting for model',?,'active',1,2,?,?,1)`,
+		request.PrincipalID, time.Now().Add(time.Hour).UnixMilli(), b.ExecutionEpoch, b.IncarnationID); err != nil {
+		t.Fatal(err)
+	}
+	if err = job.checkNativeStandbyActivity(ctx); err == nil {
+		t.Fatal("sleep allowed with active running lease")
+	}
+	op, _, err := engine.DB.Accept(ctx, request)
+	if err != nil || op.WorkerID != "worker-b" || len(op.Children) != 2 {
+		t.Fatalf("manual fork admission %+v: %v", op, err)
+	}
+	if err = engine.drive(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	if worker.forkReceipt.OperationID != op.ID {
+		t.Fatal("owner did not receive the original manual Fork")
 	}
 }

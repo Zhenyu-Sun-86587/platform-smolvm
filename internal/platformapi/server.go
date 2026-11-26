@@ -431,7 +431,7 @@ func (s *Server) routes() {
 		}
 		h, healthErr := official.Health(r.Context())
 		ready := healthErr == nil && official.Ready(r.Context()) == nil
-		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
+		v := map[string]any{"control_epoch": c.ControlEpoch, "installation_id": c.InstallationID, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
 		v["default_boot_mode"] = defaults.BootMode
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)

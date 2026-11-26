@@ -66,7 +66,9 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const hasWorkers = systemRuntimes.some(item => item.worker_id && item.worker_id !== "local-worker")
   const automatic = hasWorkers && !runtimeID
   const runtime = systemRuntimes.find(profile => profile.runtime_instance_id === runtimeID) ?? systemRuntimes[0]
-  const availableNetworks = (automatic ? [] : networks.items ?? []).filter(network => network.runtime_instance_id === runtime?.runtime_instance_id)
+  const availableNetworks = (networks.items ?? []).filter((network, index, all) => automatic
+    ? all.findIndex(item => item.network_id === network.network_id) === index
+    : network.runtime_instance_id === runtime?.runtime_instance_id)
 
   const [name, setName] = useState(() =>
     fixtureScene === "36" ? "invalid name " + "x".repeat(250) : fixtureScene === "03" ? "amber-cedar" : preview ? "" : suggestName()
