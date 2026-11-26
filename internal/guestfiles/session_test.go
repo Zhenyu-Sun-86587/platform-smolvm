@@ -20,8 +20,6 @@ import (
 func fakeAgent(t *testing.T, ctx context.Context, authorize func(context.Context) error, capability bool, serve func(net.Conn)) (*Session, error) {
 	t.Helper()
 	host, guest := net.Pipe()
-	t.Cleanup(func() { _ = guest.Close() })
-	t.Cleanup(func() { _ = host.Close() })
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
@@ -38,7 +36,6 @@ func fakeAgent(t *testing.T, ctx context.Context, authorize func(context.Context
 	}()
 	t.Cleanup(func() {
 		_ = host.Close()
-		_ = guest.Close()
 		<-finished
 	})
 	return open(ctx, host, authorize)
