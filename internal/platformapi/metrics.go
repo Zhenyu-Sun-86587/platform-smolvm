@@ -164,17 +164,25 @@ func (s *Server) systemMetricSample(ctx context.Context) (systemMetrics, error) 
 	}
 	source, scope := "official_runtime", "official_runtime"
 	adapter := s.OfficialRuntime()
-	switch len(profiles) {
-	case 0:
-	case 1:
+	if len(profiles) > 0 {
 		source, scope = "worker", "worker"
-		profile := profiles[0]
-		adapter, err = s.ForBinding(registry.Binding{RuntimeInstanceID: profile.RuntimeInstanceID, RuntimeBundleID: profile.RuntimeBundleID})
-		if err != nil {
-			return systemMetrics{MetricObservation: missingMetric(source, scope, "RUNTIME_UNAVAILABLE", "Registered Worker metrics route is unavailable.")}, nil
+		var workerSocket string
+		for _, profile := range profiles {
+			resolved, err := s.ForBinding(registry.Binding{RuntimeInstanceID: profile.RuntimeInstanceID, RuntimeBundleID: profile.RuntimeBundleID})
+			if err != nil || resolved == nil {
+				return systemMetrics{MetricObservation: missingMetric(source, scope, "RUNTIME_UNAVAILABLE", "Registered Worker metrics route is unavailable.")}, nil
+			}
+			worker, _ := resolved.(interface{ WorkerSocket() string })
+			if len(profiles) > 1 && (worker == nil || worker.WorkerSocket() == "" || workerSocket != "" && workerSocket != worker.WorkerSocket()) {
+				return systemMetrics{MetricObservation: missingMetric(source, scope, "WORKER_SCOPE_AMBIGUOUS", "Registered runtime profiles do not identify a single Worker scope.")}, nil
+			}
+			if workerSocket == "" {
+				adapter = resolved
+				if worker != nil {
+					workerSocket = worker.WorkerSocket()
+				}
+			}
 		}
-	default:
-		return systemMetrics{MetricObservation: missingMetric("worker", "worker", "WORKER_SCOPE_AMBIGUOUS", "Registered runtime profiles do not identify a single Worker scope.")}, nil
 	}
 	if adapter == nil {
 		return systemMetrics{MetricObservation: missingMetric(source, scope, "RUNTIME_UNAVAILABLE", "System metrics route is unavailable.")}, nil
