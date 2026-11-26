@@ -231,6 +231,18 @@ export class Client {
     }
     createMachine(spec, options) { return this.mutate("machines", spec, options); }
     getMachine(id, signal) { return this.get(machine(id), signal); }
+    getMachineMetrics(id, signal) { return this.get(machine(id) + "/metrics", signal); }
+    getSystemMetrics(signal) { return this.get("system/metrics", signal); }
+    listFiles(id, path, signal) {
+        const endpoint = machine(id) + "/files/list";
+        return this.pages(path === undefined ? endpoint : withQuery(endpoint, { path }), 100, signal);
+    }
+    downloadFile(id, path, signal) {
+        return this.response(withQuery(machine(id) + "/files", { path }), { signal });
+    }
+    uploadFile(id, path, data, options = {}) {
+        return this.upload(withQuery(machine(id) + "/files", { path }), data, options);
+    }
     getMachineResources(id, signal) { return this.get(machine(id) + "/resources", signal); }
     async configureResources(id, resources, options = {}) {
         let { revision, generation } = options;
@@ -264,6 +276,9 @@ export class Client {
     }
     applyDefaultLifecyclePolicy(revision, machines, options) {
         return this.mutate("lifecycle-policy-applications", { default_policy_revision: revision, machines }, options);
+    }
+    listRunningLeases(id, signal) {
+        return this.pages(machine(id) + "/leases", 100, signal);
     }
     async acquireRunningLease(id, reason, ttlSeconds, options = {}) {
         const revision = options.revision ?? (await this.getMachine(id, options.signal)).revision;
@@ -341,6 +356,9 @@ export class Client {
     cancelOperation(id, options = {}) {
         return this.mutate(operation(id) + "/cancel", {}, options);
     }
+    listServices(id, signal) {
+        return this.pages(machine(id) + "/services", 100, signal);
+    }
     getService(id, signal) { return this.get(service(id), signal); }
     listDesktopSessions(id, signal) {
         return this.pages(machine(id) + "/desktop-sessions", 100, signal);
@@ -357,6 +375,9 @@ export class Client {
     desktopSocket(id, signal) {
         const path = "desktop-sessions/" + segment(id);
         return this.browserSocket(path + "/tunnel", path + "/tunnel-tickets", "sandbox.rfb.v1", signal);
+    }
+    listSnapshots(id, signal) {
+        return this.pages(id ? machine(id) + "/snapshots" : "snapshots", 100, signal);
     }
     getSnapshot(id, signal) { return this.get(snapshot(id), signal); }
     listMachines(signal) { return this.pages("machines", 100, signal); }

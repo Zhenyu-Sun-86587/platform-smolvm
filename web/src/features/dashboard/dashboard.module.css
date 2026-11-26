@@ -1,0 +1,185 @@
+.page {
+  display: grid;
+  gap: 34px;
+}
+
+.greeting {
+  display: grid;
+  gap: 12px;
+}
+
+.greeting time {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.greeting h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 30px;
+  letter-spacing: -.025em;
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 11px 0 15px;
+  background: var(--input);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  text-align: left;
+}
+
+.command kbd {
+  margin-left: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px;
+  font-size: 10px;
+}
+
+.shortcuts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shortcuts a, .example {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 11px;
+  color: var(--muted-foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.shortcuts a:hover { color: var(--foreground); }
+
+.intro {
+  position: relative;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 12px;
+  min-height: 238px;
+  padding: 26px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: linear-gradient(130deg, color-mix(in srgb, var(--primary) 8%, var(--card)), var(--background) 70%);
+}
+
+.intro > button {
+  position: absolute;
+  top: 16px;
+  right: 15px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.intro h2, .intro p, .fleet h2, .resources h2 {
+  margin: 0;
+}
+
+.intro h2 { font-size: 20px; }
+.intro p { color: var(--muted-foreground); }
+
+.example {
+  padding: 10px 12px;
+  gap: 12px;
+  color: var(--foreground);
+}
+
+.example span {
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.fleet {
+  display: grid;
+  gap: 13px;
+}
+
+.fleet > header, .resources header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fleet h2, .resources h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.fleet > header span {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.resources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+}
+
+.resources section {
+  padding: 15px 17px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.resources p {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.operation, .resource {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.resources header a {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.operation {
+  justify-content: space-between;
+  text-decoration: none;
+  color: var(--foreground);
+}
+
+.operation small {
+  display: block;
+  color: var(--muted-foreground);
+}
+
+.resource strong { margin-left: auto; }
+
+@media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
+  .intro { display: none; }
+  .command kbd { display: none; }
+}

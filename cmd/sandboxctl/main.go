@@ -136,7 +136,9 @@ func rootCommand() (*cobra.Command, *client) {
 	profiles.Short = "List registered runtime profiles and bundle references"
 	networks := api.list("networks", "networks", false)
 	networks.Short = "List registered Worker private networks"
-	root.AddCommand(profiles, networks)
+	root.AddCommand(profiles, networks, sub("metrics", "Read system metrics for the reported runtime scope", cobra.NoArgs, func(cmd *cobra.Command, _ []string) error {
+		return api.show(cmd, "system/metrics")
+	}))
 	root.AddCommand(api.mcpCommand())
 	root.AddCommand(api.backups())
 	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())

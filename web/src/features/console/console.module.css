@@ -1,0 +1,77 @@
+.workspaceActions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
+.connect header { display: grid; gap: 7px; padding-inline-end: 20px; }
+.connect { max-height: calc(100dvh - 28px); overflow-y: auto; }
+.connectionLinks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.connectionLinks .connectionLink { min-height: 57px; height: auto; justify-content: start; text-align: start; white-space: normal; padding: 10px 12px; }
+.connectionLink span { display: grid; gap: 2px; }
+.connectionLink strong { font-size: 13px; }
+.connectionLink small { font-weight: 400; opacity: .78; }
+.connectionLabel, .sessionsLink { display: inline-flex; align-items: center; gap: 7px; }
+.connectionLabel h3 { margin: 0; font-size: 13px; }
+.sessionsLink { width: max-content; max-width: 100%; font-size: 12px; }
+.ssh { padding: 12px; border: 1px solid var(--border); border-radius: 9px; }
+.ssh p { color: var(--muted-foreground); font-size: 12px; margin: 7px 0 0; }
+.commands { display: flex; align-items: start; gap: 8px; padding: 9px; margin-top: 10px; border-radius: 6px; background: var(--background); }
+.commands pre { flex: 1; font: 11px/1.6 var(--mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+
+.console, .terminalEmbed, .desktopEmbed {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #0d1422;
+  color: #e6edf9;
+}
+.console { height: var(--console-viewport, 100dvh); width: 100%; overflow: hidden; }
+.terminalEmbed { height: min(50vh, 570px); border-radius: 8px; overflow: hidden; }
+.desktopEmbed { height: min(65vh, 710px); border-radius: 8px; overflow: hidden; }
+.toolbar {
+  min-height: 48px;
+  padding: 7px 14px;
+  padding-inline-end: max(14px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: #131f31;
+  border-bottom: 1px solid #27354d;
+}
+.toolbarName, .toolbarActions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.toolbarName a { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: #bcd5f8; }
+.toolbarName strong { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.toolbarName code { font-size: 11px; }
+.toolbarName > span { color: #a5b4cd; font-size: 11px; }
+.screen { flex: 1; min-height: 0; min-width: 0; padding: 9px 8px calc(4px + env(safe-area-inset-bottom)); }
+.surface { flex: 1; min-height: 0; position: relative; overflow: hidden; isolation: isolate; }
+.desktopView { position: absolute; inset: 0; }
+.desktopView, .officeFixture { background: radial-gradient(ellipse at 72% 85%, #172c50, #10192a 58%, #0d1422 87%); }
+.overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 18px; pointer-events: none; }
+.statusCard {
+  width: min(420px, 100%); display: grid; gap: 9px; align-content: center; text-align: center;
+  background: #131f31; border: 1px solid #314665; border-radius: 11px; padding: 24px;
+  color: #c9d7f1; font-size: 13px; pointer-events: auto;
+}
+.statusCard h2 { margin: 0; font-size: 16px; color: #e6edf9; }
+.statusCard p { margin: 0; }
+.statusCard a { color: #b5d0f7; }
+.statusCard button { justify-self: center; }
+.statusCard label { text-align: start; }
+.statusCard select { width: 100%; }
+.spinner { justify-self: center; color: #91b8ed; animation: spin 1.3s linear infinite; }
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+@media (max-width: 699px), (max-width: 1023px) and (pointer: coarse) {
+  .toolbar { min-height: 42px; padding-inline: 8px; }
+  .connectionLinks .connectionLink { padding-inline: 8px; }
+  .screen { padding-inline: 4px; }
+}
+
+.launcher { display: grid; gap: 12px; }
+.launcher input { width: 100%; }
+.launcher p { font-size: 13px; margin: 0; color: var(--muted-foreground); }
+.appGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.appTile, .appSkeleton { min-height: 62px; border-radius: 8px; }
+.appTile { display: grid; place-content: center; justify-items: center; gap: 5px; font-size: 12px; border: 1px solid var(--border); background: var(--card); }
+.appTile[data-highlighted="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 16%, var(--card)); }

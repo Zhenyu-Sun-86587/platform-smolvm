@@ -1,0 +1,513 @@
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+
+.scopes, .filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scopes {
+  border-bottom: 1px solid var(--border);
+}
+
+.scopes button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0 12px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.scopes button[aria-pressed=true] {
+  box-shadow: 0 2px 0 var(--primary);
+  color: var(--foreground);
+}
+
+.filters {
+  margin-left: auto;
+}
+
+.mobileScopes {
+  display: none;
+}
+
+.filterButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  position: relative;
+  min-width: 34px;
+  min-height: 34px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 9px;
+  color: var(--muted-foreground);
+}
+
+.filterButton[data-filtered=true]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 7px;
+  height: 7px;
+  transform: translate(35%, -35%);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--background);
+}
+
+.filterMenu {
+  min-width: 160px;
+  max-width: calc(100vw - 24px);
+  max-height: var(--radix-dropdown-menu-content-available-height);
+  overflow: auto;
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--foreground);
+  box-shadow: 0 14px 34px #0006;
+  padding: 5px;
+  font-size: 13px;
+  z-index: 40;
+}
+
+.filterOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 33px;
+  padding: 0 10px;
+  border-radius: 5px;
+  outline: none;
+  cursor: pointer;
+}
+
+.filterOption[data-highlighted], .filterOption[data-state=checked] {
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  width: min(100%, 345px);
+  margin: 0 0 12px auto;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+}
+
+.search input, .search button {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.search input {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+}
+
+.search button {
+  color: var(--muted-foreground);
+}
+
+.contextNote {
+  margin: -4px 0 16px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.contextNote button, .textButton {
+  color: var(--foreground);
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.machineList {
+  display: grid;
+  gap: 12px;
+  container-type: inline-size;
+}
+
+.machineCard {
+  --power: #8490a2;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 74px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color .2s, background .2s;
+}
+
+.machineCard[data-power=running] { --power: #68c899; }
+.machineCard[data-power=standby] { --power: #48c7d4; }
+.machineCard[data-power=hibernated] { --power: #aa9be6; }
+.machineCard[data-power=stopped] { --power: #9a9dab; }
+.machineCard[data-power=unknown] { --power: #d6a567; }
+
+.machineCard:hover, .machineCard:focus-within {
+  border-color: color-mix(in srgb, var(--foreground) 28%, var(--border));
+}
+
+.machineLink {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1 1 180px;
+  overflow: hidden;
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+.machineLink::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+}
+
+.machineLink:focus-visible::after {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.dot {
+  height: 8px;
+  width: 8px;
+  flex: none;
+  border-radius: 100%;
+  background: var(--power);
+}
+
+.machineIdentity, .machineContext, .machineTags, .usage {
+  min-width: 0;
+  font-family: var(--mono);
+}
+
+.machineIdentity {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.machineIdentity strong {
+  font-weight: 500;
+}
+
+.machineIdentity small, .machineContext, .usage {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.machineIdentity strong, .machineIdentity small, .machineContext, .machineContext small, .usage {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machineTags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.tag, .powerBadge {
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.tag {
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--muted-foreground);
+}
+
+.powerBadge {
+  color: var(--power);
+  background: color-mix(in srgb, var(--power) 14%, transparent);
+}
+
+.machineContext {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 135px;
+}
+
+.machineContext small {
+  max-width: 120px;
+  padding-left: 4px;
+}
+
+.machineActions {
+  flex: none;
+  position: relative;
+  z-index: 1;
+}
+
+.usage {
+  min-width: 90px;
+  text-align: right;
+}
+
+.pagination, .pagination > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination {
+  justify-content: space-between;
+  margin-top: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.skeleton {
+  min-height: 74px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  animation: loading 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes loading { to { opacity: .5; } }
+
+.createModal {
+  width: min(450px, calc(100vw - 32px));
+}
+
+.createForm, .advanced, .advancedFields {
+  display: grid;
+  gap: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field > span, .checkbox, .sizes legend {
+  color: var(--muted-foreground);
+}
+
+.field :is(input, select, textarea), .nameField {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input);
+  color: var(--foreground);
+}
+
+.field :is(input, select, textarea) {
+  padding: 8px 11px;
+  min-height: 36px;
+}
+
+.field input, .field textarea {
+  font-family: var(--mono);
+}
+
+.field textarea {
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.nameField {
+  display: flex;
+  min-height: 46px;
+}
+
+.nameField input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+}
+
+.nameField button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 42px;
+  background: transparent;
+  border: 0;
+  color: var(--muted-foreground);
+}
+
+.nameField:focus-within {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.nameField input:focus-visible {
+  outline: none;
+}
+
+.field .fieldError {
+  color: #f59aa3;
+  font-size: 12px;
+}
+
+.sizes, .advancedFields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.sizes legend {
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.sizeOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sizeOptions > button {
+  min-height: 40px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.sizeOptions > button strong {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.sizeOptions > button[aria-pressed=true] {
+  background: color-mix(in srgb, var(--primary) 10%, var(--card));
+  border-color: var(--primary);
+}
+
+.textButton {
+  margin: 8px 0 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.sizes small, .checkbox small, .field small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+}
+
+.checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.checkbox input {
+  appearance: auto;
+  accent-color: var(--primary);
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+}
+
+.advanced summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted-foreground);
+}
+
+.advancedFields {
+  margin-top: 14px;
+}
+
+.createLinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@container (max-width: 630px) {
+  .machineContext, .usage {
+    display: none;
+  }
+}
+
+@container (min-width: 631px) and (max-width: 740px) {
+  .machineContext small {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) and (pointer: fine) {
+  .toolbar .filters {
+    flex-basis: 100%;
+    justify-content: end;
+  }
+}
+
+@media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
+  .mobileScopes { display: block; }
+  .scopes { display: none; }
+  .filters { margin-left: 0; }
+  .filterButton { width: auto; min-width: 36px; min-height: 36px; }
+  .machineCard {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 15px 16px;
+    gap: 9px 12px;
+    min-height: 124px;
+  }
+  .machineLink { grid-column: 1 / -1; }
+  .machineTags { margin-left: 22px; }
+  .machineContext { display: none; }
+  .machineCard .usage {
+    display: block;
+    grid-row: 3;
+    grid-column: 1 / -1;
+    text-align: left;
+    margin-left: 22px;
+  }
+  .machineActions { grid-column: 2; grid-row: 2; }
+  .createModal { width: 100%; }
+  .field :is(input, select, textarea), .search input { font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .machineCard { transition: none; }
+  .skeleton, .spinning { animation: none; }
+}
