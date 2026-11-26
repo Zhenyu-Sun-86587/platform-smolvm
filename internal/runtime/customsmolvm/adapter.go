@@ -51,7 +51,7 @@ func (r Route) Validate() error {
 }
 
 type Adapter struct {
-	unimplemented
+	rt.UnsupportedOperations
 	route           Route
 	legacyLifecycle bool
 	scopedRelease   bool

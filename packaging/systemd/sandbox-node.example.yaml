@@ -1,0 +1,25 @@
+authority:
+  worker_id: worker-a
+  enrollment_generation: 1
+  controller_id: platformd
+  control_epoch: replace-with-platform-control-epoch
+listen: "10.0.10.20:9443"
+state_dir: /var/lib/sandbox-node
+tls:
+  # The Worker certificate also needs an IP/DNS SAN for the endpoint.
+  # URI SAN spiffe://sandbox-platform/node/worker-a/1
+  certificate: /etc/sandbox-node/tls/node.pem
+  key: /etc/sandbox-node/tls/node-key.pem
+  client_ca: /etc/sandbox-node/tls/controller-ca.pem
+  # The pinned client cert must have URI SAN spiffe://sandbox-platform/controller/platformd.
+  controller_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+routes:
+  - runtime_instance_id: worker-a-runtime
+    instance_id: smolvm-deep
+    bundle_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    state_reader_id: replace-with-installed-state-reader
+    socket: /run/smolvm-deep/api.sock
+    worker_socket: /run/smolvm-deep/worker.sock
+    manifest: /opt/sandbox-platform/runtime/deep/manifest.json
+    # Worker-local root generation IDs provisioned outside NodeGateway.
+    root_generations: [replace-with-worker-root-generation]
