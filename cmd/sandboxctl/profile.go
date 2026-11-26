@@ -88,6 +88,9 @@ func (c *client) readProfile() (localProfile, error) {
 }
 
 func (c *client) applyProfile() error {
+	if !c.explicitProfile && c.explicitOrigin && c.token != "" {
+		return nil
+	}
 	profile, err := c.readProfile()
 	if errors.Is(err, os.ErrNotExist) && !c.explicitProfile {
 		return nil

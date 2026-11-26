@@ -227,6 +227,9 @@ func installSSHInclude(target, include string) error {
 	if !filepath.IsAbs(target) {
 		return errors.New("OpenSSH config path must be absolute")
 	}
+	if strings.ContainsAny(include, "*?[]%") {
+		return errors.New("OpenSSH Include path must be a literal filename")
+	}
 	if err := ensurePrivateDirectory(filepath.Dir(target)); err != nil {
 		return err
 	}
