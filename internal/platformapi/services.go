@@ -239,6 +239,16 @@ func (s *Server) serviceRoutes() {
 	})
 	s.mux.HandleFunc("GET /v1/machines/{machine}/ssh-tunnel", func(w http.ResponseWriter, r *http.Request) {
 		mid := r.PathValue("machine")
+		if managed, present := r.URL.Query()["managed"]; present {
+			if len(managed) != 1 || managed[0] != "1" {
+				fail(w, r, registry.ErrInvalid)
+				return
+			}
+			if err := s.managedSSHTunnel(w, r, mid); err != nil {
+				fail(w, r, err)
+			}
+			return
+		}
 		p, _, err := s.authenticate(r)
 		if err == nil {
 			err = p.Authorize("tunnel", mid)
@@ -528,6 +538,10 @@ func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.B
 	if v.GuestPort != lifecycle.SystemSSHPort {
 		return "", notReady
 	}
+	return s.awaitNativeSSHKey(ctx, p, b, reauthorize)
+}
+
+func (s *Server) awaitNativeSSHKey(ctx context.Context, p auth.Principal, b registry.Binding, reauthorize func(context.Context) error) (string, error) {
 	poll := time.NewTicker(250 * time.Millisecond)
 	defer poll.Stop()
 	for {
@@ -545,13 +559,13 @@ func (s *Server) awaitSSHKey(ctx context.Context, p auth.Principal, b registry.B
 			m.CurrentBinding.ExecutionRef() != b.ExecutionRef() {
 			return "", registry.ErrGeneration
 		}
-		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, v.GuestPort)
+		key, err := s.VerifiedNativeSSHKey(ctx, *m.CurrentBinding, lifecycle.SystemSSHPort)
 		if err != nil || key != "" {
 			return key, err
 		}
 		select {
 		case <-ctx.Done():
-			return "", notReady
+			return "", &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "binding SSH identity not yet verified"}
 		case <-poll.C:
 		}
 	}
