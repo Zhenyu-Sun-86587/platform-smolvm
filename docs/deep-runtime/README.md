@@ -41,7 +41,7 @@
 
 ## 3. 文档导航与阅读顺序
 
-11 月 26 日的冻结候选已在隔离 Worker 上完成安装、OCI 和 Debian System 的实机验收。fdd620e 的安装复测覆盖两种私网的唤醒、受保护 Guest 主动分叉，以及 platformd 崩溃之后的连接回收。[候选 fdd620e](candidate-fdd620e.md) · [先前候选 91e2c72](candidate-91e2c72.md) · [A01–A36 逐项验收台账](acceptance-ledger.md)
+11 月 26 日，隔离 Worker 已安装候选 `1eb5104`，平台锁定为 `c095c4f`。发行包包含八组 KVM 验收的原始记录，安装前后各两次 OCI 启动的结果一致。发行说明列出了包摘要、适用能力和安装后的复测，逐项台账标明了历史版本与本轮跳过的子项。[当前候选](candidate-1eb5104.md) · [A01–A36 验收台账](acceptance-ledger.md) · [历史候选 fdd620e](candidate-fdd620e.md)
 
 | 文件 | 用途 | 首次执行必须阅读的部分 |
 | --- | --- | --- |
@@ -52,6 +52,8 @@
 | [baseline-lock.json](baseline-lock.json) | 可机器读取的本次源码基线 | 仅是源码锁；不是已构建 bundle manifest |
 
 包中只有以上五份主 Markdown，另含源码基线 JSON 和完整性校验文件。原研究报告不重复装入；工程中的源码事实指向固定 SHA，设计项明确标“新增/拟实现”。研究报告只作为机制解释背景，不覆盖本包修正后的事务细节。
+
+`checksums.sha256` 记录原始工程计划压缩包中的六个文件。将压缩包解压到单独目录后，可在清单所在目录运行 `sha256sum -c checksums.sha256`。本目录中后续的规格修订和验收记录由 Git 保存。
 
 ## 4. 关键工程选择
 
