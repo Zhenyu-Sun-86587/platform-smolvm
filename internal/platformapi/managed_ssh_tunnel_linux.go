@@ -204,7 +204,7 @@ func managedSSHNetworkError(err error) error {
 }
 
 func managedSSHCapability(reason, message string) error {
-	return &rt.CapabilityError{Capability: "access.managed_ssh", Status: rt.Capability{
+	return &rt.CapabilityError{Capability: managedSSHAccessCapability, Status: rt.Capability{
 		Status: "unsupported", ReasonCode: reason, Message: message,
 	}}
 }

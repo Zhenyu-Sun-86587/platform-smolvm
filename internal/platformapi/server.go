@@ -522,6 +522,7 @@ func (s *Server) machineRoutes() {
 				if err != nil {
 					return err
 				}
+				v.projectManagedSSHPrincipal(p)
 				visible = append(visible, v)
 			}
 		}
@@ -540,6 +541,7 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
+		v.projectManagedSSHPrincipal(p)
 		return write(w, 200, v)
 	})
 	s.route("POST /v1/machines", func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
