@@ -55,4 +55,14 @@ Guest Linux 6.18.60 应用了 `deep-x86_64.config` 和 `managed-identity-x86_64.
 
 复跑使用 [installed_fork_backing_kvm.py](../../tests/integration/installed_fork_backing_kvm.py)。A01 可传入冻结 `accept-block-counter`。A01 与 A02 联合复跑先以静态 C 工具链编译 [cold-fork-guest.c](../../tests/fixtures/cold-fork-guest.c)，将结果传给 `--guest` 并设置 `--lineage`。两个模式均传入 `--bundle` 安装目录和 `--smolvm` 冻结源码。联合复跑 Guest 的 SHA-256 为 `1df043ef1d6599a470f7ff9662c81dc0e67ec94de97ee2b35196a6c02b14ae21`。两段 JSON 保存在 `.build/release-86dae32/installed-a01-a02-lineage-final.log`，SHA-256 为 `637fae59ed8a2a58cc8db325b06e630bae5f9b1381b13628672964247bffa6fd`。
 
+## A03 递归分支独立写入、休眠和末引用回收
+
+同一安装件在真实 KVM 中从根 Fork 左右兄弟，随后由左分支 Fork 中间分支，再从中间分支 Fork 叶子。各分支每轮先核对上一轮的 1024 个私有页和两个写盘扇区，再写入由分支与 tick 决定的新值。根与左右兄弟同时运行，各推进四个 tick，并读回各自不同的标记。中间分支从 tick 13 推进到 16，叶子从 19 推进到 22，均保留 Guest PID 446。根、左和中间三个祖先分别经 Worker 围栏和 pidfd 确认退出，再移除各自的状态目录、运行目录与控制 socket。
+
+叶子通过 Native API 单独 Hibernate。Worker 确认原执行退出且绑定空槽，右兄弟仍写页和盘并推进至 tick 143。随后叶子以 `exact` 模式从同一持久清单恢复，逻辑实例保留，执行 epoch 从 1 变成 2，Guest PID 446 从 tick 22 精确续到 23。设备库存中的三个原卷保留各自身份，其中两个数据卷在首个恢复 tick 继续验证原分支写入。
+
+末个 volatile reader 退出前，Worker 与右兄弟共同持有四个无目录链接的 RAM backing，合计实分配 60,522,496 字节。右兄弟退出并清理后，三个 capture 的资源和传输均进入 `deleted/collected`，active root ref 和未释放 FD lease 均为零。Worker、Serve 和恢复后的叶子均无对应 backing 的 FD 或映射。回收前后的三代批次与四个子机的逻辑谱系完全相同，叶子的 durable StatePoint 仍为 `available`，恢复后的叶子继续写页和盘至 tick 26。
+
+复跑时静态编译 [branch-lineage-guest.c](../../tests/fixtures/branch-lineage-guest.c)，再以 root 运行 [installed_fork_lineage_kvm.py](../../tests/integration/installed_fork_lineage_kvm.py)，传入 `--guest`、`--bundle` 和 `--smolvm`。原始 JSON 及输出在 `.build/release-86dae32/installed-a03-lineage-final.log`，SHA-256 为 `1117cad130ef10809ee38657d6acdc3b0833e80caf0b7e7b5330db1a7110bad6`。Guest 夹具 SHA-256 为 `ca7e458ec26dda1370ae944d76347ca5b7990551975d5a87052de15ab455a549`。
+
 [d8cc5d5 历史安装证据](candidate-d8cc5d5.md) · [91e2c72 历史安装证据](candidate-91e2c72.md) · [逐项验收台账](acceptance-ledger.md)
