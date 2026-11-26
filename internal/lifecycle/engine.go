@@ -95,6 +95,7 @@ type Intent struct {
 	TaskCredentialID  string                   `json:"task_credential_id,omitempty"`
 	TaskAcceptedPower registry.PowerState      `json:"task_accepted_power,omitempty"`
 	TaskExecution     *rt.ExecutionRef         `json:"task_execution,omitempty"`
+	Retirement        *systemRetirement        `json:"retirement,omitempty"`
 	Native            *rt.NativeSubmission     `json:"native,omitempty"`
 	Launch            *rt.LaunchSubmission     `json:"launch,omitempty"`
 	Volume            *rt.VolumeMutation       `json:"volume,omitempty"`
@@ -345,6 +346,9 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		}
 	}
 	j.Runtime, err = e.ForBinding(j.Binding)
+	if op.Kind == "delete" && !bindingRuntime(j.Binding).Legacy() {
+		return j.driveSystemDelete(ctx, err)
+	}
 	if rt.ManagedStatePoint(op.Kind) || (op.Kind == "start" && (j.Binding.PowerState == registry.PowerHibernated || j.Intent.StatePoint != nil)) {
 		return j.driveStatePoint(ctx, err)
 	}
@@ -717,16 +721,7 @@ func (j *Job) reconcile(ctx context.Context) error {
 func (j *Job) verify(ctx context.Context) error {
 	o, err := j.loadOwned(ctx)
 	if j.Intent.Target == "absent" && errors.Is(err, rt.ErrNotFound) {
-		return j.Done(ctx, registry.TransitionRequest{MarkDeleted: true, Effect: registry.EffectApplied, DesiredPower: "deleted", Apply: func(ctx context.Context, tx *sql.Tx) error {
-			if _, err := tx.ExecContext(ctx, "UPDATE dependencies SET status='released' WHERE child_binding_id=? AND kind='live_branch_resource'", j.Binding.ID); err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, "UPDATE port_allocations SET state='released' WHERE binding_id=?", j.Binding.ID); err != nil {
-				return err
-			}
-			_, err := tx.ExecContext(ctx, "DELETE FROM snapshot_pins WHERE owner_kind='binding' AND owner_id=? OR owner_kind='pre_replacement' AND owner_id IN (SELECT id FROM operations WHERE machine_id=? AND kind='rollback')", j.Binding.ID, j.Binding.MachineID)
-			return err
-		}})
+		return j.finishDelete(ctx, nil)
 	}
 	if err != nil {
 		return err

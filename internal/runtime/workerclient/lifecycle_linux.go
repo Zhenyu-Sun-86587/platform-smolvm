@@ -12,7 +12,7 @@ import (
 func lifecycleMethod(name string) bool {
 	switch name {
 	case "QueryLifecycleEvents", "QueryHostActivity", "GetLifecycleStatus", "ApplyLifecyclePolicy", "ReportActivity", "AcquireActivityHold", "ReleaseActivityHold",
-		"AcquireRunningLease", "RenewRunningLease", "ReleaseRunningLease", "RequestWake", "AuthorizeWakeActivation", "CancelWakeDemand", "CloseAccessProtection", "QueryProtection":
+		"AcquireRunningLease", "RenewRunningLease", "ReleaseRunningLease", "RequestWake", "AuthorizeWakeActivation", "CancelWakeDemand", "CloseAccessProtection", "QueryProtection", "RetireStoppedInstance":
 		return true
 	}
 	return false
@@ -23,12 +23,12 @@ func (c Client) Lifecycle(ctx context.Context, method, key string, expected Exec
 	}
 	q := request{Method: method, Expected: &expected, Payload: payload}
 	if key != "" {
-		data, e := json.Marshal([]any{method, key, expected, payload})
-		if e != nil {
-			return e
+		digest, err := LifecycleDigest(method, key, expected, payload)
+		if err != nil {
+			return err
 		}
 		q.OperationID = key
-		q.RequestDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+		q.RequestDigest = digest
 	}
 	raw, _, err := c.call(ctx, q, nil, nil)
 	if err != nil {
@@ -38,6 +38,14 @@ func (c Client) Lifecycle(ctx context.Context, method, key string, expected Exec
 		return nil
 	}
 	return json.Unmarshal(raw, into)
+}
+
+func LifecycleDigest(method, key string, expected Execution, payload any) (string, error) {
+	data, err := json.Marshal([]any{method, key, expected, payload})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(data)), nil
 }
 
 // RetryDelivery reports failures for which the same durable request may still
