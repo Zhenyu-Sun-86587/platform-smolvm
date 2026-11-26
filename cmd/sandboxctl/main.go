@@ -163,7 +163,9 @@ func rootCommand() (*cobra.Command, *client) {
 	}))
 	root.AddCommand(api.mcpCommand())
 	root.AddCommand(api.backups())
-	root.AddCommand(adminCommand(), doctorCommand(), diagnosticsCommand())
+	registerLocalCommands(root)
+	root.AddCommand(api.profileStatus(), api.menuBarCommand())
+	api.addInteractiveShell(root)
 	return root, api
 }
 
