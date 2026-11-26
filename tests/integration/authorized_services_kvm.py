@@ -2,6 +2,7 @@
 """Exercise ordinary authorized service access and owned lifecycle operations on KVM."""
 
 import argparse
+import base64
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
@@ -9,7 +10,9 @@ import json
 import os
 from pathlib import Path
 import shlex
+import select
 import socket
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -20,7 +23,8 @@ from managed_system_vsock import Platform, wait_for, worker
 
 
 DIRECT = {"private-tcp", "private-udp"}
-SYSTEM = {"system-boot", "system-fork", "system-restore", "system-lifecycle"}
+OWNER = {"system-tasks-delete", "system-rollback"}
+SYSTEM = {"system-boot", "system-fork", "system-restore", "system-lifecycle"} | OWNER
 NETWORK = dict(network_id="owned-services", route_domain_id="owned-services", cidr="10.44.61.0/24")
 PROGRAM = "/run/authorized-service.pl"
 RECEIPTS = "/run/authorized-service-receipts"
@@ -135,8 +139,95 @@ def policy_standby(platform, mid, ref, confirmed, marker, volatile_path):
             stop_operation_id=stopped["operation_id"], start_operation_id=started["operation_id"])
 
 
+def owner_tasks_delete(platform, mid, ref):
+    path = f"machines/{mid}"
+    marker = "task-" + os.urandom(12).hex()
+
+    def task_ready():
+        view = platform.app(path)
+        return view if view.get("task_metadata_status") == "complete" else None
+
+    view = wait_for(task_ready, timeout=30)
+    saved = platform.complete(platform.change(path + "/hibernate", "owned-before-task", {}, view))
+    capture = saved["result"]["statepoint"]["capture_id"]
+    paused = platform.app(path)
+    assert paused["power_state"] == "hibernated"
+    task = {"argv": ["/bin/sh", "-ec", 'printf "%s\\n" "$1"; exec sleep 120', "owned", marker], "task_key": "owned-task"}
+    accepted = platform.change(path + "/tasks", "owned-start-task", task, paused)
+    started = platform.complete(accepted)
+    assert platform.change(path + "/tasks", "owned-start-task", task, paused)["operation_id"] == accepted["operation_id"]
+    _, active = platform.context(mid)
+    assert active["instance_id"] == ref["instance_id"] and active["incarnation_id"] != ref["incarnation_id"]
+    assert active["execution_epoch"] == ref["execution_epoch"] + 1, active
+    tid = started["result"]["task_id"]
+    task_path = "tasks/" + tid
+    wait_for(lambda: base64.b64decode(platform.app(task_path + "/output")["data_base64"]) == (marker + "\n").encode())
+    live = platform.app(task_path)
+    assert live["state"] == "running" and live["runner"]["pid"] > 1, live
+    now = platform.app(path)
+    cancelled = platform.complete(platform.app(task_path + "/cancel", "POST", {"grace_seconds": 1}, {
+        "If-Control-Epoch": platform.epoch, "Idempotency-Key": "owned-cancel-task", "If-Match": f'"{now["revision"]}"',
+    }, 202))
+    assert cancelled["result"]["state"] == platform.app(task_path)["state"] == "cancelled", cancelled
+    view = platform.wait_capability(path, "lifecycle.stop")
+    stopped = platform.complete(platform.change(path + "/stop", "owned-stop-for-delete", {}, view))
+    assert stopped["source_disposition"] == "EXITED", stopped
+    stopped_view = platform.app(path)
+    receipt = platform.complete(platform.change(path, "owned-delete", {}, stopped_view, method="DELETE"))
+    assert receipt["source_disposition"] == "EXITED" and receipt["result"]["execution_epoch"] == active["execution_epoch"]
+    assert platform.change(path, "owned-delete", {}, stopped_view, method="DELETE")["operation_id"] == receipt["operation_id"]
+    tombstone = platform.app(path)
+    assert tombstone["desired_power"] == "deleted" and tombstone["deleted_at"] and not tombstone.get("binding"), tombstone
+    with sqlite3.connect(f"file:{platform.root / 'catalog/catalog.sqlite'}?mode=ro", uri=True) as catalog:
+        live_slots = catalog.execute("SELECT count(*) FROM instance_bindings WHERE instance_id=?", (active["instance_id"],)).fetchone()
+        assert live_slots == (0,), live_slots
+    witness(platform, "system-tasks-delete", original=identity(ref), execution=identity(active), task_id=tid, capture_id=capture,
+            task_operation_id=started["operation_id"], cancel_operation_id=cancelled["operation_id"],
+            stop_operation_id=stopped["operation_id"], delete_operation_id=receipt["operation_id"], marker=marker)
+
+
+def owner_rollback(platform, mid, ref):
+    path = f"machines/{mid}"
+    ram, disk = "/run/owned-rollback", "/root/owned-rollback"
+    original = "before-" + os.urandom(12).hex()
+    changed = "after-" + os.urandom(12).hex()
+
+    def write(marker):
+        platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" >"$2"; printf %s "$1" >"$3"; sync "$3"',
+                             "owned", marker, ram, disk])
+
+    write(original)
+    saved = platform.complete(platform.change(path + "/snapshots", "owned-rollback-base", {"capture_mode": "vm"},
+                                               platform.wait_capability(path, "state.checkpoint")))["result"]
+    assert saved["statepoint"]["phase"] == "durable", saved
+    write(changed)
+    assert platform.guest(ref, ["cat", ram, disk]) == (changed * 2).encode()
+    old = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
+    assert identity(old) == identity(ref)
+    with os.fdopen(os.pidfd_open(old["pid"]), "rb", buffering=0) as pidfd:
+        assert not select.select([pidfd], [], [], 0)[0]
+        rollback = platform.complete(platform.change(path + "/rollback", "owned-rollback", {
+            "snapshot_id": saved["snapshot_id"], "volume_restore_policy": "clone_conflicts",
+        }, platform.wait_capability(path, "state.rollback")))
+        assert select.select([pidfd], [], [], 5)[0], "rollback left the original VMM live"
+    _, active = platform.context(mid)
+    assert active["instance_id"] == ref["instance_id"] and active["incarnation_id"] != ref["incarnation_id"]
+    assert active["execution_epoch"] == ref["execution_epoch"] + 1, active
+    assert wait_for(lambda: platform.guest(active, ["cat", ram, disk]) == (original * 2).encode(), retry=(RuntimeError, OSError))
+    rescue = rollback["result"]["rescue_capture_id"]
+    assert rescue and rescue != saved["statepoint"]["capture_id"], rollback
+    witness(platform, "system-rollback", original=identity(ref), restored=identity(active), snapshot_id=saved["snapshot_id"],
+            operation_id=rollback["operation_id"], rescue_capture_id=rescue, marker=original)
+
+
 def system_lifecycle(platform, case):
-    mid, _, ref = machine(platform, "system", light=case == "system-lifecycle")
+    mid, _, ref = machine(platform, "system", light=case == "system-lifecycle" or case in OWNER)
+    if case == "system-tasks-delete":
+        owner_tasks_delete(platform, mid, ref)
+        return
+    if case == "system-rollback":
+        owner_rollback(platform, mid, ref)
+        return
     machine_path = f"machines/{mid}"
     marker = "ram-" + os.urandom(12).hex()
     path = "/run/authorized-state"

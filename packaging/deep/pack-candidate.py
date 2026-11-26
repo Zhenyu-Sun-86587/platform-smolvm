@@ -220,6 +220,7 @@ def main():
                     cases = list(measured["runs"])
                     if managed_evidence.AUTHORIZED_LIFECYCLE in measured:
                         cases.append(managed_evidence.LIFECYCLE_CASE)
+                    cases.extend(managed_evidence.authorized_owner_runs(measured))
                 else:
                     managed_contracts = set(managed_evidence.MANAGED)
                     cases = [*managed_evidence.SCENARIOS]

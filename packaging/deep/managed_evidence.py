@@ -16,6 +16,9 @@ AUTHORIZED_SCOPE = "managed_authorized_scope"
 AUTHORIZED_LIFECYCLE = "authorized_lifecycle"
 LIFECYCLE_CASE = "system-lifecycle"
 LIFECYCLE_SCHEMA = "RuntimeAuthorizedLifecycle/1"
+AUTHORIZED_OWNER = "authorized_owner"
+OWNER_CASES = ("system-tasks-delete", "system-rollback")
+OWNER_SCHEMA = "RuntimeAuthorizedOwner/1"
 SCHEMA_V1 = "RuntimeManagedAcceptance/1"
 SCHEMA_V2 = "RuntimeManagedAcceptance/2"
 SCHEMA_V3 = "RuntimeManagedAcceptance/3"
@@ -183,9 +186,20 @@ def authorized_contracts(evidence):
     return {AUTHORIZED_SCOPE}
 
 
+def authorized_owner_runs(evidence):
+    if AUTHORIZED_OWNER not in evidence:
+        return {}
+    owner = evidence[AUTHORIZED_OWNER]
+    fields(owner, "schema runs", "authorized owner operations")
+    runs = owner["runs"]
+    require(owner["schema"] == OWNER_SCHEMA and isinstance(runs, dict) and runs
+            and runs.keys() <= set(OWNER_CASES), "unsupported authorized owner operation")
+    return runs
+
+
 def verify_authorized_log(case, path, measured):
     require(path.is_file() and 0 < path.stat().st_size <= 4 * 1024 * 1024, f"invalid authorized log for {case}")
-    label, mode = (case, None) if case == LIFECYCLE_CASE else AUTHORIZED_CASES[case]
+    label, mode = (case, None) if case in (LIFECYCLE_CASE, *OWNER_CASES) else AUTHORIZED_CASES[case]
     prefix = "Authorized KVM "
     lines = path.read_text(encoding="utf-8").splitlines()
     require(bool(lines) and lines[-1].startswith(prefix), f"missing final authorized result for {case}")
@@ -239,6 +253,14 @@ def verify_authorized_log(case, path, measured):
                 and marked("wake_operation_id", "released_lease_id"), "missing policy, held Standby and authorized resume")
         require(same_slot(original, ref("cold_started")) and marked("stop_operation_id", "start_operation_id")
                 and value["stop_operation_id"] != value["start_operation_id"], "missing verified cold restart")
+    elif case == "system-tasks-delete":
+        ids = ("task_operation_id", "cancel_operation_id", "stop_operation_id", "delete_operation_id")
+        require(same_slot(ref("original"), ref("execution"))
+                and marked("task_id", "capture_id", "marker", *ids)
+                and len({value[key] for key in ids}) == len(ids), "missing completed task and machine retirement")
+    elif case == "system-rollback":
+        require(same_slot(ref("original"), ref("restored"))
+                and marked("snapshot_id", "operation_id", "rescue_capture_id", "marker"), "missing same-machine rollback")
     else:
         original, restored = ref("original"), ref("restored")
         receipts = value.get("business_receipts")
@@ -258,7 +280,8 @@ def verify_authorized_log(case, path, measured):
 def verify_authorized(root, profile, artifacts, evidence):
     base = ("schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes "
             "system_template_sha256 acceptance_revisions measurement_bundle_digest runs")
-    fields(evidence, base + (" " + AUTHORIZED_LIFECYCLE if AUTHORIZED_LIFECYCLE in evidence else ""), "authorized evidence")
+    optional = [group for group in (AUTHORIZED_LIFECYCLE, AUTHORIZED_OWNER) if group in evidence]
+    fields(evidence, " ".join((base, *optional)), "authorized evidence")
     advertised = set(profile["contracts"]) - MEASUREMENT_PROTOCOLS
     require(advertised == authorized_contracts(evidence) and "system-debian-v1" in profile["boot_profiles"],
             "authorized evidence differs from the advertised contract scope")
@@ -286,6 +309,10 @@ def verify_authorized(root, profile, artifacts, evidence):
         fields(lifecycle, "schema log_sha256 harness_sha256", "authorized lifecycle run")
         require(lifecycle["schema"] == LIFECYCLE_SCHEMA, "unsupported authorized lifecycle schema")
         runs = {**runs, LIFECYCLE_CASE: {key: lifecycle[key] for key in ("log_sha256", "harness_sha256")}}
+    selected = authorized_owner_runs(evidence)
+    require("system-tasks-delete" not in selected or LIFECYCLE_CASE in runs, "task and deletion need measured lifecycle")
+    require("system-rollback" not in selected or "system-restore" in runs, "rollback needs measured StatePoint restore")
+    runs = {**runs, **selected}
     for case, result in runs.items():
         fields(result, "log_sha256 harness_sha256", "authorized acceptance run")
         digest(result["harness_sha256"], "authorized harness digest")

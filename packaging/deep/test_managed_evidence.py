@@ -142,6 +142,23 @@ class ManagedEvidenceTest(unittest.TestCase):
         self.evidence[managed.AUTHORIZED_LIFECYCLE] = dict(schema=managed.LIFECYCLE_SCHEMA, **policy)
         self.verify()
 
+        independent = {"instance_id": "another-slot", "incarnation_id": "another-vmm", "execution_epoch": 1}
+        runs["system-restore"] = self.log("system-restore", (witness(
+            "system-restore", original=original, restored=independent, saved_execution=restored,
+            marker="ram", capture_id="capture", snapshot_id="snapshot",
+        ),))
+        task_case, rollback_case = managed.OWNER_CASES
+        task = self.log(task_case, (witness(task_case, original=original, execution=restored, task_id="task",
+                                            capture_id="capture", marker="started", task_operation_id="task-start",
+                                            cancel_operation_id="cancel", stop_operation_id="stop", delete_operation_id="delete"),))
+        rollback = self.log(rollback_case, (witness(rollback_case, original=original, restored=restored,
+                                                    marker="data", snapshot_id="snapshot", operation_id="rollback",
+                                                    rescue_capture_id="rescue"),))
+        self.evidence[managed.AUTHORIZED_OWNER] = {
+            "schema": managed.OWNER_SCHEMA, "runs": {task_case: task, rollback_case: rollback},
+        }
+        self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()

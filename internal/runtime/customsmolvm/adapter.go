@@ -52,34 +52,34 @@ func (r Route) Validate() error {
 
 type Adapter struct {
 	unimplemented
-	route               Route
-	legacyLifecycle     bool
-	scopedRelease       bool
-	authorizedLifecycle bool
+	route           Route
+	legacyLifecycle bool
+	scopedRelease   bool
+	authorized      authorizedRelease
 }
 
 func (a *Adapter) WorkerSocket() string { return a.route.WorkerSocket }
 
 func (a *Adapter) LifecycleWorkerSocket() string {
-	if a.legacyLifecycle || a.authorizedLifecycle {
+	if a.legacyLifecycle || a.authorized.lifecycle {
 		return a.WorkerSocket()
 	}
 	return ""
 }
 
 func (a *Adapter) NativeStopContract() bool {
-	return a.legacyLifecycle || a.authorizedLifecycle
+	return a.legacyLifecycle || a.authorized.lifecycle
 }
 
 func (a *Adapter) NativeStandbyContract() bool {
-	return !a.scopedRelease || a.authorizedLifecycle
+	return !a.scopedRelease || a.authorized.lifecycle
 }
 
 func (a *Adapter) Admit(kind string) error {
 	if kind == "configure" && a.LifecycleWorkerSocket() != "" {
 		return nil
 	}
-	if a.legacyLifecycle && (kind == "delete" || kind == "task_start" || kind == "task_cancel") {
+	if (a.legacyLifecycle || a.authorized.taskDelete) && (kind == "delete" || kind == "task_start" || kind == "task_cancel") {
 		return nil
 	}
 	if a.WorkerSocket() != "" {
@@ -118,7 +118,7 @@ func New(route Route) (*Adapter, error) {
 			if a.legacyLifecycle {
 				return nil, fmt.Errorf("scoped Runtime Bundle has a conflicting historical lifecycle contract")
 			}
-			a.authorizedLifecycle, err = route.readAuthorizedLifecycle(raw)
+			a.authorized, err = route.readAuthorizedRelease(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -137,12 +137,17 @@ func (a *Adapter) connect(ctx context.Context) (*http.Client, Handshake, error) 
 		endpoint.CloseIdleConnections()
 		return nil, Handshake{}, err
 	}
-	if a.authorizedLifecycle && h.Capabilities[rt.SystemBootCapability].Supported {
+	if a.authorized.lifecycle && h.Capabilities[rt.SystemBootCapability].Supported {
 		capability := rt.Capability{Status: "supported", Supported: true, ContractVersion: 1, VerifiedProfile: "managed-parked-v1"}
 		h.Capabilities["lifecycle.standby"] = capability
 		h.Capabilities["lifecycle.standby_wake"] = capability
 		capability.VerifiedProfile = rt.SystemBootProfile
 		h.Capabilities["lifecycle.stop"] = capability
+	}
+	if a.authorized.rollback && h.Capabilities["state.checkpoint"].Supported && h.Capabilities["state.restore"].Supported {
+		h.Capabilities["state.rollback"] = rt.Capability{
+			Status: "supported", Supported: true, ContractVersion: 1, VerifiedProfile: "managed-block-v1",
+		}
 	}
 	return endpoint, h, nil
 }
