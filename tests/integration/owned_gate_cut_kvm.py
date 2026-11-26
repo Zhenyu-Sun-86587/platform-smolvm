@@ -19,7 +19,7 @@ from authorized_services_kvm import NETWORK, identity, machine
 from managed_system_vsock import Platform, wait_for
 
 PHASES = ("authority_prepared", "offered", "applying", "identity_ready", "committing", "policy_armed")
-TARGET_ORDINAL = 1
+TARGET_ORDINAL = 0
 PROGRAM = "/run/owned-gate.pl"
 RECEIPTS = "/run/owned-gate-receipts"
 APPLICATION = r"""
@@ -182,21 +182,50 @@ def gate_case(platform, phase):
     wait_for(lambda: any(row[0] == source_ip for row in rows()), retry=(RuntimeError, OSError))
     before = round_trip(ref, source_ip, old_identity)
     source_pid = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]["pid"]
-    accepted = platform.change(path + "/fork-batches", "owned-gate-cut", {
-        "children": [{"name": "owned surviving child"}, {"name": "owned cut target"}],
-        "require_independent": True,
-    }, platform.wait_capability(path, "state.fork_batch"))
+    def fork_one(name, key):
+        return platform.change(path + "/fork-batches", key, {
+            "children": [{"name": name}], "require_independent": True,
+        }, platform.wait_capability(path, "state.fork_batch"))
+
+    accepted = fork_one("owned cut target", "owned-gate-cut")
     with catalog_reader(platform) as db:
         cut = interrupt_target(db, accepted["operation_id"], phase, ref, source_pid, platform.bundle_id)
     print("Owned activation cut", json.dumps({"requested_phase": phase, "bundle_digest": platform.bundle_id, **cut}, sort_keys=True), flush=True)
-    finished = platform.complete(accepted)
+    def terminal():
+        result = platform.app("operations/" + accepted["operation_id"])
+        if result["state"] in ("succeeded", "failed"):
+            return result
+        assert result["state"] not in ("cancelled", "recovery_required"), result
+
+    finished = wait_for(terminal, timeout=120)
     assert finished["source_lock_released"] and finished["source_disposition"] == "RUNNING", finished
     _, parent_now = platform.context(source)
     assert identity(parent_now) == identity(ref)
     assert guest_identity(platform, ref) == old_identity
     parent = round_trip(ref, source_ip, old_identity)
     assert int(parent[2]) > int(before[2]), (before, parent)
-    child = finished["children"][0]
+    if not cut["hit"]:
+        print("Requested cut was not proved.", flush=True)
+        return False
+
+    with catalog_reader(platform) as db:
+        failed = child_state(db, accepted["operation_id"], TARGET_ORDINAL)
+        leases = db.execute("SELECT state FROM network_tap_leases WHERE incarnation_id=?", (
+            cut["before"]["incarnation_id"],
+        )).fetchall()
+    failed_child = finished["children"][TARGET_ORDINAL]
+    assert finished["state"] == "failed" and finished["effect"] == "none", finished
+    assert failed_child["state"] in ("failed", "quarantined") and failed["operation_phase"] == "ABORTED", finished
+    assert failed["process_phase"] == "exited" and failed["phase"] != "released", dict(failed)
+    assert all(lease["state"] == "retired" for lease in leases), [dict(lease) for lease in leases]
+    visible = platform.app("machines")["items"]
+    assert not any(item.get("machine_id") == failed_child.get("machine_id") for item in visible), visible
+    cut_ip = str(ipaddress.IPv4Address(cut["before"]["address"]))
+    assert all(row[0] != cut_ip for row in rows()), "collector saw I/O from failed target"
+
+    completed = platform.complete(fork_one("owned positive target", "owned-gate-positive"))
+    assert completed["source_lock_released"] and completed["source_disposition"] == "RUNNING", completed
+    (child,) = completed["children"]
     assert child["state"] == "ready" and child["resource_independence"] == "verified", child
     _, target = platform.context(child["machine_id"])
     new_identity = guest_identity(platform, target)
@@ -206,26 +235,10 @@ def gate_case(platform, phase):
     received = round_trip(target, child_ip, new_identity)
     first_child = next(row for row in rows() if row[0] == child_ip)
     assert tuple(first_child[3:]) == new_identity and int(first_child[2]) > 1, first_child
-    if not cut["hit"]:
-        print("Requested cut was not proved. The owned sibling completed ordinary loopback and private I/O.", flush=True)
-        return False
-
-    with catalog_reader(platform) as db:
-        failed = child_state(db, accepted["operation_id"], TARGET_ORDINAL)
-        leases = db.execute("SELECT state FROM network_tap_leases WHERE incarnation_id=?", (
-            cut["before"]["incarnation_id"],
-        )).fetchall()
-    failed_child = finished["children"][TARGET_ORDINAL]
-    assert failed_child["state"] == "failed" and failed["operation_phase"] == "ABORTED", finished
-    assert failed["process_phase"] == "exited" and failed["phase"] != "released", dict(failed)
-    assert all(lease["state"] == "retired" for lease in leases), [dict(lease) for lease in leases]
-    visible = platform.app("machines")["items"]
-    assert not any(item.get("machine_id") == failed_child.get("machine_id") for item in visible), visible
-    cut_ip = str(ipaddress.IPv4Address(cut["before"]["address"]))
-    assert all(row[0] != cut_ip for row in rows()), "collector saw I/O from failed target"
     print("Owned activation witness", json.dumps({
         "phase": phase, "bundle_digest": platform.bundle_id, "effect": finished["effect"],
-        "operation_id": accepted["operation_id"], "source": identity(ref), "child": identity(target),
+        "operation_id": accepted["operation_id"], "positive_operation_id": completed["operation_id"],
+        "source": identity(ref), "child": identity(target),
         "source_loopback": parent, "child_loopback": received, "child_first_external": first_child,
         "failed_address": cut_ip, "failed_activation": failed["phase"], "failed_receipts": 0,
     }, sort_keys=True), flush=True)
@@ -259,7 +272,11 @@ def main():
         platform = Platform(args, root, stack, (NETWORK,), use_installation=args.use_installation)
         try:
             platform.start()
-            return 0 if gate_case(platform, args.phase) else 2
+            succeeded = gate_case(platform, args.phase)
+            peak = Path("/sys/fs/cgroup") / slice_name / "memory.peak"
+            if peak.is_file():
+                print("Owned fixture slice memory peak", peak.read_text().strip(), flush=True)
+            return 0 if succeeded else 2
         except BaseException:
             for name in ("platform.log", "worker.log", "serve.log"):
                 log = root / name
