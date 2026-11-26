@@ -27,7 +27,7 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics"}
+INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1592,6 +1592,9 @@ def test(args, root, stack, case):
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
     platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
                         use_installation=case in INSTALLED_CASES)
+    candidate = args.platformd
+    if case == "polish-history":
+        args.platformd = args.previous_platformd
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
@@ -1622,6 +1625,10 @@ def test(args, root, stack, case):
     _, ref = platform.context(machine_id)
     wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
              retry=(RuntimeError, OSError))
+    if case == "polish-history":
+        from polish_product import check_historical_capture
+        check_historical_capture(platform, source, ref, candidate)
+        return
     if case in ("polish-files", "polish-capture", "polish-lease-fork", "polish-metrics"):
         from polish_product import check_capture, check_files, check_lease_and_fork, check_passive_metrics
         check = {"polish-files": check_files, "polish-capture": check_capture,
@@ -1697,11 +1704,13 @@ def main():
     parser.add_argument("--platformd", type=lambda p: Path(p).resolve(), required=True)
     parser.add_argument("--system-image", type=lambda p: Path(p).resolve(), required=True,
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
+    parser.add_argument("--previous-platformd", type=lambda p: Path(p).resolve(strict=True),
+                        help="previous release used to create a genuine historical snapshot")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
@@ -1709,11 +1718,15 @@ def main():
     if os.geteuid() != 0:
         parser.error("requires root, KVM, a live systemd manager, and Linux socket peer pidfds")
     selection = args.case or cases
+    if "polish-history" in selection and args.previous_platformd is None:
+        parser.error("polish-history requires --previous-platformd")
     if len(selection) > 1:
         for case in selection:
             command = [sys.executable, __file__, "--bundle", args.bundle, "--platformd", args.platformd,
                        "--system-image", args.system_image, "--cc", args.cc, "--work-dir", args.work_dir,
                        "--case", case]
+            if args.previous_platformd:
+                command.extend(["--previous-platformd", args.previous_platformd])
             if args.probe:
                 command.extend(["--probe", args.probe])
             env = {**os.environ, "MANAGED_SYSTEM_VSOCK_TEST_NAMESPACE": "0"}

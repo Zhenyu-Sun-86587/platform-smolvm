@@ -203,3 +203,31 @@ def check_passive_metrics(platform, path, ref):
                           observed_at=sample["observed_at"], cpu_millis=sample["cpu_millis"],
                           cpu_bracket=[low, high], memory_mb=sample["memory_mb"],
                           worker_allocated_mb=system["allocated_memory_mb"], file_woke_guest=True)), flush=True)
+
+
+def check_historical_capture(platform, path, ref, candidate):
+    platform.guest(ref, ["sh", "-ec", "printf previous >/root/polish-old; sync /root/polish-old"])
+    saved = platform.complete(platform.change(path + "/snapshots", "previous-checkpoint",
+                              {"capture_mode": "vm", "label": "Historical point"},
+                              platform.wait_capability(path, "state.checkpoint")))
+    snapshot = saved["result"]["snapshot_id"]
+    assert "capture_summary" not in platform.app("snapshots/" + snapshot)
+    control = platform.epoch
+    platform.platform_command[0] = candidate
+    platform.restart()
+    assert platform.app("control")["control_epoch"] == control
+    metadata = platform.app("snapshots/" + snapshot)
+    assert metadata["capture_summary"]["configuration"]["status"] == "unknown", metadata
+    assert metadata["capture_summary"]["ram"] == "unknown"
+    restored = platform.complete(platform.change("restores", "current-historical-restore", {
+        "snapshot_id": snapshot, "name": "historical restore", "volume_restore_policy": "clone_conflicts"}))
+    child = restored["machine_id"]
+    _, execution = platform.context(child)
+    assert execution["incarnation_id"] != ref["incarnation_id"]
+    actual = platform.app("machines/" + child + "/resources")
+    assert actual["requested"] == {}, actual
+    wait_for(lambda: platform.guest(execution, ["cat", "/root/polish-old"]) == b"previous",
+             retry=(RuntimeError, OSError))
+    print(json.dumps(dict(case="historical_reader", bundle=platform.bundle_id, snapshot=snapshot,
+                          summary=metadata["capture_summary"], restored_execution=execution["incarnation_id"],
+                          operation=restored["operation_id"], restored_resources=actual)), flush=True)
