@@ -495,9 +495,9 @@ export function Services({ machine, actions, revision, openWeb }: Context & { op
       <header><h2 className={styles.sectionTitle}>SSH</h2>
         {list.items && <button type="button" onClick={() => configure(ssh, "ssh")}>{ssh ? "Edit" : "Add SSH service"}</button>}
       </header>
-      <p>{ssh ? <>Forwards SSH to Guest port <code>{ssh.guest_port}</code>.</>
-        : list.items ? "No SSH service is published for this machine." : "SSH configuration is unavailable."}</p>
-      {hasManagedSSH(machine) ? <p>Managed SSH uses the private Worker network. Connect with <code>sandboxctl ssh {machine.machine_id}</code>.</p>
+      <p>{ssh ? <>The published SSH service forwards to Guest port <code>{ssh.guest_port}</code>.</>
+        : list.items ? "No SSH service is published for this machine." : "Published SSH service information is unavailable."}</p>
+      {hasManagedSSH(machine) ? <p>Connect through the Guest Agent with <code>sandboxctl ssh {machine.machine_id}</code>.</p>
         : ssh && <p>Connect using your enrolled Guest SSH key.</p>}
     </section>
     <MachineWebAddress machine={machine} services={list.items} openWeb={openWeb} servicesError={list.error} />
