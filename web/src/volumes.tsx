@@ -29,6 +29,7 @@ export function VolumeCatalog({ machines, actions, revision }: {
   const path = selected ? "volumes/" + segment(selected) : ""
   const details = useRemote<Volume>(path, revision)
   const current = details.data
+  const snapshots = current?.snapshots ?? []
   const runtimeProfiles = profiles.items?.filter(item => item.status === "registered") ?? []
   const eligible = machines?.filter(machine => machine.boot_mode === "system" && machine.binding?.runtime_instance_id) ?? []
   const machine = eligible.find(item => item.machine_id === consumer)
@@ -38,7 +39,7 @@ export function VolumeCatalog({ machines, actions, revision }: {
 
   const attach = (selectedVolume: Volume) => {
     if (!machine || !stopped) return
-    const attachments = selectedVolume.snapshots.map(snapshot => ({ value: snapshot.snapshot_id }))
+    const attachments = (selectedVolume.snapshots ?? []).map(snapshot => ({ value: snapshot.snapshot_id }))
     actions.dialog({
       title: "Reserve volume attachment",
       description: "The Worker makes the device available on the next cold start. Mount it inside the Guest.",
@@ -100,8 +101,8 @@ export function VolumeCatalog({ machines, actions, revision }: {
         act: async () => { await actions.mutate(path, {}, { method: "DELETE", revision: current.revision }); select("") },
       })}>Delete</button>
     </>}>
-      {current.snapshots.length === 0 && <p className="empty">No volume snapshots yet.</p>}
-      <div className="rows">{current.snapshots.map(snapshot => <div className="row" key={snapshot.snapshot_id}>
+      {snapshots.length === 0 && <p className="empty">No volume snapshots yet.</p>}
+      <div className="rows">{snapshots.map(snapshot => <div className="row" key={snapshot.snapshot_id}>
         <div><strong>{snapshot.snapshot_id}</strong><small>{snapshot.generation_id}</small></div>
         <span>{size(snapshot.capacity_bytes)}</span>
         <button onClick={() => actions.dialog({

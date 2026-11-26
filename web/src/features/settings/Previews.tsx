@@ -42,7 +42,7 @@ export function PreviewPage({ page }: { page: PreviewPage }) {
       actions={page !== "agents" && <><DocumentationLink />
         {(page === "domains" || page === "environment") && <Button variant="primary" onClick={() => setOpen(true)}><Plus size={15} /> {addLabel}</Button>}</>} />
     {page === "integrations" ? <IntegrationGrid /> : page === "agents" ? <>
-      <select className={catalog.scope} aria-label="Machine scope"><option>All machines</option><option>atlas-dev</option></select>
+      <div className={catalog.toolbar}><select className={catalog.scope} aria-label="Machine scope"><option>All machines</option><option>atlas-dev</option></select></div>
       <section className={catalog.featurePanel} data-split="true">
         <div><h2>No agent runs yet</h2><p>Finished coding agent turns appear here when agent sessions are available.</p></div>
         <div><span className={styles.eyebrow}>Agent sessions</span><pre>{`Start a session\n\nMachine    atlas-dev\nAgent      Coding assistant\nStatus     Idle`}</pre></div>
