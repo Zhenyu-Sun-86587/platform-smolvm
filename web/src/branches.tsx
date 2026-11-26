@@ -2,9 +2,11 @@ import { useEffect, useState } from "react"
 import { Box, GitBranch, GitFork, Layers2 } from "lucide-react"
 import type { Machine } from "../../sdk/typescript/src/index"
 import { api, segment, useCollection } from "./api"
-import { Callout, label, Section, State } from "./common"
+import { bundleBound, Callout, fullStateBlock, label, machinePowerState, Section, State } from "./common"
+import { EmptyState } from "./ui"
+import { machineHref } from "./routes"
 import { Button } from "./daytona/button"
-import { copyDialog } from "./workspace-actions"
+import { copyDialog, forkBatchDialog } from "./workspace-actions"
 import type { Actions } from "./main"
 
 type Edge = {
@@ -49,6 +51,13 @@ export function Branches({
   revision: number
 }) {
   const [graph, setGraph] = useState<Graph>()
+  const power = machinePowerState(machine)
+  const native = bundleBound(machine)
+  const canCapture = power === "running" || power === "standby"
+  const independent = native ? fullStateBlock(machine, "state.independent_fork") : undefined
+  const batch = native ? fullStateBlock(machine, "state.fork_batch") : undefined
+  const live = machine.capabilities?.live_fork
+  const canLive = power === "running" && (native ? live?.supported === true : live?.supported !== false)
   const names = useCollection<Machine>("machines", revision)
   useEffect(() => {
     const abort = new AbortController()
@@ -84,11 +93,11 @@ export function Branches({
         <div className={"branch-node" + (current ? " current" : "")}>
           <span className="machine-icon">{edges.length ? <GitBranch size={17} /> : <Box size={17} />}</span>
           <div>
-            <a href={"#/machines/" + segment(id) + "/branches"}>{m?.name ?? id}</a>
+            <a href={machineHref(id, "forks")}>{m?.name ?? id}</a>
             {current && <em>Current</em>}
             <small>{id}</small>
           </div>
-          {m && <State value={m.observed_state} />}
+          {m && <State value={machinePowerState(m)} />}
         </div>
         {edges.length > 0 && (
           <div className="edge-info">
@@ -110,45 +119,36 @@ export function Branches({
   }
   return (
     <Section
-      title="Branch tree"
+      title="Forks"
       actions={
         <>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={machine.capabilities?.independent_clone?.supported === false}
-            onClick={() => copyDialog(machine, actions, false)}
-          >
-            <Layers2 />
-            Independent Clone
-          </Button>
-          <Button
-            size="sm"
-            disabled={
-              machine.observed_state !== "running" || machine.capabilities?.live_fork?.supported === false
-            }
-            onClick={() => copyDialog(machine, actions, true)}
-          >
-            <GitFork />
-            Live Fork
-          </Button>
+          {native ? <>
+            <Button size="sm" variant="outline" disabled={!canCapture || Boolean(batch)} title={batch}
+              onClick={() => forkBatchDialog(machine, actions)}>Fork batch</Button>
+            <Button size="sm" disabled={!canCapture || Boolean(independent)} title={independent}
+              onClick={() => copyDialog(machine, actions, true, true)}><GitFork />Independent Fork</Button>
+          </> : <Button variant="outline" size="sm" disabled={machine.capabilities?.independent_clone?.supported === false}
+            onClick={() => copyDialog(machine, actions, false)}><Layers2 />Independent Clone</Button>}
+          {(!native || live) && <Button size="sm" variant={native ? "outline" : "default"}
+            disabled={!canLive} title={live?.message ?? undefined}
+            onClick={() => copyDialog(machine, actions, true)}><GitFork />Live Fork</Button>}
         </>
       }
     >
       <Callout error={names.error} />
       {graph?.errors.map((e, i) => <Callout key={i} error={e} />)}
-      {graph ? (
+      {graph?.edges.length ? (
         <div className="tree-canvas">
           <ul className="branch-tree">{roots.map((id) => node(id, [], new Set()))}</ul>
         </div>
-      ) : (
-        <p className="empty">Loading branch tree…</p>
-      )}
-      <div className="tree-note">
+      ) : graph && !graph.errors.length ? <EmptyState icon={<GitFork size={22} />} title="No branches yet"
+        description="Fork a running execution or create an independent branch when the runtime supports it." />
+        : !graph && <p className="empty" role="status">Loading branch tree…</p>}
+      {Boolean(graph?.edges.length) && <div className="tree-note">
         <GitBranch size={15} />
         Logical origin records ancestry. An active native storage dependency keeps the parent’s backing
         storage in use.
-      </div>
+      </div>}
     </Section>
   )
 }
