@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,11 +18,52 @@ import (
 	"time"
 
 	"sandbox-platform/internal/nodeproto"
+	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
 func backupID(scope nodeproto.Route) string {
 	return "test-backup-" + nodeproto.BackupSuffix(scope.RuntimeInstanceID, scope.BundleDigest)
+}
+
+func TestBackupCapturesRequireOriginalServeAndSourceOperation(t *testing.T) {
+	capture := workerclient.BackupCapture{CaptureID: "checkpoint", OperationID: "capture-operation", ManifestDigest: testDigest}
+	receipt := rt.OperationReceipt{OperationID: capture.OperationID, InstanceID: nodeproto.ManagedInstanceID(testRoute.LocalInstanceID, "same-name"),
+		RouteID: "deep", BundleDigest: testRoute.BundleDigest, Kind: rt.VMSnapshot, Phase: "COMPLETED",
+		StatePoint: &rt.StatePointProgress{CaptureID: capture.CaptureID, ManifestDigest: capture.ManifestDigest}}
+	query := func(_ context.Context, id string) (rt.OperationReceipt, error) {
+		if id != capture.OperationID {
+			t.Fatal("query did not use the capture's original operation ID")
+		}
+		return receipt, nil
+	}
+	validate := func() error {
+		return verifyBackupCaptures(t.Context(), testRoute, []workerclient.BackupCapture{capture}, query)
+	}
+	if err := validate(); err != nil {
+		t.Fatal(err)
+	}
+	owner := receipt.InstanceID
+	receipt.InstanceID = nodeproto.ManagedInstanceID("other-private-serve", "same-name")
+	var scope *nodeproto.Failure
+	if err := validate(); !errors.As(err, &scope) || scope.Code != nodeproto.CodeRoute {
+		t.Fatalf("same Worker and Bundle leaked across Serve origins: %v", err)
+	}
+	receipt.InstanceID = owner
+	receipt.StatePoint.ManifestDigest = "sha256:" + strings.Repeat("b", 64)
+	if err := validate(); !errors.Is(err, rt.ErrConflict) {
+		t.Fatalf("wrong StatePoint digest was accepted: %v", err)
+	}
+	receipt.Kind = rt.VMRollback
+	receipt.StatePoint = &rt.StatePointProgress{CaptureID: capture.CaptureID, ManifestDigest: capture.ManifestDigest,
+		RescueCaptureID: "actual-rescue", RescueManifestDigest: capture.ManifestDigest}
+	if err := validate(); !errors.Is(err, rt.ErrConflict) {
+		t.Fatalf("rollback target was mistaken for a capture created by rollback: %v", err)
+	}
+	capture.CaptureID = "actual-rescue"
+	if err := validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRemoteBackupDigestAndIncompleteMembers(t *testing.T) {

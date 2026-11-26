@@ -311,10 +311,17 @@ func statePointDigestValid(value string) bool {
 }
 
 func (j *Job) recordStatePoint(ctx context.Context, tx *sql.Tx, p rt.StatePointProgress, capture, purpose string) error {
+	digest := p.ManifestDigest
+	if purpose == "rollback_rescue" && p.RescueCaptureID == capture && p.RescueManifestDigest != "" {
+		if !statePointDigestValid(p.RescueManifestDigest) {
+			return registry.ErrConflict
+		}
+		digest = p.RescueManifestDigest
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO managed_statepoint_receipts
 		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runtime_instance_id,capture_id) DO NOTHING`,
 		j.Binding.RuntimeInstanceID, capture, p.RepresentationID, j.Binding.RuntimeBundleID, j.Binding.ID,
-		j.Op.ID, purpose, p.ManifestDigest, string(JSON(p)))
+		j.Op.ID, purpose, digest, string(JSON(p)))
 	if err != nil {
 		return err
 	}

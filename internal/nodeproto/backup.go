@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"path"
 	"strings"
+
+	"sandbox-platform/internal/runtime/workerclient"
 )
 
 const (
@@ -14,6 +16,7 @@ const (
 	BackupSizeHeader     = "X-Node-Backup-Bytes"
 	BackupManifestHeader = "X-Node-Manifest-Digest"
 	BackupDigestTrailer  = "X-Node-Content-Digest"
+	BackupSelectionLimit = 2 << 20
 )
 
 func BackupSuffix(instance, bundle string) string {
@@ -27,10 +30,10 @@ func ValidMember(member string) bool {
 }
 
 type BackupSelection struct {
-	ID          string   `json:"backup_id"`
-	Reader      string   `json:"state_reader_id"`
-	Captures    []string `json:"capture_ids"`
-	Generations []string `json:"generation_ids"`
+	ID          string                       `json:"backup_id"`
+	Reader      string                       `json:"state_reader_id"`
+	Captures    []workerclient.BackupCapture `json:"captures"`
+	Generations []string                     `json:"generation_ids"`
 }
 type BackupMember struct {
 	ID     string `json:"backup_id"`

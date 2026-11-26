@@ -10,16 +10,33 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type BackupCapture struct {
+	CaptureID      string `json:"capture_id"`
+	OperationID    string `json:"source_operation_id"`
+	ManifestDigest string `json:"manifest_digest"`
+}
+
 type BackupSelection struct {
 	ID             string          `json:"backup_id"`
 	Reader         string          `json:"state_reader_id"`
-	Captures       []string        `json:"capture_ids"`
+	Captures       []BackupCapture `json:"-"`
 	Generations    []string        `json:"generation_ids"`
 	BundleManifest json.RawMessage `json:"bundle_manifest"`
 }
 
 func (c Client) PrepareBackup(ctx context.Context, selected BackupSelection) (*os.File, string, error) {
-	result, file, err := c.call(ctx, request{Method: "PrepareBackupClosure", Payload: selected}, nil,
+	ids := make([]string, 0, len(selected.Captures))
+	for _, capture := range selected.Captures {
+		ids = append(ids, capture.CaptureID)
+	}
+	if selected.Generations == nil {
+		selected.Generations = []string{}
+	}
+	payload := struct {
+		BackupSelection
+		CaptureIDs []string `json:"capture_ids"`
+	}{BackupSelection: selected, CaptureIDs: ids}
+	result, file, err := c.call(ctx, request{Method: "PrepareBackupClosure", Payload: payload}, nil,
 		&descriptor{ResourceID: selected.ID, Role: "backup_manifest"})
 	if err != nil {
 		return nil, "", err

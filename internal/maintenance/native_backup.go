@@ -40,7 +40,7 @@ type nativeSelection struct {
 	Route           customsmolvm.Route
 	Node            *config.Node
 	LocalInstanceID string
-	Captures        map[string]string
+	Captures        map[string]workerclient.BackupCapture
 	Generations     []string
 }
 
@@ -66,7 +66,8 @@ type closureManifest struct {
 		Point struct {
 			ID string `json:"capture_id"`
 		} `json:"point"`
-		Digest string `json:"manifest_digest"`
+		Digest      string `json:"manifest_digest"`
+		OperationID string `json:"commit_id"`
 	} `json:"captures"`
 	Generations []string `json:"generations"`
 }
@@ -120,12 +121,12 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 		routes[r.Route.InstanceID] = r
 	}
 	selected := make(map[string]*nativeSelection)
-	rows, err := db.QueryContext(ctx, `SELECT p.runtime_instance_id,p.runtime_bundle_id,p.runtime_capture_id,s.sha256,'capture'
+	rows, err := db.QueryContext(ctx, `SELECT p.runtime_instance_id,p.runtime_bundle_id,p.runtime_capture_id,s.sha256,p.operation_id,'capture'
 		FROM vm_snapshot_provenance p JOIN snapshots s ON s.id=p.snapshot_id WHERE s.state='ready'
-		UNION SELECT b.runtime_instance_id,b.runtime_bundle_id,p.capture_id,p.manifest_digest,'capture'
+		UNION SELECT b.runtime_instance_id,b.runtime_bundle_id,p.capture_id,p.manifest_digest,p.operation_id,'capture'
 		FROM runtime_bindings b JOIN managed_statepoint_receipts p ON p.runtime_instance_id=b.runtime_instance_id AND p.capture_id=b.last_capture_id
 		WHERE b.status='current' AND b.power_state='hibernated'
-		UNION SELECT v.runtime_instance_id,v.runtime_bundle_id,s.generation_handle,'','disk'
+		UNION SELECT v.runtime_instance_id,v.runtime_bundle_id,s.generation_handle,'','','disk'
 		FROM volume_snapshots s JOIN volumes v ON s.volume_id=v.id WHERE s.state='available'
 		ORDER BY 1,3`)
 	if err != nil {
@@ -133,8 +134,8 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var routeID, bundle, id, digest, kind string
-		if err := rows.Scan(&routeID, &bundle, &id, &digest, &kind); err != nil {
+		var routeID, bundle, id, digest, operation, kind string
+		if err := rows.Scan(&routeID, &bundle, &id, &digest, &operation, &kind); err != nil {
 			return nil, err
 		}
 		candidate, ok := routes[routeID]
@@ -143,7 +144,7 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 			return nil, fmt.Errorf("%w: endpoint for the pinned bundle is unavailable", ErrNativeClosure)
 		}
 		if selected[routeID] == nil {
-			candidate.Captures = map[string]string{}
+			candidate.Captures = map[string]workerclient.BackupCapture{}
 			candidate.Generations = []string{}
 			if candidate.Node != nil {
 				var owner, local string
@@ -156,10 +157,11 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 		}
 		set := selected[routeID]
 		if kind == "capture" {
-			if old, existing := set.Captures[id]; existing && old != digest {
+			capture := workerclient.BackupCapture{CaptureID: id, OperationID: operation, ManifestDigest: digest}
+			if old, existing := set.Captures[id]; existing && old != capture {
 				return nil, fmt.Errorf("%w: StatePoint receipts disagree", ErrNativeClosure)
 			}
-			set.Captures[id] = digest
+			set.Captures[id] = capture
 		} else if !slices.Contains(set.Generations, id) {
 			set.Generations = append(set.Generations, id)
 		}
@@ -338,11 +340,11 @@ func pinNativeRoute(ctx context.Context, store *registry.Store, runID string, pl
 	root := filepath.Join("native", suffix)
 	pinned := pinnedNative{id: runID + "-" + suffix, route: plan.Route,
 		archive: NativeArchive{RuntimeInstance: plan.Route.InstanceID, Bundle: plan.Route.Bundle, Reader: plan.Route.Reader, Directory: root}}
-	captures := make([]string, 0, len(plan.Captures))
-	for id := range plan.Captures {
-		captures = append(captures, id)
+	captures := make([]workerclient.BackupCapture, 0, len(plan.Captures))
+	for _, capture := range plan.Captures {
+		captures = append(captures, capture)
 	}
-	slices.Sort(captures)
+	slices.SortFunc(captures, func(a, b workerclient.BackupCapture) int { return strings.Compare(a.CaptureID, b.CaptureID) })
 	client, closeClient, err := plan.backupClient(ctx, store)
 	if err != nil {
 		return pinned, err
@@ -426,7 +428,9 @@ func checkSelection(raw []byte, id string, plan nativeSelection, manifest *closu
 	}
 	seen := make(map[string]bool)
 	for _, capture := range manifest.Captures {
-		if seen[capture.Point.ID] || plan.Captures[capture.Point.ID] != capture.Digest || capture.Digest == "" {
+		expected, found := plan.Captures[capture.Point.ID]
+		if !found || seen[capture.Point.ID] || expected.ManifestDigest != capture.Digest || capture.Digest == "" ||
+			expected.OperationID != capture.OperationID || capture.OperationID == "" {
 			return errors.New("Worker backup StatePoint differs from its committed receipt")
 		}
 		seen[capture.Point.ID] = true

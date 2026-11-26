@@ -88,8 +88,16 @@ func backupStream[T any](ctx context.Context, a *Adapter, path string, in T) (_ 
 		return nil, 0, "", &nodeproto.Failure{Code: nodeproto.CodeAuthority}
 	}
 	expiry := nodeproto.PeerDeadline(r.TLS.VerifiedChains)
+	if r.StatusCode != http.StatusOK {
+		defer r.Body.Close()
+		var failure nodeproto.Failure
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&failure) == nil && failure.Code != "" {
+			return nil, 0, "", &failure
+		}
+		return nil, 0, "", &nodeproto.Failure{Code: nodeproto.CodeUnavailable}
+	}
 	size, err := strconv.ParseInt(r.Header.Get(nodeproto.BackupSizeHeader), 10, 64)
-	if r.StatusCode != http.StatusOK || r.Header.Get("Content-Type") != "application/octet-stream" || err != nil || size < 0 {
+	if r.Header.Get("Content-Type") != "application/octet-stream" || err != nil || size < 0 {
 		r.Body.Close()
 		return nil, 0, "", &nodeproto.Failure{Code: nodeproto.CodeUnavailable}
 	}
