@@ -118,11 +118,13 @@ export function Branches({
     )
   }
   if (graph && graph.edges.length === 0 && graph.errors.length === 0) {
+    const forkCommand = native && independent === undefined ? "sandboxctl machines live-fork " + machine.machine_id + " child-name"
+      : "sandboxctl machines fork " + machine.machine_id + " child-name" + (native ? " --require-independent" : "")
     return <WorkspaceGuide label="No forks" title="Branch this machine"
       description="Create a machine from this execution. Parent and child can continue independently when the runtime supports that mode."
       actions={<Button disabled={native ? !canCapture || Boolean(independent) : !canLive}
         title={independent} onClick={() => copyDialog(machine, actions, true, native)}>Fork</Button>}
-      commands={["# Fork this machine into a new one", "sandboxctl machines fork " + machine.machine_id + " child-name" + (native ? " --require-independent" : ""),
+      commands={["# Fork this machine into a new one", forkCommand,
         "", "# Show parent and children", "sandboxctl machines dependencies " + machine.machine_id]} />
   }
   return (

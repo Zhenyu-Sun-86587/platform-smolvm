@@ -16,7 +16,7 @@ import { currentServiceObservation, fixtureScene, useCollection } from "./api"
 import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
 import { policyFields, policyOverrides } from "./lifecycle-policy"
-import { powerDialog, WorkspaceActions } from "./workspace-actions"
+import { hasVerifiedSSHHostKey, powerDialog, WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
 const Desktop = lazy(() => import("./Desktop"))
@@ -98,7 +98,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
           description="Agent session history is unavailable. Run a command in the guest and follow its output with persistent tasks."
           actions={<a className={styles.documentButton} href={base + "/automations"}>View persistent tasks</a>}
           commands={["# List persistent tasks", "sandboxctl tasks list " + machine.machine_id,
-            "", "# Run a short Guest command", "sandboxctl exec " + machine.machine_id + " -- /usr/bin/id"]} />
+            "", "# Run a short Guest command", (machine.boot_mode === "system" ? "sandboxctl exec --cwd / --follow " : "sandboxctl exec ") + machine.machine_id + " -- /usr/bin/id"]} />
         : selected === "settings" ? <div className={styles.settings}><PowerSettings machine={machine} actions={actions} /><MachineConfiguration {...context} /><Activity {...context} /></div>
         : <Overview {...context} />}
     </div>
@@ -533,7 +533,7 @@ export function Services({ machine, actions, revision }: Context) {
       const ssh = item.protocol === "ssh"
       const http = item.protocol === "http" || item.protocol === "https"
       const url = item.public_host && http ? `https://${item.public_host}${item.public_port ? ":" + item.public_port : ""}` : undefined
-      const connect = ssh ? `sandboxctl ssh-config ${machine.machine_id}` : url
+      const connect = ssh ? `sandboxctl ${item.enabled !== false && hasVerifiedSSHHostKey(machine) ? "ssh" : "ssh-config"} ${machine.machine_id}` : url
         ? `curl -H "Authorization: Bearer \$SANDBOX_TOKEN" "${url}"`
         : `sandboxctl port-forward ${item.service_id} --local-port 8080`
       return <div className={styles.port} key={item.service_id}>
@@ -660,10 +660,13 @@ export function Snapshots({ machine, machines, actions, revision, directory = fa
   if (machine && captures && !captures.length && !history.error) {
     const vm = bundleBound(machine)
     const blocked = vm ? vmBlock : cleanBlock && recoveryBlock
+    const captureCommand = vm && fullStateBlock(machine, "state.checkpoint") === undefined
+      ? "sandboxctl snapshots capture-vm " + machine.machine_id
+      : "sandboxctl snapshots capture " + machine.machine_id + (vm ? " --capture-mode vm" : "")
     return <WorkspaceGuide label="No checkpoints" title="Save this machine’s state"
       description="Capture the supported Guest state and restore it at a later point."
       actions={<Button disabled={Boolean(blocked)} title={blocked} onClick={() => captureMachine(machine, actions, vm)}>Checkpoint</Button>}
-      commands={["# Save this machine's state", "sandboxctl snapshots capture " + machine.machine_id + (vm ? " --capture-mode vm" : ""),
+      commands={["# Save this machine's state", captureCommand,
         "", "# List its checkpoints", "sandboxctl snapshots list " + machine.machine_id]} />
   }
   return <>
