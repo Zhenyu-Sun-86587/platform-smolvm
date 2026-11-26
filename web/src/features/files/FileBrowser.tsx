@@ -44,6 +44,10 @@ const safePath = (path: string) => path.startsWith("/") && !path.includes("\0") 
 const child = (path: string, name: string) => path.replace(/\/$/, "") + "/" + name
 const parent = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/"
 
+function shellPath(path: string) {
+  return /^[a-zA-Z0-9_./-]+$/.test(path) ? path : "'" + path.replaceAll("'", "'\\''") + "'"
+}
+
 function changedExecution() {
   return new PlatformError(409, {
     code: "GENERATION_CONFLICT", message: "The machine execution has changed. Reopen the directory before using files.",
@@ -343,8 +347,8 @@ function Browser({ machine, actions, current, autoload }: {
       </footer>
     </div>
     <CommandPanel commands={[
-      "sandboxctl files put " + machine.machine_id + " ./local-file.txt " + child(path, "local-file.txt"),
-      "sandboxctl files get " + machine.machine_id + " " + child(path, "guest-file.txt") + " ./guest-file.txt",
+      "sandboxctl files put " + machine.machine_id + " ./local-file.txt " + shellPath(child(path, "local-file.txt")),
+      "sandboxctl files get " + machine.machine_id + " " + shellPath(child(path, "guest-file.txt")) + " ./guest-file.txt",
     ]} />
     <Modal open={Boolean(transfer)} onOpenChange={open => { if (!open) setTransfer(undefined) }} title={transferTitle}
       description={transfer?.mode === "preview" ? transfer.path : uploadLimit ? "Maximum upload size " + bytes(uploadLimit) : undefined}

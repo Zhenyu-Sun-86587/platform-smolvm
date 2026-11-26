@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import type { Machine, MachineMetrics } from "../../../../sdk/typescript/src/index"
 import { machine as machinePath } from "../../../../sdk/typescript/src/index"
-import { bundleBound, Callout, label, time, useRemote } from "../../common"
+import { Callout, label, time, useRemote } from "../../common"
 import { fixtureScene, metricAvailability, metricNumber } from "../../api"
 import styles from "./detail.module.css"
 
@@ -54,8 +54,7 @@ export function ResourceUsage({ machine, revision }: { machine: Machine; revisio
   const [sampleRevision, setSampleRevision] = useState(0)
   const [history, setHistory] = useState<{ key: string; samples: Sample[] }>()
   const { data, error } = useRemote<MachineMetrics>(machinePath(machine.machine_id) + "/metrics", revision + sampleRevision)
-  const status = data && bundleBound(machine) && !data.execution && !fixtureScene && (data.availability === "available" || data.availability === "partial")
-    ? "unknown" : metricAvailability(data, machine)
+  const status = metricAvailability(data, machine)
   const current = status === "available" || status === "partial"
   const sample = current ? sampleOf(data) : undefined
   const identity = JSON.stringify([machine.machine_id, machine.binding?.binding_id, machine.binding_generation,

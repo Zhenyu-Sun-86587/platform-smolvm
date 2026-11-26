@@ -78,7 +78,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
       </div>
       <WorkspaceActions key={machine.machine_id} machine={machine} actions={actions} surface="detail"
         capture={() => captureMachine(machine, actions, bundleBound(machine))}
-        captureBlock={bundleBound(machine) ? fullStateBlock(machine, "state.checkpoint") :
+        captureBlock={bundleBound(machine) ? checkpointBlocked(machine) :
           capabilityReason(machine, "clean_checkpoint") && capabilityReason(machine, "active_recovery")} />
     </header>
     <nav ref={navigation} className={styles.tabs} aria-label="Machine sections">
@@ -98,7 +98,7 @@ export function MachineView({ tab, ...context }: Context & { tab: string }) {
           description="Agent session history is unavailable. Run a command in the guest and follow its output with persistent tasks."
           actions={<a className={styles.documentButton} href={base + "/automations"}>View persistent tasks</a>}
           commands={["# List persistent tasks", "sandboxctl tasks list " + machine.machine_id,
-            "", "# Open an interactive shell", "sandboxctl exec " + machine.machine_id + " --tty -- /bin/sh"]} />
+            "", "# Run a short Guest command", "sandboxctl exec " + machine.machine_id + " -- /usr/bin/id"]} />
         : selected === "settings" ? <div className={styles.settings}><PowerSettings machine={machine} actions={actions} /><MachineConfiguration {...context} /><Activity {...context} /></div>
         : <Overview {...context} />}
     </div>
@@ -543,6 +543,12 @@ export function Services({ machine, actions, revision }: Context) {
   </>
 }
 
+function checkpointBlocked(machine: Machine) {
+  const power = machinePowerState(machine)
+  return fullStateBlock(machine, "state.checkpoint") ??
+    (power === "running" || power === "standby" ? undefined : "Start this machine before capturing its execution.")
+}
+
 function captureMachine(machine: Machine, actions: Actions, vm: boolean) {
   const clean = capabilityReason(machine, "clean_checkpoint")
   const recovery = capabilityReason(machine, "active_recovery")
@@ -569,7 +575,7 @@ export function Snapshots({ machine, machines, actions, revision, directory = fa
   const captures = items ?? history.items
   const cleanBlock = capabilityReason(machine, "clean_checkpoint")
   const recoveryBlock = capabilityReason(machine, "active_recovery")
-  const vmBlock = machine && fullStateBlock(machine, "state.checkpoint")
+  const vmBlock = machine && checkpointBlocked(machine)
   const [error, setError] = useState<unknown>()
   const modal = (mode: string, item: Snapshot) => {
     const resource = snapshot(item.snapshot_id)
