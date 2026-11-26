@@ -365,6 +365,9 @@ def hibernate_case(platform, source, ref, probe, seen_cids):
 def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, boundaries=False):
     serial = 0
     port = 45713
+    source_attachment = platform.app(f"machines/{source_id}/network")
+    source_mode = "fixed_internal" if target_mode == "native" else "native"
+    assert source_attachment["state"] == "published" and source_attachment["mode"] == source_mode, source_attachment
 
     def call(method, ref, payload=None):
         nonlocal serial
@@ -390,6 +393,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, bo
         platform.guest(ref, ["/usr/bin/systemd-run", "--unit=packet-wake-service", probe, "--serve", str(port)])
         wait_for(lambda: f":{port:04X}".encode() in platform.guest(ref, ["/bin/cat", "/proc/net/tcp"]))
         endpoint = platform.app(f"machines/{machine_id}/network")
+        assert endpoint["state"] == "published" and endpoint["mode"] == target_mode, endpoint
         return f"machines/{machine_id}", machine, ref, endpoint
 
     def policy(machine, ref, allowed, expected_revision):
@@ -610,6 +614,7 @@ def packet_wake_case(platform, source_id, source_ref, binary, target_mode, *, bo
 
         wait_for(datagram_outcome, timeout=8)
     print("One authorized UDP datagram crossed durable wake. Oversized data woke the VM and was dropped.")
+    print(f"Private packet round trip {source_mode} -> {target_mode} on {platform.bundle_id}.", flush=True)
 
 
 class ResponseBytes:

@@ -109,7 +109,7 @@ def read_profile(root):
     require("oci-v1" in boot_profiles and set(boot_profiles) <= BOOT_TEMPLATES.keys(), "unsupported boot profiles")
     contracts = profile["contracts"]
     require(isinstance(contracts, dict), "contracts must be an object")
-    optional = contracts.keys() & managed_evidence.MANAGED
+    optional = contracts.keys() & (managed_evidence.MANAGED | {managed_evidence.PRIVATE_NETWORK})
     fields(contracts, " ".join((*PROTOCOLS, *optional)), "contracts")
     for name, version in profile["contracts"].items():
         require(type(version) is int and version == 1, f"unsupported contract version: {name}")

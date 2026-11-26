@@ -146,7 +146,7 @@ def source_licenses(stage, lock, kernel, crun):
     return reader[1].decode()
 
 
-def write_profiles(stage, lock, evidence, reader, managed=False):
+def write_profiles(stage, lock, evidence, reader, managed=False, private_network=False):
     profiles = stage / "profiles"
     profiles.mkdir()
     guest, cpu, kvm = (evidence[name] for name in ("guest", "host_cpu", "kvm"))
@@ -171,9 +171,12 @@ def write_profiles(stage, lock, evidence, reader, managed=False):
         "tsc_migration_template": "intel-portable", "verified_operations": ["oci-boot", *(["managed-fork", "hibernate-restore"] if managed else [])],
     })
     sources = lock["sources"]
+    contracts = {name: 1 for name in (*PROTOCOLS, *(managed_evidence.MANAGED if managed else ()))}
+    if private_network:
+        contracts[managed_evidence.PRIVATE_NETWORK] = 1
     write_json(profiles / "verification.json", {
         "schema": "RuntimeVerificationProfile/1", "boot_profiles": ["oci-v1", *(["system-debian-v1"] if managed else [])],
-        "contracts": {name: 1 for name in (*PROTOCOLS, *(managed_evidence.MANAGED if managed else ()))},
+        "contracts": contracts,
         "state_reader_id": f"{reader}:{sources['smolvm']['commit']}:{sources['libkrun']['commit']}",
         "required_kvm_caps": sorted(KVM_CAPABILITIES), "optional_features": [],
     })
@@ -199,10 +202,14 @@ def main():
             lock, _ = read_locks(stage / BUILD_LOCK, stage / TOOLCHAIN_LOCK)
             evidence = checked_evidence(args.evidence, stage, lock)
             reader = source_licenses(stage, lock, args.kernel_archive, args.crun_archive)
+            private_network = False
             if args.managed_evidence:
                 inputs = args.managed_evidence
-                files = [managed_evidence.EVIDENCE, managed_evidence.SYSTEM_TEMPLATE,
-                         *(managed_evidence.log_name(case) for case in managed_evidence.SCENARIOS)]
+                private_network = managed_evidence.uses_private_network(read_json(inputs / managed_evidence.EVIDENCE))
+                cases = [*managed_evidence.SCENARIOS]
+                if private_network:
+                    cases.extend(managed_evidence.PACKET_DIRECTIONS)
+                files = [managed_evidence.EVIDENCE, managed_evidence.SYSTEM_TEMPLATE, *(managed_evidence.log_name(case) for case in cases)]
                 for name in files:
                     target = stage / name
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +217,7 @@ def main():
                 with (stage / "NOTICE").open("a", encoding="utf-8") as notice:
                     notice.write("The System template includes a Debian guest disk with installed package copyright files under /usr/share/doc. "
                                  "The managed acceptance record identifies the tested disk, build and KVM fixture results.\n")
-            write_profiles(stage, lock, evidence, reader, bool(args.managed_evidence))
+            write_profiles(stage, lock, evidence, reader, bool(args.managed_evidence), private_network)
             checksum = pack_bundle(stage, output)
         require(verify_bundle(output, expected=checksum) == checksum, "candidate digest verification failed")
         print(checksum)

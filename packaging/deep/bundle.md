@@ -96,6 +96,14 @@ python3 -B packaging/deep/pack-candidate.py \
 
 The acceptance record identifies the runtime build, the two test suite commits, platformd and the uncompressed System disk. The OCI cases exercise recursive fork, failed-child retry, rollback, two writable disks and automatic lifecycle. The Debian cases exercise Agent rebinding, Guest grants, and successive durable captures. Verification checks all five logs and the restored disk bytes before accepting the additional contracts.
 
+### Publish measured private networking
+
+Pass `--private-network` to `measure-managed.py` on a Worker with `/dev/net/tun`, nftables and the privileges to create isolated network namespaces. It runs the existing `packet-native` and `packet-fixed` acceptance cases in addition to the five base cases. Each packet log records the observed source and target attachment modes and the shared measurement Bundle digest. Both cases cover TCP reaching a parked execution, exact resume from durable state at the reserved address, and delivery or dropping of the first UDP datagram according to the bound.
+
+The packer selects `RuntimeManagedAcceptance/2` when both directions were measured. The installer verifies each log and reconstructs the measurement manifest from the exact staged runtime, Worker, libraries, Agent and identity helper. It also verifies the measured Debian disk against the packaged archive. The final Bundle digest includes these records and identifies the reader for installed captures.
+
+Serve exposes `network.native`, `network.fixed_internal`, `network.tap` and `network.tap_restore` for the measured Debian managed private-network profile while the configured Worker reports the expected executable digest. These cases certify restore at the same reserved address. `network.native_reidentity` remains unknown pending a release measurement of independent Native identity change. Both acceptance schemas provide the evidence for `lifecycle.standby` and `boot.system_state_restore`. The two packet cases additionally qualify for `lifecycle.standby_wake`. Existing version 1 evidence remains valid for install, verification and historical readers.
+
 ## Retain a historical reader and roll back selection
 
 Install each release in its own digest-named directory. Keep a separate Serve process, Unix socket and writable state directory for each release. Configure each verified endpoint under `runtime.custom` with the values from `sandboxctl admin runtime-capabilities`. The Worker broker and its resource catalog are shared. Existing bindings keep their Serve identity and Bundle digest. Switch the selected runtime for new instances to the earlier installed route to roll back new-instance placement. A binary rollback of platformd follows the [platform rollback procedure](../install/README.md) and requires a compatible pre-upgrade database backup for schema changes.

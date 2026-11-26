@@ -2,7 +2,6 @@
 """Measure managed OCI and Debian capabilities on a local KVM Worker."""
 import argparse
 import gzip
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +12,7 @@ import tarfile
 import tempfile
 
 import managed_evidence
-from bundle import BUILD_LOCK, BUILD_RECORD, IDENTITY_HELPER, ROOTFS, AGENT, PROTOCOLS, check_runtime
+from bundle import AGENT, BUILD_LOCK, BUILD_RECORD, IDENTITY_HELPER, MANIFEST, PROTOCOLS, check_runtime
 from bundle_inputs import BundleError, canonical_json, file_digest, require
 
 
@@ -41,23 +40,20 @@ def checked_guest(disk, runtime, temporary):
 
 
 def test_bundle(runtime, dest):
-    names = ["smolvm-bin", "smolvm-resourced", "lib/libkrun.so.2", "lib/libkrunfw.so.5", ROOTFS, IDENTITY_HELPER]
-    entries = []
-    for name in names:
+    entries = {}
+    for name, installed in managed_evidence.MEASURED_ARTIFACTS.items():
         src = runtime / name
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
         sha, size = file_digest(target)
-        entries.append({"path": name, "size": size, "sha256": sha})
+        entries[installed] = {"path": installed, "size": size, "sha256": sha}
     for link, target in (("libkrun.so", "libkrun.so.2"), ("libkrunfw.so", "libkrunfw.so.5")):
         (dest / "lib" / link).symlink_to(target)
-    manifest = {"schema": "RuntimeBundle/1", "platform": "linux-x86_64", "artifacts": entries,
-                "guest": {"boot_profiles": ["oci-v1", "system-debian-v1"]},
-                "contracts": {name: 1 for name in (*PROTOCOLS, *managed_evidence.MANAGED)}}
-    manifest["contracts"]["state_reader_id"] = "managed-acceptance:" + checksum(runtime / BUILD_RECORD)
-    manifest["bundle_digest"] = "sha256:" + hashlib.sha256(canonical_json(manifest)).hexdigest()
-    (dest / "runtime-bundle.json").write_bytes(canonical_json(manifest))
+    contracts = {name: 1 for name in (*PROTOCOLS, *managed_evidence.MANAGED)}
+    manifest = managed_evidence.measurement_manifest(entries, checksum(runtime / BUILD_RECORD), contracts)
+    (dest / MANIFEST).write_bytes(canonical_json(manifest))
+    return manifest["bundle_digest"]
 
 
 def archive_system(disk, output):
@@ -71,8 +67,9 @@ def archive_system(disk, output):
 
 def probe_binary(supplied, source, output, cc):
     if supplied:
-        return supplied.resolve(strict=True)
-    subprocess.run([cc, "-static", "-Os", "-o", output, source], check=True)
+        shutil.copy2(supplied.resolve(strict=True), output)
+    else:
+        subprocess.run([cc, "-static", "-Os", "-o", output, source], check=True)
     return output
 
 
@@ -97,13 +94,18 @@ def measure(args):
     (output / managed_evidence.SYSTEM_TEMPLATE).parent.mkdir()
     (output / managed_evidence.log_name("oci-capture")).parent.mkdir()
     runs = {}
+    network_runs = {}
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="managed-acceptance-") as temp:
         temp = Path(temp)
+        # The several Worker namespaces import one private copy of the System disk.
+        snapshot = temp / managed_evidence.SYSTEM_DISK
+        subprocess.run(["cp", "--reflink=auto", "--sparse=always", "--", image, snapshot], check=True)
+        image = snapshot
         checked_guest(image, runtime, temp)
         bundle = temp / "bundle"
-        test_bundle(runtime, bundle)
-        platformd = args.platformd.resolve(strict=True)
+        measured_bundle = test_bundle(runtime, bundle)
+        platformd = Path(shutil.copy2(args.platformd.resolve(strict=True), temp / "platformd"))
         counter = probe_binary(args.counter, source / "crates/smolvm-resourced/tests/kvm-parked-block-guest.c",
                                temp / "counter", args.cc)
         probe = probe_binary(args.probe, platform / "tests/fixtures/vsock-probe.c", temp / "vsock-probe", args.cc)
@@ -115,19 +117,31 @@ def measure(args):
                  "system-fork": (system, [*product, "--case", "fork"]),
                  "system-captures": (system, [*product, "--case", "successive-captures"]),
                  "system-relay": (system, [*product, "--case", "relay"])}
+        if args.private_network:
+            cases.update({case: (system, [*product, "--case", case]) for case in managed_evidence.PACKET_DIRECTIONS})
         for case, (fixture, command) in cases.items():
             path = output / managed_evidence.log_name(case)
             with path.open("wb") as log:
                 result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
             require(result.returncode == 0, f"{case} failed, see {path}")
-            managed_evidence.verify_run(case, path)
-            runs[case] = {"log_sha256": checksum(path), "harness_sha256": checksum(fixture)}
-        archive_system(image, output / managed_evidence.SYSTEM_TEMPLATE)
-        evidence = {"schema": "RuntimeManagedAcceptance/1", "build_lock_sha256": checksum(runtime / BUILD_LOCK),
+            managed_evidence.verify_run(case, path, measured_bundle)
+            run = {"log_sha256": checksum(path), "harness_sha256": checksum(fixture)}
+            if case in managed_evidence.PACKET_DIRECTIONS:
+                source_mode, target_mode = managed_evidence.PACKET_DIRECTIONS[case]
+                network_runs[case] = {**run, "source_mode": source_mode, "target_mode": target_mode}
+            else:
+                runs[case] = run
+        template = output / managed_evidence.SYSTEM_TEMPLATE
+        archive_system(image, template)
+        evidence = {"schema": managed_evidence.SCHEMA_V1, "build_lock_sha256": checksum(runtime / BUILD_LOCK),
                     "build_record_sha256": checksum(runtime / BUILD_RECORD), "platformd_sha256": checksum(platformd),
                     "system_disk_bytes": image.stat().st_size, "system_disk_sha256": checksum(image),
                     "acceptance_revisions": revisions, "counter_sha256": checksum(counter),
                     "vsock_probe_sha256": checksum(probe), "runs": runs}
+        if args.private_network:
+            evidence["schema"] = managed_evidence.SCHEMA_V2
+            evidence["private_network"] = {"measurement_bundle_digest": measured_bundle,
+                                           "system_template_sha256": checksum(template), "runs": network_runs}
         (output / managed_evidence.EVIDENCE).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
 
@@ -137,6 +151,7 @@ if __name__ == "__main__":
         parser.add_argument("--" + flag, required=True, type=Path)
     parser.add_argument("--counter", type=Path, help="precompiled static kvm-parked-block-guest fixture")
     parser.add_argument("--probe", type=Path, help="precompiled static vsock-probe fixture")
+    parser.add_argument("--private-network", action="store_true", help="also measure both managed private-network directions in KVM")
     parser.add_argument("--cc", default="cc", help="C compiler for Guest test fixtures")
     try:
         measure(parser.parse_args())
