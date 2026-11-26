@@ -1,11 +1,12 @@
 import { useState } from "react"
 import {
-  Bot, Braces, Building2, Cloud, Code2, Copy, Database, GitBranch, Globe2, Link2, LockKeyhole, Plus, Search,
+  Bot, Building2, Copy, Globe2, Link2, LockKeyhole, Plus, Search,
 } from "lucide-react"
 import { fixtureScene } from "../../api"
 import { Button, EmptyState, Modal, PageHeader } from "../../ui"
 import { CommandPreview } from "../catalog/CommandPreview"
 import { DocumentationLink } from "../catalog/DocumentationLink"
+import { PreviewBrandLogo } from "../catalog/PreviewBrandLogo"
 import catalog from "../catalog/catalog.module.css"
 import styles from "./settings.module.css"
 
@@ -17,16 +18,16 @@ const pages = {
   environment: { title: "Environment", Icon: LockKeyhole, description: "Variables and secrets injected into your VMs’ commands." },
 }
 const integrations = [
-  { name: "Claude Code", category: "Coding", Icon: Code2, description: "Coding agent for terminal workspaces." },
-  { name: "Codex", category: "Coding", Icon: Bot, description: "Coding agent for your workspace." },
-  { name: "Antigravity", category: "Coding", Icon: Cloud, description: "Developer tools for agent-led work." },
-  { name: "Git", category: "Source control", Icon: GitBranch, description: "Distributed version control for source code." },
-  { name: "GitHub", category: "Source control", Icon: GitBranch, description: "Repository access for your account." },
-  { name: "GitHub App", category: "Source control", Icon: GitBranch, description: "Repository access for an organization." },
-  { name: "Figma", category: "Design", Icon: Braces, description: "Design files and collaboration." },
-  { name: "Linear", category: "Planning", Icon: Code2, description: "Project and issue tracking." },
-  { name: "Neon", category: "Databases", Icon: Database, description: "Hosted PostgreSQL projects." },
-]
+  { name: "Claude Code", category: "Coding", logo: "claude", description: "Coding agent for terminal workspaces." },
+  { name: "Codex", category: "Coding", logo: "codex", description: "Coding agent for your workspace." },
+  { name: "Antigravity", category: "Coding", logo: "antigravity", description: "Developer tools for agent-led work." },
+  { name: "Git", category: "Source control", logo: "git", description: "Distributed version control for source code." },
+  { name: "GitHub", category: "Source control", logo: "github", description: "Repository access for your account." },
+  { name: "GitHub App", category: "Source control", logo: "github", description: "Repository access for an organization." },
+  { name: "Figma", category: "Design", logo: "figma", description: "Design files and collaboration." },
+  { name: "Linear", category: "Planning", logo: "linear", description: "Project and issue tracking." },
+  { name: "Neon", category: "Databases", logo: "neon", description: "Hosted PostgreSQL projects." },
+] as const
 
 export function PreviewPage({ page }: { page: PreviewPage }) {
   const [open, setOpen] = useState(false)
@@ -86,8 +87,9 @@ function IntegrationGrid() {
       <select aria-label="Sort integrations" value={sort} onChange={event => setSort(event.target.value)}><option value="recommended">Recommended</option><option value="name">Name</option></select>
     </div>
     <div className={styles.integrationGrid}>
-      {shown.map(({ name, category, Icon, description }) => <button type="button" key={name} onClick={() => setDetail({ name, category, Icon, description })}>
-        <Icon size={36} /><small>Recommended</small><strong>{name}</strong><p>{description}</p>
+      {shown.map(item => <button type="button" key={item.name} onClick={() => setDetail(item)}>
+        <PreviewBrandLogo logo={item.logo} size={36} /><small>Recommended</small>
+        <strong>{item.name}</strong><p>{item.description}</p>
       </button>)}
     </div>
     {!shown.length && <p className={catalog.empty}>No matching integrations.</p>}

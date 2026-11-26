@@ -96,7 +96,7 @@
   align-items: center;
   gap: 7px;
   color: var(--muted-foreground);
-  background: var(--input);
+  background: var(--surface-input, var(--card));
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 0 9px;
@@ -134,7 +134,13 @@
 }
 
 .integrationGrid svg {
-  color: var(--accent);
+  color: var(--foreground);
+}
+
+.integrationGrid svg:is([data-preview-logo=figma], [data-preview-logo=neon]) {
+  background: #08090c;
+  border-radius: 8px;
+  padding: 3px;
 }
 
 .integrationGrid small {
