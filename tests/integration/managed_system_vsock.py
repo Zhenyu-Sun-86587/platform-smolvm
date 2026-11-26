@@ -27,7 +27,7 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent"}
+INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1590,7 +1590,11 @@ def test(args, root, stack, case):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
-    platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
+    epoch_check = case == "polish-metrics-epoch"
+    if epoch_check:
+        networks = (dict(network_id="idle-net", route_domain_id="idle-route", cidr="10.64.39.0/24"),)
+    platform = Platform(args, root, stack, networks, gateway={"apps_domain": "polish-idle.test"} if epoch_check else None,
+                        state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
                         use_installation=case in INSTALLED_CASES)
     candidate = args.platformd
     if case == "polish-history":
@@ -1602,6 +1606,10 @@ def test(args, root, stack, case):
     )
     if case in ("task-fork-cancel-retry", "fork-lost-reply", "grant-rollback"):
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
+    if epoch_check:
+        intent.update(resources=dict(cpu_count=1, memory_mib=512), network=dict(network_id="idle-net", mode="native"),
+                      lifecycle_policy=dict(auto_standby=False, auto_hibernate=False, min_running_after_wake_seconds=0,
+                                            pressure_reclaim="disabled"))
     if case == "live-resources-hot":
         intent.update(live_compute_growth=True, resources=dict(cpu_count=1, memory_mib=512))
     if packet_case:
@@ -1625,6 +1633,10 @@ def test(args, root, stack, case):
     _, ref = platform.context(machine_id)
     wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
              retry=(RuntimeError, OSError))
+    if epoch_check:
+        from polish_metrics_epoch import check_passive_idle_epoch
+        check_passive_idle_epoch(platform, source, ref)
+        return
     if case == "polish-history":
         from polish_product import check_historical_capture
         check_historical_capture(platform, source, ref, candidate)
@@ -1711,7 +1723,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
