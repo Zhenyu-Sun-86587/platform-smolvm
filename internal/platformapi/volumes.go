@@ -433,6 +433,15 @@ func (s *Server) volumeJob(ctx context.Context, job *lifecycle.Job) error {
 	}
 	receipt, err := control.ApplyVolume(ctx, *job.Intent.Volume)
 	if err != nil {
+		var runtimeFault *rt.Error
+		if errors.As(err, &runtimeFault) {
+			switch runtimeFault.NativeCode {
+			case "E_VOLUME_STORAGE_NOT_APPLIED":
+				return &lifecycle.Failure{Code: "VOLUME_STORAGE_NOT_APPLIED", Message: runtimeFault.Message}
+			case "E_HOST_IO":
+				err = fmt.Errorf("%w: %w", rt.ErrUncertain, err)
+			}
+		}
 		job.Written = errors.Is(err, rt.ErrUnavailable) || errors.Is(err, rt.ErrUncertain)
 		return err
 	}
