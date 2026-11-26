@@ -41,9 +41,9 @@ func (s *Store) NativeBackupSelection(ctx context.Context, id string) (NativeBac
 }
 
 // PinNativeBackupSelection seals the copied catalog and its exact logical
-// roots together. prepare must persist the staged catalog before returning.
-// It issues no Worker RPC while the installation write lock is held.
-func (s *Store) PinNativeBackupSelection(ctx context.Context, run BackupRun, prepare func() (NativeBackupSelection, error)) error {
+// roots together. prepare reads the source and seal durably publishes its
+// staging marker after conflicts are checked. Neither callback calls a Worker.
+func (s *Store) PinNativeBackupSelection(ctx context.Context, run BackupRun, prepare func() (NativeBackupSelection, error), seal func() error) error {
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -102,6 +102,9 @@ func (s *Store) PinNativeBackupSelection(ctx context.Context, run BackupRun, pre
 		if _, err := tx.ExecContext(ctx, `INSERT INTO native_backup_volume_pins VALUES(?,?)`, run.ID, id); err != nil {
 			return err
 		}
+	}
+	if err := seal(); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

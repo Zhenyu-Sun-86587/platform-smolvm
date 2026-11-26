@@ -197,10 +197,12 @@ func sealNativeCatalog(ctx context.Context, cfg config.Config, plan *BackupPlan,
 		if err != nil {
 			return result, err
 		}
-		if !copied {
-			err = seal()
-		}
 		return result, err
+	}, func() error {
+		if copied {
+			return nil
+		}
+		return seal()
 	})
 	if errors.Is(err, registry.ErrNativeBackupBusy) {
 		return errors.Join(ErrNativeBackupRetry, err)
