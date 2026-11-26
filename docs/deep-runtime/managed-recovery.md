@@ -58,3 +58,13 @@ sudo env PYTHONDONTWRITEBYTECODE=1 python3 -B tests/integration/worker_gc_kvm.py
   --bundle "$BUNDLE" --platformd "$PLATFORMD" --system-image "$SYSTEM_IMAGE" \
   --cut-library "$CUT_LIBRARY"
 ```
+
+## 组件重启时的网络和卷写入
+
+在同一份 `fb69434` 冻结安装和配套 platformd 上启动两台 Debian，一台使用 Native，另一台使用 FixedInternal。发送端建立一次 TCP 连接。每次中断后，测试通过原 VMM 的 Guest Agent 要求发送端在该连接上发送新随机数。接收端用已打开的独立卷写入并同步随机数，随后应答。测试从 Guest 块设备单独读回整段日志，逐次比较两端的进程、套接字 inode、TCP 地址和端口，并从宿主核对 VMM PID、启动时间、cgroup 和 writer 的 OFD 锁。
+
+platformd 和 Serve 的进程分别退出、重启，四个时点均成功读回应答和完整卷日志。另两次试验在 systemd 接管新 VMM 之前，以及接管成功而 Serve 尚未发放启动许可时，终止本次 Serve。尚未获得许可的两个进程均退出，Worker 没有为它们登记执行或发放 writer。原公开操作在新 Serve 上完成，各启动一台新 VMM。原有两台 Guest 在这两个切点继续使用相同 TCP 会话写入独立卷。
+
+broker 被终止后，原连接又交付一次随机数，两台 Guest 的 writer 与平台绑定仍在。重新启动同一 broker 后，它确认两台原 VMM 及三个实际 writer 文件，但 Native 与 FixedInternal 两条原 TAP 租约均保持 `unknown`。`CompleteRecovery` 返回 `E_RECOVERING`。下一条挑战在七秒内没有应答，接收端也没有写入该随机数。原安装的网络恢复仍待修复。在该次试验中两端 socket inode 分别为 881 和 1005，接收端在中断前写入并核验了 672 字节。
+
+复现使用 `component_restart_kvm.py --scope-cuts --expect-unrecovered-network`，另传同批 `--bundle`、`--platformd` 和 `--system-image`。正向模式省略 `--expect-unrecovered-network`，须由新 broker 自动恢复到 ready，并在原 TCP 会话上继续写盘。实测记录 `.build/wp23/a20-component-stream-fb69434-v5.log` 的 SHA-256 为 `871cd7f86a2c58dfaaeb00d57d56380cac6e7dacc858e03d3843abd395079e0e`。[组件重启夹具](../../tests/integration/component_restart_kvm.py)
