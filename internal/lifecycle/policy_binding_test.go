@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
@@ -14,6 +15,31 @@ import (
 )
 
 type policyCall func(context.Context, string, string, workerclient.Execution, any, any) error
+
+func TestAccessWaitsForTheOriginalControlReceipt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ref := workerclient.Execution{InstanceID: "owned-slot", IncarnationID: "owned-execution", Epoch: 1}
+	expected := map[string]any{"protection_id": "owned-access", "expected_binding_revision": 1}
+	calls := 0
+	client := accessPolicyWorker{policyCall(func(_ context.Context, method, key string, actual workerclient.Execution, input, result any) error {
+		calls++
+		raw, err := json.Marshal(input)
+		if err != nil || method != "RequestWake" || key != "owned-access-admit" || actual != ref ||
+			string(raw) != `{"expected_binding_revision":1,"protection_id":"owned-access"}` {
+			t.Fatalf("unexpected control request on attempt %d: %s %s %+v %s", calls, method, key, actual, raw)
+		}
+		if calls == 1 {
+			return context.DeadlineExceeded
+		}
+		*(result.(*string)) = "original-receipt"
+		return nil
+	})}
+	var receipt string
+	if err := client.Lifecycle(ctx, "RequestWake", "owned-access-admit", ref, expected, &receipt); err != nil || calls != 2 || receipt != "original-receipt" {
+		t.Fatalf("receipt %q after %d requests: %v", receipt, calls, err)
+	}
+}
 
 func (call policyCall) Lifecycle(ctx context.Context, method, id string, ref workerclient.Execution, request, result any) error {
 	return call(ctx, method, id, ref, request, result)

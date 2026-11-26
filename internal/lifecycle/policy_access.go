@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
@@ -79,10 +80,30 @@ func (e *Engine) checkAccessPrincipal(ctx context.Context, p auth.Principal, mac
 	return nil
 }
 
+// A control reply may be delayed while the Worker finishes a capture phase.
+// Read calls and keyed mutations can use the same execution and request again
+// before the access deadline. No Guest data has been submitted at this point.
+type accessPolicyWorker struct{ policyWorker }
+
+func (w accessPolicyWorker) Lifecycle(ctx context.Context, method, key string, expected workerclient.Execution, payload, into any) error {
+	for {
+		err := w.policyWorker.Lifecycle(ctx, method, key, expected, payload, into)
+		if !workerclient.RetryDelivery(err) && !errors.Is(err, io.EOF) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(ctx.Err(), fmt.Errorf("waiting for Worker %s: %w", method, err))
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b registry.Binding, client workerclient.Client, entry AccessEndpoint) (registry.Binding, func(), error) {
 	var none registry.Binding
 	ctx, cancel := context.WithTimeout(parent, time.Duration(e.Config.Gateway.WaitSeconds)*time.Second)
 	defer cancel()
+	control := accessPolicyWorker{client}
 	id, err := registry.NewID("access-")
 	if err != nil {
 		return none, nil, err
@@ -103,7 +124,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	request := func(ctx context.Context, method, key string, args map[string]any, out *protectionReceipt) error {
 		args["principal"] = p.ID
 		args["protection_id"] = id
-		return client.Lifecycle(ctx, method, key, scope, args, out)
+		return control.Lifecycle(ctx, method, key, scope, args, out)
 	}
 	read := func(ctx context.Context) (protectionReceipt, error) {
 		var current protectionReceipt
@@ -125,7 +146,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 			return none, nil, registry.ErrGeneration
 		}
 		b = *m.CurrentBinding
-		st, err := e.ObservePolicy(ctx, b, client)
+		st, err := e.ObservePolicy(ctx, b, control)
 		if err != nil {
 			return none, nil, err
 		}

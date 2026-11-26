@@ -200,7 +200,7 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 | A28 | `86dae32` 冻结安装和更新 Worker，同机实测 | 公开策略等待 Worker 回执时显示 `pending`。同一 Debian 逻辑实例分别核对 Standby 单开、Hibernate 单开、共用 idle 起点的两阶段、停驻证据失联后的阻塞、raw 停驻 profile 的阻塞和旧 `idle_policy` 仅休眠。Hibernate 恢复的新执行和同一执行的两次短 Standby Wake 都获得三个新 collector 会话。迟到报告被围栏，两路公开详情在 Worker 失联时一致显示 blocked。另已核对全局默认、覆盖与批量应用。 `managed/lifecycle.log`、`.build/wp10/debian-lease-and-protected-fork-kvm-v2.log`、`.build/a28-idle-policy-kvm-v6.log`、`.build/wake-collector-kvm-v2.log` | — |
 | A29 | 冻结安装、开发实机，代表场景通过 | Guest 等待 TLS SSE 超过 idle 阈值时仅有 `hold:credential_proxy`，流结束后同一执行自动 Standby。私网 Guest 直连 HTTP SSE 时保持源出站和目标入站证据。Gateway OpenSSH 静默 PTY 有 `hold:service_access` 和真实连接证据，独立 Guest Relay 前台 Exec 静默 12 秒仅有 `hold:guest_exec`。等待客户端的桌面会话仅有 `lease:desktop_session`。新版 System Agent 用公共终端 API 验证权限、断连时的 Worker hold、按偏移重接及退出码。各项活动结束后，仍有监听 daemon 的同一执行实际进入 Standby。 `.build/wp23/transactional-proxy-kvm.log`、`.build/guest-direct-sse-kvm.log`、`.build/platform-desktop-worker-lease-a30.log`、`.build/platform-guest-silent-exec-a29-v2.log` | 在下一完整冻结安装中复测含 `system-exec-stream-v1` 的 System 镜像。 |
 | A30 | 冻结 Worker 与公开平台，自动候选和保护排序通过 | 排队中的压力休眠分别被同一 Worker 新确认的 Access hold 和 `keep_running` 取消。公共 `keep_running` 在空闲 Standby 排队期间确认，Worker 记录取消且未提交原生操作。另一次已提交的 Standby 完成后，新桌面 Access 在原 epoch 唤醒并取得正式租约。获确认的 v2 续约是原到期时间之后唯一 blocker，释放后进入 Standby。两个并发公共请求与恢复 monitor 推进同一运行租约，连续两轮均只产生一个有效租约。 `.build/worker-pressure-kvm-v9.log`、`.build/wp23/lease-serial-installed-kvm-1.log`、`.build/wp23/lease-serial-installed-kvm-2.log`、`.build/platform-desktop-worker-lease-a30.log` 新增 4 组自动 Hibernate 实机。`keep_running` 与所有者 v2 租约分别在 `STOP_COMMIT` 前保留原 epoch，在提交后保留原保存点并从 epoch 2 继续。合法租约在当前执行续租，越过初始 TTL 和空闲期限仍阻止自动睡眠。每组实际只有一项自动候选。[四组保护排序](#a30-保护与自动休眠提交) | — |
-| A31 | d8cc5d5 冻结安装，八组私网停止切点通过 | Native、FixedInternal 各从 Running 和 Standby 在 `STOP_COMMIT` 前后复测。提交前获准的私网 SYN 撤销休眠并保留原 epoch，原 Standby 随后唤醒。提交后两个 SYN 共用一次原 StatePoint 精确恢复，epoch 增加一次。两个方向另已验证有界 UDP 交付与大包丢弃，fb69434 冻结测量再次通过。[fb69434 同包测量](candidate-fb69434.md#九项包内测量) · [d8cc5d5 安装复测](candidate-d8cc5d5.md) · [fdd620e 安装复测](candidate-fdd620e.md) | 服务和 API 入口在停止切点的撤权及新执行 hold。 |
+| A31 | 冻结安装的八组私网切点、修复平台的公开 HTTP 与 API 切点通过 | Native、FixedInternal 各从 Running 和 Standby 在 STOP 提交前后复测。服务与管理 API 并发进入时，提交前撤销休眠并保留原 epoch，提交后共同精确恢复同一 StatePoint，各自取得新执行的 hold。所有者撤销一个在途连接后仅另一个请求产生业务回执。一次 Worker 控制读取超时后仍返回相同回执。[服务与管理 API](#a31-并发服务与管理-api)、[私网安装复测](candidate-d8cc5d5.md) | — |
 | A32 | 冻结 Worker、开发平台与 Chromium，所有者生命周期通过 | 实际公共 v1 租约过期后保持 `suspect`，v2 到期后为 `released/expired`。Chromium 使用同一所有者会话，分别显示逾期保护继续、到期保护结束及操作按钮状态。Guest 任务服务停止时，页面显示活动状态未知并阻止自动睡眠。所有者用原 v1 租约完成续租和主动释放，始终在同一执行。夹具 `tests/integration/lifecycle_lease_ui_kvm.py`，记录 `.build/wp23/a32-fb69434-browser-owner-lease-v1.log`（SHA-256 `495a41c05334cfcad9e3ed43d882067de28842f8a39dd9ca64c53f2b490112a5`）。 | 子机或旧执行的令牌重放按要求跳过。 |
 | A33 | 同 Bundle 和双 Bundle 冻结安装，压力与共享引用通过 | 两路 Serve 共用单个 Worker 账本和隔离 slice。六个并发启动、Fork、Restore 在候选全受保护时被拒绝，两个 VMM 继续。两套冻结 Bundle 并存时仅低优先级 Guest 休眠，实收 62,935,040 字节。同 Bundle 组实测六个共同 RAM inode 在第一子机退出后保留，第二子机退出后 Worker 关闭托管 FD，活父机继续持有。父机完成休眠后 `shmem` 为 0，`memory.current` 总降 111,386,624 字节。[d8cc5d5 安装复测](candidate-d8cc5d5.md) · [fb69434 自动 balloon](#a33-实际-balloon-反馈与预算) | — |
 | A34 | d8cc5d5 冻结安装，重启与唤醒恢复通过 | platformd 强制退出后仅释放该进程的连接，独立运行租约保留，迟到的旧申请被拒。Worker 经 SIGKILL 后从同一安装件重启，原 VMM 和已确认策略继续，旧 PTY hold 进入 `suspect`，重放的旧活动序号无法解除 `unknown`。丢失应答的唤醒与另一请求合并为一次精确恢复，重授权只给获准请求授予新执行 hold，旧 epoch 无法续租。持续压力下 20 秒唤醒宽限得到验证。[d8cc5d5 安装复测](candidate-d8cc5d5.md)、[fdd620e 安装复测](candidate-fdd620e.md) | — |
@@ -217,6 +217,21 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 | `lease` | `c40afc53c643048ce435d7543fce04105c28f1d7b1e8e1dcf11c46d0b55a4d60` | `6fb0d5696650e8627d0b7ffe0c6ead590074e6430ec8967571ce7ef001125e44` |
 
 日志位于 `.build/wp23/a30-owned-{keep-running,lease}-{before,after}-v1.log`。
+
+### A31 并发服务与管理 API
+
+两条已授权请求从同一屏障放行。HTTP 服务向自己的 Guest 追加一条业务记录，管理 API 通过 Guest exec 追加另一条记录。测试使用只读冻结安装 `fb69434`、System 镜像 SHA-256 `f7b0611ebb21af630addeddf95717aae284f7aa44b4abe2ee7c3933919570b02` 和修复后的平台二进制 `ecfc92b523d63234163618ca8d04a788db57853d844891c430f03f1d585a8306`。此前在原平台的 Standby 切点出现一次 HTTP 500，日志显示两条请求均等候 Worker 的 `GetLifecycleStatus` 应答超时。修复后每次控制层重试沿用原执行、请求键和载荷，业务仅在持有当前执行的保护后交付。
+
+| 初态与切点 | 实测结果 | `.build/wp23/` 日志与 SHA-256 |
+| --- | --- | --- |
+| Running，STOP 前 | 取消休眠，epoch 1，两条业务各一次 | `a31-acknowledged-running-before-v4.log` · `62961ca85b610cc5c1eb5432f37e7dc1ad12c876c0b38e06639da41bd22bbfa5` |
+| Standby，STOP 前 | 连续三次取消休眠，原执行唤醒，两条业务各一次 | `a31-acknowledged-standby-before-v1.log` 至 `v3.log`，第三次 `ce0597e563477dca6497e8a51643d57cb997ef611f67ed866b296b87e645b668` |
+| Running，STOP 后 | 一次精确恢复至 epoch 2，同一唤醒发放两个 hold | `a31-acknowledged-running-after-v4.log` · `e862d6d41f514de7dffd35dbe8d5396f8e89e0efffe815299f3bf2659f43b745` |
+| Standby，STOP 后 | 一次精确恢复至 epoch 2，两条业务各一次 | `a31-acknowledged-standby-after-v4.log` · `20f303641e42c62e223dbeea4bea98c0a68efe390e6ce95ca64cbe46b45d358f` |
+| Running，STOP 后撤销在途服务 | 已提交的 HTTP 返回 401，Guest 无该业务记录。管理 API 单独取得 hold 并完成 | `a31-acknowledged-running-withdraw-v4.log` · `9db32544ddd4ac13fb1485106f39e3f123bdceb14360fd1caa529e07f0a75e2b` |
+| Standby，保存完成后人为延迟本次 Worker 6.5 秒 | 跨越 5 秒 RPC 超时，HTTP 200。一次精确恢复，两个新 hold，两条业务各一次 | `a31-owner-control-timeout-stable-v3.log` · `c61b6b8f18640e163023e570edf0528c982f02fb561e84cd4bbc86fcda33b89d` |
+
+[公开切点夹具](../../tests/integration/lifecycle_access_cut_kvm.py)
 
 ### A33 实际 balloon 反馈与预算
 

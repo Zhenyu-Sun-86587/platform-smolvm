@@ -118,7 +118,12 @@ func (c Client) call(ctx context.Context, q request, pass *os.File, expect *desc
 	if err != nil || n != len(wire) || sent != len(rights) {
 		return nil, nil, errors.Join(errors.New("cannot send complete Worker request"), err)
 	}
-	return readReply(raw, q.RequestID, expect)
+	body, file, err := readReply(raw, q.RequestID, expect)
+	var transport net.Error
+	if errors.As(err, &transport) {
+		err = fmt.Errorf("read Worker %s response: %w", q.Method, err)
+	}
+	return body, file, err
 }
 
 func readReply(raw syscall.RawConn, requestID string, expect *descriptor) (json.RawMessage, *os.File, error) {
