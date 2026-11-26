@@ -157,7 +157,7 @@ function ConnectionInfo({ machine }: { machine: Machine }) {
           {copied ? <><Check /> Copied</> : <><Copy /> Copy</>}
         </Button>
       </div>
-      {managed ? <p className={consoleStyles.sshHint}>Managed SSH is configured. The CLI requests a short-lived root certificate and checks the private connection when you connect.
+      {managed ? <p className={consoleStyles.sshHint}>Managed SSH is configured. When you connect, the platform checks your permission to manage this machine and authorizes your SSH public key for this session.
         {machine.capabilities?.["access.managed_ssh"]?.constraints?.host_key_status === "observed" && " The platform has observed the host key for this execution."}
         {" "}After CLI login, OpenSSH and editors can use the generated <code>NAME.sandbox</code> alias for a unique eligible name.</p>
         : direct && <p className={consoleStyles.sshHint}>Use a public key authorized for your Guest SSH user.</p>}

@@ -17,7 +17,7 @@ const tips = [
   { category: "Command line", title: "Manage machines from the CLI",
     description: "Use the CLI to create machines, list running guests, and inspect operations.", command: "sandboxctl machines list" },
   { category: "Connect", title: "SSH into a machine",
-    description: "Managed System machines use a short-lived root certificate with manage access and a private Worker network. Open the machine’s connection options for its SSH command.", command: "sandboxctl ssh MACHINE" },
+    description: "If you have manage access, you can use this command on machines that support managed SSH. Open the machine’s connection options to check.", command: "sandboxctl ssh MACHINE" },
   { category: "Reusable images", title: "Create a reusable snapshot",
     description: "Capture a machine as a snapshot to preserve a restore point.", href: "#/snapshots" },
 ]
