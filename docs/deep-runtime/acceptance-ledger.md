@@ -134,13 +134,33 @@
 | --- | --- | --- | --- |
 | A19 | 冻结历史点、CPU 合同及正式安装公开备份通过 | `fdd620e` 和 `d8cc5d5` 交叉恢复返回 `E_BUNDLE_UNAVAILABLE`，目标维持 epoch 0。共享 Worker 重启后原 reader 恢复 Guest PID、计数与两盘标记。`d8cc5d5` 与 `fb69434` 同 Worker 的公开 CLI 复测中，旧 reader 缺失返回 `CAPABILITY_UNKNOWN`、`effect=none`，无新增执行，两个持久点仍阻止退役。恢复旧 reader 后，两代 FixedInternal 点继续原任务 PID、RAM 和根盘标记。开发 Worker 校验完整归档和缺块、截断副本。`1eb5104` 正式安装公开备份达到 `verified`，独立 Worker 从原 manifest 启动并读回 RAM 和根盘标记。便携归档复用增量块并恢复两代，拒绝不匹配的 CPU 数、RAM 大小及真实 KVM Guest CPU 合同。代表语料索引包含原生 OCI、System Native、附加盘、CPU 槽、RAM growth 能力边界与长 Standby。[双 Bundle 安装复测](candidate-d8cc5d5.md#两个冻结-bundle-共用-worker)、[历史与正式安装记录](statepoint-history-a19.md) | — |
 | A20 | 1eb5104 冻结安装，组件、网络和两种整机重启通过 | platformd、Serve、broker 分别退出，systemd 接管前后分别中断。修复后的 Worker 重认原有 TCP 会话、TAP 和 writer，同一块盘录得九轮应答。独立虚拟 Worker 正常关机和断电后，两份旧写授权自动释放，原易失代际标记丢失，同一持久点恢复原 RAM 和盘数据。[组件及整机实测](managed-recovery.md#worker-主机换-boot-后的恢复)、[网络与 DNS](A20_LIVE_NETWORK_RECOVERY.md) 正式安装分别完成两个 scope 移交切点、平台／Serve／Worker 重启、两条合法租约的 DNS 与连接恢复，以及两次整机换 boot。[最终整机记录](managed-recovery.md#正式安装的整机复测) | 已失效租约及未就绪期间的业务连接按要求跳过。 |
-| A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
+| A21 | `1eb5104` 正式安装，七组授权服务和三组队列、断连测试通过 | HTTP、TCP-mTLS、SSH 和双向私网 TCP/UDP 从休眠唤醒同一实例，各组只有一次恢复。HTTP 两个等待位接纳两笔请求，第三笔在进入 Guest 前被拒。HTTP 和 TCP 的应用接收请求后断连，Guest 均只记一次。[服务请求与唤醒回执](#a21-正式安装的并发服务唤醒) | 冒用来源或使用失效凭据按要求跳过。 |
 | A22 | 冻结桌面与开发网关，服务修订和活流验收通过 | 桌面单次票据交付真实 framebuffer，Worker 确认原生租约后 API 返回会话。延迟和丢失确认、授权撤回、到期、平台重启均已测，休眠后新授权请求接回原 Xvfb。Guest grant 撤销关闭在途 SSE。f2df146 正向测量组合的 HTTPS SSE 和 mTLS 在 revision 1→2 后切换实际端口，旧流关闭。撤销已建立流的令牌或证书只关闭该流，独立合法流继续。OpenSSH 修订关闭旧流，pidfd 确认旧 VMM 退出，合法新连接唤醒原保存点，从 epoch 1 转至 2 并校验 host key 和 RAM 标记。[服务修订与关闭记录](service-revision-a22.md)、`.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log` | — |
 | A23 | `1eb5104` 正式安装，Native 和 FixedInternal 交接、独立恢复通过 | 两种网络模式均以原 run 跨 Worker 和 platformd 中断，保持原 checkpoint、休眠点与独立卷的选择。并发公开删除后 Worker 引用继续保护数据，暂存缺块和原 reader 缺失均保留已验证备份。退役旧源后，新 Worker 恢复原 RAM、根盘和独立卷。Native 使用新 `/32`，FixedInternal 保留内部地址并换到新 VIP。此前 1017 在途备份升级到 1018 后保持两路原选择，六组 ext4 发布和保留中断通过。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[正式安装双模式](#a23-正式安装的双模式备份交接)、[发布中断记录](#a23-备份发布与保留中断) | 旧夹具的非管理员权限尝试按本轮范围跳过，且不计通过。 |
 | A24 | 最终平台锁 `c095c4f`，迁移中断、升级和回退通过 | `0.1.6` 向 schema 1019 迁移写入未提交 WAL 时终止，19 张旧表及全部行保持一致。完成升级后旧二进制拒绝打开新 schema。两版本分别恢复备份，原 owner 新登录，继续读取原暂停记录及各自新的 control epoch。锁定平台包在 Ubuntu 24.04 KVM 中通过正式安装器升级，官方 Serve 在升级期间连续运行。跨 schema 回退被拒绝，整机断电后系统服务、原数据库、owner 和两份备份再次核验。[最终平台锁及实机](platform-upgrade-a24.md)、[此前发行件](#a24-历史发行件升级与回退) | 旧控制代次的写入子项按要求跳过，且不计通过。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
 | A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | 本地 96 次 rebase 与预取、24 次共享页缓存对照、KVM/设备写并集和网络盘 24 次读取对照已通过。三子机的网络盘读通道与编译吞吐待验。 |
+
+### A21 正式安装的并发服务唤醒
+
+2026-11-26，正式安装 `1eb5104` 与平台 `c095c4f` 在 KVM 上完成下列测试。每组先记下独立 Debian 目标的休眠点和 Worker 事件游标。同一所有者用当前凭据或已获准的私网 attachment 访问目标。每次恢复均取自原保存点，逻辑实例保持相同，执行从 epoch 1 进入 epoch 2。夹具逐笔比较请求 ID 和 Guest 应用日志。[KVM 复测入口](../../tests/integration/authorized_services_kvm.py)
+
+| 入口 | 首批请求和实际交付 |
+| --- | --- |
+| HTTP、TCP-mTLS、SSH | 各有两笔并发请求，共用本组唯一一次恢复。HTTP 另在接收后断开，返回 502 和 `may_have_started`，Guest 对该 ID 只有一条记录。 |
+| 私网直接 TCP | Native 到 FixedInternal、FixedInternal 到 Native 分别测试。每方向两笔并发请求各收到自己的响应。 |
+| 私网直接 UDP | 两个方向分别发送一份带唯一 ID 的首包。两个目标都从休眠恢复并各处理一次。 |
+| HTTP 等待队列 | 三个所有者连接均已完成 TLS 握手，同时向休眠目标提交请求，等待上限为 2。两笔成功，第三笔返回 409、`RESOURCE_EXHAUSTED` 和 `not_started`，Guest 无该 ID。队列释放后新请求成功。 |
+| TCP 接收后关闭 | 分别经 TCP-mTLS 与直接 TCP 提交请求，接收端先记 ID 再关闭连接。两个客户端都读到 EOF，随后各用一个新 ID 成功。关闭和后续请求的 ID 在各自 Guest 中均只出现一次。 |
+
+七组常规记录位于 `.build/release-1eb5104/installed-a21-*.log`。三个补充用例使用夹具 `2903dd0` 的 `--check-forwarding`，原始记录位于 `.build/`。
+
+| 补充记录 | SHA-256 |
+| --- | --- |
+| `a21-1eb5104-http-queue-v1.log` | `8f2d36deaa6551805d798eecc1e230b4e8435fc2a541e9736dbdc0b7098d9ef3` |
+| `a21-1eb5104-tcp-mtls-close-v1.log` | `e5e3b00aa8544e29ec7c3132690d143dda488b6dfea34833d8e001ee6cc7ced4` |
+| `a21-1eb5104-private-tcp-close-v1.log` | `46bd862b0c6f086d7a61ebbb4284682ab20783c95e99a81493e166eb22137d15` |
 
 ### A23 备份发布与保留中断
 
