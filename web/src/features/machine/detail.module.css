@@ -149,3 +149,9 @@
   .metrics { grid-template-columns: 1fr; }
   .machineMark { width: 34px; height: 34px; }
 }
+
+.powerOptions { display: grid; gap: 8px; }
+.powerOption { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.powerOption:last-child { border-bottom: 0; }
+.powerOption strong { font-size: 13px; }
+.powerOption p { color: var(--muted-foreground); font-size: 12px; margin: 3px 0 0; }

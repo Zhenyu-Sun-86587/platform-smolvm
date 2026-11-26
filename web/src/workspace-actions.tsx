@@ -33,13 +33,16 @@ import {
 
 export function powerDialog(m: Machine, actions: Actions, kind: string) {
   const deleting = kind === "delete"
-  const managed = Boolean(m.binding?.runtime_instance_id && m.binding?.runtime_bundle_id)
+  const managed = bundleBound(m)
+  const captures = kind === "pause" || kind === "hibernate"
   actions.dialog({
     title: (kind === "stop" ? "Cold stop" : kind === "pause" ? "Hibernate" : label(kind)) + " machine",
-    submit: label(kind),
+    submit: captures ? "Hibernate" : label(kind),
     description:
-      kind === "pause"
+      captures
         ? "Save the complete running state, including memory, for a later resume."
+        : kind === "standby"
+          ? "Suspend the execution in memory. The host keeps its current allocation."
         : kind === "stop"
           ? "This ends the running execution. The guest disk is retained."
           : deleting
@@ -47,7 +50,7 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
             : undefined,
     destructive: deleting || kind === "stop",
     fields:
-      kind === "pause"
+      captures
         ? [{ name: "allow_active_tasks", label: "Include active persistent tasks", type: "checkbox" }]
         : kind === "stop" && !managed
           ? [{ name: "cancel_tasks", label: "Cancel active persistent tasks first", type: "checkbox" }]
@@ -57,7 +60,8 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
         "machines/" + segment(m.machine_id) + (deleting ? "" : "/" + kind),
         {
           expected_generation: m.binding_generation,
-          ...(f.has("allow_active_tasks") ? { allow_active_tasks: true } : {}),
+          ...(f.has("allow_active_tasks") ? (kind === "hibernate"
+            ? { activity_policy: { allow_active_tasks: true } } : { allow_active_tasks: true }) : {}),
           ...(f.has("cancel_tasks") ? { cancel_tasks: true } : {}),
         },
         { method: deleting ? "DELETE" : "POST", revision: m.revision },
@@ -94,7 +98,7 @@ export function copyDialog(m: Machine, actions: Actions, live: boolean, independ
   })
 }
 
-function forkBatchDialog(m: Machine, actions: Actions) {
+export function forkBatchDialog(m: Machine, actions: Actions) {
   actions.dialog({
     title: "Fork batch",
     description: "Create independent children from one source capture.",
@@ -233,8 +237,8 @@ export function WorkspaceActions({
             <Cable />
             Connection options
           </DropdownMenuItem>
-          {!deep && <DropdownMenuItem
-            disabled={!running || m.capabilities?.live_fork?.supported === false}
+          {(!deep || m.capabilities?.live_fork) && <DropdownMenuItem
+            disabled={!running || (deep ? m.capabilities?.live_fork?.supported !== true : m.capabilities?.live_fork?.supported === false)}
             onSelect={() => copyDialog(m, actions, true)}
           >
             <GitFork />
@@ -255,7 +259,7 @@ export function WorkspaceActions({
             </DropdownMenuItem>
           })}
           {!deep && running && (
-            <DropdownMenuItem onSelect={() => powerDialog(m, actions, "pause")}>
+            <DropdownMenuItem disabled={m.capabilities?.pause?.supported === false} onSelect={() => powerDialog(m, actions, "pause")}>
               <Moon />
               Hibernate
             </DropdownMenuItem>
