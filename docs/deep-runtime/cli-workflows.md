@@ -44,7 +44,7 @@ rmdir "$dir"
 
 ### 进入 Guest 时的凭据
 
-`sandboxctl exec --tty --cwd / MACHINE -- /bin/sh` 使用平台 token 和 Guest Agent，适合只想打开交互 shell 的场景。`sandboxctl ssh MACHINE` 使用 OpenSSH，平台凭据授权隧道并读取已验证的 Guest 主机密钥，Guest 使用已授权的用户公钥认证。私钥在 ssh-agent 或 OpenSSH 默认位置时可直接连接，需要指定特定文件时用 `--identity`。受管的 System SSH 还需启用对应服务和密钥同步。
+`sandboxctl exec --tty --cwd / MACHINE -- /bin/sh` 使用平台 token 和 Guest Agent，适合只需要交互 shell 的场景。`sandboxctl ssh MACHINE` 使用 OpenSSH，通过平台隧道连接。具备托管 SSH 能力时，CLI 自动准备本地身份；Guest 原有的授权公钥及 SSH agent 继续用于 `--legacy` 或 `--identity` 指定的已发布服务。
 
 ### 脚本如何判断下一步
 
