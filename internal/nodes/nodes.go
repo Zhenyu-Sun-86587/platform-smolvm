@@ -42,6 +42,13 @@ func NewClient(n config.Node, control registry.Control, db *registry.Store) (*no
 		return nil, authority, err
 	}
 	c, err := nodeclient.New(nodeclient.Config{Authority: authority, Endpoint: n.Endpoint, NodeSPKIPin: n.Pin, TLS: &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: roots},
+		SelectNode: func(ctx context.Context, candidate nodeproto.NodeIdentity) (nodeproto.NodeIdentity, error) {
+			id, err := db.WorkerNodeIdentity(ctx, authority, candidate)
+			if errors.Is(err, registry.ErrNotFound) || errors.Is(err, registry.ErrWorkerIdentityConflict) {
+				return nodeproto.NodeIdentity{}, &nodeproto.Failure{Code: nodeproto.CodeAuthority}
+			}
+			return id, err
+		},
 		Authorize: func(ctx context.Context) error {
 			var active bool
 			err := db.ReadDB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_enrollments e JOIN workers w ON w.id=e.worker_id JOIN meta m ON m.id=1
@@ -172,6 +179,10 @@ func (n *Worker) refresh(ctx context.Context) error {
 	if err = n.DB.EnrollWorker(ctx, registry.WorkerEnrollment{WorkerID: n.Authority.WorkerID, Generation: int64(n.Authority.EnrollmentGeneration), CertificateFingerprint: n.config.Pin, Authority: n.Authority.ControlEpoch}); err != nil {
 		return err
 	}
+	if err = n.DB.PinWorkerJournal(ctx, n.Authority, hello.Identity(), n.config.JournalID); err != nil {
+		return err
+	}
+	ctx = nodeclient.WithReconciliationIdentity(ctx, hello.Identity())
 	// Close the Node's admission gates as soon as the enrollment is verified.
 	// Even an unavailable budget must not delay a requested cordon or drain.
 	mode, err := n.DB.GetWorkerMaintenance(ctx, n.config.ID)
@@ -179,7 +190,7 @@ func (n *Worker) refresh(ctx context.Context) error {
 		return err
 	}
 	if mode.Mode == "cordoned" || mode.Mode == "draining" {
-		if _, err = n.syncGate(ctx, mode.Mode); err != nil {
+		if _, err = n.syncGate(ctx, mode.Mode, true); err != nil {
 			return err
 		}
 	}
@@ -433,12 +444,12 @@ func checkHibernatedBinding(expected wc.Execution, capture string, status lifecy
 	return nil
 }
 
-func (n *Worker) syncGate(ctx context.Context, mode string) (nodeproto.Gate, error) {
+func (n *Worker) syncGate(ctx context.Context, mode string, restrictOnly bool) (nodeproto.Gate, error) {
 	gate, err := n.Client.Gate(ctx)
 	if err != nil || gate.Mode == mode {
 		return gate, err
 	}
-	return n.Client.SetGate(ctx, nodeproto.SetGate{Mode: mode, ExpectedRevision: gate.Revision})
+	return n.Client.SetGate(ctx, nodeproto.SetGate{Mode: mode, ExpectedRevision: gate.Revision, RestrictOnly: restrictOnly})
 }
 
 func (n *Worker) maintenance(ctx context.Context, s placement.Sample) error {
@@ -474,7 +485,7 @@ func (n *Worker) maintenance(ctx context.Context, s placement.Sample) error {
 	if m.Phase == "activating" && len(facts.UnresolvedResources) != 0 {
 		return nil
 	}
-	gate, err := n.syncGate(ctx, m.Mode)
+	gate, err := n.syncGate(ctx, m.Mode, false)
 	if err != nil {
 		return err
 	}

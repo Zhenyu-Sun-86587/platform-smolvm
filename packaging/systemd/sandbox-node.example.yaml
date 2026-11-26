@@ -7,6 +7,12 @@
 # SPKI pin, then start sandbox-node. Retain the same state directory.
 # An unchanged controller/epoch advances one generation and preserves the gate.
 # A changed controller or control epoch requires a greater generation and enters Drain.
+# Keep journal.db and its durable identity across daemon restarts and rotation.
+# During the first journal-fencing upgrade for an existing Worker, read its
+# identity from the original stopped journal as the Node service account:
+#   /opt/sandbox-platform/current/sandbox-node -config /etc/sandbox-node/config.yaml -print-journal-id
+# Set that value as journal_id on the matching platformd Worker entry.
+# A lost journal requires restoring the original journal or provisioning a new Worker ID.
 authority:
   worker_id: worker-a
   enrollment_generation: 1

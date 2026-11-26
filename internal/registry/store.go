@@ -203,6 +203,7 @@ func (s *Store) migrate(ctx context.Context, marker string, hasMarker bool) (Con
 		{1022, "1022_worker_artifacts.sql"},
 		{1023, "1023_packet_wake_overlay.sql"},
 		{1024, "1024_worker_enrollment_ticket.sql"},
+		{1025, "1025_worker_journal_identity.sql"},
 	}
 	latest := files[len(files)-1].version
 	known := current == 0

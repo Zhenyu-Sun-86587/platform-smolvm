@@ -2,7 +2,9 @@ package nodegateway
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +25,15 @@ import (
 type Journal struct {
 	db   *sql.DB
 	lock *os.File
+	id   string
 }
 
 const journalSchema = `
 CREATE TABLE IF NOT EXISTS authority (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journal_identity (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	value TEXT NOT NULL
 );
@@ -165,7 +172,41 @@ func openJournal(stateDir string, authority nodeproto.Authority, existing bool) 
 	if saved != string(raw) {
 		return nil, errors.New("Node journal authority differs from configuration")
 	}
+	if err = j.loadIdentity(); err != nil {
+		return nil, err
+	}
 	return j, nil
+}
+
+func (j *Journal) ID() string { return j.id }
+
+// ReadJournalID reports the identity from an existing operator-selected
+// journal while the Node is stopped. It does not create a missing journal.
+func ReadJournalID(stateDir string, authority nodeproto.Authority) (string, error) {
+	j, err := openJournal(stateDir, authority, true)
+	if err != nil {
+		return "", err
+	}
+	return j.ID(), j.Close()
+}
+
+func (j *Journal) loadIdentity() error {
+	err := j.db.QueryRow("SELECT value FROM journal_identity WHERE id=1").Scan(&j.id)
+	if errors.Is(err, sql.ErrNoRows) {
+		var entropy [32]byte
+		if _, err := rand.Read(entropy[:]); err != nil {
+			return err
+		}
+		j.id = "journal-" + hex.EncodeToString(entropy[:])
+		_, err = j.db.Exec("INSERT INTO journal_identity(id,value) VALUES(1,?)", j.id)
+	}
+	if err != nil {
+		return err
+	}
+	if !nodeproto.ValidJournalID(j.id) {
+		return errors.New("invalid persistent Node journal identity")
+	}
+	return nil
 }
 
 func (j *Journal) Close() error {
@@ -346,7 +387,8 @@ func gateAllows(ctx context.Context, q queryer, requiredActive, blockedByDrain b
 }
 
 func (j *Journal) setGate(ctx context.Context, request nodeproto.SetGate) (nodeproto.Gate, error) {
-	if request.ExpectedRevision < 1 || request.ExpectedRevision >= math.MaxInt64 {
+	if request.ExpectedRevision < 1 || request.ExpectedRevision >= math.MaxInt64 ||
+		request.RestrictOnly && request.Mode == nodeproto.GateActive {
 		return nodeproto.Gate{}, rt.ErrInvalid
 	}
 	switch request.Mode {
@@ -366,7 +408,7 @@ func (j *Journal) setGate(ctx context.Context, request nodeproto.SetGate) (nodep
 	if gate.Revision != request.ExpectedRevision {
 		return nodeproto.Gate{}, rt.ErrConflict
 	}
-	if gate.Mode == request.Mode {
+	if gate.Mode == request.Mode || request.RestrictOnly && gate.Mode == nodeproto.GateDraining {
 		return gate, nil
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE entrance SET mode=?,revision=revision+1 WHERE id=1", request.Mode); err != nil {

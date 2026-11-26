@@ -20,6 +20,8 @@ runtime:
 #     endpoint: https://worker-a.example.test:9443
 #     enrollment_generation: 1
 #     node_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+#     # Required for an established Worker upgrading to journal identity fencing.
+#     # journal_id: value from the original stopped Node's -print-journal-id command
 #     ca_file: /etc/sandbox-platform/tls/worker-ca.pem
 #     # Optional private signing key for this Worker’s one-time CSR enrollment.
 #     ca_signing_key_file: /etc/sandbox-platform/tls/worker-a-ca.key

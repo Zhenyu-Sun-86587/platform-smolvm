@@ -214,8 +214,12 @@ func TestRemoteBackupRejectsPathsAndRouteAlias(t *testing.T) {
 
 func backupHTTPStatus(t *testing.T, ctx context.Context, node pair, input nodeproto.BackupMember) (int, nodeproto.Failure) {
 	t.Helper()
+	hello, err := node.client.Handshake(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, err := json.Marshal(nodeproto.Envelope[nodeproto.BackupMember]{
-		Protocol: nodeproto.Version, Authority: testAuthority, Route: testRoute, Request: input,
+		Protocol: nodeproto.Version, Authority: testAuthority, Node: hello.Identity(), Route: testRoute, Request: input,
 	})
 	if err != nil {
 		t.Fatal(err)

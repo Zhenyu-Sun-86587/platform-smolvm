@@ -37,10 +37,11 @@ func runtimeExecution(in workerclient.Execution) rt.ExecutionRef {
 func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ net.Conn, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	if err := a.client.authorizeRequest(ctx); err != nil {
+	node, check, err := a.client.requestIdentity(ctx, path, in)
+	if err != nil {
 		return nil, err
 	}
-	envelope := nodeproto.Envelope[In]{Protocol: nodeproto.Version, Authority: a.client.authority, Route: a.scope, Request: in}
+	envelope := nodeproto.Envelope[In]{Protocol: nodeproto.Version, Authority: a.client.authority, Node: node, Route: a.scope, Request: in}
 	raw, err := json.Marshal(envelope)
 	if err != nil || len(raw) > nodeproto.FrameSize {
 		return nil, &nodeproto.Failure{Code: nodeproto.CodeInvalid}
@@ -82,6 +83,6 @@ func openStream[In any](ctx context.Context, a *Adapter, path string, in In) (_ 
 		return nil, &nodeproto.Failure{Code: reply.Code}
 	}
 	conn := nodeproto.NewFramedConn(context.Background(), ws, a.client.authority.ControllerID, a.client.authority.WorkerID)
-	go a.client.watchAuthority(conn.Done(), expiry, func() { _ = conn.Close() })
+	go watchAuthority(conn.Done(), expiry, func() { _ = conn.Close() }, check)
 	return conn, nil
 }

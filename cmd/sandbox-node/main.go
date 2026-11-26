@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,13 +21,36 @@ import (
 func main() {
 	configPath := flag.String("config", "/etc/sandbox-node/config.yaml", "Node gateway configuration")
 	from := flag.String("rebind-from", "", "offline authority rebind or certificate rotation using the previous configuration")
+	showJournal := flag.Bool("print-journal-id", false, "read the persistent identity of an existing, stopped Node journal")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := run(ctx, *configPath, *from); err != nil {
+	var err error
+	if *showJournal {
+		err = printJournalID(*configPath, *from)
+	} else {
+		err = run(ctx, *configPath, *from)
+	}
+	if err != nil {
 		slog.Error("sandbox-node", "error", err)
 		os.Exit(1)
 	}
+}
+
+func printJournalID(configPath, rebindFrom string) error {
+	if rebindFrom != "" {
+		return errors.New("journal identity inspection requires the current journal configuration")
+	}
+	c, err := nodegateway.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	id, err := nodegateway.ReadJournalID(c.StateDir, c.Authority)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, id)
+	return err
 }
 
 func run(ctx context.Context, configPath, rebindFrom string) error {
@@ -88,7 +112,7 @@ func run(ctx context.Context, configPath, rebindFrom string) error {
 	defer bounded.Close()
 	serve := make(chan error, 1)
 	go func() { serve <- server.ServeTLS(bounded, "", "") }()
-	slog.Info("NodeGateway/1 listening", "worker_id", c.Authority.WorkerID, "enrollment_generation", c.Authority.EnrollmentGeneration)
+	slog.Info("NodeGateway/1 listening", "worker_id", c.Authority.WorkerID, "enrollment_generation", c.Authority.EnrollmentGeneration, "journal_id", journal.ID())
 	select {
 	case err := <-serve:
 		return err

@@ -128,7 +128,7 @@ func stream[In any](s *Server, mux *http.ServeMux, path string, execution func(I
 			_ = reply(nodeproto.CodeInvalid)
 			return
 		}
-		route, err := s.checkScope(request.Protocol, request.Authority, request.Route, true)
+		route, err := s.checkScope(path, request.Protocol, request.Authority, request.Node, request.Route, true)
 		if err != nil {
 			_ = reply(nodeproto.FailureCode(err))
 			return

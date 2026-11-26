@@ -17,6 +17,7 @@ type Node struct {
 	Endpoint     string      `yaml:"endpoint"`
 	Generation   uint64      `yaml:"enrollment_generation"`
 	Pin          string      `yaml:"node_spki_pin"`
+	JournalID    string      `yaml:"journal_id"`
 	CA           string      `yaml:"ca_file"`
 	CASigningKey string      `yaml:"ca_signing_key_file,omitempty"`
 	Certificate  string      `yaml:"certificate_file"`
@@ -44,6 +45,9 @@ func validateNodes(nodes []Node, instances map[string]bool) error {
 		}
 		if !nodeproto.ValidID(n.ID) || n.Generation == 0 || n.Generation > math.MaxInt64 || !nodeproto.ValidDigest(n.Pin) || ids[n.ID] || pins[n.Pin] || len(n.Routes) == 0 || len(n.Routes) > 64 {
 			return errors.New("Worker enrollment requires a distinct identity and key pin, a generation and registered routes")
+		}
+		if n.JournalID != "" && !nodeproto.ValidJournalID(n.JournalID) {
+			return errors.New("Worker journal_id must use a persistent Node journal identity")
 		}
 		ids[n.ID], pins[n.Pin] = true, true
 		for _, path := range []string{n.CA, n.Certificate, n.Key} {

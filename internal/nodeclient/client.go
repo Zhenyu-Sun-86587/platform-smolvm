@@ -26,17 +26,20 @@ type Config struct {
 	TLS         *tls.Config
 	NodeSPKIPin string
 	Authorize   func(context.Context) error
+	SelectNode  func(context.Context, nodeproto.NodeIdentity) (nodeproto.NodeIdentity, error)
 }
 
 type Client struct {
-	endpoint  string
-	authority nodeproto.Authority
-	control   *http.Client
-	stream    *http.Client
-	authorize func(context.Context) error
+	endpoint   string
+	authority  nodeproto.Authority
+	control    *http.Client
+	stream     *http.Client
+	authorize  func(context.Context) error
+	selectNode func(context.Context, nodeproto.NodeIdentity) (nodeproto.NodeIdentity, error)
 
-	mu        sync.RWMutex
-	routeInfo map[nodeproto.Route]nodeproto.RouteInfo
+	mu            sync.RWMutex
+	routeInfo     map[nodeproto.Route]nodeproto.RouteInfo
+	lastHandshake nodeproto.NodeIdentity
 }
 
 func New(config Config) (*Client, error) {
@@ -80,7 +83,7 @@ func New(config Config) (*Client, error) {
 	}
 	u.Path = ""
 	return &Client{endpoint: u.String(), authority: config.Authority, control: newHTTPClient(nodeproto.ControlSlots + nodeproto.GuestSlots + nodeproto.StorageSlots),
-		stream: newHTTPClient(nodeproto.StreamSlots), authorize: config.Authorize, routeInfo: make(map[nodeproto.Route]nodeproto.RouteInfo)}, nil
+		stream: newHTTPClient(nodeproto.StreamSlots), authorize: config.Authorize, selectNode: config.SelectNode, routeInfo: make(map[nodeproto.Route]nodeproto.RouteInfo)}, nil
 }
 
 func (c *Client) authorizeRequest(ctx context.Context) error {
@@ -100,7 +103,7 @@ func (c *Client) Handshake(ctx context.Context) (nodeproto.Handshake, error) {
 	if err != nil {
 		return out, err
 	}
-	if out.Protocol != nodeproto.Version || out.Authority != c.authority || !nodeproto.ValidID(out.NodeSession) ||
+	if out.Protocol != nodeproto.Version || out.Authority != c.authority || !out.Identity().Valid() ||
 		!nodeproto.ValidID(out.HostBootID) || out.Coverage != nodeproto.KnownOnly || len(out.Routes) == 0 {
 		return nodeproto.Handshake{}, &nodeproto.Failure{Code: nodeproto.CodeAuthority}
 	}
@@ -113,6 +116,7 @@ func (c *Client) Handshake(ctx context.Context) (nodeproto.Handshake, error) {
 	}
 	c.mu.Lock()
 	c.routeInfo = routes
+	c.lastHandshake = out.Identity()
 	c.mu.Unlock()
 	return out, nil
 }
@@ -139,15 +143,14 @@ func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route,
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if path != nodeproto.HandshakePath {
-		if err := c.authorizeRequest(ctx); err != nil {
-			return out, err
-		}
-		if c.authorize != nil {
-			go c.watchAuthority(ctx.Done(), time.Time{}, cancel)
-		}
+	node, check, err := c.requestIdentity(ctx, path, in)
+	if err != nil {
+		return out, err
 	}
-	envelope := nodeproto.Envelope[In]{Protocol: nodeproto.Version, Authority: c.authority, Route: scope, Request: in}
+	if check != nil {
+		go watchAuthority(ctx.Done(), time.Time{}, cancel, check)
+	}
+	envelope := nodeproto.Envelope[In]{Protocol: nodeproto.Version, Authority: c.authority, Node: node, Route: scope, Request: in}
 	raw, err := json.Marshal(envelope)
 	if err != nil || len(raw) > nodeproto.ControlRequestLimit {
 		return out, &nodeproto.Failure{Code: nodeproto.CodeInvalid}
@@ -199,9 +202,9 @@ func tracePeer(ctx context.Context, cancel context.CancelFunc, sending *atomic.B
 	})
 }
 
-func (c *Client) watchAuthority(done <-chan struct{}, expiry time.Time, revoke func()) {
+func watchAuthority(done <-chan struct{}, expiry time.Time, revoke func(), check func(context.Context) error) {
 	var checkAt, expires <-chan time.Time
-	if c.authorize != nil {
+	if check != nil {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		checkAt = ticker.C
@@ -220,7 +223,7 @@ func (c *Client) watchAuthority(done <-chan struct{}, expiry time.Time, revoke f
 			return
 		case <-checkAt:
 			ctx, stop := context.WithTimeout(context.Background(), time.Second)
-			err := c.authorizeRequest(ctx)
+			err := check(ctx)
 			stop()
 			if err != nil {
 				revoke()

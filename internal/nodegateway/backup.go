@@ -42,7 +42,7 @@ func backupRPC[T any](s *Server, mux *http.ServeMux, slots chan struct{}, path s
 			writeFailure(w, nodeproto.CodeInvalid)
 			return
 		}
-		route, err := s.checkScope(envelope.Protocol, envelope.Authority, envelope.Route, true)
+		route, err := s.checkScope(path, envelope.Protocol, envelope.Authority, envelope.Node, envelope.Route, true)
 		if err != nil {
 			writeFailure(w, nodeproto.FailureCode(err))
 			return

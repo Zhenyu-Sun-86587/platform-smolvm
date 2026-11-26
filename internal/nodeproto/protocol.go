@@ -90,16 +90,18 @@ func (r Route) Valid() bool {
 }
 
 type Envelope[T any] struct {
-	Protocol  string    `json:"protocol"`
-	Authority Authority `json:"authority"`
-	Route     Route     `json:"route"`
-	Request   T         `json:"request"`
+	Protocol  string       `json:"protocol"`
+	Authority Authority    `json:"authority"`
+	Node      NodeIdentity `json:"node_identity,omitzero"`
+	Route     Route        `json:"route"`
+	Request   T            `json:"request"`
 }
 
 type Handshake struct {
 	Protocol    string      `json:"protocol"`
 	Authority   Authority   `json:"authority"`
 	NodeSession string      `json:"node_session"`
+	JournalID   string      `json:"journal_id"`
 	HostBootID  string      `json:"host_boot_id"`
 	Routes      []RouteInfo `json:"routes"`
 	Coverage    string      `json:"coverage"`
@@ -315,4 +317,5 @@ type Gate struct {
 type SetGate struct {
 	Mode             string `json:"mode"`
 	ExpectedRevision uint64 `json:"expected_revision"`
+	RestrictOnly     bool   `json:"restrict_only,omitempty"`
 }

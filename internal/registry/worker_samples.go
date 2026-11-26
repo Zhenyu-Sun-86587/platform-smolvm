@@ -80,6 +80,15 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 	if sample.ControlEpoch != control.ControlEpoch || sample.EnrollmentGeneration != generation {
 		return fmt.Errorf("%w: budget authority is stale", ErrConflict)
 	}
+	var observedSession string
+	err = tx.QueryRowContext(ctx, `SELECT observed_node_session FROM worker_node_journals WHERE worker_id=?`, sample.WorkerID).
+		Scan(&observedSession)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if observedSession != "" && observedSession != sample.Session.NodeSessionID {
+		return fmt.Errorf("%w: Worker sample does not match the last authenticated handshake", ErrStaleObservation)
+	}
 	var mode, observed string
 	if err := tx.QueryRowContext(ctx, `SELECT desired_mode, observed_status FROM workers WHERE id=?`, sample.WorkerID).
 		Scan(&mode, &observed); err != nil {

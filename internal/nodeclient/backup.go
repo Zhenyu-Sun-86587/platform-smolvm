@@ -62,13 +62,13 @@ func backupStream[T any](ctx context.Context, a *Adapter, path string, in T) (_ 
 			cancel()
 		}
 	}()
-	check, stop := context.WithTimeout(ctx, 2*time.Second)
-	err = a.client.authorizeRequest(check)
+	scope, stop := context.WithTimeout(ctx, 2*time.Second)
+	node, check, err := a.client.requestIdentity(scope, path, in)
 	stop()
 	if err != nil {
 		return nil, 0, "", err
 	}
-	raw, err := json.Marshal(nodeproto.Envelope[T]{Protocol: nodeproto.Version, Authority: a.client.authority, Route: a.scope, Request: in})
+	raw, err := json.Marshal(nodeproto.Envelope[T]{Protocol: nodeproto.Version, Authority: a.client.authority, Node: node, Route: a.scope, Request: in})
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -101,7 +101,7 @@ func backupStream[T any](ctx context.Context, a *Adapter, path string, in T) (_ 
 		r.Body.Close()
 		return nil, 0, "", &nodeproto.Failure{Code: nodeproto.CodeUnavailable}
 	}
-	go a.client.watchAuthority(ctx.Done(), expiry, cancel)
+	go watchAuthority(ctx.Done(), expiry, cancel, check)
 	return &backupReader{response: r, hash: sha256.New(), remaining: size, ctx: ctx, cancel: cancel}, size, r.Header.Get(nodeproto.BackupManifestHeader), nil
 }
 

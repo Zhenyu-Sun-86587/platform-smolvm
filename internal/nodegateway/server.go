@@ -179,7 +179,7 @@ func (s *Server) handshake() nodeproto.Handshake {
 	slices.SortFunc(routes, func(a, b nodeproto.RouteInfo) int {
 		return strings.Compare(a.RuntimeInstanceID, b.RuntimeInstanceID)
 	})
-	return nodeproto.Handshake{Protocol: nodeproto.Version, Authority: s.authority, NodeSession: s.session,
+	return nodeproto.Handshake{Protocol: nodeproto.Version, Authority: s.authority, NodeSession: s.session, JournalID: s.journal.ID(),
 		HostBootID: s.bootID, Routes: routes, Coverage: nodeproto.KnownOnly}
 }
 
@@ -221,11 +221,15 @@ func decodeJSON(in io.Reader, target any) error {
 	return nil
 }
 
-func (s *Server) checkScope(protocol string, authority nodeproto.Authority, scope nodeproto.Route, routeRequired bool) (Route, error) {
+func (s *Server) checkScope(path, protocol string, authority nodeproto.Authority, node nodeproto.NodeIdentity, scope nodeproto.Route, routeRequired bool) (Route, error) {
 	if protocol != nodeproto.Version {
 		return Route{}, &nodeproto.Failure{Code: nodeproto.CodeUnsupported}
 	}
-	if authority != s.authority {
+	expected := nodeproto.NodeIdentity{JournalID: s.journal.ID(), NodeSession: s.session}
+	if path == nodeproto.HandshakePath {
+		expected = nodeproto.NodeIdentity{}
+	}
+	if authority != s.authority || node != expected {
 		return Route{}, &nodeproto.Failure{Code: nodeproto.CodeAuthority}
 	}
 	if !routeRequired && scope == (nodeproto.Route{}) {
@@ -263,7 +267,7 @@ func serverRPC[In, Out any](s *Server, mux *http.ServeMux, path string, slots ch
 			writeFailure(w, nodeproto.CodeInvalid)
 			return
 		}
-		route, err := s.checkScope(in.Protocol, in.Authority, in.Route, routeRequired)
+		route, err := s.checkScope(path, in.Protocol, in.Authority, in.Node, in.Route, routeRequired)
 		if err != nil {
 			writeFailure(w, nodeproto.FailureCode(err))
 			return
