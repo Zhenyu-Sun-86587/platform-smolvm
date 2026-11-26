@@ -527,7 +527,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(), required=True)
-    parser.add_argument("--case", choices=sorted(SYSTEM | DIRECT | {"http", "tcp-mtls", "ssh", "cli-terminal", "managed-ssh"}), required=True)
+    parser.add_argument("--case", choices=sorted(SYSTEM | DIRECT | {"http", "tcp-mtls", "ssh", "cli-terminal", "managed-ssh", "managed-ssh-isolated"}), required=True)
     parser.add_argument("--mode", choices=("native", "fixed_internal"), default="native")
     parser.add_argument("--sandboxctl", type=lambda path: Path(path).resolve())
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
@@ -537,7 +537,7 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("Linux KVM and an isolated root fixture are required")
-    if args.case in {"ssh", "cli-terminal", "managed-ssh"} and args.sandboxctl is None:
+    if args.case in {"ssh", "cli-terminal", "managed-ssh", "managed-ssh-isolated"} and args.sandboxctl is None:
         parser.error("SSH requires the authorized platform client")
     if args.check_forwarding and args.case not in {"http", "tcp-mtls", "private-tcp"}:
         parser.error("--check-forwarding requires http, tcp-mtls, or private-tcp")
@@ -560,13 +560,16 @@ def main():
         keys, tls, gateway = (None, None, None) if system or args.case in DIRECT else tls_setup(root)
         if args.check_forwarding and args.case == "http":
             gateway["max_waiters_per_machine"] = HTTP_WAKE_WAITERS
-        platform = Platform(args, root, stack, () if system else (NETWORK,),
+        platform = Platform(args, root, stack, () if system or args.case == "managed-ssh-isolated" else (NETWORK,),
                             use_installation=args.use_installation, tls=tls, gateway=gateway,
-                            managed_ssh=args.case in {"ssh", "cli-terminal", "managed-ssh"})
+                            managed_ssh=args.case in {"ssh", "cli-terminal", "managed-ssh", "managed-ssh-isolated"})
         try:
             platform.start()
             if system:
                 system_lifecycle(platform, args.case)
+            elif args.case == "managed-ssh-isolated":
+                from managed_ssh_access import check_networkless
+                check_networkless(platform, args, keys)
             elif args.case == "managed-ssh":
                 from managed_ssh_access import check
                 check(platform, args, keys)

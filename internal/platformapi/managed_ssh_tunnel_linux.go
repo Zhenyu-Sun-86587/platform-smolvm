@@ -2,24 +2,39 @@ package platformapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/crypto/ssh"
 	"sandbox-platform/internal/auth"
+	"sandbox-platform/internal/execbridge"
 	"sandbox-platform/internal/gateway"
 	"sandbox-platform/internal/lifecycle"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
-	"sandbox-platform/internal/runtime/workerclient"
 )
 
 const managedSSHProtocol = "sandbox.tunnel.v1"
+const managedSSHKeyHeader = "X-Sandbox-SSH-Public-Key"
+
+func managedSSHUserKey(h http.Header) (ssh.PublicKey, error) {
+	values := h.Values(managedSSHKeyHeader)
+	// Plain Ed25519 is always the same-sized OpenSSH blob. The exact encoding
+	// excludes certs, authorized_keys options, comments and request ambiguity.
+	if len(values) != 1 || len(values[0]) != 80 || !strings.HasPrefix(values[0], "ssh-ed25519 ") {
+		return nil, registry.ErrInvalid
+	}
+	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(values[0]))
+	if err != nil || key.Type() != ssh.KeyAlgoED25519 ||
+		strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(key)), "\n") != values[0] {
+		return nil, registry.ErrInvalid
+	}
+	return key, nil
+}
 
 // Managed SSH is an intrinsic System management path. The manage permission
 // already authorizes root Guest exec. Publication permissions and settings
@@ -41,6 +56,10 @@ func (s *Server) managedSSHTunnel(w http.ResponseWriter, r *http.Request, mid st
 	}) {
 		return registry.ErrInvalid
 	}
+	userKey, err := managedSSHUserKey(r.Header)
+	if err != nil {
+		return err
+	}
 	admission, cancel := context.WithTimeout(r.Context(), time.Duration(s.Config.Gateway.WaitSeconds)*time.Second)
 	defer cancel()
 	before, err := s.ManagedSystemSSHBinding(admission, mid)
@@ -57,9 +76,6 @@ func (s *Server) managedSSHTunnel(w http.ResponseWriter, r *http.Request, mid st
 	worker, ok := lifecycle.PolicyClient(adapter, before)
 	if !ok {
 		return managedSSHCapability("MANAGED_SSH_WORKER_REQUIRED", "managed SSH requires the native Worker access controller")
-	}
-	if err = s.checkManagedSSHNetwork(admission, worker, before); err != nil {
-		return err
 	}
 	// Wake may promote the execution epoch, while replacing the binding or its
 	// runtime slot requires a fresh request.
@@ -81,45 +97,36 @@ func (s *Server) managedSSHTunnel(w http.ResponseWriter, r *http.Request, mid st
 	if err != nil {
 		return err
 	}
-	attachment, err := managedSSHAttachment(admission, worker, b)
-	if err != nil {
+	check := func(ctx context.Context) error {
+		return s.checkManagedSSHExecution(ctx, p, b, key)
+	}
+	if err := check(admission); err != nil {
 		return err
 	}
-	check := func(ctx context.Context) error {
-		if err := s.checkManagedSSHExecution(ctx, p, b, key); err != nil {
-			return err
-		}
-		current, err := managedSSHAttachment(ctx, worker, b)
-		if err != nil {
-			return err
-		}
-		if current != attachment {
-			return registry.ErrGeneration
-		}
-		return nil
+	agent, err := worker.OpenGuestAgent(admission, lifecycle.WorkerExecution(b))
+	if err != nil {
+		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "the Worker could not open the current Guest Agent"}
 	}
-	backend := gateway.Backend{Port: lifecycle.SystemSSHPort, Protocol: "ssh", DialPrivate: func(ctx context.Context) (net.Conn, error) {
-		conn, err := worker.DialAttachment(ctx, attachment, lifecycle.SystemSSHPort, "tcp")
-		if err != nil {
-			return nil, err
-		}
-		if err = s.checkManagedSSHExecution(ctx, p, b, key); err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	}}
-	if err = s.checkManagedSSHExecution(admission, p, b, key); err != nil {
+	if err := check(admission); err != nil {
+		_ = agent.Close()
+		return err
+	}
+	stream, err := execbridge.OpenManagedSSHD(admission, agent, userKey)
+	if errors.Is(err, rt.ErrUnsupported) {
+		return managedSSHCapability("MANAGED_SSH_AGENT_REQUIRED", "managed SSH requires a System Agent with bidirectional exec")
+	}
+	if err != nil {
+		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "the Guest Agent could not start managed SSH"}
+	}
+	defer stream.Close()
+	if err := check(admission); err != nil {
 		return err
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{managedSSHProtocol}})
 	if err != nil {
 		return nil
 	}
-	defer conn.CloseNow()
-	if err = backend.Tunnel(r.Context(), conn, check); err != nil {
-		_ = conn.Close(websocket.StatusInternalError, "managed SSH backend closed")
-	}
+	_ = gateway.TunnelConn(r.Context(), conn, stream, check)
 	return nil
 }
 
@@ -156,51 +163,6 @@ func (s *Server) checkManagedSSHExecution(ctx context.Context, p auth.Principal,
 		return registry.ErrGeneration
 	}
 	return nil
-}
-
-func (s *Server) checkManagedSSHNetwork(ctx context.Context, worker workerclient.Client, b registry.Binding) error {
-	if b.PowerState == registry.PowerRunning || b.PowerState == registry.PowerStandby {
-		// The Worker lookup is passive and also works when a standby attachment
-		// is temporarily gated. Opening the gate is part of verified access.
-		_, err := worker.LookupAttachment(ctx, lifecycle.WorkerExecution(b))
-		return managedSSHNetworkError(err)
-	}
-	m, err := s.DB.GetMachine(ctx, b.MachineID)
-	if err != nil {
-		return err
-	}
-	var spec struct {
-		Network *rt.LaunchNetwork `json:"network"`
-	}
-	if err := json.Unmarshal(m.Spec, &spec); err != nil {
-		return err
-	}
-	if spec.Network == nil || spec.Network.NetworkID == "" {
-		return managedSSHCapability("MANAGED_SSH_PRIVATE_NETWORK_REQUIRED", "managed SSH requires a configured Worker private network")
-	}
-	return nil
-}
-
-func managedSSHAttachment(ctx context.Context, worker workerclient.Client, b registry.Binding) (workerclient.NetworkAttachment, error) {
-	a, err := worker.LookupAttachment(ctx, lifecycle.WorkerExecution(b))
-	if err != nil {
-		return a, managedSSHNetworkError(err)
-	}
-	if a.Lease.State != "attached" || a.Lease.Gate != "open" {
-		return a, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "managed SSH attachment is not published for this execution"}
-	}
-	return a, nil
-}
-
-func managedSSHNetworkError(err error) error {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	var fault *workerclient.Fault
-	if errors.As(err, &fault) && fault.Code == "E_NOT_FOUND" {
-		return managedSSHCapability("MANAGED_SSH_PRIVATE_NETWORK_REQUIRED", "managed SSH requires a Worker private network attachment")
-	}
-	return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "managed SSH attachment could not be verified for this execution"}
 }
 
 func managedSSHCapability(reason, message string) error {

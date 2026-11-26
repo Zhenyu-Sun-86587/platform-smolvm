@@ -2,7 +2,6 @@
 
 from contextlib import ExitStack, closing
 import hashlib
-import ipaddress
 import json
 import os
 import select
@@ -11,7 +10,7 @@ import subprocess
 import time
 from urllib.parse import urlencode, urlsplit
 
-from authorized_services_kvm import NETWORK, PROGRAM, SERVICE_PORT, machine, write_service
+from authorized_services_kvm import PROGRAM, SERVICE_PORT, machine, write_service
 from managed_system_vsock import wait_for
 from service_revision_kvm import mutate
 
@@ -62,9 +61,6 @@ def check(platform, args, keys):
         assert not any(x["protocol"] == "ssh" for x in platform.app(path + "/services")["items"])
         alias = "ssh-first-use.sandbox"
         assert run("ssh", "-oBatchMode=yes", alias, "id -u; exit 23", code=23) == b"0\n"
-        connection = run("ssh", "-oBatchMode=yes", alias, 'printf "%s" "$SSH_CONNECTION"').decode().split()
-        router = str(ipaddress.ip_network(NETWORK["cidr"]).network_address + 1)
-        assert len(connection) == 4 and connection[0] == router and connection[-1] == "2222", connection
         assert run(args.sandboxctl, "ssh", "ssh-first-use", "--", "id -u") == b"0\n"
         blob = os.urandom(36865)
         source, downloaded = directory / "source.bin", directory / "downloaded.bin"
@@ -109,16 +105,14 @@ def check(platform, args, keys):
         parked = platform.wait_capability(path, "lifecycle.standby")
         platform.complete(platform.change(path + "/standby", "managed-ssh-standby", {}, parked))
         assert platform.app(path)["power_state"] == "standby"
-        after = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
-        assert after[0] == "0" and after[1] == connection[0] and after[-1] == "2222", after
+        assert run(args.sandboxctl, "ssh", mid, "--", "id -u") == b"0\n"
         assert platform.app(path)["power_state"] == "running"
         live = platform.wait_capability(path, "state.hibernate")
         platform.complete(platform.change(path + "/hibernate", "managed-ssh-hibernate", {}, live))
         assert platform.app(path)["power_state"] == "hibernated"
-        restored = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
-        assert restored[0] == "0" and restored[1] == router and restored[-1] == "2222", restored
+        assert run(args.sandboxctl, "ssh", mid, "--", "id -u") == b"0\n"
         assert platform.context(mid)[1]["execution_epoch"] > ref["execution_epoch"]
-        # Revocation must sever this transport even if its SSH certificate is still valid.
+        # The local key stays on disk, but revocation must sever this live transport.
         with subprocess.Popen(["ssh", "-oBatchMode=yes", alias, "echo connected; exec sleep 90"],
                               env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL) as active:
@@ -134,7 +128,31 @@ def check(platform, args, keys):
                 if active.poll() is None:
                     active.kill()
         run("ssh", "-oBatchMode=yes", alias, "id -u", code=255)
-        print(json.dumps(dict(case="managed-ssh-and-web", mode=args.mode, machine_id=mid, ssh_source=connection[0],
-                              guest_port=connection[-1], new_user_exit=23, agent=False, published_ssh=False,
+        print(json.dumps(dict(case="managed-ssh-and-web", mode=args.mode, machine_id=mid, transport="worker_guest_agent",
+                              new_user_exit=23, agent=False, published_ssh=False,
                               revocation_ms=revoke_ms, sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
                               direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
+
+
+def check_networkless(platform, args, keys):
+    mid, _, ref = machine(platform, "isolated-ssh", light=True)
+    path = "machines/" + mid
+    view = platform.app(path)
+    assert not view.get("network"), view.get("network")
+    token = platform.change("tokens", "isolated-manage", {
+        "label": "Isolated machine", "scope": {"access": "manage", "machine_id": mid},
+    }, status=200)["token"]
+    env = {**os.environ, "SANDBOX_URL": platform.origin, "SANDBOX_TOKEN": token,
+           "SANDBOX_CA_FILE": str(keys / "ca.pem"), "SSH_ASKPASS_REQUIRE": "never"}
+    env.pop("SSH_AUTH_SOCK", None)
+    # Force a large discrepancy between Guest and host realtime in this disposable
+    # VM. SSH must authenticate normally and preserve the Guest's chosen clock.
+    platform.guest(ref, ["date", "-u", "-s", "@1600000000"])
+    response = subprocess.run([args.sandboxctl, "ssh", "--batch-mode", mid, "--", "id -u; date -u +%s"],
+                              env=env, capture_output=True, timeout=90)
+    assert response.returncode == 0, response.stderr.replace(token.encode(), b"<redacted>")
+    uid, timestamp = response.stdout.decode().split()
+    assert uid == "0" and 1600000000 <= int(timestamp) < 1600000600, (uid, timestamp)
+    assert platform.app(path + "/services")["items"] == []
+    print(json.dumps(dict(case="managed-ssh-networkless", machine_id=mid, guest_clock=int(timestamp),
+                          network=False, published_services=0, ssh_uid=uid)), flush=True)
