@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
-import { RefreshCw } from "lucide-react"
+import { CircleHelp, RefreshCw } from "lucide-react"
 import { operation, PlatformError } from "../../../../sdk/typescript/src/index"
 import type { BootMode, Control, CreateMachine, Machine, Mutation, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
 import { api, fixtureScene, useCollection } from "../../api"
@@ -185,8 +185,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
         {name && nameIssue && <span className={styles.fieldError} id="machine-name-error">{nameIssue}</span>}
       </label>
 
-      {preview ? <label className={styles.field}><span>Region</span>
-        <select value={region} onChange={event => setRegion(event.target.value)}><option value="fra">Frankfurt</option><option value="nyc">New York</option></select>
+      {preview ? <label className={styles.field}><span className={styles.fieldCaption}>Region <CircleHelp size={12} aria-hidden="true" /></span>
+        <select value={region} onChange={event => setRegion(event.target.value)}><option value="fra">Frankfurt (fra)</option><option value="nyc">New York (nyc)</option></select>
       </label> : <label className={styles.field}><span>Template</span>
         <select aria-label="Template" value={selected?.id ?? ""} disabled={busy || uncertain} onChange={event => setTemplateID(event.target.value)}>
           <option value="" disabled>{templates.items ? "Select a template" : "Loading templates…"}</option>
@@ -213,8 +213,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       </div>}
 
       {preview ? <>
-        <label className={styles.checkbox}><input type="checkbox" checked={isolated} onChange={event => setIsolated(event.target.checked)} /> Isolated</label>
-        <label className={styles.field}><span>Labels</span><textarea value={labels} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
+        <label className={styles.checkbox}><input type="checkbox" checked={isolated} onChange={event => setIsolated(event.target.checked)} /> Isolated <CircleHelp size={12} aria-hidden="true" /></label>
+        <label className={styles.field}><span className={styles.fieldCaption}>Labels <CircleHelp size={12} aria-hidden="true" /></span><textarea value={labels} onChange={event => setLabels(event.target.value)} placeholder={"env=prod\nowner=ci"} rows={2} /></label>
       </> : selected && <div className={styles.advanced}>
         {system && <label className={styles.field}><span>Runtime</span>
           <select aria-label="Runtime" value={runtime?.runtime_instance_id ?? ""} disabled={busy || uncertain} onChange={event => { setRuntimeID(event.target.value); setNetwork(""); setNetworkMode(""); setGrowth(false) }}>

@@ -6,9 +6,9 @@ import { useCollection } from "../../api"
 import { Callout, label, segment, time } from "../../common"
 import type { Actions } from "../../main"
 import { Button, Modal, PageHeader } from "../../ui"
+import { CommandPreview } from "../catalog/CommandPreview"
 import { DocumentationLink } from "../catalog/DocumentationLink"
 import catalog from "../catalog/catalog.module.css"
-import styles from "./settings.module.css"
 
 export function ApiKeys({ actions, revision, create }: { actions: Actions; revision: number; create?: boolean }) {
   const keys = useCollection<Token>("tokens", revision)
@@ -32,9 +32,10 @@ export function ApiKeys({ actions, revision, create }: { actions: Actions; revis
     <Callout error={keys.error} />
     {!keys.items && !keys.error && <div className={catalog.skeleton} role="status" aria-label="Loading API keys" />}
     {keys.items?.length === 0 && <section className={catalog.featurePanel} data-split="true">
-      <div><h2>Create an API key</h2><p>Use a key in CI or scripts that call the platform API.</p>
-        <Button variant="primary" onClick={() => setNewKey(true)}>Create key</Button></div>
-      <div><span className={styles.eyebrow}>CLI</span><pre>$ sandboxctl credentials tokens create --help</pre></div>
+      <div><span className={catalog.panelKicker}>No API keys</span>
+        <h2>Create an API key</h2><p>Use a key in CI or scripts that call the platform API.</p>
+        <Button className={catalog.neutralPrimary} variant="primary" onClick={() => setNewKey(true)}>Create key</Button></div>
+      <div><CommandPreview command="sandboxctl credentials tokens create --help" /></div>
     </section>}
     {!!keys.items?.length && <div className={catalog.tableFrame}><table className={catalog.table}>
       <thead><tr>{["Key", "Access", "Created", "Expires", "Actions"].map(column => <th key={column} scope="col">{column}</th>)}</tr></thead>

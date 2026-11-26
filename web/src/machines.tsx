@@ -3,16 +3,17 @@ import type { ReactNode } from "react"
 import * as Dropdown from "@radix-ui/react-dropdown-menu"
 import {
   Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Cpu, HardDrive,
-  GitFork, Layers3, MapPin, MemoryStick, Plus, Search, Server, Terminal, Users, X,
+  GitFork, Layers3, MapPin, MemoryStick, Plus, Search, Server, Smartphone, Terminal, Users, X,
 } from "lucide-react"
 import type { BootMode, Machine, MachineMetrics, Operation, Page, SystemMetrics } from "../../sdk/typescript/src/index"
 import { fixtureScene, metricAvailability, metricNumber } from "./api"
 import { Callout, label, machinePowerState, segment, time, useRemote } from "./common"
 import { terminalHref } from "./routes"
-import { WorkspaceActions } from "./workspace-actions"
+import { ConnectDialog, WorkspaceActions } from "./workspace-actions"
 import { Button, EmptyState, PageHeader, StatusBadge } from "./ui"
 import { CreateMachineDialog } from "./features/machines/CreateMachineDialog"
 import { DocumentationLink } from "./features/catalog/DocumentationLink"
+import { DashboardIntro } from "./features/dashboard/DashboardIntro"
 import styles from "./features/machines/machines.module.css"
 import dashboard from "./features/dashboard/dashboard.module.css"
 import type { Actions } from "./main"
@@ -76,7 +77,7 @@ function MachineCard({ machine, actions, revision }: { machine: Machine; actions
   const runtime = machine.binding?.runtime_instance_id
   const href = "#/machines/" + segment(machine.machine_id)
   const lineage = fixtureScene && machine.machine_id === "fixture-fork" ? "Forked from atlas-dev" : undefined
-  return <article className={styles.machineCard} data-power={state}>
+  return <article className={styles.machineCard} data-power={state} data-fixture={Boolean(fixtureScene)}>
     <a href={href} className={styles.machineLink} title={machine.name}>
       <span className={styles.dot} aria-hidden="true" />
       <span className={styles.machineIdentity}>
@@ -150,7 +151,7 @@ export function MachineList({ rows, error, actions, revision, defaultBoot, creat
 
   return <>
     <PageHeader title="Machines" className={styles.pageHeading} icon={<Server />} description="Live and stopped environments across your workspace."
-      actions={<><DocumentationLink className={styles.docsLink} /><Button variant="primary" onClick={dialog.show}><Plus size={15} /> New machine</Button></>} />
+      actions={<><DocumentationLink className={styles.docsLink} icon={false} /><Button variant="primary" onClick={dialog.show}><Plus size={15} /> New machine</Button></>} />
     <Callout error={error} />
     <div className={styles.toolbar}>
       <div className={styles.scopes} aria-label="Machine scope">
@@ -203,7 +204,7 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
   onSearch?: () => void; username?: string
 }) {
   const dialog = useCreate(create)
-  const [intro, setIntro] = useState(fixtureScene === "01")
+  const [connect, setConnect] = useState(false)
   const ops = useRemote<Page<Operation>>("operations?limit=4", revision)
   const metrics = useRemote<SystemMetrics>("system/metrics", revision)
   const machines = rows ?? []
@@ -227,24 +228,18 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
       ? `${number.toLocaleString()} ${unit}` : "Unavailable"
   }
   return <div className={dashboard.page}>
-    {intro && <section className={dashboard.intro}>
-      <button type="button" aria-label="Dismiss example shortcuts" onClick={() => setIntro(false)}><X size={16} /></button>
-      <Activity size={24} />
-      <h2>Coding agent connections</h2>
-      <p>Preview how linked tools would appear in a workspace.</p>
-      <div className={dashboard.shortcuts}>{["Claude Code", "Codex", "Antigravity"].map(tool =>
-        <span className={dashboard.example} key={tool}>{tool} <span>Preview</span></span>)}</div>
-    </section>}
+    {fixtureScene === "01" && <DashboardIntro />}
     <section className={dashboard.greeting}>
       <time dateTime={now.toISOString()}>{date}</time>
       <h1>{username ? `Hello, ${username}` : "Welcome to your workspace"}</h1>
       {onSearch && <button type="button" className={dashboard.command} onClick={onSearch}><Search size={16} /><span>Search your workspace</span><kbd>Ctrl B</kbd></button>}
       <div className={dashboard.shortcuts}>
         <Button size="sm" variant="secondary" onClick={dialog.show}><Plus size={14} /> New machine</Button>
+        {running && fixtureScene === "45" && <Button size="sm" onClick={() => setConnect(true)}><Smartphone size={14} /> SSH app · {running.name}</Button>}
         {running && <a href={terminalHref(running.machine_id)}><Terminal size={14} /> Web terminal · {running.name}</a>}
         <a href="#/machines"><Server size={14} /> All machines</a>
         <a href="#/snapshots"><Layers3 size={14} /> Snapshots</a>
-        <a href="#/operations"><Activity size={14} /> Operations</a>
+        {!fixtureScene && <a href="#/operations"><Activity size={14} /> Operations</a>}
         <DocumentationLink />
       </div>
     </section>
@@ -289,5 +284,6 @@ export function Dashboard({ rows, error, actions, revision, defaultBoot, create,
       </section>
     </div>}
     {dialog.open && <CreateMachineDialog actions={actions} revision={revision} defaultBoot={defaultBoot} close={dialog.close} />}
+    {running && connect && <ConnectDialog machine={running} actions={actions} open={connect} onOpenChange={setConnect} />}
   </div>
 }

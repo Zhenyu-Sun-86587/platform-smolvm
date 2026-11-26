@@ -1,19 +1,20 @@
 import { useState } from "react"
 import {
-  Bot, Braces, Building2, Cloud, Code2, Database, GitBranch, Globe2, Link2, LockKeyhole, Plus, Search,
+  Bot, Braces, Building2, Cloud, Code2, Copy, Database, GitBranch, Globe2, Link2, LockKeyhole, Plus, Search,
 } from "lucide-react"
 import { fixtureScene } from "../../api"
 import { Button, EmptyState, Modal, PageHeader } from "../../ui"
+import { CommandPreview } from "../catalog/CommandPreview"
 import { DocumentationLink } from "../catalog/DocumentationLink"
 import catalog from "../catalog/catalog.module.css"
 import styles from "./settings.module.css"
 
 type PreviewPage = "agents" | "integrations" | "domains" | "environment"
 const pages = {
-  agents: { title: "Agents", Icon: Bot, description: "Review the runs of coding agents across your machines." },
-  integrations: { title: "Integrations", Icon: Link2, description: "Browse tools that can be connected to a workspace." },
-  domains: { title: "Domains", Icon: Globe2, description: "Assign custom domains to machine services." },
-  environment: { title: "Environment", Icon: LockKeyhole, description: "Manage workspace variables and secrets." },
+  agents: { title: "Agents", Icon: Bot, description: "How your coding agents’ turns went, across your machines, for the last 30 days. Reading them never wakes a machine." },
+  integrations: { title: "Integrations", Icon: Link2, description: "Connect an account once and it’s available inside every machine. Agents and scripts can use these connections." },
+  domains: { title: "Domains", Icon: Globe2, description: "Bring your own domain, point it at any of your machines." },
+  environment: { title: "Environment", Icon: LockKeyhole, description: "Variables and secrets injected into your VMs’ commands." },
 }
 const integrations = [
   { name: "Claude Code", category: "Coding", Icon: Code2, description: "Coding agent for terminal workspaces." },
@@ -30,6 +31,7 @@ const integrations = [
 export function PreviewPage({ page }: { page: PreviewPage }) {
   const [open, setOpen] = useState(false)
   const [region, setRegion] = useState("fra")
+  const [agent, setAgent] = useState("claude-code")
   const { title, Icon, description } = pages[page]
   const addLabel = page === "domains" ? "Add domain" : "Add variable"
   if (!fixtureScene) return <>
@@ -38,7 +40,7 @@ export function PreviewPage({ page }: { page: PreviewPage }) {
     {page === "domains" && <p>Manage published hostnames in <a href="#/networking">Services</a>.</p>}
   </>
   return <>
-    <PageHeader title={title} icon={<Icon />} description={description}
+    <PageHeader title={title} icon={<Icon />} description={description} className={page === "integrations" ? catalog.stackedHeading : undefined}
       actions={page !== "agents" && <><DocumentationLink />
         {(page === "domains" || page === "environment") && <Button variant="primary" onClick={() => setOpen(true)}><Plus size={15} /> {addLabel}</Button>}</>} />
     {page === "integrations" ? <IntegrationGrid /> : page === "agents" ? <>
@@ -48,7 +50,8 @@ export function PreviewPage({ page }: { page: PreviewPage }) {
         <div><span className={styles.eyebrow}>Agent sessions</span><pre>{`Start a session\n\nMachine    atlas-dev\nAgent      Coding assistant\nStatus     Idle`}</pre></div>
       </section>
     </> : page === "domains" ? <>
-      <div className={catalog.toolbar}><div className={catalog.actions}><select className={catalog.scope} aria-label="Region" value={region} onChange={event => setRegion(event.target.value)}>
+      <p className={styles.wildcard}>An organization-wide wildcard domain can cover all machines in a region. <a href="#/settings">View settings</a></p>
+      <div className={catalog.toolbar}><div className={catalog.actions}><select className={catalog.regionSelect} aria-label="Region" value={region} onChange={event => setRegion(event.target.value)}>
         <option value="fra">Frankfurt</option><option value="nyc">New York</option>
       </select></div></div>
       <p className={catalog.empty}>No domains in this region.</p>
@@ -84,7 +87,7 @@ function IntegrationGrid() {
     </div>
     <div className={styles.integrationGrid}>
       {shown.map(({ name, category, Icon, description }) => <button type="button" key={name} onClick={() => setDetail({ name, category, Icon, description })}>
-        <Icon size={28} /><small>{category}</small><strong>{name}</strong><p>{description}</p>
+        <Icon size={36} /><small>Recommended</small><strong>{name}</strong><p>{description}</p>
       </button>)}
     </div>
     {!shown.length && <p className={catalog.empty}>No matching integrations.</p>}
@@ -98,22 +101,42 @@ function IntegrationGrid() {
 const sections = [["", "General"], ["members", "Members"], ["teams", "Teams"], ["billing", "Billing"], ["usage", "Usage"]]
 export function OrganizationPreview({ tab }: { tab?: string }) {
   const [create, setCreate] = useState(false)
+  const [edit, setEdit] = useState(false)
+  const [copied, setCopied] = useState("")
+  const orgID = "org_example-workspace"
+  async function copyID() {
+    try {
+      await navigator.clipboard.writeText(orgID)
+      setCopied("Copied")
+    } catch {
+      setCopied("Copy unavailable")
+    }
+  }
   return <>
-    <PageHeader title="Organization settings" icon={<Building2 />} description="Organization identity and workspace access." actions={<DocumentationLink />} />
+    <PageHeader title="Organization settings" icon={<Building2 />} description="Identity, members, billing, and settings for your organization." actions={<DocumentationLink />} />
     <nav className={styles.tabs} aria-label="Settings sections">{sections.map(([id, title]) => <a key={title} href={"#/settings" + (id ? "/" + id : "")}
       aria-current={(tab ?? "") === id ? "page" : undefined}>{title}</a>)}</nav>
     {tab === "teams" ? <>
-      <div className={styles.sectionToolbar}><span className={styles.eyebrow}>0 teams</span><Button onClick={() => setCreate(true)}>Create team</Button></div>
-      <section className={catalog.featurePanel}><div><h2>No teams yet</h2><p>Teams group organization members and their access.</p></div></section>
+      <div className={styles.sectionToolbar}><span className={styles.eyebrow}>0 teams</span><Button className={catalog.neutralPrimary} variant="primary" onClick={() => setCreate(true)}>Create team</Button></div>
+      <section className={catalog.featurePanel}><div><h2>No teams yet</h2><p>Create a team to group organization members.</p></div></section>
     </> : !tab ? <>
       <section className={styles.previewSection}>
         <h2>Identity</h2><p>Find the organization name and ID for API and CLI calls.</p>
-        <div><span className={styles.eyebrow}>Organization name</span><strong>Example Workspace</strong>
-          <span className={styles.eyebrow}>Organization ID</span><code>org_example-workspace</code></div>
+        <div className={styles.identityCard}>
+          <button className={styles.editName} type="button" onClick={() => setEdit(true)}>Edit</button>
+          <span className={styles.eyebrow}>Organization name</span><strong>Example Workspace</strong>
+          <span className={styles.eyebrow}>Organization ID</span>
+          <div className={styles.identityId}><code>{orgID}</code><button type="button" aria-label="Copy organization ID" onClick={copyID}><Copy size={13} /></button>
+            {copied && <span role="status">{copied}</span>}</div>
+        </div>
       </section>
-      <section className={styles.previewSection}><h2>Wildcard domain</h2><p>A wildcard domain covers the machines in one region.</p>
-        <div><span>Frankfurt · No wildcard domain</span><span>New York · No wildcard domain</span></div></section>
+      <section className={styles.previewSection}><h2>Wildcard domain</h2><p>A wildcard domain covers the machines in a region. Each region can have its own, such as preview.example.test for Frankfurt.</p>
+        <div className={styles.wildcardRows}><span><small>FRA</small> No wildcard domain</span><span><small>NYC</small> No wildcard domain</span></div></section>
     </> : <EmptyState title={`${sections.find(([id]) => id === tab)?.[1] ?? "Settings"} preview`} />}
+    {edit && <Modal open onOpenChange={value => { if (!value) setEdit(false) }} title="Edit organization name"
+      description="Organization identity is available as a preview." footer={<Button onClick={() => setEdit(false)}>Close</Button>}>
+      <div className={catalog.form}><label>Organization name<input defaultValue="Example Workspace" /></label></div>
+    </Modal>}
     {create && <Modal open onOpenChange={value => { if (!value) setCreate(false) }} title="Create team"
       description="Team management is available as a preview." footer={<Button onClick={() => setCreate(false)}>Close</Button>}>
       <div className={catalog.form}><label>Team name<input placeholder="Engineering" /></label></div>

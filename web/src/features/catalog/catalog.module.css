@@ -1,4 +1,4 @@
-.toolbar, .actions, .segments, .region {
+.toolbar, .actions, .segments {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -29,22 +29,48 @@
   color: var(--foreground);
 }
 
-.region {
-  min-height: 33px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--input);
-  color: var(--muted-foreground);
+.regionTrigger {
+  position: relative;
 }
 
-.region select {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  min-height: 30px;
-  padding: 0;
-  color: var(--foreground);
+.regionTrigger::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--background);
+  border-radius: 50%;
+  background: var(--primary-action);
+}
+
+.regionMenu {
+  min-width: 150px;
+  padding: 4px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  z-index: 40;
+}
+
+.regionMenu [role=menuitemradio] {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 33px;
+  padding: 0 8px;
+  border-radius: 4px;
+}
+
+.regionMenu [data-highlighted] {
+  background: var(--accent);
+}
+
+.regionSelect {
+  min-width: 150px;
+  min-height: 32px;
+  font-size: 13px;
 }
 
 .scope {
@@ -70,6 +96,12 @@
 
 .smallModal {
   --modal-width: 384px;
+  --primary-action: #f4f4f5;
+  --primary-action-foreground: #101012;
+}
+
+.smallModal :global(.console-modal-header [aria-label="Close dialog"]) {
+  display: none;
 }
 
 .form {
@@ -158,11 +190,11 @@
 .featurePanel {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  margin: 18px 0;
-  min-height: 300px;
+  margin: 24px 0;
+  min-height: 342px;
   border: 1px solid var(--border);
   border-radius: 16px;
-  background: linear-gradient(120deg, color-mix(in srgb, var(--primary) 8%, var(--card)), var(--background) 75%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary-action) 8%, var(--background)), var(--background) 45%);
   overflow: hidden;
 }
 
@@ -173,7 +205,7 @@
   align-content: center;
   justify-items: start;
   gap: 14px;
-  padding: 32px max(24px, 4%);
+  padding: 32px 38px;
 }
 
 .featurePanel h2 {
@@ -196,6 +228,7 @@
 
 .featurePanel > div + div {
   align-content: start;
+  justify-items: stretch;
   padding: 18px;
   background: var(--card);
   border-left: 1px solid var(--border);
@@ -238,6 +271,71 @@
   background: var(--background);
 }
 
-.form select, .region, .segments {
+.form select, .segments {
   background: var(--popover);
+}
+
+.neutralPrimary {
+  --primary-action: #f4f4f5;
+  --primary-action-foreground: #101012;
+}
+
+.automationPanel { margin-top: 44px; }
+.toolbar + .featurePanel { margin-top: 12px; }
+
+.panelKicker, .commandPreview > header {
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.panelKicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panelKicker::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  background: var(--primary-action);
+  transform: rotate(45deg);
+}
+
+.commandPreview {
+  min-width: 0;
+}
+
+.commandPreview > header {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.commandPreview button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  color: var(--muted-foreground);
+  font: inherit;
+  text-transform: inherit;
+}
+
+.commandPreview pre {
+  margin: 12px 0 0;
+  line-height: 1.7;
+}
+
+@media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
+  .featurePanel > div { padding: 22px; }
 }
