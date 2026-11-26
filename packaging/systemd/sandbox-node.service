@@ -1,0 +1,26 @@
+[Unit]
+Description=Sandbox Worker NodeGateway
+After=network-online.target smolvm-serve.service
+Wants=network-online.target
+Requires=smolvm-serve.service
+
+[Service]
+Type=exec
+User=sandbox-platform
+Group=sandbox-platform
+SupplementaryGroups=sandbox-control
+StateDirectory=sandbox-node
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/sandbox-node
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ExecStart=/opt/sandbox-platform/current/sandbox-node -config /etc/sandbox-node/config.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=25s
+
+[Install]
+WantedBy=multi-user.target
