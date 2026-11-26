@@ -11,10 +11,10 @@ import { fileDigest } from "./features/files/digest"
 export { fileDigest } from "./features/files/digest"
 import { Button } from "./daytona/button"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuItem, DropdownMenuContent } from "./daytona/dropdown-menu"
-import { useCollection } from "./api"
+import { currentServiceObservation, useCollection } from "./api"
 import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
-import { policyFields, policyInput } from "./lifecycle-policy"
+import { policyFields, policyOverrides } from "./lifecycle-policy"
 import { powerDialog, WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
@@ -145,7 +145,11 @@ function ManagedResources({ machine, actions, revision }: Context) {
   const quota = data?.cpu_limit
   return <Section title="Live resources" actions={fields.length > 0 && <button onClick={edit}>Adjust</button>}>
     <Callout error={result.error}/>
-    {data && <Details value={{
+    {!result.error && !seen && <p className={styles.note}>
+      {data ? compute?.pending?.operation_id ? "The resource change is pending." : "Live allocation has not been observed."
+        : "Reading live allocation…"}
+    </p>}
+    {data && (seen || quota || compute?.pending) && <Details value={{
       profile: compute?.profile, online_vCPUs: seen?.online_cpus, allocated_vCPU_slots: seen?.cpus?.created,
       allocated_memory_MiB: memory, balloon_target_MiB: seen?.balloon?.target_mib, balloon_actual_MiB: seen?.balloon?.actual_mib,
       effective_millicpus: quota ? quota.quota_usec === null ? "Unlimited" : quota.quota_usec * 1000 / quota.period_usec : undefined,
@@ -395,17 +399,11 @@ function readiness(service?: Service) {
 }
 
 export function ServiceStatus({ item, machine }: { item: Service; machine?: Machine }) {
-  const observation = item.observation
+  const observation = currentServiceObservation(item, machine)
   if (item.enabled === false) return <State value="disabled" />
   if (!observation) return <State value="unknown" />
-  const scoped = observation.scope !== "configuration"
-  const current = observation.service_revision === item.revision &&
-    (!scoped || Boolean(machine && machine.machine_id === item.machine_id &&
-      observation.binding_generation != null && observation.binding_generation === machine.binding_generation &&
-      observation.execution_epoch != null && observation.execution_epoch === machine.binding?.execution_epoch &&
-      machinePowerState(machine) === "running"))
   return <div className={styles.observation}>
-    <State value={current ? observation.status : "stale"} />
+    <State value={observation.status} />
     <span>{label(observation.scope)} · {label(observation.stage)}</span>
     {observation.observed_at && <time dateTime={observation.observed_at}>{time(observation.observed_at)}</time>}
     {observation.reason_code && <span title={observation.reason_code}>{label(observation.reason_code.toLowerCase())}</span>}
@@ -609,9 +607,12 @@ function CaptureDetails({ item }: { item: Snapshot }) {
       source_revision: config?.source_machine_revision ?? "Unknown",
       CPU: resources?.cpu_count ?? "Unknown", memory_MiB: resources?.memory_mib ?? "Unknown",
       guest_storage_GiB: resources?.storage_gib ?? "Unknown", boot_mode: spec?.boot_mode ?? "Unknown",
-      template: config?.template_id ?? "Unknown", RAM: summary?.ram ? label(summary.ram) : "Unknown",
+      template: spec?.template_id ?? config?.template_id ?? "Unknown",
+      RAM: summary?.ram ? label(summary.ram) : "Unknown", RAM_bytes: summary?.ram_bytes ?? "Unknown",
       disks: summary?.disks ?? "Unknown", restore_policies: summary?.restore_policies?.map(label).join(", ") || "Unknown",
-      evidence: config?.manifest_digest, reason: config?.reason_code ?? summary?.reason_code,
+      source: config?.source, specification_digest: config?.spec_digest,
+      manifest_digest: config?.manifest_digest, verified: summary?.verified_at ? time(summary.verified_at) : undefined,
+      reason: config?.reason_code ?? summary?.reason_code,
     }} />
   </details>
 }
@@ -640,7 +641,7 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
   const policy = machine.lifecycle_policy
   const blockers = policy?.effective_blockers ?? policy?.worker?.blockers ?? machine.blocked_reasons
   const base = machinePath(machine.machine_id)
-  const leases = useRemote<Page<RunningLease>>(policyOnly ? "" : base + "/leases", revision)
+  const leases = useCollection<RunningLease>(policyOnly ? "" : base + "/leases", revision)
   const [newLease, setNewLease] = useState<Record<string, unknown>>()
   const changeLease = (lease: RunningLease, release: boolean) => actions.dialog({
     title: release ? "Release lease" : "Renew lease",
@@ -653,11 +654,15 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
     }, { method: release ? "DELETE" : "PATCH", revision: lease.revision })
   })
   return <>
-    {policy?.supported ? <Section title="Lifecycle policy" actions={<button onClick={() => actions.dialog({
+    {policy?.supported ? <Section title="Lifecycle policy" actions={<button disabled={policy.desired_revision !== policy.applied_revision} onClick={() => actions.dialog({
       title: "Edit lifecycle policy", submit: "Apply", sheet: true, fields: policyFields(policy.desired),
-      act: form => actions.mutate(base, { expected_generation: machine.binding_generation,
-        expected_policy_revision: policy.desired_revision, lifecycle_policy: policyInput(form) },
-        { method: "PATCH", revision: machine.revision }),
+      act: form => {
+        const overrides = policyOverrides(form, policy.desired)
+        if (!Object.keys(overrides).length) throw new Error("Choose a policy setting to change.")
+        return actions.mutate(base, { expected_generation: machine.binding_generation,
+          expected_policy_revision: policy.desired_revision, lifecycle_policy: overrides },
+          { method: "PATCH", revision: machine.revision })
+      },
     })}>Configure</button>}>
       <div className={styles.policyStatus}>
         <State value={policy.effective_status ?? "unknown"} />
@@ -673,7 +678,13 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
         eligible_after_seconds: policy.worker?.next_action && Math.ceil(policy.worker.next_action.eligible_after_ms / 1000),
         last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
       {policy.worker && <details className="disclosure"><summary>Worker activity observations</summary>
-        <Details value={policy.worker.collectors} />
+        <Details value={{
+          worker_power: policy.worker.power, execution_epoch: policy.worker.execution_epoch,
+          collector_generation: policy.worker.collector_generation,
+          activity: Object.fromEntries(Object.entries(policy.worker.collectors ?? {}).map(([key, value]) =>
+            [key, value.fresh ? "Current" : "Stale"])),
+          pressure_admission: policy.worker.pressure?.admission_throttled ? "Throttled" : undefined,
+        }} />
       </details>}
     </Section> : bundleBound(machine) ? <Section title="Lifecycle policy">
       <p className={styles.note}>Lifecycle policy support has not been verified for this machine.</p>
@@ -700,7 +711,7 @@ function Activity({ machine, actions, revision, policyOnly = false }: Context & 
     })}>Acquire lease</button>}>
       <Callout error={leases.error} />
       {newLease && <Details value={newLease} />}
-      <div className="rows">{leases.data?.items.map(lease => <div className="row" key={lease.lease_id}>
+      <div className="rows">{leases.items?.map(lease => <div className="row" key={lease.lease_id}>
         <code>{lease.lease_id}</code><State value={lease.state === "released" && lease.release_reason === "expired" ? "expired" : lease.state} /><span>{lease.reason}</span><span>{time(lease.expires_at)}</span><small>{leaseDescription(lease)}</small>
         <button disabled={lease.state === "released"} onClick={() => changeLease(lease, false)}>Renew</button><button disabled={lease.state === "released"} onClick={() => changeLease(lease, true)}>Release</button>
       </div>)}</div>

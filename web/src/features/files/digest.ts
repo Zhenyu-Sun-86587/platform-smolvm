@@ -1,7 +1,7 @@
-export async function fileDigest(blob: Blob) {
+export async function fileDigest(source: Blob | ReadableStream<Uint8Array>) {
   const { sha256 } = await import("@noble/hashes/sha256")
   const hash = sha256.create()
-  const reader = blob.stream().getReader()
+  const reader = (source instanceof Blob ? source.stream() : source).getReader()
   try {
     for (;;) {
       const chunk = await reader.read()

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 import { ArrowUp, Download, FileText, FolderClosed, Pencil, RefreshCw, Upload } from "lucide-react"
-import type { GuestFileCapability, GuestFileEntry, GuestFileUpload, Machine, Page } from "../../../../sdk/typescript/src/index"
+import type { GuestFileCapability, GuestFileEntry, Machine, Page } from "../../../../sdk/typescript/src/index"
 import { machine as machinePath, PlatformError } from "../../../../sdk/typescript/src/index"
 import { api } from "../../api"
-import { Callout, download, label, machinePowerState, query, str } from "../../common"
+import { Callout, download, label, machinePowerState, str } from "../../common"
 import type { Actions } from "../../main"
 import { Button, Modal } from "../../ui"
 import { fileDigest } from "./digest"
@@ -163,7 +163,7 @@ function Browser({ machine, actions, current, autoload }: {
     const target = child(path, item.name)
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(target), { signal })
+      const response = await api.downloadFile(machine.machine_id, target, signal)
       const contents = await readText(response, previewLimit)
       if (signal.aborted) return
       setTransferError(undefined)
@@ -176,7 +176,7 @@ function Browser({ machine, actions, current, autoload }: {
     const target = child(path, item.name)
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(target), { signal })
+      const response = await api.downloadFile(machine.machine_id, target, signal)
       await download(response, item.name)
     })
   }
@@ -185,9 +185,8 @@ function Browser({ machine, actions, current, autoload }: {
     if (!uncertain || !canDownload) return
     void useFile(async signal => {
       await request(machine.machine_id, signal)
-      const response = await api.response(base + "?" + query(uncertain.path), { signal })
-      const blob = await response.blob()
-      const sha256 = await fileDigest(blob)
+      const response = await api.downloadFile(machine.machine_id, uncertain.path, signal)
+      const sha256 = await fileDigest(response.body ?? new Blob())
       if (signal.aborted) return
       setNotice(sha256 === uncertain.sha256
         ? "The Guest has the submitted bytes at " + uncertain.path + "."
@@ -221,9 +220,9 @@ function Browser({ machine, actions, current, autoload }: {
         digest = await fileDigest(payload)
         const intent = await api.intent(signal)
         dispatched = true
-        const receipt = await actions.tracked(() => api.upload<GuestFileUpload>(base + "?" + query(target), payload, {
-          revision: latest.revision, intent, signal, sha256: digest,
-        }))
+        const receipt = await actions.tracked(intent => api.uploadFile(machine.machine_id, target, payload, {
+          revision: latest.revision, intent, signal,
+        }), { intent })
         if (receipt.state !== "uploaded" || receipt.sha256 !== digest || receipt.path !== target || receipt.size !== payload.size) {
           throw new Error("The upload receipt did not match the submitted file.")
         }
