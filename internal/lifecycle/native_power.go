@@ -214,6 +214,8 @@ func nativeRefusal(err error) error {
 		code = "EXECUTION_EPOCH_CHANGED"
 	case "E_STATE_CONFLICT":
 		code = "STATE_CONFLICT"
+	case "E_VOLUME_CONFLICT":
+		code = "VOLUME_CONFLICT"
 	case "E_OPERATION_IN_PROGRESS":
 		code = "OPERATION_IN_PROGRESS"
 	case "E_RESOURCE_LIMIT":
