@@ -3,15 +3,19 @@
 
 import argparse
 from contextlib import ExitStack
+import errno
+import hashlib
 import json
 import os
 from pathlib import Path
 import select
+import sqlite3
 import subprocess
 import sys
 import tempfile
 
 from managed_system_vsock import Platform, digest, wait_for, worker
+from worker_restart_kvm import restart_worker
 
 
 MIB = 1 << 20
@@ -68,6 +72,17 @@ class Product:
         self.applied(machine + "/start", machine=machine)
         return self.execution(machine)
 
+    def stop(self, machine, ref):
+        wait_for(lambda: self.platform.app(machine)["capabilities"]["lifecycle.stop"]["supported"], timeout=40)
+        inventory = self.platform.native(f"/instances/{ref['instance_id']}/inventory")
+        pidfd = os.pidfd_open(inventory["execution"]["pid"])
+        try:
+            self.applied(machine + "/stop", machine=machine)
+            assert select.select([pidfd], [], [], 4)[0], inventory["execution"]
+        finally:
+            os.close(pidfd)
+        assert self.platform.app(machine)["power_state"] == "stopped"
+
     def execution(self, machine):
         ref = self.platform.context(machine.split("/")[-1])[1]
         wait_for(lambda: self.platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
@@ -89,19 +104,20 @@ class Product:
             'dd if="$1" bs=512 skip=8 count=1 status=none | head -c "$2"', "read", path, str(length)])
 
 
-def checkpoint_case(platform, *, check_catalog=True):
+def checkpoint_case(platform, *, check_catalog=True, source_disposition="running", verify_retired_head=False):
     product = Product(platform)
     machine = product.machine("Checkpoint disks")
-    ids = []
+    ids, attachments = [], {}
     for name in ("left", "right"):
         volume = product.volume(name)
         ids.append(volume["volume_id"])
-        product.attach(machine, volume, name)
+        attachments[volume["volume_id"]] = product.attach(machine, volume, name)
     archive = product.volume("read-only archive")
     archive_id = archive["volume_id"]
     archive = product.applied(f"volumes/{archive_id}/snapshots", revision=archive["revision"])["result"]["volume"]
     archived = archive["snapshots"][0]
     archive_lease = product.attach(machine, archive, "archive", mode="ro", snapshot_id=archived["snapshot_id"])
+    attachments[archive_id] = archive_lease
     ref = product.start(machine)
     originals = product.disks(ref)
     first = ["checkpoint-left-abcdef", "checkpoint-right-0123"]
@@ -121,15 +137,50 @@ def checkpoint_case(platform, *, check_catalog=True):
     assert all(advanced[ident][1]["writable_head_id"] != originals[ident][1]["writable_head_id"] for ident in ids)
     print(f"Checkpoint {snapshot} holds {first}; the live source advanced its two volume heads to {later}.", flush=True)
 
+    current_ref = ref
+    active_archive = archive_lease["attachment_id"]
+    if source_disposition != "running":
+        product.stop(machine, ref)
+        moved = product.machine("Original volumes moved elsewhere")
+        for volume, attachment in attachments.items():
+            original = product.read_volume(volume)
+            product.applied("volume-attachments/" + attachment["attachment_id"],
+                            {"expected_volume_revision": original["revision"]}, machine=machine, method="DELETE")
+            assert product.read_volume(volume)["attachments"] == []
+            options = {"mode": "ro", "snapshot_id": archived["snapshot_id"]} if volume == archive_id else {}
+            next_lease = product.attach(moved, product.read_volume(volume), attachment["device_key"], **options)
+            assert next_lease["attachment_id"] != attachment["attachment_id"]
+            if volume == archive_id:
+                active_archive = next_lease["attachment_id"]
+        assert platform.app(machine + "/volume-attachments")["items"] == []
+        if source_disposition == "deleted":
+            product.applied(machine, machine=machine, method="DELETE")
+            if verify_retired_head:
+                root_volume, = set(advanced) - set(attachments)
+                latest_head = advanced[root_volume][1]["writable_head_id"]
+                captured_head = originals[root_volume][1]["writable_head_id"]
+                retired = worker(platform.worker, "QueryResource", {"resource_id": latest_head})
+                assert retired["state"] == "deleted" and not (platform.root / "catalog/objects" / latest_head).exists()
+                assert worker(platform.worker, "QueryResource", {"resource_id": captured_head})["state"] == "available"
+                print(f"Source private head {latest_head} was removed; checkpoint head {captured_head} remained pinned.",
+                      flush=True)
+        current_ref = product.start(moved)
+        advanced = product.disks(current_ref)
+        for volume, value in zip(ids, later, strict=True):
+            assert product.read(current_ref, advanced[volume][0], len(value)) == value.encode()
+        print(f"Original product attachments were detached and the same volumes moved with latest bytes. "
+              f"The capturing compute is {source_disposition}.", flush=True)
+
     exact = product.failure("VOLUME_GENERATION_MISMATCH", "restores",
                             {"name": "Exact conflict", "snapshot_id": snapshot, "volume_restore_policy": "exact"})
     print(f"Exact public restore returned {exact['error']['code']} and effect none.", flush=True)
-    assert platform.context(machine.split("/")[-1])[1] == ref
+    if source_disposition == "running":
+        assert platform.context(machine.split("/")[-1])[1] == ref
     cloned = product.applied("restores", {"name": "Saved disk clone", "snapshot_id": snapshot,
                                          "volume_restore_policy": "clone_conflicts"})
     clone = "machines/" + cloned["machine_id"]
     restored = product.execution(clone)
-    assert restored["instance_id"] != ref["instance_id"] and restored["execution_epoch"] == 1
+    assert restored["instance_id"] not in {ref["instance_id"], current_ref["instance_id"]} and restored["execution_epoch"] == 1
     receipt = cloned["result"]
     assert receipt["statepoint"]["manifest_digest"] == checkpoint["statepoint"]["manifest_digest"]
     mapping = receipt["volume_map"]
@@ -143,9 +194,9 @@ def checkpoint_case(platform, *, check_catalog=True):
         target, disk = clone_disks[mapping[ident]]
         assert disk["writable_head_id"] != advanced[ident][1]["writable_head_id"]
         assert product.read(restored, target, len(old)) == old.encode()
-        assert product.read(ref, advanced[ident][0], len(current)) == current.encode()
+        assert product.read(current_ref, advanced[ident][0], len(current)) == current.encode()
         product.write(restored, target, "clone-only")
-        assert product.read(ref, advanced[ident][0], len(current)) == current.encode()
+        assert product.read(current_ref, advanced[ident][0], len(current)) == current.encode()
     print(f"clone_conflicts restored saved RAM and both exact bytes on new volumes {[(v, mapping[v]) for v in ids]}. "
           "Writes in the clone did not change the independently advanced source.", flush=True)
     if check_catalog:
@@ -160,8 +211,8 @@ def checkpoint_case(platform, *, check_catalog=True):
         shared = product.read_volume(archive_id)["attachments"]
         assert len(shared) == 2 and all(item["state"] == "attached" and item["generation_id"] == archived["generation_id"]
                                         and item["mode"] == "ro" for item in shared), shared
-        assert archive_lease["attachment_id"] in {item["attachment_id"] for item in shared}
-        assert {item["instance_id"] for item in shared} == {ref["instance_id"], restored["instance_id"]}
+        assert active_archive in {item["attachment_id"] for item in shared}
+        assert {item["instance_id"] for item in shared} == {current_ref["instance_id"], restored["instance_id"]}
         print(f"Each new writable volume is public. Both KVMs hold separate read-only leases on {archived['generation_id']}.",
               flush=True)
         product.applied(clone + "/hibernate", machine=clone)
@@ -231,14 +282,7 @@ def lifecycle_case(platform):
     print("Live attachment changes required a fenced stopped execution; live growth returned CONFLICT. "
           "The Guest devices, capacity and bytes stayed intact.", flush=True)
 
-    inventory = platform.native(f"/instances/{first['instance_id']}/inventory")
-    pidfd = os.pidfd_open(inventory["execution"]["pid"])
-    try:
-        product.applied(machine + "/stop", machine=machine)
-        assert select.select([pidfd], [], [], 4)[0], inventory["execution"]
-    finally:
-        os.close(pidfd)
-    assert platform.app(machine)["power_state"] == "stopped"
+    product.stop(machine, first)
     assert all(item["state"] == "reserved" for item in platform.app(machine + "/volume-attachments")["items"])
     grown = product.applied(**grow(product.read_volume(fsid)))["result"]
     assert grown["block_capacity_applied"] and grown["filesystem_resize_status"] == "not_requested", grown
@@ -270,13 +314,189 @@ def lifecycle_case(platform):
           "The Guest then expanded ext4 to 32 MiB.", flush=True)
 
 
+class FaultPlatform(Platform):
+    """Load the precise fsync fault only in this fixture's Worker process."""
+
+    def spawn(self, command, log):
+        if Path(command[0]).name != "smolvm-resourced":
+            return super().spawn(command, log)
+        prior = self.env
+        self.env = {**prior, "LD_PRELOAD": str(self.args.fsync_shim),
+                    "VOLUME_TEST_SEAL_FAULT": str(self.root / "seal-fault")}
+        try:
+            return super().spawn(command, log)
+        finally:
+            self.env = prior
+
+
+def isolate_objects(root, stack):
+    image = root / "objects.ext4"
+    with image.open("wb") as target:
+        target.truncate(1350 * MIB)
+    subprocess.run(["mkfs.ext4", "-q", "-F", "-m", "0", image], check=True)
+    objects = root / "catalog/objects"
+    objects.parent.mkdir(mode=0o700)
+    objects.mkdir(mode=0o700)
+    subprocess.run(["mount", "-o", "loop", image, objects], check=True)
+    stack.callback(lambda: wait_for(lambda: subprocess.run(
+        ["umount", objects], capture_output=True).returncode == 0, timeout=10))
+    objects.chmod(0o700)
+    return objects
+
+
+def fill(objects, leave=0):
+    file = objects / "proof-filler"
+    with file.open("ab", buffering=0) as out:
+        stats = os.statvfs(objects)
+        free = stats.f_bavail * stats.f_frsize
+        if leave:
+            assert free > leave
+            os.posix_fallocate(out.fileno(), os.fstat(out.fileno()).st_size, free - leave)
+        else:
+            block = b"x" * stats.f_frsize
+            try:
+                for _ in range(free // len(block) + 1):
+                    out.write(block)
+            except OSError as error:
+                assert error.errno == errno.ENOSPC, error
+            else:
+                raise AssertionError("isolated object disk did not reach ENOSPC")
+        os.fsync(out.fileno())
+    return file
+
+
+def growth_fault_case(platform, objects):
+    product = Product(platform)
+    machine = product.machine("Volume fault recovery")
+    initial = product.volume("grow under real ENOSPC", 16 * MIB)
+    ident = initial["volume_id"]
+    product.attach(machine, initial, "fault-data")
+    first = product.start(machine)
+    disk = product.disks(first)[ident][0]
+    platform.guest(first, ["/bin/sh", "-ec",
+        'yes "scope verified volume" | head -c 16777216 | dd of="$1" bs=1M conv=notrunc,fsync status=none', "seed", disk])
+
+    def guest_hash(execution, path):
+        return platform.guest(execution, ["/bin/sh", "-ec",
+            'dd if="$1" bs=1M count=16 iflag=fullblock status=none | sha256sum', "hash", path]).split()[0].decode()
+
+    expected = guest_hash(first, disk)
+    product.stop(machine, first)
+    original = product.read_volume(ident)
+    head = original["head_resource_id"]
+    old_file = objects / head / "data"
+    old_inode = old_file.stat().st_ino
+    assert digest(old_file) == "sha256:" + expected
+    grow = dict(path=f"volumes/{ident}", method="PATCH", revision=original["revision"], body={"capacity_bytes": 32 * MIB})
+    catalog = f"file:{platform.root}/catalog/catalog.sqlite?mode=ro"
+
+    def row(sql, *params):
+        with sqlite3.connect(catalog, uri=True) as database:
+            return database.execute(sql, params).fetchone()
+
+    def clean_abort(op):
+        ident = op["operation_id"]
+        phase, saved = row("SELECT phase,result_json FROM operations JOIN product_volume_operations USING(operation_id) "
+                           "WHERE operation_id=?", ident)
+        assert phase == "ABORTED" and "no space" in json.loads(saved)["storage_not_applied"].lower(), (phase, saved)
+        assert not row("SELECT resource_id FROM managed_blocks WHERE operation_id=?", ident)
+        assert not (objects / (ident + "-head")).exists()
+
+    filler = fill(objects, leave=2 * MIB)
+    blocked = product.operation(**grow)
+    if blocked["state"] != "failed" or blocked["effect"] != "none":
+        ident = blocked["operation_id"]
+        mode = oct(old_file.stat().st_mode & 0o777)
+        pending = row("SELECT phase,result_json FROM operations JOIN product_volume_operations USING(operation_id) "
+                      "WHERE operation_id=?", ident)
+        seal = row("SELECT state FROM root_refs WHERE owner_kind='block_seal' AND owner_id=?", ident)
+        disk = os.statvfs(objects)
+        print(f"Failed growth metadata {pending}, seal {seal}, old mode {mode}, "
+              f"free bytes {disk.f_bavail * disk.f_frsize}, staging paths {[p.name for p in objects.glob('.block-*')]}.",
+              flush=True)
+    assert blocked["state"] == "failed" and blocked["effect"] == "none" and (
+        blocked["error"]["code"] == "VOLUME_STORAGE_NOT_APPLIED"), blocked
+    clean_abort(blocked)
+    assert product.read_volume(ident) == original
+    assert old_file.stat().st_mode & 0o777 == 0o600 and old_file.stat().st_ino == old_inode
+    assert digest(old_file) == "sha256:" + expected
+    fill(objects)
+    refused_create = product.failure("VOLUME_STORAGE_NOT_APPLIED", "volumes", {
+        "name": "unapplied head", "capacity_bytes": 4 * MIB, "runtime_instance_id": platform.serve_id,
+    })
+    clean_abort(refused_create)
+    assert len(platform.app("volumes")["items"]) == 1
+    filler.unlink()
+    reopened = product.start(machine)
+    assert guest_hash(reopened, product.disks(reopened)[ident][0]) == expected
+    product.stop(machine, reopened)
+    print(f"Actual ext4 ENOSPC aborted create and grow without a published head. "
+          f"The original inode {old_inode}, revision and 16 MiB data sha256:{expected} survived a cold boot.", flush=True)
+
+    selector = platform.root / "seal-fault"
+    selector.write_text(str(old_file))
+    interrupted = product.operation(**grow)
+    assert interrupted["state"] == "recovery_required" and interrupted["effect"] == "unknown", interrupted
+    assert selector.with_suffix(".observed").is_file()
+    key = interrupted["operation_id"]
+    assert old_file.stat().st_mode & 0o777 == 0o400
+    assert row("SELECT state FROM root_refs WHERE owner_kind='block_seal' AND owner_id=? AND resource_id=?", key, head) == ("active",)
+    prepared = objects / (key + "-head") / "data"
+    staged_inode = prepared.stat().st_ino
+    assert prepared.stat().st_size == 32 * MIB
+    with prepared.open("rb") as source:
+        assert hashlib.sha256(source.read(16 * MIB)).hexdigest() == expected
+    assert product.read_volume(ident)["state"] == "changing"
+    runtime_name = platform.app(machine)["runtime_name"]
+    assert platform.native(f"/machines/{runtime_name}/binding")["incarnation_id"] is None
+    rival = product.failure("CONFLICT", f"volumes/{ident}/snapshots", revision=original["revision"])
+    assert not row("SELECT operation_id FROM product_volume_operations WHERE operation_id=?", rival["operation_id"])
+    print(f"Scoped fsync EIO followed the original head's mode change to 0400. "
+          f"Rollback is fenced and the real replacement inode {staged_inode} is durable for reconciliation.", flush=True)
+
+    health = worker(platform.worker, "Health")
+    binary = platform.bundle / "smolvm-resourced"
+    restart_worker(platform, binary)
+    def replacement():
+        current = worker(platform.worker, "Health")
+        return current if current["broker_session_id"] != health["broker_session_id"] else None
+
+    current = wait_for(replacement, retry=(OSError, RuntimeError))
+    assert current["state"] == "recovering" and current["executable_sha256"] == digest(binary), current
+    selector.unlink()
+    ack = platform.app(f"operations/{key}/reconcile", "POST", {}, {
+        "If-Control-Epoch": platform.epoch, "Idempotency-Key": "repair-volume-seal",
+    })
+    settled = platform.complete(ack)
+    volume = settled["result"]["volume"]
+    assert volume["head_resource_id"] == key + "-head" and volume["revision"] == original["revision"] + 1
+    assert prepared.stat().st_ino == staged_inode and volume["capacity_bytes"] == 32 * MIB
+    assert row("SELECT state FROM root_refs WHERE owner_kind='block_seal' AND owner_id=? AND resource_id=?", key, head) == ("dropped",)
+    # An empty Worker has no live VMM to complete its boot recovery for it.
+    if worker(platform.worker, "Health")["state"] == "recovering":
+        assert worker(platform.worker, "CompleteRecovery", {"broker_session_id": current["broker_session_id"]})["state"] == "ready"
+    execution = product.start(machine)
+    new_disk = product.disks(execution)[ident][0]
+    assert guest_hash(execution, new_disk) == expected
+    assert platform.guest(execution, ["/usr/sbin/blockdev", "--getsize64", new_disk]) == b"33554432\n"
+    product.write(execution, new_disk, "active-after-reconcile")
+    assert product.read(execution, new_disk, len("active-after-reconcile")) == b"active-after-reconcile"
+    print("After Worker SIGKILL, public reconcile completed the original operation and reused the staged inode. "
+          "A fresh KVM read the original 16 MiB data and wrote to the 32 MiB successor.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(strict=True), required=True)
     parser.add_argument("--checkpoint-data-only", action="store_true",
                         help="omit projection assertions when measuring a historical installation")
-    parser.add_argument("--case", choices=("checkpoint", "lifecycle"), default="checkpoint")
+    parser.add_argument("--case", choices=("checkpoint", "detached-checkpoint", "deleted-checkpoint", "lifecycle", "growth-fault"),
+                        default="checkpoint")
+    parser.add_argument("--fsync-shim", type=lambda path: Path(path).resolve(strict=True),
+                        help="prebuilt shared library from tests/fixtures/volume-fsync-fault.c")
+    parser.add_argument("--verify-retired-head", action="store_true",
+                        help="check physical private-head deletion in the deleted-checkpoint case")
     args = parser.parse_args()
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
         parser.error("requires root, KVM, and systemd")
@@ -294,7 +514,15 @@ def main():
                        check=True, stdout=subprocess.DEVNULL)
         stack.callback(subprocess.run, ["systemctl", "stop", unit], check=False)
         os.environ["SMOLVM_WORKER_SLICE_NAME"] = unit
-        platform = Platform(args, root, stack)
+        if args.case == "growth-fault":
+            if args.fsync_shim is None:
+                args.fsync_shim = root / "volume-fsync-fault.so"
+                source = Path(__file__).resolve().parents[1] / "fixtures/volume-fsync-fault.c"
+                subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-o", args.fsync_shim, source, "-ldl"], check=True)
+            objects = isolate_objects(root, stack)
+            platform = FaultPlatform(args, root, stack)
+        else:
+            platform = Platform(args, root, stack)
         try:
             platform.start()
             manifest = json.loads((args.bundle / "runtime-bundle.json").read_text())
@@ -303,10 +531,14 @@ def main():
             assert worker(platform.worker, "Health")["executable_sha256"] == "sha256:" + expected
             print(f"Live Bundle {platform.bundle_id}, Worker sha256:{expected}, "
                   f"platformd {digest(args.platformd)}.", flush=True)
-            if args.case == "checkpoint":
-                checkpoint_case(platform, check_catalog=not args.checkpoint_data_only)
-            else:
+            if args.case.endswith("checkpoint"):
+                source_disposition = {"checkpoint": "running", "detached-checkpoint": "stopped", "deleted-checkpoint": "deleted"}[args.case]
+                checkpoint_case(platform, check_catalog=not args.checkpoint_data_only, source_disposition=source_disposition,
+                                verify_retired_head=args.verify_retired_head)
+            elif args.case == "lifecycle":
                 lifecycle_case(platform)
+            else:
+                growth_fault_case(platform, objects)
         except BaseException:
             for log in [root / "platform.log", root / "worker.log", root / "serve.log",
                         *(root / "state/managed").glob("*.log")]:

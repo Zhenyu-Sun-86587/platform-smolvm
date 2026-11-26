@@ -23,9 +23,9 @@
 | A07 | 冻结测量、开发实机，部分 | 冻结 OCI 从停驻点到旧 VMM 退出期间计数未推进。exact 恢复保留原 PID、紧接下一 tick 和原两个卷。开发实机核对 STOP_COMMIT 重启围栏、缺 chunk 及改盘拒绝。 `managed/oci-capture.log`、`.build/wp10/durable-statepoint.log` | 有活后代与无后代两组比较，关联外部 I/O、STOP 前回原态和 STOP 后仅退出，核对冗余 pin 释放、后代冷页及实际节省。 |
 | A08 | 冻结测量、开发实机，部分 | 真实控制器从 Running 进入 Standby，越过 guest 报告 TTL 后继续 Hibernate，后续按原执行点恢复。开发 managed Standby/Wake 以同一 execution epoch 得到 STANDBY 和 RUNNING 回执。 `managed/lifecycle.log`、`.build/network-gate-libs/platform-native-power-combined.log`、`smolvm/libkrun/tests/guest_gate/probe.py` | 当前候选的 raw 拒绝 strict clone、长待机原点、无新增 RAM 持久化及盘代际、时钟仅补偿一次的联合测量。 |
 | A09 | 冻结测量、开发实机，部分 | 同一真实切点恢复 RAM 和两个 writer。双盘 VMM 测试先确认两盘 flush，旧 FD 尚在时源保持 held，随后一起 pivot。 `managed/oci-capture.log`、`.build/block-kvm/live-pivot.log`、`.build/wp10/parked-block.log` | 随机截取应用多盘未完成事务的相位，覆盖合法不相等盘计数，验证跨 capture 的输入组合必拒。 |
-| A10 | 开发实机，部分 | 两个 Bundle 在同 Worker 竞争，第二个被拒绝运行中的 writer。真实 OFD 逃逸时对旧进程的 death fence 保持阻塞，三盘场景验证独立 writable heads。 `.build/wp23/tracked-coexistence-kvm.log`、`.build/block-kvm/evidence.log`、`.build/wp10/product-managed-kvm.log` | 同一代际的 RW/RO 与 RW/RW、硬链接/路径别名、可共享 immutable RO 和未知 writer 的交叉矩阵。 |
-| A11 | 冻结安装与开发实机，旧 checkpoint 对照通过 | 两个持久 RW 卷在保存点后各自写入新数据。同一保存点的公开 `exact` 恢复报告 `VOLUME_GENERATION_MISMATCH` 和 `effect=none`。`clone_conflicts` 返回两个不同的新卷 ID，恢复旧 RAM 与两盘旧字节，克隆后的写入不影响源。两台 VM 各以独立只读挂接共享同一已固定代际，平台重启后目录可查。克隆机休眠期间解挂被拒，精确唤醒保留已投影的卷 ID 和写入。[实际字节、卷映射与运行范围](#卷恢复与停机存储实测) | 含新卷目录投影的冻结安装复测。 |
-| A12 | 开发实机，公开停机卷流程通过 | Running 的挂接和解挂返回带围栏要求的 `PRECONDITION_FAILED`，增长返回 `CONFLICT`。公开 Stop 通过 pidfd 确认原 VMM 退出。停机增长在重启后显示 32 MiB 块盘、16 MiB 原 ext4 及原文件，Guest 单独扩到 32 MiB。另一持久卷解挂后挂接到新实例，原数据仍可读。既有实机另验证错误 consumer、插槽及过期 epoch。[实际容量和运行范围](#卷恢复与停机存储实测) | 其他盘角色组合、配备在线热插拔的 profile，以及 ENOSPC 和 fsync 故障注入。 |
+| A10 | 开发实机，部分 | 两个 Bundle 共用 Worker 时，第二路不能取得运行中的 writer。真实 OFD 逃逸阻止旧进程通过退出围栏，三盘场景验证独立 writable heads。隔离 ext4 ENOSPC 验证 Create/Grow 未发布新 head，原写卷随后可冷启。[实际字节与故障范围](#卷恢复与停机存储实测) `.build/wp23/tracked-coexistence-kvm.log`、`.build/block-kvm/evidence.log`、`.build/wp10/product-managed-kvm.log` | 同一代际的 RW/RO 与 RW/RW、硬链接/路径别名、可共享 immutable RO 和未知 writer 的交叉矩阵。 |
+| A11 | 冻结安装与开发实机，旧 checkpoint 对照通过 | 两个持久 RW 卷在保存点后各自写入新数据。原挂接释放并转挂至另一虚机，源实例删除且私有盘实际移除后，公开 `exact` 仍报告 `VOLUME_GENERATION_MISMATCH` 和 `effect=none`。`clone_conflicts` 返回两个不同的新卷 ID，恢复旧 RAM 与两盘旧字节。只读代际通过两个独立挂接共享。平台重启、克隆再休眠及精确唤醒后仍可查新卷并读到克隆写入。[实际字节、卷映射与运行范围](#卷恢复与停机存储实测) | 含新卷目录投影的冻结安装复测。 |
+| A12 | 开发实机，公开停机卷和存储故障通过 | Running 挂接、解挂与增长被拒。公开 Stop 确认原 VMM 退出，停机增长后 Guest 可独立从 16 MiB 文件系统扩到 32 MiB，解挂的持久卷可在另一实例读取。真实 ENOSPC 使 Create/Grow 无效果结束。旧盘进入只读阶段后的定点 fsync EIO 进入待恢复，Worker 重启后原操作完成，32 MiB 新盘保留原字节并可写。[容量、故障和运行范围](#卷恢复与停机存储实测) | 其他盘角色组合、在线热插拔 profile，及其他磁盘故障时序。 |
 | A13 | 开发实机、Rust 测试，部分 | Native 实测 Guest /32 与 Worker 路由。FixedInternal 实测稳定 Guest 内部 IP、独立 Worker 地址与 SSH。备份恢复拒绝重叠目标网段。Worker 测试核对 route domain IPAM 及旧 attachment fence。 `.build/managed-network-native-v2.log`、`.build/managed-network-platform-fixed-v3.log`、`.build/platform-networked-backup-native-v3.log`、`.build/wp23/close-workers-tests.log` | 同内部 IP 的多个 A 实例双向通信，跨私网 ACL、hairpin、MTU、实际 guest 冒用和未受管 IPv6 的组合。 |
 | A14 | 冻结测量、开发实机，部分 | 冻结 OCI 目标在激活前被终止，成功兄弟与 capture 保留。开发 TAP 在 park 和身份应用期间对 ICMP 沉默，失败身份保持隔离，父子保持独立；目标探针另检查早到 commit、错误 context 和后来一次 standby 上的旧 BEGIN。 `managed/oci-capture.log`、`.build/network-gate-libs/hostroute-kvm.log`、`smolvm/libkrun/tests/guest_gate/target_probe.py` | 各身份阶段的真实 Guest ACK 重放及断连，合并普通进程、容器、loopback 与外部 I/O 计数，验证每次坏 child 都未发布。 |
 | A15 | 冻结安装、开发实机、PoC，部分 | 冻结 `d8cc5d5` 从公开 Fork Batch 创建独立子机。捕获前源机的普通 Agent、提交后两机的普通 Agent 均返回 503。服务恢复后，原 System PID 787 与嵌套 PID 1 的计数从 4 分别推进到源 554、子 527。生产 freezer 的两次 helper SIGKILL 均在 1.26–1.28 s 恢复三个计数器，回执 `failed_thawed/EPIPE`。2 vCPU PoC 另覆盖取消、超时、D 态及未应答 FUSE。[PoC 记录](checkout.md#guest-用户态冻结实验)、`.build/gate-acceptance/helper-exit-kvm.log`、`.build/gate-acceptance/installed-agent-stopped-kvm.log` | 生产路径的 D 态、FUSE 和取消边界。 |
@@ -39,6 +39,12 @@
 
 公开 Stop 和离线拓扑试验使用 Stop 开发 Bundle `sha256:4677add0f57d315cf872b93962dd5b666a4360e0e5a4a2530cb9bf08a4fc3d8e`。增长回执的 `block_capacity_applied` 为真，`filesystem_resize_status` 为 `not_requested`。Guest 独立完成文件系统检查和扩容，旧标志文件可读。解挂的持久卷 `vol_e9b1382990eaf3ffca36864038b18b91` 重新挂接后读到 `portable-original-bytes`。
 
+删除后的复测使用开发 Bundle `sha256:84dcd2a3a8da011d87a053af10172bfefab5d5a8b3697551f1186754382ed9d4`。源私有 head `next-043a3ef2259ce52346679524416b63eb` 在 Worker 变为 `deleted` 且实际文件已移除。旧 checkpoint 依赖的 `head-b3e52b12c774547f06e61d6d38f5570c` 仍可用。已转挂至另一活虚机的原 RW 卷保持最新字节，旧点克隆读到保存时的 RAM 和双盘数据。原 RO 代际 `op_8a09a89883bfb81efaa637ea21a2364a-head` 由各自的新挂接引用。
+
+故障复测使用开发 Bundle `sha256:a7769afb760c334a9859235a7fccbcd747fc4a917a3817177e5a27239d3a01a6`。夹具通过隔离挂载中的稀疏 ext4 对象盘触发实际 ENOSPC。旧实现先封存旧 head，磁盘满时留下 Worker `NEW` 和暂存目录。新实现先物化并同步替换盘。Create/Grow 在暂存失败后均记录 `ABORTED`，公开返回 `VOLUME_STORAGE_NOT_APPLIED` 和 `effect=none`，保留原 inode 15、卷修订及 16 MiB 的 SHA-256 `acdfd1236350ce9f7b16f0a5c04cbb73606edbd268d60a3058c686f54e7eaa7a`。冷启动在 Guest 中读到相同摘要。
+
+在替换盘的 32 MiB 文件同步完成后，夹具只对选定旧 head 变为 `0400` 后的 fsync 注入 EIO。操作报告 `recovery_required` 和 `effect=unknown`，seal pin 继续有效，绑定保持停止，竞争快照被拒。Worker 经 SIGKILL 重启后，同一公开 operation 通过 reconcile 继续，保留新盘 inode 19，卷修订增加一次。所有 VMM 已停，夹具使用 Worker 的 `CompleteRecovery` 结束 broker 恢复。新 KVM 读回原 16 MiB 摘要，并确认后继盘实际可写。
+
 原始日志位于 `.build/release-d8cc5d5/`，夹具为 `tests/integration/volume_product_kvm.py`。
 
 | 原始记录 | SHA-256 |
@@ -46,6 +52,9 @@
 | `installed-volume-checkpoint-baseline.log` | `d4de05e26ac6ff7784b41127538e5492f96908fa5862557da90a90bdc034da5d` |
 | `managed-volume-checkpoint-fixed-kvm-v2.log` | `10c75bae97e2361def625dfcc05d9886bb0884e9cf05d30ee37b7ebfc4c5e6f3` |
 | `native-volume-lifecycle-kvm-v4.log` | `bdb5706900e17fc9004f62f12057a73827ef62d915d248305ad03b39edf986df` |
+| `managed-volume-deleted-checkpoint-kvm-v3.log` | `5201aa66e612916c0aee08af39cf8725daa8048230110d6f0d0ac6aeef4d4443` |
+| `managed-volume-growth-fault-kvm-v4.log` | `02886381fe5d1cf0e8de5c6af3bf244832c1fa380a6a2f32d9838398dd55adbe` |
+| `managed-volume-growth-fault-kvm-v8.log` | `9d6cabe34a019decf8d355b01e0a4b8d158792e32b22cb50f7cbfa58f4db4d56` |
 
 ## 兼容、运维、备份与性能
 
