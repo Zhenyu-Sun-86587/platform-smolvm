@@ -17,7 +17,7 @@ const tips = [
   { category: "Command line", title: "Manage machines from the CLI",
     description: "Use the CLI to create machines, list running guests, and inspect operations.", command: "sandboxctl machines list" },
   { category: "Connect", title: "SSH into a machine",
-    description: "Open a machine’s connection options to get the SSH configuration for your client.", command: "sandboxctl ssh-config MACHINE" },
+    description: "With an SSH service and your public key configured in the guest, connect from your terminal. For manual OpenSSH setup, open the machine’s connection options.", command: "sandboxctl ssh MACHINE" },
   { category: "Reusable images", title: "Create a reusable snapshot",
     description: "Capture a machine as a snapshot to preserve a restore point.", href: "#/snapshots" },
 ]

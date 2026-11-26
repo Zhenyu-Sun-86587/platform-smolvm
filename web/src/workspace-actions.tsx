@@ -120,6 +120,11 @@ export function forkBatchDialog(m: Machine, actions: Actions) {
     }, { revision: m.revision }),
   })
 }
+export function hasVerifiedSSHHostKey(machine: Machine) {
+  const evidence = machine.binding?.guest_management_evidence
+  return evidence?.ssh_ready === true && Boolean(evidence.ssh_host_key?.trim())
+}
+
 function SSHInfo({ machine }: { machine: Machine }) {
   const { items, error } = useCollection<Service>("machines/" + segment(machine.machine_id) + "/services", machine.revision)
   const [copied, setCopied] = useState(false),
@@ -127,19 +132,24 @@ function SSHInfo({ machine }: { machine: Machine }) {
   const service = items?.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
   const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
-  const commands = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
+  const direct = hasVerifiedSSHHostKey(machine)
+  const manual = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
+  const commands = direct ? "sandboxctl ssh " + machine.machine_id : fixtureScene === "30" ? cmd : manual
   return <section aria-label="SSH with sandboxctl">
     <div className={consoleStyles.connectionLabel}><h3>CLI</h3><span>Connect using OpenSSH</span></div>
     <Callout error={error || copyError} />
     {!items && !error ? <p role="status">Checking published services…</p> : service ? <>
       <div className={consoleStyles.commands}>
-        <pre>{fixtureScene === "30" ? "$ " + cmd : commands}</pre>
+        <pre>{fixtureScene === "30" ? "$ " + commands : commands}</pre>
         <Button size="sm" variant="outline" className={consoleStyles.copyCommand} aria-label={copied ? "SSH commands copied" : "Copy SSH commands"}
           onClick={() => navigator.clipboard.writeText(commands).then(() => setCopied(true)).catch(setError)}>
           {copied ? <><Check /> Copied</> : <><Copy /> Copy</>}
         </Button>
       </div>
-      {!fixtureScene && <p className={consoleStyles.sshHint}>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>}
+      {direct && <p className={consoleStyles.sshHint}>Use a public key authorized for your Guest SSH user.</p>}
+      {direct ? <details className={consoleStyles.sshHint}><summary>Manual OpenSSH setup</summary>
+        <p>Add the output of <code>{hostKey}</code> to <code>~/.ssh/sandbox_known_hosts</code> and the output of <code>{cmd}</code> to your SSH configuration. Then run <code>ssh sandbox-{machine.machine_id}</code>.</p>
+      </details> : !fixtureScene && <p className={consoleStyles.sshHint}>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>}
     </> : items ? <p className={consoleStyles.sshHint}><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
   </section>
 }
