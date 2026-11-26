@@ -60,7 +60,7 @@ ssh_dir=$root/etc/ssh/sandbox-managed
 ssh_unit=sandbox-managed-sshd.service
 ssh_sync=$root/usr/local/sbin/sandbox-system-ssh-sync
 
-for directory in "$commands" "$units" "$enabled" "$network"; do
+for directory in "$commands" "$units" "$enabled" "$network" "$root/workspace"; do
     check_guest_path "$directory"
 done
 for command in smolvm-agent taskd taskctl task-runner; do
@@ -82,6 +82,7 @@ if [ -x "$root/usr/sbin/sshd" ]; then
 fi
 
 install -d -m 0755 "$commands" "$enabled" "$network"
+mkdir -p -- "$root/workspace"
 for command in smolvm-agent taskd taskctl task-runner; do
     install -T -m 0755 "$bin/$command" "$commands/$command"
 done

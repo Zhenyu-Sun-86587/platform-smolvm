@@ -91,19 +91,23 @@ type Action struct {
 	CancelTasks        bool   `json:"cancel_tasks,omitempty"`
 }
 type Intent struct {
-	Native          *rt.NativeSubmission     `json:"native,omitempty"`
-	Retirement      *systemRetirement        `json:"retirement,omitempty"`
-	Launch          *rt.LaunchSubmission     `json:"launch,omitempty"`
-	Volume          *rt.VolumeMutation       `json:"volume,omitempty"`
-	Fork            *nativeForkIntent        `json:"fork,omitempty"`
-	StatePoint      *rt.StatePointSubmission `json:"statepoint,omitempty"`
-	Stage           string                   `json:"stage"`
-	Name            string                   `json:"runtime_name"`
-	Source          string                   `json:"source,omitempty"`
-	Target          string                   `json:"expected_state,omitempty"`
-	PauseID         string                   `json:"pause_id,omitempty"`
-	BindingID       string                   `json:"binding_id"`
-	WorkloadFailure *workloadStartFailure    `json:"workload_failure,omitempty"`
+	SourceTaskBinding *tasks.Binding           `json:"source_task_binding,omitempty"`
+	TaskCredentialID  string                   `json:"task_credential_id,omitempty"`
+	TaskAcceptedPower registry.PowerState      `json:"task_accepted_power,omitempty"`
+	TaskExecution     *rt.ExecutionRef         `json:"task_execution,omitempty"`
+	Retirement        *systemRetirement        `json:"retirement,omitempty"`
+	Native            *rt.NativeSubmission     `json:"native,omitempty"`
+	Launch            *rt.LaunchSubmission     `json:"launch,omitempty"`
+	Volume            *rt.VolumeMutation       `json:"volume,omitempty"`
+	Fork              *nativeForkIntent        `json:"fork,omitempty"`
+	StatePoint        *rt.StatePointSubmission `json:"statepoint,omitempty"`
+	Stage             string                   `json:"stage"`
+	Name              string                   `json:"runtime_name"`
+	Source            string                   `json:"source,omitempty"`
+	Target            string                   `json:"expected_state,omitempty"`
+	PauseID           string                   `json:"pause_id,omitempty"`
+	BindingID         string                   `json:"binding_id"`
+	WorkloadFailure   *workloadStartFailure    `json:"workload_failure,omitempty"`
 }
 
 type workloadStartFailure struct {
@@ -141,7 +145,16 @@ func (e *Engine) Call(ctx context.Context, b registry.Binding, req tasks.Request
 		req.Binding = GuestBinding(b)
 	}
 	return tasks.Call(ctx, func(ctx context.Context, argv []string, in []byte) ([]byte, error) {
-		res, err := adapter.Exec(ctx, b.RuntimeName, rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 30})
+		request := rt.ExecRequest{Command: argv, Stdin: string(in), TimeoutSeconds: 30}
+		var res rt.ExecResult
+		var err error
+		if bindingRuntime(b).Legacy() {
+			res, err = adapter.Exec(ctx, b.RuntimeName, request)
+		} else if control, ok := adapter.(rt.NativeGuestControl); ok {
+			res, err = control.GuestExec(ctx, b.ExecutionRef(), request)
+		} else {
+			return nil, rt.ErrUnsupported
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -327,7 +340,7 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		j.Binding.RuntimeInstanceID = route.RuntimeInstanceID
 		j.Binding.RuntimeBundleID = route.RuntimeBundleID
 	}
-	if op.State != registry.Queued {
+	if op.State != registry.Queued || len(op.Dispatch) > 0 && (op.Kind == "task_start" || op.Kind == "task_cancel") {
 		if err = json.Unmarshal(op.Dispatch, &j.Intent); err != nil {
 			return err
 		}
@@ -908,12 +921,33 @@ func (j *Job) checkHolds(ctx context.Context, action string) error {
 
 func SaveAdopted(ctx context.Context, tx *sql.Tx, b registry.Binding, ts []tasks.Task) error {
 	for _, t := range ts {
-		if t.Namespace != b.TaskNamespace || t.MachineID != b.MachineID {
+		if t.ID == "" || t.Namespace != b.TaskNamespace || t.MachineID != b.MachineID || t.Generation != b.Generation ||
+			(t.OriginMachineID == "") != (t.OriginTaskID == "") {
 			return errors.New("adopted task identity mismatch")
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,machine_id,binding_generation,task_namespace,guest_task_id,start_token,spec_hash,spec_json,state,exit_code,origin_machine_id,origin_task_id,observed_at,result_json) VALUES(?,?,?,?,?,?,'','{}',?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, t.ID, b.MachineID, b.Generation, t.Namespace, t.ID, "origin:"+t.ID, t.State, t.ExitCode, t.OriginMachineID, t.OriginTaskID, t.ObservedAt.UnixMilli(), string(JSON(t)))
+		token := "origin:" + t.ID
+		if t.OriginTaskID == "" {
+			token = "observed:" + t.ID
+		}
+		inserted, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,machine_id,binding_generation,task_namespace,guest_task_id,start_token,spec_hash,spec_json,state,exit_code,origin_machine_id,origin_task_id,observed_at,result_json)
+			VALUES(?,?,?,?,?,?,'','{}',?,?,NULLIF(?,''),NULLIF(?,''),?,?) ON CONFLICT(id) DO NOTHING`,
+			t.ID, b.MachineID, b.Generation, t.Namespace, t.ID, token, t.State, t.ExitCode, t.OriginMachineID, t.OriginTaskID, t.ObservedAt.UnixMilli(), string(JSON(t)))
 		if err != nil {
 			return err
+		}
+		if n, err := inserted.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			var same bool
+			err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id=? AND machine_id=? AND binding_generation=?
+				AND task_namespace=? AND COALESCE(origin_machine_id,'')=? AND COALESCE(origin_task_id,'')=?)`,
+				t.ID, b.MachineID, b.Generation, t.Namespace, t.OriginMachineID, t.OriginTaskID).Scan(&same)
+			if err != nil {
+				return err
+			}
+			if !same {
+				return registry.ErrGeneration
+			}
 		}
 	}
 	return nil

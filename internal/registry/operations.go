@@ -374,12 +374,22 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		op.RuntimeName = prior.CurrentBinding.RuntimeName
 	}
 
+	if route != (rt.BundleRoute{}) && oneOf(op.Kind, "task_start", "task_cancel") {
+		if r.CredentialID == "" || prior.CurrentBinding == nil {
+			return Operation{}, false, fmt.Errorf("%w: native task mutation requires a current binding and credential", ErrInvalid)
+		}
+		op.Dispatch, err = json.Marshal(map[string]string{"task_credential_id": r.CredentialID,
+			"task_accepted_power": string(prior.CurrentBinding.PowerState)})
+		if err != nil {
+			return Operation{}, false, err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO operations
 		(id, control_epoch, principal_id, machine_id, source_machine_id, binding_id, binding_generation, runtime_name,
-		kind, state, stage, request_json, effect, created_at, updated_at, heavy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, op.ID, op.ControlEpoch, op.PrincipalID, nullable(op.MachineID),
+		kind, state, stage, request_json, dispatch_json, effect, created_at, updated_at, heavy)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, op.ID, op.ControlEpoch, op.PrincipalID, nullable(op.MachineID),
 		nullable(op.SourceMachineID), nullable(op.BindingID), op.BindingGeneration, op.RuntimeName, op.Kind, op.State, op.Stage,
-		request, op.Effect, now.UnixMilli(), now.UnixMilli(), op.Heavy)
+		request, nullable(string(op.Dispatch)), op.Effect, now.UnixMilli(), now.UnixMilli(), op.Heavy)
 	if err != nil {
 		return Operation{}, false, err
 	}

@@ -3111,6 +3111,7 @@ components:
         boot_mode: {$ref: '#/components/schemas/BootMode'}
         live_compute_growth: {type: boolean}
         desktop_profile: {const: software-vnc-v1}
+        task_metadata_status: {type: string, enum: [complete, unavailable, stale]}
         network: {$ref: '#/components/schemas/MachineNetwork'}
         resources: {$ref: '#/components/schemas/ResourcePatch'}
         idle_policy: {$ref: '#/components/schemas/IdlePolicy'}

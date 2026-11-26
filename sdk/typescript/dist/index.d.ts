@@ -330,6 +330,7 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
     runtime_identity?: Record<string, unknown> | null;
     runtime_name?: string;
     guest_management_status?: string;
+    task_metadata_status?: "complete" | "unavailable" | "stale";
     state_reason?: unknown;
     binding?: {
         binding_id?: string;

@@ -35,6 +35,7 @@ type machineView struct {
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
 	Resources    json.RawMessage          `json:"resources,omitempty"`
 	GuestStatus  string                   `json:"guest_management_status"`
+	TaskMetadata string                   `json:"task_metadata_status,omitempty"`
 	Blocked      []string                 `json:"blocked_reasons"`
 	Capabilities map[string]rt.Capability `json:"capabilities"`
 }
@@ -115,6 +116,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		v.RuntimeName = m.CurrentBinding.RuntimeName
 		v.GuestStatus = m.CurrentBinding.GuestManagementStatus
 		if !official {
+			v.TaskMetadata = lifecycle.TaskMetadataStatus(*b)
 			for _, kind := range []string{rt.Standby, rt.Wake} {
 				v.Capabilities[rt.NativePowerCapability(kind)] = s.NativePowerCapability(*b, kind)
 			}
@@ -158,6 +160,16 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 	}
 	if m.ActiveOperationID != "" {
 		v.Blocked = append(v.Blocked, "operation_in_progress")
+	}
+	if !official && v.TaskMetadata != "" {
+		if v.TaskMetadata == "complete" && v.PowerState != registry.PowerRunning {
+			v.TaskMetadata = "stale"
+		}
+		if v.TaskMetadata == "complete" && v.Lifecycle != nil && v.Lifecycle.Supported {
+			v.Capabilities["persistent_task"] = rt.Capability{Status: "supported", Supported: true, ContractVersion: 1, VerifiedProfile: "taskd-v1"}
+		} else {
+			v.Capabilities["persistent_task"] = rt.Capability{Status: "unknown", ReasonCode: "TASK_METADATA_UNAVAILABLE", Message: "Current Guest Task Manager confirmation required"}
+		}
 	}
 	if official && v.GuestStatus != "ready" && m.ObservedState == "running" {
 		v.Blocked = append(v.Blocked, "guest_management_"+v.GuestStatus)

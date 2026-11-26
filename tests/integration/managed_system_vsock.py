@@ -323,6 +323,24 @@ def fork_case(platform, source, ref, probe, seen_cids):
     return completed["children"]
 
 
+def agent_unavailable(platform, execution):
+    try:
+        platform.native(f"/instances/{execution['instance_id']}/guest/ping", dict(expected=execution, request={}))
+    except RuntimeError as error:
+        _, status, body = error.args[0]
+        detail = json.loads(body)
+        assert status == 503 and detail.get("code") == "E_GUEST_MANAGEMENT_UNAVAILABLE", (status, detail)
+        return True
+    return False
+
+
+def stop_agent_for_capture(platform, ref):
+    for action, seconds in (("start", 60), ("stop", 1)):
+        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
+                             "--timer-property=AccuracySec=100ms", "/usr/bin/systemctl", action, "smolvm-agent.service"])
+    wait_for(lambda: agent_unavailable(platform, ref), timeout=15)
+
+
 def gate_without_agent(platform, source, ref, probe, seen_cids):
     script = "/var/tmp/gate-counter.sh"
     platform.guest(ref, ["/usr/bin/tee", script], r"""set -eu
@@ -349,22 +367,9 @@ done
         return (len(sample) == 2 and all(count > old for (_, count), old in zip(sample, previous))
                 and sample)
 
-    def agent_unavailable(execution):
-        try:
-            platform.native(f"/instances/{execution['instance_id']}/guest/ping", dict(expected=execution, request={}))
-        except RuntimeError as error:
-            _, status, body = error.args[0]
-            detail = json.loads(body)
-            assert status == 503 and detail.get("code") == "E_GUEST_MANAGEMENT_UNAVAILABLE", (status, detail)
-            return True
-        return False
-
     before = wait_for(lambda: advanced(ref, [2, 2]), retry=(RuntimeError, OSError))
     assert before[0][0] > 1 and before[1][0] == 1, before
-    for action, seconds in (("start", 60), ("stop", 1)):
-        platform.guest(ref, ["/usr/bin/systemd-run", "--unit=fixture-agent-" + action, f"--on-active={seconds}s",
-                             "--timer-property=AccuracySec=100ms", "/usr/bin/systemctl", action, "smolvm-agent.service"])
-    wait_for(lambda: agent_unavailable(ref), timeout=15)
+    stop_agent_for_capture(platform, ref)
     op = platform.complete(platform.change(source + "/fork-batches", "fork-with-agent-stopped", {
         "children": [{"name": "Agent stopped child"}], "require_independent": True,
     }, platform.app(source)))
@@ -373,13 +378,106 @@ done
     view, target = platform.context(child["machine_id"])
     assert view["power_state"] == "running" and target["incarnation_id"] != ref["incarnation_id"], view
     assert child["state"] == "ready" and child["resource_independence"] == "verified", child
-    assert agent_unavailable(ref) and agent_unavailable(target), "Agent restarted before the fork committed"
+    assert agent_unavailable(platform, ref) and agent_unavailable(platform, target), "Agent restarted before the fork committed"
     print("The ordinary Guest Agent was unavailable before capture and on both VMs after the independent fork committed.", flush=True)
     for label, execution in (("source", ref), ("child", target)):
         after = wait_for(lambda: advanced(execution, [n for _, n in before]), retry=(RuntimeError, OSError))
         assert [pid for pid, _ in after] == [pid for pid, _ in before], (before, after)
         print(f"{label}: same System and nested PID counters advanced from {before} to {after}.", flush=True)
     inherited_agent(platform, target, probe, seen_cids)
+
+
+def task_wake_case(platform, source, ref):
+    before = wait_for(lambda: (v if (v := platform.app(source)).get("task_metadata_status") == "complete" else None))
+    platform.complete(platform.change(source + "/hibernate", "before-task", {}, before))
+    for state in ("hibernated", "standby"):
+        saved = platform.app(source)
+        assert saved["power_state"] == state, saved
+        body = {"argv": ["/bin/sh", "-c", "echo ready; exec sleep 240"], "task_key": "task-from-" + state}
+        accepted = platform.change(source + "/tasks", "start-from-" + state, body, saved)
+        started = platform.complete(accepted)
+        assert platform.change(source + "/tasks", "start-from-" + state, body, saved)["operation_id"] == accepted["operation_id"]
+        machine, live = platform.context(saved["machine_id"])
+        assert machine["power_state"] == "running" and live["execution_epoch"] == ref["execution_epoch"] + 1, live
+        if state == "hibernated":
+            restored = live
+        else:
+            assert live == restored, (live, restored)
+        task = "tasks/" + started["result"]["task_id"]
+        wait_for(lambda: b"ready" in base64.b64decode(platform.app(task + "/output")["data_base64"]))
+        cancelled = platform.complete(platform.app(task + "/cancel", "POST", {"grace_seconds": 1}, {
+            "If-Control-Epoch": platform.epoch, "Idempotency-Key": "cancel-" + state,
+            "If-Match": f'"{machine["revision"]}"',
+        }, 202))
+        assert cancelled["result"]["state"] == "cancelled" and platform.app(task)["state"] == "cancelled", cancelled
+        if state == "hibernated":
+            platform.complete(platform.change(source + "/standby", "standby-for-task", {}, platform.app(source)))
+        print(f"A public task woke {state}, returned live output and was cancelled on confirmed epoch {live['execution_epoch']}.", flush=True)
+
+
+def native_task_case(platform, source, ref, case):
+    initial = wait_for(lambda: (v if (v := platform.app(source)).get("task_metadata_status") == "complete" else None))
+    source_id = initial["machine_id"]
+    command = """set -eu
+mkfifo /run/task-reply
+nonce=$(cat /proc/sys/kernel/random/uuid)
+printf '%s %s\\n' "$$" "$nonce" >/run/task-id
+read -r reply </run/task-reply
+printf '%s %s %s\\n' "$$" "$nonce" "$reply"
+"""
+    body = dict(argv=["/bin/sh", "-ec", command], task_key="original-task")
+    started = platform.complete(platform.change(source + "/tasks", "original-task", body, initial))
+    original_id = started["result"]["task_id"]
+    original = platform.app("tasks/" + original_id)
+    marker = wait_for(lambda: platform.guest(ref, ["/bin/cat", "/run/task-id"]).strip(), retry=(OSError, RuntimeError))
+    assert original["machine_id"] == source_id and original["state"] == "running", original
+    assert original["runner"]["pid"] > 1 and not original.get("origin_task_id"), original
+    if case == "task-restore":
+        saved = platform.complete(platform.change(source + "/snapshots", "task-checkpoint", {"capture_mode": "vm"}, platform.app(source)))
+        target = platform.complete(platform.change("restores", "restore-task", dict(snapshot_id=saved["result"]["snapshot_id"],
+            name="Restored task", volume_restore_policy="clone_conflicts")))
+        target_id = target["machine_id"]
+    else:
+        stop_agent_for_capture(platform, ref)
+        accepted_view = platform.app(source)
+        path = source + "/fork-batches"
+        body = dict(children=[dict(name="Live child"), dict(name="Over budget")], require_independent=True, admission="best_effort")
+        accepted = platform.change(path, "same-task-cut", body, accepted_view)
+        finished = platform.complete(accepted)
+        retained, refused = finished["children"]
+        assert finished["effect"] == "partial" and finished["source_lock_released"], finished
+        assert retained["state"] == "ready" and refused["error_code"] == "RESOURCE_LIMIT", finished
+        assert platform.change(path, "same-task-cut", body, accepted_view)["operation_id"] == accepted["operation_id"]
+        denied = platform.change("operations/" + finished["operation_id"] + "/cancel", "late-cancel", {}, status=409)
+        assert denied["error"]["code"] == "OPERATION_IN_PROGRESS", denied
+        after = platform.app("operations/" + finished["operation_id"])
+        assert after["result"]["capture_id"] == finished["result"]["capture_id"] and after["children"] == finished["children"]
+        target_id = retained["machine_id"]
+        _, child_ref = platform.context(target_id)
+        assert agent_unavailable(platform, child_ref)
+        assert platform.app("machines/" + target_id)["task_metadata_status"] == "unavailable"
+        assert platform.app("machines/" + target_id + "/tasks")["items"] == []
+    vm = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
+    with os.fdopen(os.pidfd_open(vm["pid"]), "rb", buffering=0) as original_vmm:
+        assert int(Path(f"/proc/{vm['pid']}/stat").read_text().rsplit(")", 1)[1].split()[19]) == vm["pid_start_time"]
+        signal.pidfd_send_signal(original_vmm.fileno(), signal.SIGKILL)
+        assert select.select([original_vmm], [], [], 10)[0]
+    platform.restart()
+    machine = "machines/" + target_id
+    _, child_ref = platform.context(target_id)
+    def adopted():
+        return next((t for t in platform.app(machine + "/tasks")["items"] if t.get("origin_task_id") == original_id), None)
+    child = wait_for(adopted)
+    assert child["machine_id"] == target_id and child["origin_machine_id"] == source_id and child["id"] != original_id, child
+    assert child["task_namespace"] != original["task_namespace"] and child["run_id"] == original["run_id"], child
+    assert platform.guest(child_ref, ["/bin/cat", "/run/task-id"]).strip() == marker
+    platform.guest(child_ref, ["/bin/sh", "-c", "echo child >/run/task-reply"])
+    task = "tasks/" + child["id"]
+    ended = wait_for(lambda: (v if (v := platform.app(task))["state"] == "succeeded" else None))
+    data = base64.b64decode(platform.app(task + "/output")["data_base64"]).strip()
+    assert ended["exit_code"] == 0 and data == marker + b" child", (ended, data)
+    print(f"{case}: after source VMM exit and platform restart, public task {child['id']} retained run {child['run_id']} "
+          f"and returned the original process identity {data.decode()}.", flush=True)
 
 
 def statepoint_case(platform, source, ref, probe, seen_cids):
@@ -1051,6 +1149,8 @@ def policy_case(platform, source, machine_id, execution):
 
 
 def test(args, root, stack, case):
+    if case == "task-adoption":
+        os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case else ()
     platform = Platform(args, root, stack, networks)
@@ -1073,6 +1173,12 @@ def test(args, root, stack, case):
              retry=(RuntimeError, OSError))
     if case in ("live-resources", "live-resources-hot"):
         live_resources_case(platform, source, ref, case == "live-resources-hot")
+        return
+    if case in ("task-adoption", "task-restore"):
+        native_task_case(platform, source, ref, case)
+        return
+    if case == "task-wake":
+        task_wake_case(platform, source, ref)
         return
     inventory = platform.native(f"/instances/{ref['instance_id']}/inventory")
     assert any(device["virtio_type"] == 19 and device.get("parked_vsock_rebind")
@@ -1124,7 +1230,7 @@ def main():
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
-                        "live-resources", "live-resources-hot", "gate-without-agent"), action="append")
+                        "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-restore", "task-wake"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))

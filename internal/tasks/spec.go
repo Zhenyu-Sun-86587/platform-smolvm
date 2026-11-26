@@ -22,7 +22,7 @@ func normalize(spec Spec) (Spec, error) {
 		}
 	}
 	if spec.Cwd == "" {
-		spec.Cwd = "/workspace"
+		spec.Cwd = DefaultWorkDir
 	}
 	if !filepath.IsAbs(spec.Cwd) || strings.ContainsRune(spec.Cwd, 0) {
 		return spec, errors.New("cwd must be an absolute Guest path")

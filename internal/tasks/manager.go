@@ -164,6 +164,13 @@ func (m *manager) handle(request Request) (Response, error) {
 	}
 	if request.Method == "hello" {
 		summary := Hello{Protocol: ProtocolVersion, BootID: m.boot, ManagerPID: os.Getpid(), Cgroup: m.probe == nil, Barrier: m.barrier}
+		transition, err := m.readTransition()
+		if err != nil {
+			return Response{}, err
+		}
+		if transition != nil {
+			summary.Transition = transition.OperationID
+		}
 		if m.probe != nil {
 			summary.Reason = m.probe.Error()
 		}
