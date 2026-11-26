@@ -27,7 +27,7 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact"}
+INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1622,6 +1622,11 @@ def test(args, root, stack, case):
     _, ref = platform.context(machine_id)
     wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
              retry=(RuntimeError, OSError))
+    if case in ("polish-files", "polish-capture"):
+        from polish_product import check_capture, check_files
+        check = check_files if case == "polish-files" else check_capture
+        check(platform, source, ref)
+        return
     if case in ("live-resources", "live-resources-hot"):
         live_resources_case(platform, source, ref, case == "live-resources-hot")
         return
@@ -1695,7 +1700,7 @@ def main():
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
-                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact"), action="append")
+                        "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
     parser.add_argument("--probe", type=lambda p: Path(p).resolve(), help="prebuilt tests/fixtures/vsock-probe.c")
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
