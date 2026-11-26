@@ -56,17 +56,21 @@ class Product:
             runtime_instance_id=self.platform.serve_id, start=False, resources={"cpu_count": 1, "memory_mib": 512}))
         return "machines/" + op["machine_id"]
 
-    def volume(self, name, size=8 * MIB):
-        return self.applied("volumes", dict(name=name, capacity_bytes=size,
-            runtime_instance_id=self.platform.serve_id))["result"]["volume"]
+    def volume(self, name, size=8 * MIB, *, lifecycle=None):
+        body = dict(name=name, capacity_bytes=size, runtime_instance_id=self.platform.serve_id)
+        if lifecycle is not None:
+            body["lifecycle"] = lifecycle
+        return self.applied("volumes", body)["result"]["volume"]
 
     def read_volume(self, vol):
         return self.platform.app("volumes/" + vol)
 
     def attach(self, machine, volume, key, **options):
-        return self.applied(machine + "/volume-attachments", dict(volume_id=volume["volume_id"],
+        op = self.applied(machine + "/volume-attachments", dict(volume_id=volume["volume_id"],
             expected_volume_revision=volume["revision"], device_key=key, **options),
-            machine=machine)["result"]["volume"]["attachments"][0]
+            machine=machine)
+        ident = "vatt_" + op["operation_id"].removeprefix("op_")
+        return next(item for item in op["result"]["volume"]["attachments"] if item["attachment_id"] == ident)
 
     def start(self, machine):
         self.applied(machine + "/start", machine=machine)
@@ -95,6 +99,10 @@ class Product:
         return {block["managed_attachment"]["volume_id"]: (f"/dev/vd{chr(ord('a') + i)}", block["managed_attachment"])
                 for i, block in enumerate(blocks)}
 
+    def head_collected(self, resource):
+        return worker(self.platform.worker, "QueryResource", {"resource_id": resource})["state"] == "deleted" and (
+            not (self.platform.root / "catalog/objects" / resource).exists())
+
     def write(self, ref, path, data):
         self.platform.guest(ref, ["/bin/sh", "-ec",
             'printf %s "$2" | dd of="$1" bs=512 seek=8 conv=notrunc,fsync status=none', "write", path, data])
@@ -108,8 +116,12 @@ def checkpoint_case(platform, *, check_catalog=True, source_disposition="running
     product = Product(platform)
     machine = product.machine("Checkpoint disks")
     ids, attachments = [], {}
+    private = None
     for name in ("left", "right"):
-        volume = product.volume(name)
+        machine_lifetime = platform.args.machine_volumes and name == "left" and source_disposition == "running"
+        volume = product.volume(name, lifecycle="machine" if machine_lifetime else None)
+        if machine_lifetime:
+            private = volume["volume_id"]
         ids.append(volume["volume_id"])
         attachments[volume["volume_id"]] = product.attach(machine, volume, name)
     archive = product.volume("read-only archive")
@@ -193,6 +205,7 @@ def checkpoint_case(platform, *, check_catalog=True, source_disposition="running
     for ident, old, current in zip(ids, first, later, strict=True):
         target, disk = clone_disks[mapping[ident]]
         assert disk["writable_head_id"] != advanced[ident][1]["writable_head_id"]
+        assert disk["generation_id"] == originals[ident][1]["writable_head_id"], disk
         assert product.read(restored, target, len(old)) == old.encode()
         assert product.read(current_ref, advanced[ident][0], len(current)) == current.encode()
         product.write(restored, target, "clone-only")
@@ -204,10 +217,14 @@ def checkpoint_case(platform, *, check_catalog=True, source_disposition="running
         projected = platform.app(clone + "/volume-attachments")["items"]
         expected = {mapping[ident] for ident in ids} | {archive_id}
         assert {item["volume_id"] for item in projected} == expected, projected
+        assert {item["volume_id"]: item["attachment_id"] for item in projected} == (
+            receipt["statepoint"]["product_attachments"]), (projected, receipt)
         for ident in ids:
             public = product.read_volume(mapping[ident])
             assert public["head_resource_id"] == clone_disks[mapping[ident]][1]["writable_head_id"], public
             assert len(public["attachments"]) == 1 and public["attachments"][0]["state"] == "attached", public
+            if ident == private:
+                assert public["lifecycle"] == "machine" and public["machine_instance_id"] == restored["instance_id"], public
         shared = product.read_volume(archive_id)["attachments"]
         assert len(shared) == 2 and all(item["state"] == "attached" and item["generation_id"] == archived["generation_id"]
                                         and item["mode"] == "ro" for item in shared), shared
@@ -217,10 +234,15 @@ def checkpoint_case(platform, *, check_catalog=True, source_disposition="running
               flush=True)
         product.applied(clone + "/hibernate", machine=clone)
         assert platform.app(clone)["power_state"] == "hibernated"
+        hibernated_refusals = []
         for item in projected:
             volume = product.read_volume(item["volume_id"])
-            product.failure("VOLUME_TOPOLOGY_UNAVAILABLE", "volume-attachments/" + item["attachment_id"],
-                            dict(expected_volume_revision=volume["revision"]), machine=clone, method="DELETE")
+            failure = product.failure("VOLUME_TOPOLOGY_UNAVAILABLE", "volume-attachments/" + item["attachment_id"],
+                                      dict(expected_volume_revision=volume["revision"]), machine=clone, method="DELETE")
+            if platform.args.machine_volumes:
+                assert failure["error"]["reason_code"] == "REQUIRES_STOPPED", failure
+            hibernated_refusals.append(failure["error"])
+        print(json.dumps({"hibernated_topology_refusals": hibernated_refusals}, sort_keys=True), flush=True)
         resumed = product.start(clone)
         assert resumed["execution_epoch"] == restored["execution_epoch"] + 1
         disks = product.disks(resumed)
@@ -235,18 +257,35 @@ def lifecycle_case(platform):
     machine = product.machine("Volume lifecycle source")
     filesystem, data, spare = (product.volume(name, 16 * MIB) for name in ("filesystem", "portable data", "spare"))
     fsid, vid, spareid = (volume["volume_id"] for volume in (filesystem, data, spare))
+    ephemeral = product.volume("legacy ephemeral data", lifecycle="ephemeral")
+    archive = product.volume("immutable archive")
+    ephemeral_id, archive_id = (volume["volume_id"] for volume in (ephemeral, archive))
     product.attach(machine, filesystem, "filesystem")
     attachment = product.attach(machine, data, "portable")
+    product.attach(machine, ephemeral, "ephemeral")
+    archive_writer = product.attach(machine, archive, "archive")
+    private = None
+    if platform.args.machine_volumes:
+        private = product.volume("instance-owned writable data", lifecycle="machine")
+        assert private["lifecycle"] == "machine" and "machine_instance_id" not in private
+        private_id = private["volume_id"]
+        private_lease = product.attach(machine, private, "private")
+        assert product.read_volume(private_id)["machine_instance_id"] == private_lease["instance_id"]
     first = product.start(machine)
     disks = product.disks(first)
     fs, raw = (disks[ident][0] for ident in (fsid, vid))
     marker = b"fixture-volume-file"
     raw_marker = "portable-original-bytes"
+    ephemeral_marker, archive_marker = "legacy-ephemeral-bytes", "sealed-archive-bytes"
     platform.guest(first, ["/usr/sbin/mke2fs", "-q", "-F", "-t", "ext4", fs])
     platform.guest(first, ["/bin/sh", "-ec",
         'mkdir -p /mnt/volume-proof; mount "$1" /mnt/volume-proof; printf %s "$2" >/mnt/volume-proof/proof; sync; umount /mnt/volume-proof',
         "filesystem", fs, marker.decode()])
     product.write(first, raw, raw_marker)
+    product.write(first, disks[ephemeral_id][0], ephemeral_marker)
+    product.write(first, disks[archive_id][0], archive_marker)
+    if private is not None:
+        product.write(first, disks[private_id][0], "machine-private-bytes")
 
     def block_size(ref, disk):
         return int(platform.guest(ref, ["/usr/sbin/blockdev", "--getsize64", disk]))
@@ -265,53 +304,366 @@ def lifecycle_case(platform):
         return dict(path="volumes/" + fsid, body=dict(capacity_bytes=32 * MIB),
                     revision=ref_volume["revision"], method="PATCH")
 
-    def detach(volume):
-        return dict(path="volume-attachments/" + attachment["attachment_id"],
+    def detach(volume, lease):
+        return dict(path="volume-attachments/" + lease["attachment_id"],
                     body=dict(expected_volume_revision=volume["revision"]), machine=machine, method="DELETE")
+
+    def check_readonly(ref, device, text=archive_marker):
+        assert platform.guest(ref, ["/usr/sbin/blockdev", "--getro", device]) == b"1\n"
+        assert product.read(ref, device, len(text)) == text.encode()
 
     before_fs = filesystem_size(first, fs)
     assert block_size(first, fs) == 16 * MIB and file(first, fs) == marker
-    product.failure("CONFLICT", **grow(product.read_volume(fsid)))
-    product.failure("PRECONDITION_FAILED", **detach(product.read_volume(vid)))
-    product.failure("PRECONDITION_FAILED", machine + "/volume-attachments",
+    live_grow = product.failure("CONFLICT", **grow(product.read_volume(fsid)))
+    live_detach = product.failure("PRECONDITION_FAILED", **detach(product.read_volume(vid), attachment))
+    live_attach = product.failure("PRECONDITION_FAILED", machine + "/volume-attachments",
                     dict(volume_id=spareid, expected_volume_revision=spare["revision"], device_key="spare", mode="rw"),
                     machine=machine)
+    failures = {name: op["error"] for name, op in (("grow", live_grow), ("detach", live_detach), ("attach", live_attach))}
+    if platform.args.machine_volumes:
+        assert all(error["reason_code"] == "REQUIRES_STOPPED" for error in failures.values()), failures
+    capabilities = platform.app(machine)["capabilities"]
+    assert not any(capabilities.get(name, {}).get("supported") for name in
+                   ("storage.block_hotplug", "storage.block_hotunplug"))
     assert block_size(first, fs) == 16 * MIB and filesystem_size(first, fs) == before_fs
     assert product.read(first, raw, len(raw_marker)) == raw_marker.encode()
     assert set(product.disks(first)) == set(disks)
-    print("Live attachment changes required a fenced stopped execution; live growth returned CONFLICT. "
-          "The Guest devices, capacity and bytes stayed intact.", flush=True)
+    print(json.dumps({"live_volume_preconditions": failures, "guest_devices_unchanged": sorted(disks)}, sort_keys=True),
+          flush=True)
 
     product.stop(machine, first)
     assert all(item["state"] == "reserved" for item in platform.app(machine + "/volume-attachments")["items"])
     grown = product.applied(**grow(product.read_volume(fsid)))["result"]
     assert grown["block_capacity_applied"] and grown["filesystem_resize_status"] == "not_requested", grown
     assert grown["volume"]["capacity_bytes"] == 32 * MIB, grown
-    product.applied(**detach(product.read_volume(vid)))
-    assert {item["volume_id"] for item in platform.app(machine + "/volume-attachments")["items"]} == {fsid}
+    product.applied(**detach(product.read_volume(vid), attachment))
+    product.applied(**detach(product.read_volume(archive_id), archive_writer))
+    archive = product.read_volume(archive_id)
+    archive = product.applied(f"volumes/{archive_id}/snapshots", revision=archive["revision"])["result"]["volume"]
+    archived, = archive["snapshots"]
+    readonly = product.attach(machine, archive, "archive", mode="ro", snapshot_id=archived["snapshot_id"])
+    wanted = {fsid, ephemeral_id, archive_id}
+    if private is not None:
+        owned = product.read_volume(private_id)
+        private_archive = product.applied(f"volumes/{private_id}/snapshots",
+                                          revision=owned["revision"])["result"]["volume"]
+        private_snapshot, = private_archive["snapshots"]
+        wanted.add(private_id)
+    assert {item["volume_id"] for item in platform.app(machine + "/volume-attachments")["items"]} == wanted
     assert product.read_volume(vid)["attachments"] == []
     assert product.read_volume(vid)["lifecycle"] == "persistent"
 
     second = product.start(machine)
     assert second["execution_epoch"] == first["execution_epoch"] + 1
     devices = product.disks(second)
-    assert fsid in devices and vid not in devices and len(devices) == len(disks) - 1, devices
+    root_volume, = set(disks) - wanted - {vid}
+    assert set(devices) == wanted | {root_volume}, devices
     fs = devices[fsid][0]
     assert block_size(second, fs) == 32 * MIB
     assert filesystem_size(second, fs) == before_fs and file(second, fs) == marker
     platform.guest(second, ["/bin/sh", "-c",
         '/usr/sbin/e2fsck -fp "$1"; test "$?" -le 1', "check-before-growth", fs])
+    platform.guest(second, ["/usr/sbin/blockdev", "--setro", fs])
+    platform.guest(second, ["/bin/sh", "-ec",
+        'if /usr/sbin/resize2fs "$1"; then exit 1; fi', "expected-filesystem-failure", fs])
+    assert block_size(second, fs) == 32 * MIB and filesystem_size(second, fs) == before_fs
+    assert product.read_volume(fsid)["capacity_bytes"] == 32 * MIB
+    platform.guest(second, ["/usr/sbin/blockdev", "--setrw", fs])
     platform.guest(second, ["/usr/sbin/resize2fs", fs])
     assert filesystem_size(second, fs) == 32 * MIB and file(second, fs) == marker
+    assert product.read(second, devices[ephemeral_id][0], len(ephemeral_marker)) == ephemeral_marker.encode()
+    check_readonly(second, devices[archive_id][0])
+    assert devices[archive_id][1]["generation_id"] == archived["generation_id"]
+    refused_readonly = product.failure("PRECONDITION_FAILED", **detach(product.read_volume(archive_id), readonly))
+    if platform.args.machine_volumes:
+        assert refused_readonly["error"]["reason_code"] == "REQUIRES_STOPPED", refused_readonly
+    if private is not None:
+        assert product.read(second, devices[private_id][0], len("machine-private-bytes")) == b"machine-private-bytes"
 
     target = product.machine("Volume lifecycle destination")
     product.attach(target, product.read_volume(vid), "imported-data")
+    product.attach(target, product.read_volume(archive_id), "shared-archive",
+                   mode="ro", snapshot_id=archived["snapshot_id"])
+    if private is not None:
+        target_lease = product.attach(target, product.read_volume(private_id), "machine-ro",
+            mode="ro", snapshot_id=private_snapshot["snapshot_id"])
+        assert product.read_volume(private_id)["machine_instance_id"] == first["instance_id"]
     moved = product.start(target)
-    target_disk = product.disks(moved)[vid][0]
-    assert product.read(moved, target_disk, len(raw_marker)) == raw_marker.encode()
+    destination = product.disks(moved)
+    assert product.read(moved, destination[vid][0], len(raw_marker)) == raw_marker.encode()
+    check_readonly(moved, destination[archive_id][0])
+    assert destination[archive_id][1]["generation_id"] == archived["generation_id"]
+    shared = product.read_volume(archive_id)["attachments"]
+    assert len(shared) == 2 and all(lease["state"] == "attached" and lease["mode"] == "ro" for lease in shared)
+
+    product.stop(machine, second)
+    # A detached machine volume remains owned and retirement must still reclaim it.
+    if private is not None:
+        product.applied(**detach(product.read_volume(private_id), private_lease))
+        other = product.machine("Retained snapshot reader")
+        current = product.read_volume(private_id)
+        assert current["machine_instance_id"] == first["instance_id"]
+        other_lease = product.attach(other, current, "retained-machine-ro",
+            mode="ro", snapshot_id=private_snapshot["snapshot_id"])
+    product.applied(machine, machine=machine, method="DELETE")
+    assert product.read_volume(fsid)["attachments"] == []
+    detached_ephemeral = product.read_volume(ephemeral_id)
+    assert detached_ephemeral["lifecycle"] == "ephemeral" and detached_ephemeral["attachments"] == []
+    root_head = devices[root_volume][1]["writable_head_id"]
+
+    wait_for(lambda: product.head_collected(root_head))
+    check_readonly(moved, destination[archive_id][0])
+    if private is not None:
+        private_head = devices[private_id][1]["writable_head_id"]
+        wait_for(lambda: product.head_collected(private_head))
+        assert private_id not in {item["volume_id"] for item in platform.app("volumes")["items"]}
+        platform.app("volumes/" + private_id, status=404)
+        print(f"Machine volume {private_id} kept its owner after detach and physically collected head {private_head} "
+              "with the source. Public Volume list and read no longer expose it.", flush=True)
+        assert destination[private_id][1]["generation_id"] == private_snapshot["generation_id"]
+        check_readonly(moved, destination[private_id][0], "machine-private-bytes")
+        other_ref = product.start(other)
+        device, binding = product.disks(other_ref)[private_id]
+        assert binding["generation_id"] == private_snapshot["generation_id"]
+        check_readonly(other_ref, device, "machine-private-bytes")
+        public_snapshot = platform.app("volume-snapshots/" + private_snapshot["snapshot_id"])
+        product.stop(target, moved)
+        detached = product.applied("volume-attachments/" + target_lease["attachment_id"],
+                                 {"expected_volume_revision": public_snapshot["volume_revision"]},
+                                 machine=target, method="DELETE")["result"]["volume"]
+        assert detached["state"] == "deleted" and detached["machine_instance_id"] == first["instance_id"]
+        assert {lease["attachment_id"] for lease in detached["attachments"]} == {other_lease["attachment_id"]}
+        check_readonly(other_ref, device, "machine-private-bytes")
+        assert (platform.root / "catalog/objects" / private_snapshot["generation_id"] / "data").is_file()
+        print(f"Two independent RO consumers used {private_snapshot['generation_id']} after owner deletion. "
+              "The second cold-booted from the retired volume's immutable snapshot and kept reading after the first detached.",
+              flush=True)
     print(f"Public Stop, grow and detach moved persistent {vid} to a different KVM with its exact bytes. "
-          f"{fsid} booted with a 32 MiB block device, a {before_fs}-byte filesystem and its original file. "
-          "The Guest then expanded ext4 to 32 MiB.", flush=True)
+          f"{fsid} booted with a 32 MiB block device and a {before_fs}-byte filesystem. "
+          "A read-only Guest filesystem resize failed, leaving the exposed block size intact. "
+          "The Guest then expanded ext4 to 32 MiB and read the original file. "
+          f"Legacy ephemeral {ephemeral_id} survived Delete. Private root {root_head} was collected. "
+          f"The immutable archive {archived['generation_id']} remained readable in the other KVM.", flush=True)
+
+
+def machine_fork_case(platform):
+    product = Product(platform)
+    parent = product.machine("Machine-owned Fork parent")
+    private = product.volume("Private Fork data", lifecycle="machine")
+    persistent = product.volume("Persistent Fork data")
+    archive = product.volume("Fork archive")
+    product.attach(parent, private, "fork-data")
+    product.attach(parent, persistent, "fork-persistent")
+    archive_writer = product.attach(parent, archive, "fork-archive")
+    archive_id = archive["volume_id"]
+    first = product.start(parent)
+    archive_mark = "fork-immutable-data"
+    product.write(first, product.disks(first)[archive_id][0], archive_mark)
+    product.stop(parent, first)
+    archive = product.read_volume(archive_id)
+    product.applied("volume-attachments/" + archive_writer["attachment_id"],
+                    {"expected_volume_revision": archive["revision"]}, machine=parent, method="DELETE")
+    archive = product.read_volume(archive_id)
+    archive = product.applied(f"volumes/{archive_id}/snapshots", revision=archive["revision"])["result"]["volume"]
+    snapshot, = archive["snapshots"]
+    product.attach(parent, archive, "fork-archive", mode="ro", snapshot_id=snapshot["snapshot_id"])
+    source = product.start(parent)
+    sources = product.disks(source)
+    originals = {"fork-data": private["volume_id"], "fork-persistent": persistent["volume_id"]}
+    for key, volume_id in originals.items():
+        product.write(source, sources[volume_id][0], f"captured-{key}")
+    platform.guest(source, ["/bin/sh", "-ec",
+        "printf inherited >/run/a12-fork-marker; printf captured-root >/etc/a12-fork-root; sync"])
+    platform.wait_capability(parent, "state.independent_fork")
+
+    fork = product.applied(parent + "/forks", dict(child_name="Independent machine volume", require_independent=True),
+                           machine=parent)
+    child = "machines/" + fork["result"]["child_machine_id"]
+    child_receipt, = fork["children"]
+    assert child_receipt["resource_independence"] == "verified", child_receipt
+    target = product.execution(child)
+    leases = {item["device_key"]: item for item in platform.app(child + "/volume-attachments")["items"]}
+    assert set(leases) == set(originals) | {"fork-archive"}
+    assert all(lease["state"] == "attached" for lease in leases.values())
+    destinations = product.disks(target)
+    before, after = {}, {}
+    for key, volume_id in originals.items():
+        child_volume = leases[key]["volume_id"]
+        assert child_volume != volume_id and leases[key]["mode"] == "rw"
+        original, cloned = product.read_volume(volume_id), product.read_volume(child_volume)
+        before[key], after[key] = original, cloned
+        assert original["lifecycle"] == cloned["lifecycle"]
+        if key == "fork-data":
+            assert original["machine_instance_id"] == source["instance_id"]
+            assert cloned["machine_instance_id"] == target["instance_id"]
+        assert original["head_resource_id"] != cloned["head_resource_id"]
+        target_disk, actual = destinations[child_volume]
+        assert actual["writable_head_id"] == cloned["head_resource_id"]
+        captured = f"captured-{key}"
+        assert product.read(target, target_disk, len(captured)) == captured.encode()
+        source_disk = sources[volume_id][0]
+        product.write(source, source_disk, "parent-next")
+        product.write(target, target_disk, "child-next")
+        assert product.read(source, source_disk, 11) == b"parent-next"
+        assert product.read(target, target_disk, 10) == b"child-next"
+    assert platform.guest(target, ["/bin/cat", "/run/a12-fork-marker"]) == b"inherited"
+    root_volume, = set(destinations) - {item["volume_id"] for item in leases.values()}
+    root_head = destinations[root_volume][1]["writable_head_id"]
+    platform.guest(target, ["/bin/sh", "-ec", "printf child-root >/etc/a12-fork-root; sync"])
+    archive_disk, archive_binding = destinations[archive_id]
+    assert leases["fork-archive"]["mode"] == "ro" and leases["fork-archive"]["volume_id"] == archive_id
+    assert leases["fork-archive"]["generation_id"] == archive_binding["generation_id"] == snapshot["generation_id"]
+    assert len(product.read_volume(archive_id)["attachments"]) == 2
+    assert platform.guest(target, ["/usr/sbin/blockdev", "--getro", archive_disk]) == b"1\n"
+    assert product.read(target, archive_disk, len(archive_mark)) == archive_mark.encode()
+
+    product.stop(parent, source)
+    product.applied(parent, machine=parent, method="DELETE")
+    source_private = before["fork-data"]
+    child_private = after["fork-data"]
+    wait_for(lambda: product.head_collected(source_private["head_resource_id"]))
+    platform.app("volumes/" + source_private["volume_id"], status=404)
+    assert product.read_volume(before["fork-persistent"]["volume_id"])["attachments"] == []
+    assert product.read(target, archive_disk, len(archive_mark)) == archive_mark.encode()
+    restarted, epochs = target, []
+    for _ in range(2):
+        product.stop(child, restarted)
+        prior = restarted["execution_epoch"]
+        restarted = product.start(child)
+        assert restarted["execution_epoch"] == prior + 1
+        epochs.append(restarted["execution_epoch"])
+        actual_disks = product.disks(restarted)
+        assert actual_disks[root_volume][1]["writable_head_id"] == root_head
+        assert platform.guest(restarted, ["/bin/cat", "/etc/a12-fork-root"]) == b"child-root"
+        for cloned in after.values():
+            disk, restarted_binding = actual_disks[cloned["volume_id"]]
+            assert restarted_binding["writable_head_id"] == cloned["head_resource_id"]
+            assert product.read(restarted, disk, 10) == b"child-next"
+        assert product.read_volume(child_private["volume_id"])["machine_instance_id"] == restarted["instance_id"]
+        assert product.read(restarted, actual_disks[archive_id][0], len(archive_mark)) == archive_mark.encode()
+    product.stop(child, restarted)
+    product.applied(child, machine=child, method="DELETE")
+    wait_for(lambda: product.head_collected(child_private["head_resource_id"]))
+    platform.app("volumes/" + child_private["volume_id"], status=404)
+    for saved in (before["fork-persistent"], after["fork-persistent"]):
+        actual = product.read_volume(saved["volume_id"])
+        assert actual["state"] == "available" and actual["head_resource_id"] == saved["head_resource_id"]
+        assert not actual["attachments"]
+    archive = product.read_volume(archive_id)
+    assert archive["snapshots"] == [snapshot] and not archive["attachments"]
+    print(json.dumps({"case": "machine-fork", "capture_id": fork["result"]["capture_id"],
+                      "parent_volumes": {key: item["volume_id"] for key, item in before.items()},
+                      "child_volumes": {key: item["volume_id"] for key, item in after.items()},
+                      "parent_collected": source_private["head_resource_id"],
+                      "child_collected": child_private["head_resource_id"], "child_restarted_epochs": epochs,
+                      "child_root_head": root_head,
+                      "shared_immutable": snapshot["generation_id"]},
+                     sort_keys=True), flush=True)
+
+
+def native_roles_case(platform):
+    product = Product(platform)
+
+    def request_digest(key):
+        return "sha256:" + hashlib.sha256(key.encode()).hexdigest()
+
+    def native_operation(key, kind, execution, parameters):
+        expected = {field: execution[field] for field in ("instance_id", "incarnation_id", "execution_epoch")}
+        accepted = platform.native("/operations", dict(operation_id=key, kind=kind, expected=expected,
+                                                         request_digest=request_digest(key), parameters=parameters))
+        assert accepted["phase"] == "NEW", accepted
+        receipt = wait_for(lambda: row if (row := platform.native(f"/operations/{key}"))["phase"] != "NEW" else None,
+                           timeout=150)
+        assert receipt["phase"] == "COMPLETED", receipt
+        return receipt
+
+    base = "fixture-all-role-base"
+    path = platform.root / "role-data.raw"
+    marker = "immutable-data-device"
+    with path.open("wb") as image:
+        image.truncate(MIB)
+        image.seek(4096)
+        image.write(marker.encode())
+    scope = dict(route_id="deep", bundle_digest=platform.bundle_id, operation_id="import-role-data",
+                 request_digest=digest(path), expected=dict(instance_id="role-template", incarnation_id=None, execution_epoch=0))
+    worker(platform.worker, "BeginOperation", {"kind": "catalog"}, **scope)
+    with path.open("rb") as image:
+        worker(platform.worker, "ImportImmutableBlock",
+               dict(resource_id=base, capacity_bytes=MIB, content_sha256=scope["request_digest"]), fd=image.fileno(), **scope)
+    worker(platform.worker, "FinishOperation", {"abort": False, "expected_revision": 1}, **scope)
+
+    name = "all-block-roles"
+    roles = ("root", "storage", "overlay", "cache", "data")
+    expected = platform.native(f"/machines/{name}/binding")
+    disks = [dict(attachment_id=f"fixture-{role}", device_id=role, role=role, read_only=role == "data",
+                  generation_id="fixture-system-root" if role == "root" else base) for role in roles]
+    ref = native_operation("launch-all-roles", "launch", expected, dict(
+        name=name, boot_profile="system-debian-v1", cpus=1, memory_mib=512, disks=disks, init="/sbin/init"))["execution"]
+    wait_for(lambda: platform.guest(ref, ["/bin/cat", "/proc/1/comm"]) == b"systemd\n",
+             retry=(RuntimeError, OSError))
+
+    def inventory_by_role(execution):
+        disks = product.disks(execution)
+        by_role = {attachment["role"]: (device, attachment) for device, attachment in disks.values()}
+        assert set(by_role) == set(roles) and len(disks) == len(roles), by_role
+        return by_role
+
+    observed = inventory_by_role(ref)
+    original_ids = {}
+    for role, (device, attachment) in observed.items():
+        assert attachment["device_id"] == role and attachment["attachment_id"] == f"fixture-{role}"
+        assert platform.guest(ref, ["/usr/sbin/blockdev", "--getro", device]) == (b"1\n" if role == "data" else b"0\n")
+        original_ids[role] = attachment["writable_head_id"] or attachment["generation_id"]
+        if role not in ("root", "data"):
+            product.write(ref, device, f"original-{role}")
+    platform.guest(ref, ["/bin/sh", "-ec", "printf original-root >/etc/a12-volume-root; sync; printf captured-ram >/run/a12-volume-ram"])
+    assert product.read(ref, observed["data"][0], len(marker)) == marker.encode()
+
+    saved = native_operation("snapshot-all-roles", "vm_snapshot", ref, {})["statepoint"]
+    assert saved["phase"] == "durable", saved
+    point = worker(platform.worker, "QueryStatePoint", {"capture_id": saved["capture_id"]},
+                   route_id="deep", bundle_digest=platform.bundle_id, operation_id="snapshot-all-roles",
+                   request_digest=request_digest("snapshot-all-roles"), expected=ref)["point"]
+    captured = {item["block"]["managed_attachment"]["role"]: item["block"]["managed_attachment"]
+                for item in point["devices"] if item.get("block")}
+    assert set(captured) == set(roles)
+    assert all(original_ids[role] in point["disk_generations"] for role in roles), point["disk_generations"]
+
+    # Move each writable role forward on the live source before restoring.
+    platform.guest(ref, ["/bin/sh", "-ec", "printf later-root >/etc/a12-volume-root; sync; printf latest-ram >/run/a12-volume-ram"])
+    for role in ("storage", "overlay", "cache"):
+        product.write(ref, observed[role][0], f"later-{role}")
+    current = inventory_by_role(ref)
+    assert platform.guest(ref, ["/bin/cat", "/etc/a12-volume-root"]) == b"later-root"
+    for role in ("storage", "overlay", "cache"):
+        latest = f"later-{role}"
+        assert product.read(ref, current[role][0], len(latest)) == latest.encode()
+    stop = native_operation("stop-all-roles", "stop", ref, {})
+    assert stop["native"]["source_disposition"] == "EXITED", stop
+    name = "restored-block-roles"
+    restored = native_operation("restore-all-roles", "vm_restore",
+                                platform.native(f"/machines/{name}/binding"),
+                                dict(name=name, capture_id=saved["capture_id"], mode="clone_conflicts"))
+    assert restored["statepoint"]["manifest_digest"] == saved["manifest_digest"]
+    target = restored["execution"]
+    devices = inventory_by_role(target)
+    assert platform.guest(target, ["/bin/cat", "/etc/a12-volume-root"]) == b"original-root"
+    assert platform.guest(target, ["/bin/cat", "/run/a12-volume-ram"]) == b"captured-ram"
+    for role, (device, attachment) in devices.items():
+        readonly = role == "data"
+        assert platform.guest(target, ["/usr/sbin/blockdev", "--getro", device]) == (b"1\n" if readonly else b"0\n")
+        if readonly:
+            assert attachment["generation_id"] == current[role][1]["generation_id"] == base
+            assert product.read(target, device, len(marker)) == marker.encode()
+        else:
+            assert attachment["volume_id"] != current[role][1]["volume_id"]
+            assert attachment["writable_head_id"] != current[role][1]["writable_head_id"]
+            if role != "root":
+                expected_marker = f"original-{role}"
+                assert product.read(target, device, len(expected_marker)) == expected_marker.encode()
+    print(json.dumps({"capture_id": saved["capture_id"], "manifest_digest": saved["manifest_digest"],
+                      "captured_roles": original_ids, "target_roles": {role: item for role, (_, item) in devices.items()}},
+                     sort_keys=True), flush=True)
 
 
 class FaultPlatform(Platform):
@@ -446,11 +798,14 @@ def growth_fault_case(platform, objects):
     assert prepared.stat().st_size == 32 * MIB
     with prepared.open("rb") as source:
         assert hashlib.sha256(source.read(16 * MIB)).hexdigest() == expected
-    assert product.read_volume(ident)["state"] == "changing"
+    pending_volume = product.read_volume(ident)
+    assert pending_volume["state"] == "changing" and pending_volume["capacity_bytes"] == 16 * MIB
+    assert pending_volume["head_resource_id"] == head and pending_volume["revision"] == original["revision"]
     runtime_name = platform.app(machine)["runtime_name"]
     assert platform.native(f"/machines/{runtime_name}/binding")["incarnation_id"] is None
     rival = product.failure("CONFLICT", f"volumes/{ident}/snapshots", revision=original["revision"])
     assert not row("SELECT operation_id FROM product_volume_operations WHERE operation_id=?", rival["operation_id"])
+    assert row("SELECT count(*) FROM product_volume_snapshots") == (0,)
     print(f"Scoped fsync EIO followed the original head's mode change to 0400. "
           f"Rollback is fenced and the real replacement inode {staged_inode} is durable for reconciliation.", flush=True)
 
@@ -468,6 +823,7 @@ def growth_fault_case(platform, objects):
         "If-Control-Epoch": platform.epoch, "Idempotency-Key": "repair-volume-seal",
     })
     settled = platform.complete(ack)
+    assert settled["result"]["block_capacity_applied"] and settled["result"]["filesystem_resize_status"] == "not_requested"
     volume = settled["result"]["volume"]
     assert volume["head_resource_id"] == key + "-head" and volume["revision"] == original["revision"] + 1
     assert prepared.stat().st_ino == staged_inode and volume["capacity_bytes"] == 32 * MIB
@@ -491,12 +847,18 @@ def main():
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(strict=True), required=True)
     parser.add_argument("--checkpoint-data-only", action="store_true",
                         help="omit projection assertions when measuring a historical installation")
-    parser.add_argument("--case", choices=("checkpoint", "detached-checkpoint", "deleted-checkpoint", "lifecycle", "growth-fault"),
+    parser.add_argument("--case", choices=("checkpoint", "detached-checkpoint", "deleted-checkpoint", "lifecycle",
+                                           "machine-fork", "native-roles", "growth-fault"),
                         default="checkpoint")
     parser.add_argument("--fsync-shim", type=lambda path: Path(path).resolve(strict=True),
                         help="prebuilt shared library from tests/fixtures/volume-fsync-fault.c")
     parser.add_argument("--verify-retired-head", action="store_true",
                         help="check physical private-head deletion in the deleted-checkpoint case")
+    parser.add_argument("--machine-volumes", action="store_true",
+                        help="assert machine-lifetime volumes and typed stop requirements on newer runtimes")
+    parser.add_argument("--work-dir", type=lambda path: Path(path).resolve(strict=True), default=Path("/var/tmp"))
+    parser.add_argument("--use-installation", action="store_true", help="read-only bind the supplied Bundle")
+    parser.add_argument("--state-tmpfs", action="store_true", help="use a private tmpfs for platform registry state")
     args = parser.parse_args()
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
         parser.error("requires root, KVM, and systemd")
@@ -504,7 +866,7 @@ def main():
         os.execvp("unshare", ["unshare", "--mount", "--propagation", "private", "--net", "--", "/usr/bin/env",
                               "MANAGED_SYSTEM_VSOCK_TEST_NAMESPACE=1", "PYTHONDONTWRITEBYTECODE=1",
                               sys.executable, __file__, *sys.argv[1:]])
-    with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="volume-proof-") as tmp, ExitStack() as stack:
+    with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="volume-proof-") as tmp, ExitStack() as stack:
         root = Path(tmp)
         root.chmod(0o755)
         unit = f"smolvmvolume{os.getpid()}_{os.urandom(4).hex()}.slice"
@@ -520,23 +882,28 @@ def main():
                 source = Path(__file__).resolve().parents[1] / "fixtures/volume-fsync-fault.c"
                 subprocess.run(["cc", "-shared", "-fPIC", "-O2", "-o", args.fsync_shim, source, "-ldl"], check=True)
             objects = isolate_objects(root, stack)
-            platform = FaultPlatform(args, root, stack)
+            platform = FaultPlatform(args, root, stack, state_tmpfs=args.state_tmpfs, use_installation=args.use_installation)
         else:
-            platform = Platform(args, root, stack)
+            platform = Platform(args, root, stack, state_tmpfs=args.state_tmpfs, use_installation=args.use_installation)
         try:
             platform.start()
             manifest = json.loads((args.bundle / "runtime-bundle.json").read_text())
             expected = next(entry["sha256"] for entry in manifest["artifacts"] if entry["path"] == "smolvm-resourced")
             assert platform.bundle_id == manifest["bundle_digest"]
             assert worker(platform.worker, "Health")["executable_sha256"] == "sha256:" + expected
+            assert Path(f"/proc/{platform.broker.pid}/exe").resolve(strict=True) == platform.bundle / "smolvm-resourced"
             print(f"Live Bundle {platform.bundle_id}, Worker sha256:{expected}, "
-                  f"platformd {digest(args.platformd)}.", flush=True)
+                  f"platformd {digest(args.platformd)}, System image {digest(args.system_image)}.", flush=True)
             if args.case.endswith("checkpoint"):
                 source_disposition = {"checkpoint": "running", "detached-checkpoint": "stopped", "deleted-checkpoint": "deleted"}[args.case]
                 checkpoint_case(platform, check_catalog=not args.checkpoint_data_only, source_disposition=source_disposition,
                                 verify_retired_head=args.verify_retired_head)
             elif args.case == "lifecycle":
                 lifecycle_case(platform)
+            elif args.case == "machine-fork":
+                machine_fork_case(platform)
+            elif args.case == "native-roles":
+                native_roles_case(platform)
             else:
                 growth_fault_case(platform, objects)
         except BaseException:

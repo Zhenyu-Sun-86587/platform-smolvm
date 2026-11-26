@@ -475,7 +475,7 @@ Volume状态：`creating|available|attached|detaching|snapshotting|resizing|dele
 
 ### 7.2 Attach、detach、grow、snapshot
 
-v1保证Stopped的真实块attach/detach。在线支持必须独立声明 `storage.block_hotplug` / `storage.block_hotunplug`；未具备时返回REQUIRES_STOPPED，并明确需要先保存状态还是停止当前计算。不能在Hibernated状态随意增删设备后仍声称旧RAM可按原topology恢复。
+v1 保证 Stopped 的真实块 attach/detach。在线支持分别声明 `storage.block_hotplug` 和 `storage.block_hotunplug`。缺少能力时，公开操作保留原错误 `code`，并给出可机读的 `error.reason_code=REQUIRES_STOPPED`。运行中需停止当前执行。Hibernated 实例须先 Wake 原执行，再 Stop 确认旧拓扑退出后才可编辑附件。
 
 mount/unmount与设备attach/detach是不同操作；mount依赖Guest管理/用户操作。在线detach需要Guest卸载/停用、block队列drain、VMM设备移除与writer release确认；不以删除平台记录代替。无法安全退出时保持attached/unknown并给诊断，force不自动发生。
 
@@ -575,7 +575,9 @@ MCP 使用同一 SDK 与 `/v1`，不在第一版再建另一套生命周期 API�
 
 平台 `PATCH /system/settings` 增加 `default_network_mode/default_network_id/default_boot_mode/default_lifecycle_policy`；现有 `default_idle_seconds` 继续被理解。所有默认值在 Create 接受事务中解析到持久 spec；幂等重放读取原已解析值，不因默认值后来改变而创建不同实例。
 
-Volume `lifecycle=persistent|machine`：独立持久 Volume 不随计算 delete 回收；机器私有数据盘可设置 machine 生命周期。Fork 默认对可捕获 RW Volume 的捕获代际创建独立 writable clone；子实例不能再挂同一个普通 RW 文件系统。允许不可变 RO 共享。没有声明 `include` 且无法取得一致版本的外部共享 RW/远程 mount 默认拒绝完整闭包捕获；本期完整 VM API 不提供跳过已挂接块盘的 acknowledge 开关；无法捕获的外部写附件明确返回 EXTERNAL_STATE_UNCAPTURED。若以后增加非完整状态导出，必须另列 scope、allowed_uses 与客户端动作，不能混入本接口。
+独立 `persistent` 卷随用户独立管理。`machine` 卷在首次可写挂接时确定 Worker 实例归属，解挂和冷启保留归属。已确认退出的实例完成删除后，Worker 退役其 machine 卷的可写头，已保留的快照和 StatePoint 继续保护各自引用的代际。历史 `ephemeral` 保持原生命周期。
+
+Fork 默认对可捕获 RW Volume 的捕获代际创建独立 writable clone；子实例不能再挂同一个普通 RW 文件系统。允许不可变 RO 共享。没有声明 `include` 且无法取得一致版本的外部共享 RW/远程 mount 默认拒绝完整闭包捕获；本期完整 VM API 不提供跳过已挂接块盘的 acknowledge 开关；无法捕获的外部写附件明确返回 EXTERNAL_STATE_UNCAPTURED。若以后增加非完整状态导出，必须另列 scope、allowed_uses 与客户端动作，不能混入本接口。
 
 真实 `attach` 表示 guest 可见块设备；`mount` 是 Guest OS 操作，需要 Agent/SSH/用户执行。API 不能因为一条 HostMount 配置记录就返回块盘 attach 成功。在线扩容分成块容量已增长与 Guest filesystem 是否完成增长两个结果，失败不得回缩块设备。系统模式 ext4/xfs 等差异由 guest helper 能力声明。
 
