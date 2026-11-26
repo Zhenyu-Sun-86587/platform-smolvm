@@ -41,4 +41,28 @@ rmdir "$dir"
 
 如等待超时，保留 `op`，用 `sandboxctl operations wait "$op"` 恢复观察。若连接在写入受理前后断开，保留原 key、epoch、revision、generation、目标与参数，先查询。文件提交返回 `OUTCOME_UNKNOWN` 时，核对同一执行的字节或哈希，禁止创建新的写入来推断前次结果。对 Exec 区分 API 失败与 Guest 自身的非零退出。PTY 与 SSH 为终端原始流，二进制下载到 stdout 时将日志留在 stderr。
 
+### 脚本如何判断下一步
+
+| 场景 | 输出与退出码 | 脚本动作 |
+|---|---|---|
+| 已受理，带 `--no-wait` | stdout 的 JSON 中有 `operation_id`，退出 0 | 持久保存 ID，以 `operations wait` 查询。 |
+| 已到终态 | stdout 保留 `state/stage/effect/children`。旧脚本遇到 `succeeded` 且 `partial` 仍退出 0，`--strict-result` 对 partial/unknown 退出 1 | 自动化用 `sandboxctl --json --strict-result operations wait "$op"`。读取各 child 后，按原 operation 决定是否重试。 |
+| 管理错误、能力不支持、revision 冲突 | 退出 1；`--json` 写一个 stderr 错误对象，按响应保留 `request_id/code/effect/retry`，能力错误另有 `capability/reason_code` | 检查当前版本和权限。重新读取资源、revision 和 execution，再决定是否提交不同的用户意图。 |
+| 观察原 operation 超时 | 退出 124；`error.operation_id` 和 `retry=poll_operation` | 只继续查询该 ID，不再创建。 |
+| 写入回执丢失 | 退出 1；不确定时 `effect=unknown`，有原请求信息时在 `error.intent` 内返回 | 保留原始意图和实际目标证据；HTTP 写入和 Guest 文件写入都不自动重放。 |
+| 非交互 Exec 或交互终端 | `exec --follow` 分别写 stdout/stderr，返回已确认的 Guest 退出码；`--json --follow` 是逐页 JSON。TTY 合并终端字节并发送 stdin/resize | 对脚本透传程序退出码。恢复输出读取用原 `exec_id` 和 cursor。SSH 的远端命令使用 OpenSSH shell 语义，保留 argv 用原生 exec。 |
+
+在可丢弃的现有 System Guest 上，以下命令演示显式状态保存。运行前设置 `MID`，回滚会替换该机器的当前运行态。
+
+```bash
+set -eu
+: "${MID:?}"
+sid=$(sandboxctl --json snapshots capture-vm "$MID" --label cli-test | jq -er .result.snapshot_id)
+sandboxctl snapshots rollback-vm "$MID" "$sid" --volume-restore-policy clone_conflicts
+restored=$(sandboxctl --json snapshots restore-vm "$sid" "cli-restored-$$" | jq -er .machine_id)
+sandboxctl exec --follow --cwd / "$restored" -- /usr/bin/id
+sandboxctl machines delete "$restored" --yes
+sandboxctl snapshots delete "$sid"
+```
+
 跨资源 Machine Spec 事务、完整 AgentSession、商业功能及内核 syscall 后置。多节点有独立设计、分支与验收。boxd E25 的 Agent 回合认证失败，E27 的域名继承和 E28 的黑屏截图也各有证据边界。
