@@ -34,7 +34,7 @@
   },
   "capture": {
     "verified":{"capture_mode":"vm","configuration":{"status":"verified","schema_version":1,"source_machine_revision":9,"capture_id":"capture_1","manifest_digest":"sha256:fixture","template_id":"template_1","spec":{"boot_mode":"system","resources":{"cpu_count":2,"memory_mib":1024}}},"ram":"included","disks":[{"role":"root"},{"role":"data","volume_id":"vol_1","generation_id":"gen_1","read_only":false}],"restore_policies":["exact","clone_conflicts"]},
-    "historical":{"capture_mode":"vm","configuration":{"status":"unknown","reason_code":"CAPTURE_CONFIGURATION_NOT_RECORDED"},"ram":"unknown"},
+    "historical":{"capture_mode":"vm","configuration":{"status":"unknown","reason_code":"CAPTURE_CONFIGURATION_UNRECORDED"},"ram":"unknown"},
     "restore_result":{"volume_map":{"vol_1":"vol_clone_1"}}
   },
   "services": {
