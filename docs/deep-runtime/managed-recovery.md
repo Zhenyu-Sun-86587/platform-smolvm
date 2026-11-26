@@ -68,3 +68,22 @@ platformd 和 Serve 的进程分别退出、重启，四个时点均成功读回
 broker 被终止后，原连接又交付一次随机数，两台 Guest 的 writer 与平台绑定仍在。重新启动同一 broker 后，它确认两台原 VMM 及三个实际 writer 文件，但 Native 与 FixedInternal 两条原 TAP 租约均保持 `unknown`。`CompleteRecovery` 返回 `E_RECOVERING`。下一条挑战在七秒内没有应答，接收端也没有写入该随机数。原安装的网络恢复仍待修复。在该次试验中两端 socket inode 分别为 881 和 1005，接收端在中断前写入并核验了 672 字节。
 
 复现使用 `component_restart_kvm.py --scope-cuts --expect-unrecovered-network`，另传同批 `--bundle`、`--platformd` 和 `--system-image`。正向模式省略 `--expect-unrecovered-network`，须由新 broker 自动恢复到 ready，并在原 TCP 会话上继续写盘。实测记录 `.build/wp23/a20-component-stream-fb69434-v5.log` 的 SHA-256 为 `871cd7f86a2c58dfaaeb00d57d56380cac6e7dacc858e03d3843abd395079e0e`。[组件重启夹具](../../tests/integration/component_restart_kvm.py)
+
+加入 TAP 恢复回执的 Worker 在同一套测试中重新确认了两个存活 VMM 的 TAP、网络命名空间和策略。两个 systemd 接管切点及三个组件分别重启后，原连接累计完成九轮请求，接收端的原卷包含完整的 756 字节记录。独立测试还确认两端原 DNS、服务拨号和最终 Stop 后的租约释放。日志 `.build/wp23/a20-stream-scope-network-v2b.log` 和 `.build/wp23/a20-network-dns-dial-v3.log` 的 SHA-256 分别为 `04a40a30f4c76465ea5f1173a8c846a6f57a1be4caf83c7588cb6638d59e861e`、`d36da840dc5abfc35cd053ae5fcf0a638f7031bd9b3577b548e5c3586966a743`。[网络恢复与复现输入](A20_LIVE_NETWORK_RECOVERY.md)
+
+## Worker 主机换 boot 后的恢复
+
+夹具两次启动同一块 Ubuntu 24.04 虚拟系统盘。第一次启动在嵌套 KVM 中运行三台 Debian。一台在 tmpfs 和根盘各写入同一随机数，调用公开 Hibernate 并记录保存点摘要。另外两台为正在运行的源和 Fork 子机，两份已授予的写权限以及子机正在读取的易失 RAM 代际均可在 Worker 核对。宿主文件系统同步后，一组由 Guest systemd 正常关机，另一组直接终止本次 QEMU。第二次启动换了 boot ID，复用原 ext4 状态盘和只读安装输入，运行目录与套接字重新创建。这两组实测的断电边界为虚拟 Worker 的电源。
+
+在旧 `fb69434` 中，换 boot 后 Worker 保持 `recovering`，需要逐一确认两个旧执行结束。旧平台在超过观测时限后将保留的休眠点显示为 `unknown`。记录为 `.build/wp23/a20-worker-host-fb69434-v4.log`，SHA-256 `e8bb042289501ed7f125934d84e457b656330e5d558b0bc58a2a975eda2449a9`。
+
+修复后的 Worker 核对旧 boot ID 及实际写盘文件后，自动释放两份旧授权。原易失 RAM 代际进入 `lost`。新平台向 Worker 确认休眠点、空执行槽位和 epoch，公开详情恢复为 `hibernated`。从该页调用 Start 后，两个场景都在 epoch 2 读回原 tmpfs 与根盘的随机数。开发 Bundle 为 `sha256:5d110dcb5866da3c941ce29dfbbf32c0b38e69642084975aa0f11480d61bc7cb`，Worker 为 `ce61b8ed81415201d0d67b6990a134ba5725045a0867517731b606da170380de`，platformd 为 `4abf8a0fe0e7fa109aec8ab14323eb590d73f83e074930eb8e7d9438fafa3373`。VMM、libkrun 和 Debian 镜像来自 `fb69434`。
+
+| 第二次启动前的动作 | 记录 | SHA-256 |
+| --- | --- | --- |
+| 虚拟 Worker 断电 | `.build/wp23/a20-worker-host-auto-v1.log` | `bf6a5e5b295be7dd9592235226c8257eec713091b063e319de02aedd567a20b6` |
+| Guest systemd 正常关机 | `.build/wp23/a20-worker-host-orderly-v1.log` | `a22b1869201c1c883432beefb1bf626c1f1eaec7f1f1bcd29b0b525279ee2066` |
+
+另一次断电使用 `f2df146` Worker、修复时钟的 `0d02553` libkrun 与 `83b3d29` platformd。新 boot 在旧授权的实际盘 inode 上持有一个独立的排他锁，Worker 保留原写入预订和 `unknown` 授权，并持续报告 `recovering`。释放该锁后，Worker 自动完成围栏。Guest 在原计时进程中经过至少 26 秒 managed Standby、Hibernate 和整机重启，首次采样时原定时器仍未到期。Guest 的 monotonic、boottime 和 realtime 均在 18.069 秒时达到原定的 18 秒期限。该测试使用重新测量的开发 Bundle `sha256:6e112dd4c836df1ad2b87b5eb42d1f17ee7738262bdd19ec19bbee66b1f77c75`、旧安装的 VMM 与 firmware，宿主基础镜像分配 1792 MiB。日志 `.build/wp23/a08-a20-worker-host-f2df146-clock-ofd-v4.log` 的 SHA-256 为 `6480aa68d8f5ac4b481f7b9cd675417003d06e3c6e04dcf588635310973a7ac6`。
+
+复跑时传入本机构建的可嵌套 KVM 的 Worker 基础镜像、宿主内核与对应模块、平台程序、Bundle 安装目录和 Debian 系统镜像。使用 `--automatic-recovery` 验证全自动恢复，增加 `--orderly-shutdown` 可切换关机方式。[Worker 整机夹具](../../tests/integration/worker_host_restart_kvm.py)

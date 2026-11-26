@@ -30,6 +30,15 @@ def make_seed(args, scratch):
             shutil.copy2(release / path, target / path)
     shutil.copy2(args.runtime_archive, source / "runtime.tar.gz")
     shutil.copy2(Path(__file__).with_name("release_host_guest.sh"), source / "guest.sh")
+    collect_modules(args, source)
+    seed = scratch / "fixtures.squashfs"
+    subprocess.run(["mksquashfs", source, seed, "-noappend", "-processors", "2", "-comp", "lz4",
+                    "-no-progress", "-quiet"], check=True)
+    shutil.rmtree(source)
+    return seed
+
+
+def collect_modules(args, source):
     modules = source / "modules"
     modules.mkdir()
     dependencies = subprocess.check_output(
@@ -47,15 +56,10 @@ def make_seed(args, scratch):
         else:
             shutil.copy2(module, modules)
     (source / "module-name").write_text(args.kvm_module + "\n")
-    seed = scratch / "fixtures.squashfs"
-    subprocess.run(["mksquashfs", source, seed, "-noappend", "-processors", "2", "-comp", "lz4",
-                    "-no-progress", "-quiet"], check=True)
-    shutil.rmtree(source)
-    return seed
 
 
-def boot(args, seed, disk, stage):
-    cmd = [args.qemu, "-accel", "kvm", "-cpu", "host", "-smp", "2", "-m", "768",
+def boot(args, seed, disk, stage, memory_mib=768, orderly_shutdown=False):
+    cmd = [args.qemu, "-accel", "kvm", "-cpu", "host", "-smp", "2", "-m", str(memory_mib),
            "-nodefaults", "-no-user-config", "-nographic", "-nic", "none", "-serial", "stdio",
            "-monitor", "none", "-no-reboot", "-kernel", args.kernel,
            "-append", ("root=/dev/vda rw console=ttyS0,115200 init=/bin/sh quiet panic=1 "
@@ -78,7 +82,11 @@ def boot(args, seed, disk, stage):
                     continue
                 block = os.read(process.stdout.fileno(), 16384)
                 if not block:
-                    break
+                    try:
+                        status = process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        status = "serial output closed"
+                    raise RuntimeError(f"QEMU stopped sending {stage} evidence ({status})")
                 print(block.decode(errors="replace"), end="", flush=True)
                 output = (output + block)[-65536:]
                 if not started and b"# " in output:
@@ -93,6 +101,11 @@ def boot(args, seed, disk, stage):
                     raise RuntimeError(f"guest failed during {stage}")
                 result = re.search(rb"RELEASE_FIXTURE_OK " + stage.encode() + rb" ([0-9a-f-]{36})\r?\n", output)
                 if result:
+                    if orderly_shutdown:
+                        # Let the guest's systemd stop the Worker and its VMM scopes and power off.
+                        process.communicate(timeout=90)
+                        if process.returncode != 0:
+                            raise RuntimeError(f"unexpected QEMU status after guest shutdown: {process.returncode}")
                     return result[1].decode()
             raise RuntimeError(f"no {stage} receipt before timeout or QEMU exit ({process.poll()})")
         finally:
