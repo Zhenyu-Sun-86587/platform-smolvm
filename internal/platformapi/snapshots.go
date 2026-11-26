@@ -23,6 +23,7 @@ import (
 
 type copyRequest struct {
 	CaptureMode         snapshots.CaptureMode  `json:"capture_mode,omitempty"`
+	RequireCaptureMode  snapshots.CaptureMode  `json:"require_capture_mode,omitempty"`
 	SnapshotID          string                 `json:"snapshot_id,omitempty"`
 	Label               string                 `json:"label,omitempty"`
 	Purpose             string                 `json:"purpose,omitempty"`
@@ -105,7 +106,10 @@ func (s *Server) snapshotRoutes() {
 			if kind != "snapshot" && v.CaptureMode != "" {
 				return registry.ErrInvalid
 			}
-			if kind != "restore" && kind != "rollback" && (v.VolumeRestorePolicy != "" || v.NetworkMode != "") {
+			if kind != "restore" && kind != "rollback" && (v.VolumeRestorePolicy != "" || v.NetworkMode != "" || v.RequireCaptureMode != "") {
+				return registry.ErrInvalid
+			}
+			if v.RequireCaptureMode != "" && v.RequireCaptureMode != snapshots.CaptureVM {
 				return registry.ErrInvalid
 			}
 			switch kind {
@@ -140,6 +144,12 @@ func (s *Server) snapshotRoutes() {
 				item, err := s.Snapshots.Get(r.Context(), v.SnapshotID)
 				if err != nil {
 					return err
+				}
+				if v.RequireCaptureMode == snapshots.CaptureVM && item.VM == nil {
+					if err := p.Authorize(auth.ActionManage, item.MachineID); err != nil {
+						return err
+					}
+					return &lifecycle.Failure{Code: "CAPTURE_MODE_CONFLICT", Message: "this action requires a full VM state point"}
 				}
 				if item.VM != nil {
 					if err := p.Authorize(auth.ActionManage, item.MachineID); err != nil {

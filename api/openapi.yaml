@@ -435,6 +435,7 @@ paths:
               type: object
               properties:
                 expected_generation: {type: integer, minimum: 1}
+                expected_power_state: {type: string, enum: [stopped, hibernated], description: Reject a different source power state before dispatch.}
                 reason: {type: string}
                 allow_active_tasks: {type: boolean}
                 cancel_tasks: {type: boolean}
@@ -579,6 +580,7 @@ paths:
               type: object
               properties:
                 expected_generation: {type: integer, minimum: 1}
+                expected_power_state: {type: string, const: standby, description: Reject a different source power state before dispatch.}
                 reason: {type: string}
                 allow_active_tasks: {type: boolean}
                 cancel_tasks: {type: boolean}
@@ -1185,6 +1187,7 @@ paths:
                 snapshot_id: {type: string, minLength: 1}
                 name: {type: string, minLength: 1}
                 volume_restore_policy: {$ref: '#/components/schemas/VolumeRestorePolicy'}
+                require_capture_mode: {const: vm, description: Reject managed-task snapshots before accepting the operation.}
                 network_mode: {type: string, enum: [snapshot], description: Applies to VM StatePoints}
               required:
               - snapshot_id
@@ -1225,6 +1228,7 @@ paths:
                 snapshot_id: {type: string, minLength: 1}
                 expected_generation: {type: integer, minimum: 1}
                 volume_restore_policy: {$ref: '#/components/schemas/VolumeRestorePolicy'}
+                require_capture_mode: {const: vm, description: Reject managed-task snapshots before accepting the operation.}
                 old_state_policy: {type: string, enum: [export_then_delete_on_paused]}
                 task_disposition: {type: string, enum: [cancel_captured, resume_captured]}
               required:

@@ -244,6 +244,11 @@ func (s *Store) Accept(ctx context.Context, r AcceptRequest) (Operation, bool, e
 		if err := checkMachineExpected(prior, r.ExpectedRevision, r.ExpectedGeneration); err != nil {
 			return Operation{}, false, err
 		}
+		if r.ExpectedPowerState != "" {
+			if err := RequirePowerState(prior.CurrentBinding, r.ExpectedPowerState); err != nil {
+				return Operation{}, false, err
+			}
+		}
 	}
 	var route rt.BundleRoute
 	if prior.CurrentBinding != nil {

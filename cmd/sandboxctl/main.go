@@ -29,6 +29,7 @@ import (
 type client struct {
 	origin, token, caFile string
 	jsonOutput, noWait    bool
+	strictResult          bool
 	waitTimeout           time.Duration
 	epoch, key            string
 	revision, generation  int64
@@ -37,8 +38,9 @@ type client struct {
 }
 
 type apiError struct {
-	Status int
-	Detail apiErrorDetail
+	Status   int
+	ExitCode int
+	Detail   apiErrorDetail
 }
 
 func (e *apiError) Error() string {
@@ -88,34 +90,36 @@ func main() {
 	defer cancel()
 	root, cli := rootCommand()
 	if err := root.ExecuteContext(ctx); err != nil {
-		var failed exitStatus
-		if errors.As(err, &failed) {
-			os.Exit(int(failed))
-		}
-		var apiErr *apiError
-		if cli.jsonOutput && errors.As(err, &apiErr) {
-			detail := map[string]string{
-				"code": apiErr.Detail.Code, "message": apiErr.Detail.Message, "operation_id": apiErr.Detail.OperationID,
-				"effect": apiErr.Detail.Effect, "retry": apiErr.Detail.Retry,
-			}
-			if apiErr.Detail.Capability != "" {
-				detail["capability"] = apiErr.Detail.Capability
-			}
-			if apiErr.Detail.ReasonCode != "" {
-				detail["reason_code"] = apiErr.Detail.ReasonCode
-			}
-			if apiErr.Detail.Stage != "" {
-				detail["stage"] = apiErr.Detail.Stage
-			}
-			if apiErr.Detail.Scope != "" {
-				detail["scope"] = apiErr.Detail.Scope
-			}
-			_ = json.NewEncoder(root.ErrOrStderr()).Encode(map[string]any{"status": apiErr.Status, "error": detail})
-		} else {
-			fmt.Fprintln(root.ErrOrStderr(), err)
-		}
-		os.Exit(1)
+		os.Exit(reportError(root.ErrOrStderr(), cli.jsonOutput, err))
 	}
+}
+
+func reportError(w io.Writer, jsonOutput bool, err error) int {
+	var remoteExit exitStatus
+	if errors.As(err, &remoteExit) {
+		return int(remoteExit)
+	}
+	code := 1
+	var failure *apiError
+	if errors.As(err, &failure) {
+		if failure.ExitCode != 0 {
+			code = failure.ExitCode
+		}
+		if jsonOutput {
+			response := struct {
+				Status int            `json:"status,omitempty"`
+				Error  apiErrorDetail `json:"error"`
+			}{failure.Status, failure.Detail}
+			_ = json.NewEncoder(w).Encode(response)
+			return code
+		}
+	}
+	if jsonOutput {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": apiErrorDetail{Code: "CLI_ERROR", Message: err.Error()}})
+	} else {
+		_, _ = fmt.Fprintln(w, err)
+	}
+	return code
 }
 
 func rootCommand() (*cobra.Command, *client) {
@@ -130,6 +134,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().StringVar(&api.caFile, "ca-file", os.Getenv("SANDBOX_CA_FILE"), "Additional trusted server CA PEM file")
 	root.PersistentFlags().BoolVar(&api.jsonOutput, "json", false, "Write compact JSON where applicable")
 	root.PersistentFlags().BoolVar(&api.noWait, "no-wait", false, "Print accepted operations without polling")
+	root.PersistentFlags().BoolVar(&api.strictResult, "strict-result", false, "Return nonzero for partial or unknown operation effects")
 	root.PersistentFlags().DurationVar(&api.waitTimeout, "wait-timeout", 3*time.Minute, "Maximum time to observe an operation")
 	root.PersistentFlags().StringVar(&api.epoch, "control-epoch", "", "Original control epoch for replaying a mutation")
 	root.PersistentFlags().StringVar(&api.key, "idempotency-key", "", "Idempotency key for the mutation")
@@ -251,15 +256,25 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 type apiErrorDetail = struct {
-	Code        string `json:"code"`
-	Message     string `json:"message"`
-	OperationID string `json:"operation_id"`
-	Effect      string `json:"effect"`
-	Retry       string `json:"retry"`
-	Capability  string `json:"capability"`
-	ReasonCode  string `json:"reason_code"`
-	Stage       string `json:"stage"`
-	Scope       string `json:"scope"`
+	Code        string          `json:"code"`
+	Message     string          `json:"message"`
+	OperationID string          `json:"operation_id"`
+	Effect      string          `json:"effect"`
+	Retry       string          `json:"retry"`
+	Capability  string          `json:"capability,omitempty"`
+	ReasonCode  string          `json:"reason_code,omitempty"`
+	Stage       string          `json:"stage,omitempty"`
+	Scope       string          `json:"scope,omitempty"`
+	Intent      *mutationIntent `json:"intent,omitempty"`
+}
+
+type mutationIntent struct {
+	ControlEpoch   string `json:"control_epoch"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Revision       int64  `json:"revision,omitempty"`
+	Generation     int64  `json:"generation,omitempty"`
+	Method         string `json:"method"`
+	Path           string `json:"path"`
 }
 
 func (c *client) get(ctx context.Context, path string, dest any) error {
@@ -292,18 +307,21 @@ func (c *client) intent(ctx context.Context, rev int64) (http.Header, error) {
 		return nil, err
 	}
 	epoch, key := c.epoch, c.key
-	if key == "" {
+	if epoch == "" {
 		var status struct {
 			Epoch string `json:"control_epoch"`
 		}
 		if err := c.get(ctx, "control", &status); err != nil {
 			return nil, err
 		}
+		epoch = status.Epoch
+	}
+	if key == "" {
 		var entropy [16]byte
 		if _, err := rand.Read(entropy[:]); err != nil {
 			return nil, err
 		}
-		epoch, key = status.Epoch, hex.EncodeToString(entropy[:])
+		key = hex.EncodeToString(entropy[:])
 	}
 	h := make(http.Header)
 	h.Set("If-Control-Epoch", epoch)
@@ -327,17 +345,17 @@ func (c *client) mutation(cmd *cobra.Command, method, path string, payload any, 
 		return err
 	}
 	headers.Set("Content-Type", "application/json")
-	return c.write(cmd, method, path, bytes.NewReader(raw), headers)
+	var request struct {
+		ExpectedGeneration int64 `json:"expected_generation"`
+	}
+	_ = json.Unmarshal(raw, &request)
+	return c.write(cmd, method, path, bytes.NewReader(raw), headers, request.ExpectedGeneration)
 }
 
-func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, headers http.Header) error {
+func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, headers http.Header, generation int64) error {
 	resp, err := c.request(cmd.Context(), method, path, body, headers)
 	if err != nil {
-		var api *apiError
-		if !errors.As(err, &api) || api.Detail.Effect == "unknown" || api.Status >= 500 && api.Detail.Effect != "none" {
-			c.printIntent(cmd, headers)
-		}
-		return err
+		return c.mutationError(cmd, method, path, headers, generation, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNoContent {
@@ -345,79 +363,162 @@ func (c *client) write(cmd *cobra.Command, method, path string, body io.Reader, 
 	}
 	var raw json.RawMessage
 	if err = json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		c.printIntent(cmd, headers)
-		return err
+		return c.mutationError(cmd, method, path, headers, generation, err)
 	}
 	var op operation
-	if !c.noWait && json.Unmarshal(raw, &op) == nil && op.ID != "" && op.State != "" {
-		if !op.terminal() {
+	if json.Unmarshal(raw, &op) == nil && op.ID != "" && op.State != "" {
+		if op.terminal() && (!c.noWait || c.strictResult) {
+			return c.operationResult(cmd, raw, op)
+		}
+		if !op.terminal() && !c.noWait {
 			if !c.jsonOutput {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Observing operation %s\n", op.ID)
 			}
-			return c.wait(cmd, op.ID)
+			return c.waitOperation(cmd, op.ID, op.Effect)
 		}
-		return c.operationResult(cmd, raw, op)
 	}
 	return c.print(cmd, raw)
 }
 
-func (c *client) printIntent(cmd *cobra.Command, h http.Header) {
+func (c *client) mutationError(cmd *cobra.Command, method, path string, headers http.Header, generation int64, err error) error {
+	var upstream *apiError
+	received := errors.As(err, &upstream)
+	if received && upstream.Detail.Effect != "unknown" && (upstream.Status < 500 || upstream.Detail.Effect == "none") {
+		return err
+	}
+	failure := &apiError{Detail: apiErrorDetail{
+		Code: "OUTCOME_UNKNOWN", Message: "could not verify the mutation response: " + err.Error(),
+		Effect: "unknown", Retry: "verify_original_intent",
+	}}
+	if received && upstream.Detail.Code != "" {
+		*failure = *upstream
+		failure.Detail.Effect = "unknown"
+		if failure.Detail.Retry == "" {
+			failure.Detail.Retry = "verify_original_intent"
+		}
+	}
+	revision, _ := strconv.ParseInt(strings.Trim(headers.Get("If-Match"), `"`), 10, 64)
+	failure.Detail.Intent = &mutationIntent{
+		ControlEpoch: headers.Get("If-Control-Epoch"), IdempotencyKey: headers.Get("Idempotency-Key"),
+		Revision: revision, Generation: generation, Method: method, Path: path,
+	}
+	if !c.jsonOutput {
+		c.printIntent(cmd, headers, generation)
+	}
+	return failure
+}
+
+func (c *client) printIntent(cmd *cobra.Command, h http.Header, generation int64) {
 	flags := ""
 	if revision := h.Get("If-Match"); revision != "" {
-		flags = " --revision " + strings.Trim(revision, "\"")
+		flags = " --revision " + strings.Trim(revision, `"`)
+	}
+	if generation > 0 {
+		flags += " --generation " + strconv.FormatInt(generation, 10)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Mutation intent --control-epoch %s --idempotency-key %s%s\n",
-		h.Get("If-Control-Epoch"), h.Get("Idempotency-Key"), flags)
+		shellWord(h.Get("If-Control-Epoch")), shellWord(h.Get("Idempotency-Key")), flags)
+}
+
+func shellWord(value string) string {
+	if value != "" && strings.IndexFunc(value, func(r rune) bool {
+		return !strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.+:/", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (c *client) operationResult(cmd *cobra.Command, raw json.RawMessage, op operation) error {
 	if err := c.print(cmd, raw); err != nil {
 		return err
 	}
-	if op.State != "succeeded" {
+	if op.State != "succeeded" || c.strictResult && (op.Effect == "partial" || op.Effect == "unknown") {
 		return exitStatus(1)
 	}
 	return nil
 }
 
 func (c *client) wait(cmd *cobra.Command, id string) error {
+	return c.waitOperation(cmd, id, "")
+}
+
+func (c *client) waitOperation(cmd *cobra.Command, id, effect string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), c.waitTimeout)
 	defer cancel()
-	path := "operations/" + url.PathEscape(id)
 	ticker := time.NewTicker(350 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		var raw json.RawMessage
-		if err := c.get(ctx, path, &raw); err != nil {
-			return fmt.Errorf("observe operation %s: %w", id, err)
+		if err := c.get(ctx, res("operations", id), &raw); err != nil {
+			return operationObservationError(ctx, id, effect, err)
 		}
 		var op operation
 		if err := json.Unmarshal(raw, &op); err != nil {
-			return err
+			return operationObservationError(ctx, id, effect, err)
 		}
+		if op.ID != id || op.State == "" {
+			return operationObservationError(ctx, id, effect, errors.New("invalid operation observation"))
+		}
+		effect = op.Effect
 		if op.terminal() {
 			return c.operationResult(cmd, raw, op)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("observe operation %s: %w", id, ctx.Err())
+			return operationObservationError(ctx, id, effect, ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func operationObservationError(ctx context.Context, id, effect string, err error) error {
+	if effect == "" || effect == "none" {
+		effect = "unknown"
+	}
+	failure := &apiError{Detail: apiErrorDetail{
+		Code: "OPERATION_OBSERVE_FAILED", Message: "could not observe the operation", OperationID: id,
+		Effect: effect, Retry: "poll_operation",
+	}}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		failure.ExitCode = 124
+		failure.Detail.Code = "OPERATION_WAIT_TIMEOUT"
+		failure.Detail.Message = "wait deadline exceeded; use operations wait to resume observing"
+		return failure
+	}
+	var upstream *apiError
+	if errors.As(err, &upstream) {
+		// Polling an existing operation can fail independently of its effect.
+		failure.Status = upstream.Status
+		failure.Detail.Code = upstream.Detail.Code
+		failure.Detail.Message = upstream.Detail.Message
+	} else {
+		failure.Detail.Message += ": " + err.Error()
+	}
+	return failure
 }
 
 func res(kind, id string) string {
 	return kind + "/" + url.PathEscape(id)
 }
 
-func (c *client) machine(ctx context.Context, id string) (machine, error) {
-	var m machine
+func (c *client) machine(ctx context.Context, ref string) (machine, error) {
+	id, err := c.machineID(ctx, ref)
+	if err != nil {
+		return machine{}, err
+	}
 	if c.revision > 0 && c.generation > 0 {
 		return machine{ID: id, Revision: c.revision, Generation: c.generation}, nil
 	}
-	err := c.get(ctx, res("machines", id), &m)
+	var m machine
+	if err := c.get(ctx, res("machines", id), &m); err != nil {
+		return machine{}, err
+	}
+	if m.ID != id {
+		return machine{}, errors.New("platform returned a different machine ID")
+	}
 	if c.generation > 0 {
 		m.Generation = c.generation
 	}
-	return m, err
+	return m, nil
 }
