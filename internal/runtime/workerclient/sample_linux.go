@@ -67,42 +67,38 @@ func (c Client) VerifyRoot(ctx context.Context, generation, digest string) (int6
 		return 0, err
 	}
 	var r struct {
-		ID                string `json:"resource_id"`
-		State, Durability string
-		Immutable         bool
-		Import            string `json:"created_by_operation"`
-		Descriptor        struct {
-			Schema string
+		ID         string `json:"resource_id"`
+		Kind       string `json:"kind"`
+		State      string `json:"state"`
+		Durability string `json:"durability"`
+		Immutable  bool   `json:"immutable"`
+		Import     string `json:"created_by_operation"`
+		Descriptor struct {
+			Schema string `json:"schema"`
 			Object struct {
 				ID      string  `json:"resource_id"`
 				Digest  string  `json:"content_sha256"`
 				Bytes   int64   `json:"capacity_bytes"`
 				Backing *string `json:"backing_id"`
-			}
-		}
+				Volume  *string `json:"volume_id"`
+				Format  string  `json:"format"`
+			} `json:"object"`
+		} `json:"descriptor"`
 	}
 	if err = json.Unmarshal(raw, &r); err != nil {
 		return 0, err
 	}
 	o := r.Descriptor.Object
-	if r.ID != generation || o.ID != generation || r.State != "available" || !r.Immutable || r.Durability != "durable" ||
-		r.Import == "" || r.Descriptor.Schema != "ManagedBlockObject/1" || o.Digest != digest || o.Backing != nil || o.Bytes <= 0 {
+	if r.ID != generation || o.ID != generation || r.Kind != "descriptor" || r.State != "available" || !r.Immutable || r.Durability != "durable" ||
+		r.Import == "" || r.Descriptor.Schema != "ManagedBlockObject/1" || o.Digest != digest || o.Backing != nil || o.Volume != nil ||
+		o.Format != "raw" || o.Bytes <= 0 || o.Bytes%512 != 0 {
 		return 0, errors.New("Worker did not confirm the immutable template root")
 	}
-	raw, _, err = c.call(ctx, request{Method: "QueryOperation", OperationID: r.Import}, nil, nil)
+	receipt, err := c.QueryOperation(ctx, r.Import)
 	if err != nil {
 		return 0, err
 	}
-	var receipt struct {
-		ID     string `json:"operation_id"`
-		Phase  string
-		Route  string `json:"route_id"`
-		Bundle string `json:"bundle_digest"`
-	}
-	if err = json.Unmarshal(raw, &receipt); err != nil {
-		return 0, err
-	}
-	if receipt.ID != r.Import || receipt.Phase != "COMPLETED" || receipt.Route != "deep" || receipt.Bundle != c.Bundle {
+	if receipt.Phase != "COMPLETED" {
 		return 0, errors.New("template import receipt belongs to another route or is incomplete")
 	}
 	return o.Bytes, nil

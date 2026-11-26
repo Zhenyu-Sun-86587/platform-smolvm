@@ -11,7 +11,7 @@ type statePointIdentity struct {
 	ManifestDigest string `json:"manifest_digest"`
 }
 
-func (c Client) ReleaseStatePoint(ctx context.Context, captureID, manifestDigest string) error {
+func (c Client) ReleaseStatePoint(ctx context.Context, captureID, manifestDigest, _ string) error {
 	identity := statePointIdentity{CaptureID: captureID, ManifestDigest: manifestDigest}
 	result, _, err := c.call(ctx, request{Method: "ReleaseStatePoint", Payload: identity}, nil, nil)
 	if err != nil {

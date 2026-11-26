@@ -116,7 +116,7 @@ func (s *Server) deleteVMSnapshot(ctx context.Context, j *lifecycle.Job) error {
 		}
 	}
 	j.Written = true
-	if err := worker.ReleaseStatePoint(ctx, snapshot.VM.RuntimeCaptureID, snapshot.Hash); err != nil {
+	if err := worker.ReleaseStatePoint(ctx, snapshot.VM.RuntimeCaptureID, snapshot.Hash, snapshot.VM.OperationID); err != nil {
 		var fault *workerclient.Fault
 		if errors.As(err, &fault) && (fault.Code == "E_RESOURCE_PINNED" || fresh && fault.Code == "E_CAPABILITY_UNSUPPORTED") {
 			code := "DEPENDENCY_BLOCKED"

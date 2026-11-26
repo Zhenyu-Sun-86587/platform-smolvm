@@ -128,6 +128,8 @@ func call[In, Out any](ctx context.Context, a *Adapter, path string, in In) (Out
 func request[In, Out any](ctx context.Context, c *Client, scope nodeproto.Route, path string, in In) (out Out, err error) {
 	timeout := 20 * time.Second
 	switch path {
+	case nodeproto.WorkerPath + "resources", nodeproto.WorkerPath + "resize":
+		timeout = 35 * time.Second
 	case nodeproto.GuestPingPath, nodeproto.GuestExecPath, nodeproto.GuestUploadPath, nodeproto.VolumeApplyPath:
 		timeout = 135 * time.Second
 	}

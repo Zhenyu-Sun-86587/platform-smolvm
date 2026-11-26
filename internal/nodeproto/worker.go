@@ -50,6 +50,7 @@ type CaptureRef struct {
 	CaptureID   string                 `json:"capture_id"`
 }
 type ReleaseCapture struct {
-	CaptureID string `json:"capture_id"`
-	Digest    string `json:"manifest_digest"`
+	OperationID string `json:"source_operation_id"`
+	CaptureID   string `json:"capture_id"`
+	Digest      string `json:"manifest_digest"`
 }

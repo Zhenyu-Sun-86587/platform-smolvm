@@ -3,10 +3,12 @@ package nodeclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
+
 	"sandbox-platform/internal/nodeproto"
 	rt "sandbox-platform/internal/runtime"
 	wc "sandbox-platform/internal/runtime/workerclient"
-	"slices"
 )
 
 func workerCall[In, Out any](ctx context.Context, a *Adapter, path string, in In) (Out, error) {
@@ -16,6 +18,14 @@ func workerCall[In, Out any](ctx context.Context, a *Adapter, path string, in In
 	}
 	return reply.Value, err
 }
+
+func uncertainWorkerMutation(err error) error {
+	if errors.Is(err, rt.ErrUnavailable) {
+		return errors.Join(rt.ErrUncertain, err)
+	}
+	return err
+}
+
 func (a *Adapter) Lifecycle(ctx context.Context, method, key string, expected wc.Execution, payload, into any) error {
 	if !slices.Contains(nodeproto.LifecycleActions, method) {
 		return rt.ErrUnsupported
@@ -25,6 +35,9 @@ func (a *Adapter) Lifecycle(ctx context.Context, method, key string, expected wc
 		return err
 	}
 	raw, err := workerCall[nodeproto.PolicyRequest, json.RawMessage](ctx, a, "policy/"+method, nodeproto.PolicyRequest{Expected: expected, OperationID: key, Payload: data})
+	if key != "" {
+		err = uncertainWorkerMutation(err)
+	}
 	if err != nil || into == nil {
 		return err
 	}
@@ -37,7 +50,11 @@ func (a *Adapter) LookupPacketWakeEndpoint(ctx context.Context, expected wc.Exec
 	return workerCall[wc.Execution, wc.PacketWakeEndpoint](ctx, a, "packet-endpoint", expected)
 }
 func (a *Adapter) PacketWakeRule(ctx context.Context, expected wc.Execution, rule wc.PacketWakeRule, id, digest string) (json.RawMessage, error) {
-	return workerCall[nodeproto.PacketRule, json.RawMessage](ctx, a, "packet-rule", nodeproto.PacketRule{Expected: expected, Rule: rule, OperationID: id, Digest: digest})
+	result, err := workerCall[nodeproto.PacketRule, json.RawMessage](ctx, a, "packet-rule", nodeproto.PacketRule{Expected: expected, Rule: rule, OperationID: id, Digest: digest})
+	if rule.Enabled != nil {
+		err = uncertainWorkerMutation(err)
+	}
+	return result, err
 }
 func (a *Adapter) ComputeResources(ctx context.Context, expected wc.Execution) (wc.ComputeResources, error) {
 	return workerCall[wc.Execution, wc.ComputeResources](ctx, a, "resources", expected)
@@ -46,15 +63,17 @@ func (a *Adapter) ManagedCPULimit(ctx context.Context, expected wc.Execution) (w
 	return workerCall[wc.Execution, wc.CPULimitReceipt](ctx, a, "cpu-limit", expected)
 }
 func (a *Adapter) ResizeResources(ctx context.Context, id string, expected wc.Execution, change wc.ResourceChange) (wc.ResizeReceipt, error) {
-	return workerCall[nodeproto.ResourceChange, wc.ResizeReceipt](ctx, a, "resize", nodeproto.ResourceChange{Expected: expected, OperationID: id, Change: change})
+	result, err := workerCall[nodeproto.ResourceChange, wc.ResizeReceipt](ctx, a, "resize", nodeproto.ResourceChange{Expected: expected, OperationID: id, Change: change})
+	return result, uncertainWorkerMutation(err)
 }
 func (a *Adapter) SetManagedCPULimit(ctx context.Context, id string, expected wc.Execution, limit *uint32) (wc.CPULimitReceipt, error) {
-	return workerCall[nodeproto.CPULimit, wc.CPULimitReceipt](ctx, a, "set-cpu-limit", nodeproto.CPULimit{Expected: expected, OperationID: id, Millicpus: limit})
+	result, err := workerCall[nodeproto.CPULimit, wc.CPULimitReceipt](ctx, a, "set-cpu-limit", nodeproto.CPULimit{Expected: expected, OperationID: id, Millicpus: limit})
+	return result, uncertainWorkerMutation(err)
 }
 func (a *Adapter) StatePointCapture(ctx context.Context, expected wc.Execution, id, digest, capture string) (json.RawMessage, error) {
 	return workerCall[nodeproto.CaptureRef, json.RawMessage](ctx, a, "statepoint", nodeproto.CaptureRef{Expected: expected, OperationID: id, Digest: digest, CaptureID: capture})
 }
-func (a *Adapter) ReleaseStatePoint(ctx context.Context, capture, digest string) error {
-	_, err := workerCall[nodeproto.ReleaseCapture, nodeproto.Empty](ctx, a, "release-statepoint", nodeproto.ReleaseCapture{CaptureID: capture, Digest: digest})
-	return err
+func (a *Adapter) ReleaseStatePoint(ctx context.Context, capture, digest, operation string) error {
+	_, err := workerCall[nodeproto.ReleaseCapture, nodeproto.Empty](ctx, a, "release-statepoint", nodeproto.ReleaseCapture{CaptureID: capture, Digest: digest, OperationID: operation})
+	return uncertainWorkerMutation(err)
 }

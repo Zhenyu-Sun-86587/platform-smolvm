@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 // LifecycleControl is the binding-scoped lifecycle and Guest Agent boundary.
@@ -68,6 +70,9 @@ func RetryDelivery(err error) bool {
 			return true
 		}
 		return false
+	}
+	if errors.Is(err, rt.ErrUnavailable) || errors.Is(err, rt.ErrUncertain) {
+		return true
 	}
 	var transport net.Error
 	return errors.As(err, &transport) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)

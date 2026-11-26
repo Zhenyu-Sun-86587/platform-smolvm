@@ -20,7 +20,7 @@ type BindingControl interface {
 	ComputeResources(context.Context, Execution) (ComputeResources, error)
 	ResizeResources(context.Context, string, Execution, ResourceChange) (ResizeReceipt, error)
 	StatePointCapture(context.Context, Execution, string, string, string) (json.RawMessage, error)
-	ReleaseStatePoint(context.Context, string, string) error
+	ReleaseStatePoint(context.Context, string, string, string) error
 }
 
 func ForAdapter(adapter rt.Adapter, bundle string) BindingControl {
