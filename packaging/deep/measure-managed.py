@@ -73,12 +73,68 @@ def probe_binary(supplied, source, output, cc):
     return output
 
 
+def stage_guest(runtime, image, platformd, temporary):
+    snapshot = temporary / managed_evidence.SYSTEM_DISK
+    subprocess.run(["cp", "--reflink=auto", "--sparse=always", "--", image, snapshot], check=True)
+    checked_guest(snapshot, runtime, temporary)
+    bundle = temporary / "bundle"
+    measured = test_bundle(runtime, bundle)
+    binary = Path(shutil.copy2(platformd.resolve(strict=True), temporary / "platformd"))
+    return snapshot, bundle, measured, binary
+
+
+def measure_authorized(args, runtime, image, source, platform):
+    fixture = platform / "tests/integration/authorized_services_kvm.py"
+    revisions = {
+        "smolvm": acceptance_revision(source, ["crates/smolvm-runtime-protocol/src/measured_release.rs"]),
+        "platform": acceptance_revision(platform, [fixture.relative_to(platform), "tests/integration/managed_system_vsock.py",
+                                                     "tests/fixtures/authorized-service.pl"]),
+    }
+    output = args.output.resolve()
+    output.mkdir()
+    (output / managed_evidence.SYSTEM_TEMPLATE).parent.mkdir()
+    (output / managed_evidence.log_name("system-boot")).parent.mkdir(parents=True)
+    selected = set(args.authorized_case or managed_evidence.AUTHORIZED_CASES) | {"system-boot"}
+    runs = {}
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="authorized-acceptance-") as temporary:
+        disk, bundle, measured, platformd = stage_guest(runtime, image, args.platformd, Path(temporary))
+        product = [sys.executable, "-B", str(fixture), "--bundle", str(bundle), "--system-image", str(disk),
+                   "--platformd", str(platformd), "--work-dir", str(args.work_dir)]
+        for case, (name, mode) in managed_evidence.AUTHORIZED_CASES.items():
+            if case not in selected:
+                continue
+            path = output / managed_evidence.log_name(case)
+            command = [*product, "--case", name]
+            if mode:
+                command.extend(["--mode", mode])
+            with path.open("wb") as log:
+                result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+            require(result.returncode == 0, f"{case} failed, see {path}")
+            managed_evidence.verify_authorized_log(case, path, measured)
+            runs[case] = {"log_sha256": checksum(path), "harness_sha256": checksum(fixture)}
+        template = output / managed_evidence.SYSTEM_TEMPLATE
+        archive_system(disk, template)
+        evidence = {"schema": managed_evidence.SCHEMA_V4,
+                    "build_lock_sha256": checksum(runtime / BUILD_LOCK),
+                    "build_record_sha256": checksum(runtime / BUILD_RECORD), "platformd_sha256": checksum(platformd),
+                    "system_disk_bytes": disk.stat().st_size, "system_disk_sha256": checksum(disk),
+                    "acceptance_revisions": revisions, "measurement_bundle_digest": measured,
+                    "system_template_sha256": checksum(template), "runs": runs}
+        (output / managed_evidence.EVIDENCE).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+
+
 def measure(args):
     require(os.geteuid() == 0, "managed acceptance requires KVM and a privileged Worker")
     runtime, image = args.artifacts.resolve(strict=True), args.system_image.resolve(strict=True)
     check_runtime(runtime)
     source = args.smolvm.resolve(strict=True)
     platform = Path(__file__).resolve().parents[2]
+    require(0 < image.stat().st_size <= 64 * 1024**3, "invalid Debian root disk size")
+    if args.authorized_only:
+        measure_authorized(args, runtime, image, source, platform)
+        return
+
     harness = source / "tests/test_deep_managed_launch.py"
     system = platform / "tests/integration/managed_system_vsock.py"
     revisions = {
@@ -87,7 +143,6 @@ def measure(args):
             "crates/smolvm-resourced/tests/kvm-parked-block-guest.c"]),
         "platform": acceptance_revision(platform, [system.relative_to(platform), "tests/fixtures/vsock-probe.c"]),
     }
-    require(0 < image.stat().st_size <= 64 * 1024**3, "invalid Debian root disk size")
     output = args.output.resolve()
     output.mkdir()
     (output / managed_evidence.EVIDENCE).parent.mkdir()
@@ -97,16 +152,9 @@ def measure(args):
     network_runs = {}
     resource_runs = {}
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    with tempfile.TemporaryDirectory(dir="/var/tmp", prefix="managed-acceptance-") as temp:
+    with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="managed-acceptance-") as temp:
         temp = Path(temp)
-        # The several Worker namespaces import one private copy of the System disk.
-        snapshot = temp / managed_evidence.SYSTEM_DISK
-        subprocess.run(["cp", "--reflink=auto", "--sparse=always", "--", image, snapshot], check=True)
-        image = snapshot
-        checked_guest(image, runtime, temp)
-        bundle = temp / "bundle"
-        measured_bundle = test_bundle(runtime, bundle)
-        platformd = Path(shutil.copy2(args.platformd.resolve(strict=True), temp / "platformd"))
+        image, bundle, measured_bundle, platformd = stage_guest(runtime, image, args.platformd, temp)
         counter = probe_binary(args.counter, source / "crates/smolvm-resourced/tests/kvm-parked-block-guest.c",
                                temp / "counter", args.cc)
         probe = probe_binary(args.probe, platform / "tests/fixtures/vsock-probe.c", temp / "vsock-probe", args.cc)
@@ -162,8 +210,17 @@ if __name__ == "__main__":
     parser.add_argument("--probe", type=Path, help="precompiled static vsock-probe fixture")
     parser.add_argument("--private-network", action="store_true", help="also measure both managed private-network directions in KVM")
     parser.add_argument("--live-resources", action="store_true", help="measure public resource adjustments on both System compute profiles in KVM")
+    parser.add_argument("--authorized-only", action="store_true", help="measure authorized System and private TCP lifecycle cases")
+    parser.add_argument("--authorized-case", action="append", choices=managed_evidence.AUTHORIZED_CASES,
+                        help="select an authorized case in addition to System boot; defaults to all authorized cases")
+    parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"), help="scratch directory for private measurement inputs")
     parser.add_argument("--cc", default="cc", help="C compiler for Guest test fixtures")
+    args = parser.parse_args()
+    if args.authorized_only and (args.private_network or args.live_resources or args.probe or args.counter):
+        parser.error("--authorized-only has its own fixtures and cases")
+    if args.authorized_case and not args.authorized_only:
+        parser.error("--authorized-case requires --authorized-only")
     try:
-        measure(parser.parse_args())
+        measure(args)
     except (BundleError, OSError, subprocess.SubprocessError, ValueError) as error:
         sys.exit(f"managed acceptance: {error}")

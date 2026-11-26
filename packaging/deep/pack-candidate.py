@@ -148,7 +148,7 @@ def source_licenses(stage, lock, kernel, crun):
     return reader[1].decode(), clock_tag[1].decode() if clock_tag else None
 
 
-def write_profiles(stage, lock, evidence, reader, clock_tag, managed=False, private_network=False, live_resources=False):
+def write_profiles(stage, lock, evidence, reader, clock_tag, managed_contracts):
     profiles = stage / "profiles"
     profiles.mkdir()
     guest, cpu, kvm = (evidence[name] for name in ("guest", "host_cpu", "kvm"))
@@ -170,20 +170,20 @@ def write_profiles(stage, lock, evidence, reader, clock_tag, managed=False, priv
     clock = {
         "schema": "RuntimeClockContract/1", "guest_clocksource": guest["clocksource"],
         "x86_vm_state_ioctls": ["KVM_GET_CLOCK", "KVM_SET_CLOCK"],
-        "tsc_migration_template": "intel-portable", "verified_operations": ["oci-boot", *(["managed-fork", "hibernate-restore"] if managed else [])],
+        "tsc_migration_template": "intel-portable", "verified_operations": [
+            "oci-boot", *(["managed-fork"] if "managed_parked_fork" in managed_contracts else []),
+            *(["hibernate-restore"] if "managed_statepoint" in managed_contracts else []),
+        ],
     }
     if clock_tag:
         clock.update(schema="RuntimeClockContract/2", standby_checkpoint=clock_tag,
                      standby_clock="freeze-through-activation")
     write_json(profiles / "clock.json", clock)
     sources = lock["sources"]
-    contracts = {name: 1 for name in (*PROTOCOLS, *(managed_evidence.MANAGED if managed else ()))}
-    if private_network:
-        contracts[managed_evidence.PRIVATE_NETWORK] = 1
-    if live_resources:
-        contracts[managed_evidence.LIVE_RESOURCES] = 1
+    contracts = {name: 1 for name in (*PROTOCOLS, *managed_contracts)}
     write_json(profiles / "verification.json", {
-        "schema": "RuntimeVerificationProfile/1", "boot_profiles": ["oci-v1", *(["system-debian-v1"] if managed else [])],
+        "schema": "RuntimeVerificationProfile/1",
+        "boot_profiles": ["oci-v1", *(["system-debian-v1"] if managed_contracts else [])],
         "contracts": contracts,
         "state_reader_id": f"{reader}:{sources['smolvm']['commit']}:{sources['libkrun']['commit']}",
         "required_kvm_caps": sorted(KVM_CAPABILITIES), "optional_features": [],
@@ -210,17 +210,23 @@ def main():
             lock, _ = read_locks(stage / BUILD_LOCK, stage / TOOLCHAIN_LOCK)
             evidence = checked_evidence(args.evidence, stage, lock)
             reader, clock_tag = source_licenses(stage, lock, args.kernel_archive, args.crun_archive)
-            private_network = live_resources = False
+            managed_contracts = set()
             if args.managed_evidence:
                 inputs = args.managed_evidence
                 measured = read_json(inputs / managed_evidence.EVIDENCE)
-                private_network = managed_evidence.uses_private_network(measured)
-                live_resources = measured["schema"] == managed_evidence.SCHEMA_V3
-                cases = [*managed_evidence.SCENARIOS]
-                if private_network:
-                    cases.extend(managed_evidence.PACKET_DIRECTIONS)
-                if live_resources:
-                    cases.extend(managed_evidence.RESOURCE_PROFILES)
+                require(isinstance(measured, dict), "managed evidence must be an object")
+                if measured.get("schema") == managed_evidence.SCHEMA_V4:
+                    managed_contracts = managed_evidence.authorized_contracts(measured)
+                    cases = list(measured["runs"])
+                else:
+                    managed_contracts = set(managed_evidence.MANAGED)
+                    cases = [*managed_evidence.SCENARIOS]
+                    if managed_evidence.uses_private_network(measured):
+                        managed_contracts.add(managed_evidence.PRIVATE_NETWORK)
+                        cases.extend(managed_evidence.PACKET_DIRECTIONS)
+                    if measured["schema"] == managed_evidence.SCHEMA_V3:
+                        managed_contracts.add(managed_evidence.LIVE_RESOURCES)
+                        cases.extend(managed_evidence.RESOURCE_PROFILES)
                 files = [managed_evidence.EVIDENCE, managed_evidence.SYSTEM_TEMPLATE, *(managed_evidence.log_name(case) for case in cases)]
                 for name in files:
                     target = stage / name
@@ -229,7 +235,7 @@ def main():
                 with (stage / "NOTICE").open("a", encoding="utf-8") as notice:
                     notice.write("The System template includes a Debian guest disk with installed package copyright files under /usr/share/doc. "
                                  "The managed acceptance record identifies the tested disk, build and KVM fixture results.\n")
-            write_profiles(stage, lock, evidence, reader, clock_tag, bool(args.managed_evidence), private_network, live_resources)
+            write_profiles(stage, lock, evidence, reader, clock_tag, managed_contracts)
             checksum = pack_bundle(stage, output)
         require(verify_bundle(output, expected=checksum) == checksum, "candidate digest verification failed")
         print(checksum)

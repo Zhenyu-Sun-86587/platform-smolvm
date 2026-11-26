@@ -105,6 +105,35 @@ class ManagedEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(BundleError, "wrong execution profile"):
             self.verify()
 
+    def test_v4_verifies_selected_authorized_cases_with_one_fixture(self):
+        source = self.root / "sources/smolvm.tar.gz"
+        source.parent.mkdir()
+        reader = f'{managed.SCHEMA_V4} {managed.AUTHORIZED_SCOPE}'.encode()
+        with tarfile.open(source, "w:gz") as archive:
+            member = tarfile.TarInfo("crates/smolvm-runtime-protocol/src/measured_release.rs")
+            member.size = len(reader)
+            archive.addfile(member, io.BytesIO(reader))
+        measured = managed.measurement_manifest(self.inventory(), self.evidence["build_record_sha256"],
+                                                self.profile["contracts"])["bundle_digest"]
+        original = {"instance_id": "slot", "incarnation_id": "first-vmm", "execution_epoch": 1}
+        restored = {**original, "incarnation_id": "second-vmm", "execution_epoch": 2}
+
+        def witness(name, **data):
+            return "Authorized KVM " + json.dumps(dict(case=name, bundle_digest=measured, **data))
+
+        runs = {"system-boot": self.log("system-boot", (witness("system-boot", execution=original, marker="ram"),)),
+                "network-native": self.log("network-native", (witness(
+                    "private-tcp", mode="native", source_mode="fixed_internal", original=original, restored=restored,
+                    private_ipv4="10.44.61.2", attachment_id="attachment-slot", capture_id="point", operation_id="wake",
+                    business_receipts={"request-1": 1, "request-2": 1},
+                ),))}
+        self.evidence.pop("counter_sha256")
+        self.evidence.pop("vsock_probe_sha256")
+        self.evidence.update(schema=managed.SCHEMA_V4, runs=runs, measurement_bundle_digest=measured,
+                             system_template_sha256=checksum((self.root / managed.SYSTEM_TEMPLATE).read_bytes()))
+        self.profile["contracts"] = dict.fromkeys((*PROTOCOLS, *managed.authorized_contracts(self.evidence)), 1)
+        self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,10 @@
 """Verify the release fixtures that enable optional managed Bundle contracts."""
 import hashlib
+import ipaddress
+import json
 import tarfile
 
-from bundle_inputs import canonical_json, digest, fields, read_json, require
+from bundle_inputs import BundleError, canonical_json, digest, fields, read_json, require
 
 EVIDENCE = "metadata/managed-acceptance.json"
 SYSTEM_TEMPLATE = "guest/system-debian.tar.gz"
@@ -10,9 +12,22 @@ SYSTEM_DISK = "system-debian.ext4"
 MANAGED = {"managed_block_launch", "managed_parked_fork", "managed_statepoint", "lifecycle_policy"}
 PRIVATE_NETWORK = "managed_private_network"
 LIVE_RESOURCES = "managed_live_resources"
+AUTHORIZED_SCOPE = "managed_authorized_scope"
 SCHEMA_V1 = "RuntimeManagedAcceptance/1"
 SCHEMA_V2 = "RuntimeManagedAcceptance/2"
 SCHEMA_V3 = "RuntimeManagedAcceptance/3"
+SCHEMA_V4 = "RuntimeManagedAcceptance/4"
+AUTHORIZED_CASES = {
+    "system-boot": ("system-boot", None),
+    "system-fork": ("system-fork", None),
+    "system-restore": ("system-restore", None),
+    "network-native": ("private-tcp", "native"),
+    "network-fixed": ("private-tcp", "fixed_internal"),
+}
+MEASUREMENT_PROTOCOLS = {
+    "worker_resource", "capture_control", "statepoint",
+    "guest_identity", "network_attachment", "block_attachment",
+}
 PACKET_DIRECTIONS = {
     "packet-native": ("fixed_internal", "native"),
     "packet-fixed": ("native", "fixed_internal"),
@@ -135,24 +150,10 @@ def verify_live_resources(root, profile, artifacts, evidence):
         verify_log(root, artifacts, case, result, measured)
 
 
-def verify(root, profile, artifacts):
-    advertised = set(profile["contracts"]) & MANAGED
-    network = PRIVATE_NETWORK in profile["contracts"]
-    resources = LIVE_RESOURCES in profile["contracts"]
-    if not advertised and not network and not resources and EVIDENCE not in artifacts:
-        return
-    # This profile is certified as a combination on both launch paths.
-    require(advertised == MANAGED and "system-debian-v1" in profile["boot_profiles"],
-            "incomplete managed runtime verification profile")
-    require(EVIDENCE in artifacts and SYSTEM_TEMPLATE in artifacts, "missing managed release evidence or System disk")
-    evidence = read_json(root / EVIDENCE)
-    require(uses_private_network(evidence) == network, "private network contract and acceptance schema differ")
-    require((evidence["schema"] == SCHEMA_V3) == resources, "live resource contract and acceptance schema differ")
-    base_fields = "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes acceptance_revisions counter_sha256 vsock_probe_sha256 runs"
-    fields(evidence, base_fields + (" private_network" if network else "") + (" live_resources" if resources else ""), "managed evidence")
+def verify_common_inputs(root, artifacts, evidence):
     for key, name in (("build_lock_sha256", "metadata/build-lock.json"), ("build_record_sha256", "metadata/build-record.json")):
         require(evidence[key] == "sha256:" + artifacts[name]["sha256"], f"managed acceptance belongs to a different {name}")
-    for key in ("platformd_sha256", "system_disk_sha256", "counter_sha256", "vsock_probe_sha256"):
+    for key in ("platformd_sha256", "system_disk_sha256"):
         digest(evidence[key], key)
     fields(evidence["acceptance_revisions"], "smolvm platform", "acceptance revisions")
     for repo, revision in evidence["acceptance_revisions"].items():
@@ -169,6 +170,139 @@ def verify(root, profile, artifacts):
                 checksum.update(block)
         require("sha256:" + checksum.hexdigest() == evidence["system_disk_sha256"] and archive.next() is None,
                 "System template differs from the accepted disk")
+
+
+def authorized_contracts(evidence):
+    require(isinstance(evidence, dict), "authorized evidence must be an object")
+    runs = evidence.get("runs")
+    require(isinstance(runs, dict) and "system-boot" in runs and runs.keys() <= AUTHORIZED_CASES.keys(),
+            "authorized qualification needs a System boot and recognized completed cases")
+    return {AUTHORIZED_SCOPE}
+
+
+def verify_authorized_log(case, path, measured):
+    require(path.is_file() and 0 < path.stat().st_size <= 4 * 1024 * 1024, f"invalid authorized log for {case}")
+    label, mode = AUTHORIZED_CASES[case]
+    prefix = "Authorized KVM "
+    lines = path.read_text(encoding="utf-8").splitlines()
+    require(bool(lines) and lines[-1].startswith(prefix), f"missing final authorized result for {case}")
+    try:
+        witnesses = [json.loads(line.removeprefix(prefix)) for line in lines if line.startswith(prefix)]
+    except json.JSONDecodeError as error:
+        raise BundleError(f"invalid authorized log for {case}") from error
+    require(all(isinstance(value, dict) for value in witnesses), "invalid authorized witness")
+    matches = [value for value in witnesses if value.get("case") == label and value.get("mode") == mode]
+    require(len(matches) == 1 and matches[0].get("bundle_digest") == measured,
+            f"missing singular authorized witness for {case} on its measurement Bundle")
+    value = matches[0]
+
+    def execution(key, ref):
+        fields(ref, "instance_id incarnation_id execution_epoch", key)
+        for identifier in ("instance_id", "incarnation_id"):
+            require(isinstance(ref[identifier], str) and ref[identifier], f"missing {key} identity")
+        require(type(ref["execution_epoch"]) is int and ref["execution_epoch"] > 0, f"invalid {key} epoch")
+        return ref
+
+    def ref(key):
+        return execution(key, value.get(key))
+
+    def marked(*keys):
+        return all(isinstance(value.get(key), str) and value[key] for key in keys)
+
+    def same_slot(old, new):
+        return (old["instance_id"] == new["instance_id"]
+                and old["incarnation_id"] != new["incarnation_id"]
+                and new["execution_epoch"] == old["execution_epoch"] + 1)
+
+    if case == "system-boot":
+        require(ref("execution")["execution_epoch"] == 1 and marked("marker"), "missing initial System execution")
+    elif case == "system-fork":
+        source = ref("source")
+        children = value.get("children")
+        require(isinstance(children, list) and len(children) == 2 and marked("marker"), "missing independent children")
+        executions = [source, *(execution("child", child) for child in children)]
+        require(all(len({row[key] for row in executions}) == 3 for key in ("incarnation_id", "instance_id")),
+                "System children share an execution")
+    elif case == "system-restore":
+        old, restored, saved = ref("original"), ref("restored"), ref("saved_execution")
+        require(same_slot(old, saved)
+                and all(restored[key] not in {old[key], saved[key]} for key in ("instance_id", "incarnation_id"))
+                and marked("capture_id", "snapshot_id", "marker"), "missing System checkpoint and exact Hibernate resume")
+    else:
+        original, restored = ref("original"), ref("restored")
+        receipts = value.get("business_receipts")
+        opposite = "fixed_internal" if mode == "native" else "native"
+        try:
+            address = ipaddress.IPv4Address(value.get("private_ipv4", ""))
+        except ipaddress.AddressValueError as error:
+            raise BundleError("missing reserved private IPv4 address") from error
+        require(same_slot(original, restored) and value.get("source_mode") == opposite
+                and marked("capture_id", "operation_id", "attachment_id", "private_ipv4")
+                and address.is_private and not (address.is_unspecified or address.is_loopback or address.is_link_local)
+                and isinstance(receipts, dict) and len(receipts) == 2
+                and all(request and type(count) is int and count == 1 for request, count in receipts.items()),
+                "authorized private flow lacks a single exact wake and two unique business receipts")
+
+
+def verify_authorized(root, profile, artifacts, evidence):
+    fields(evidence, "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes "
+                    "system_template_sha256 acceptance_revisions measurement_bundle_digest runs", "authorized evidence")
+    advertised = set(profile["contracts"]) - MEASUREMENT_PROTOCOLS
+    require(advertised == authorized_contracts(evidence) and "system-debian-v1" in profile["boot_profiles"],
+            "authorized evidence differs from the advertised contract scope")
+    with tarfile.open(root / "sources/smolvm.tar.gz", "r:gz") as archive:
+        try:
+            reader = archive.extractfile("crates/smolvm-runtime-protocol/src/measured_release.rs")
+        except KeyError as error:
+            raise BundleError("missing authorized release reader source") from error
+        require(reader is not None, "missing authorized release reader source")
+        with reader:
+            code = reader.read(512 * 1024)
+        require(SCHEMA_V4.encode() in code and AUTHORIZED_SCOPE.encode() in code,
+                "locked Serve reader cannot advertise authorized release cases")
+    verify_common_inputs(root, artifacts, evidence)
+    require(evidence["system_template_sha256"] == "sha256:" + artifacts[SYSTEM_TEMPLATE]["sha256"],
+            "authorized evidence uses a different System template")
+    full_measurement = {name: 1 for name in MEASUREMENT_PROTOCOLS | MANAGED}
+    measured = measurement_manifest(artifacts, evidence["build_record_sha256"], full_measurement)["bundle_digest"]
+    require(evidence["measurement_bundle_digest"] == measured, "authorized measurement uses different binaries")
+    runs = evidence["runs"]
+    fields(runs["system-boot"], "log_sha256 harness_sha256", "authorized System boot run")
+    harness = runs["system-boot"]["harness_sha256"]
+    for case, result in runs.items():
+        fields(result, "log_sha256 harness_sha256", "authorized acceptance run")
+        digest(result["harness_sha256"], "authorized harness digest")
+        require(result["harness_sha256"] == harness, "authorized cases use different fixture versions")
+        name = log_name(case)
+        require(name in artifacts and result["log_sha256"] == "sha256:" + artifacts[name]["sha256"],
+                f"authorized acceptance log differs for {case}")
+        verify_authorized_log(case, root / name, measured)
+
+
+def verify(root, profile, artifacts):
+    contracts = profile["contracts"]
+    advertised = set(contracts) & MANAGED
+    network = PRIVATE_NETWORK in contracts
+    resources = LIVE_RESOURCES in contracts
+    scoped = AUTHORIZED_SCOPE in contracts
+    if not advertised and not network and not resources and not scoped and EVIDENCE not in artifacts:
+        return
+    require(EVIDENCE in artifacts and SYSTEM_TEMPLATE in artifacts, "missing managed release evidence or System disk")
+    evidence = read_json(root / EVIDENCE)
+    require(isinstance(evidence, dict), "managed evidence must be an object")
+    if evidence.get("schema") == SCHEMA_V4:
+        verify_authorized(root, profile, artifacts, evidence)
+        return
+    # Historical profiles are verified as a combination on both launch paths.
+    require(not scoped and advertised == MANAGED and "system-debian-v1" in profile["boot_profiles"],
+            "incomplete managed runtime verification profile")
+    require(uses_private_network(evidence) == network, "private network contract and acceptance schema differ")
+    require((evidence["schema"] == SCHEMA_V3) == resources, "live resource contract and acceptance schema differ")
+    base_fields = "schema build_lock_sha256 build_record_sha256 platformd_sha256 system_disk_sha256 system_disk_bytes acceptance_revisions counter_sha256 vsock_probe_sha256 runs"
+    fields(evidence, base_fields + (" private_network" if network else "") + (" live_resources" if resources else ""), "managed evidence")
+    verify_common_inputs(root, artifacts, evidence)
+    for key in ("counter_sha256", "vsock_probe_sha256"):
+        digest(evidence[key], key)
     fields(evidence["runs"], " ".join(SCENARIOS), "managed acceptance runs")
     for case, result in evidence["runs"].items():
         fields(result, "log_sha256 harness_sha256", "acceptance run")
