@@ -1,6 +1,7 @@
 """Check the native sandboxctl PTY and the OpenSSH entry on one disposable System Guest."""
 
 import errno
+from contextlib import ExitStack
 import fcntl
 import json
 import os
@@ -66,6 +67,36 @@ def terminal(args, env, machine_id):
         os.close(slave)
 
 
+def agent_login(platform, args, mid, env, private_key):
+    # The fixture already runs as root in a private mount namespace. Hide its
+    # default OpenSSH identities so only the disposable agent can authenticate.
+    directory = platform.root / "empty-root"
+    directory.mkdir(mode=0o700)
+    with ExitStack() as stack:
+        subprocess.run(["mount", "--bind", directory, "/root"], check=True)
+        stack.callback(subprocess.run, ["umount", "/root"], check=True)
+        sock = platform.root / "ssh-agent.sock"
+        agent = subprocess.Popen(["ssh-agent", "-D", "-a", sock], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stack.callback(agent.wait, 10)
+        stack.callback(agent.terminate)
+        wait_for(sock.is_socket, timeout=5)
+        env = {**env, "SSH_AUTH_SOCK": str(sock), "SSH_ASKPASS_REQUIRE": "never"}
+        assert subprocess.run(["ssh-add", "-l"], env=env, capture_output=True).returncode == 1
+        def cli(*words):
+            return subprocess.run([args.sandboxctl, *words], env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, timeout=65)
+        native = cli("exec", "--follow", "--cwd", "/", mid, "--", "/usr/bin/id", "-u")
+        assert native.returncode == 0 and native.stdout == b"0\n", native.stderr
+        denied = cli("ssh", mid, "--batch-mode", "--", "id -u")
+        assert denied.returncode == 255 and b"Permission denied" in denied.stderr, (denied.returncode, denied.stderr)
+        subprocess.run(["ssh-add", private_key], env=env, check=True, capture_output=True)
+        connected = cli("ssh", mid, "--", "id -u; exit 22")
+        assert connected.returncode == 22 and connected.stdout == b"0\n", (connected.returncode, connected.stderr)
+        print(json.dumps(dict(case="cli-ssh-agent", machine_id=mid, native_exec_without_ssh_key=True,
+                              empty_agent_exit=denied.returncode, ssh_login_without_identity_flag=True,
+                              guest_exit=connected.returncode)), flush=True)
+
+
 def check(platform, args, keys, private_key):
     mid, _, ref = machine(platform, "cli-terminal", "native")
     # Manage includes read access to the verified host key and scoped tunnel access.
@@ -81,6 +112,7 @@ def check(platform, args, keys, private_key):
                           "--user", "root", "--", "id -u; exit 21"], env=env,
                          stdin=subprocess.DEVNULL, capture_output=True, timeout=65)
     assert ssh.returncode == 21 and ssh.stdout == b"0\n", (ssh.returncode, ssh.stdout, ssh.stderr)
+    agent_login(platform, args, mid, env, private_key)
     assert platform.context(mid)[1] == ref
     print(json.dumps(dict(case="cli-terminal", machine_id=mid, service_id=sid,
                           bundle=platform.bundle_id, execution_epoch=ref["execution_epoch"],

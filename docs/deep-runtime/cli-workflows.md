@@ -42,6 +42,10 @@ rmdir "$dir"
 
 如等待超时，保留 `op`，用 `sandboxctl operations wait "$op"` 恢复观察。若连接在写入受理前后断开，保留原 key、epoch、revision、generation、目标与参数，先查询。文件提交返回 `OUTCOME_UNKNOWN` 时，核对同一执行的字节或哈希，禁止创建新的写入来推断前次结果。对 Exec 区分 API 失败与 Guest 自身的非零退出。PTY 与 SSH 为终端原始流，二进制下载到 stdout 时将日志留在 stderr。
 
+### 进入 Guest 时的凭据
+
+`sandboxctl exec --tty --cwd / MACHINE -- /bin/sh` 使用平台 token 和 Guest Agent，适合只想打开交互 shell 的场景。`sandboxctl ssh MACHINE` 使用 OpenSSH，平台凭据授权隧道并读取已验证的 Guest 主机密钥，Guest 使用已授权的用户公钥认证。私钥在 ssh-agent 或 OpenSSH 默认位置时可直接连接，需要指定特定文件时用 `--identity`。受管的 System SSH 还需启用对应服务和密钥同步。
+
 ### 脚本如何判断下一步
 
 | 场景 | 输出与退出码 | 脚本动作 |
