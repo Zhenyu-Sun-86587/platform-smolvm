@@ -26,6 +26,8 @@ The existing operation states and effects retain their wire meaning.
 Use `--strict-result` to make partial or unknown effects return nonzero.
 JSON mutation errors report the original intent in `error.intent`, while
 `OPERATION_WAIT_TIMEOUT` reports the original operation ID and exits 124.
+The client disables body replay for transmitted mutations, including empty
+writes. Receipt recovery stays an explicit caller decision.
 An operation that ends in `succeeded` with `effect:"partial"` can have both
 successful and failed children. Inspect its `children` receipts and use
 `operations retry` for eligible failed targets on the same operation ID.

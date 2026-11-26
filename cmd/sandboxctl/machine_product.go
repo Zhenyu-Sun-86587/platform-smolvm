@@ -29,7 +29,31 @@ func (c *client) machineProductCommands() []*cobra.Command {
 		}, m.Revision)
 	})
 	config := &cobra.Command{Use: "config", Short: "Read and update workspace configuration"}
-	set := c.update("set MACHINE", "machines", http.MethodPatch, true)
+	var body string
+	set := sub("set MACHINE", "Patch workspace settings using the current machine guards", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		payload, err := jsonBody(strings.TrimSpace(body))
+		if err != nil {
+			return err
+		}
+		var patch map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &patch); err != nil {
+			return err
+		}
+		m, err := c.machine(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+		generation := json.RawMessage(strconv.FormatInt(m.Generation, 10))
+		if existing, ok := patch["expected_generation"]; ok {
+			var supplied int64
+			if err := json.Unmarshal(existing, &supplied); err != nil || supplied != m.Generation {
+				return errors.New("body expected_generation must match the selected generation")
+			}
+		}
+		patch["expected_generation"] = generation
+		return c.mutation(cmd, http.MethodPatch, res("machines", m.ID), patch, m.Revision)
+	})
+	set.Flags().StringVar(&body, "body", "", "JSON object containing the supported machine settings to change")
 	_ = set.MarkFlagRequired("body")
 	config.AddCommand(sub("get MACHINE", "Read workspace configuration and lifecycle status", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 		return c.showMachine(cmd, args[0], "")
