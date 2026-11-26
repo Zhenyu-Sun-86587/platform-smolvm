@@ -15,6 +15,7 @@ const capabilities: Record<string, Capability> = {
   "boot.live_compute_growth": supported,
   "state.independent_fork": supported,
   "state.capture_vm": supported,
+  "state.checkpoint": supported,
   "state.clone_vm": supported,
   "state.restore_vm": supported,
   "state.standby": supported,
@@ -33,7 +34,7 @@ const control: Control & { runtime_ready: boolean; principal: { username: string
 }
 const profile: RuntimeProfile = {
   runtime_instance_id: network.runtime_instance_id, runtime_bundle_id: "fixture-runtime", state_reader_id: "fixture-reader",
-  status: "ready", verification_status: "verified", security_status: "verified", boot_profiles: ["system", "oci"],
+  status: "registered", verification_status: "verified", security_status: "verified", boot_profiles: ["system", "oci"],
   running_bindings: 2, standby_bindings: 0, hibernated_bindings: 0, bundle_binding_refs: 3,
   bundle_snapshot_refs: 0, capabilities,
 }
