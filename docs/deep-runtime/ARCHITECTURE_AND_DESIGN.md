@@ -1,6 +1,8 @@
 # 架构与设计
 
-> 本文是工程决策。已有源码事实用固定提交链接支撑；“新增”均为拟实现。接口和枚举以 TECHNICAL_SPECIFICATION 为准，工作包编号见 IMPLEMENTATION_PLAN。
+> 本文记录 2026-11-25 的工程决策。“新增”指相对于初始源码基线的设计。接口和枚举见技术规格，工作包编号见实施计划。
+
+在隔离 Worker 上，实机已分别核对 platformd、Serve、资源 Worker 与 VMM 的进程边界。Worker 和 Serve 可独立替换，独立分支有各自的写盘，旧保存点由对应 reader 恢复。各阶段的故障与恢复证据按安装版本记录。[组件恢复](managed-recovery.md) · [保存点兼容](statepoint-history-a19.md) · [A01–A36 验收台账](acceptance-ledger.md)
 
 ## 1. 总体结构：保留产品，扩展三个底层边界
 
