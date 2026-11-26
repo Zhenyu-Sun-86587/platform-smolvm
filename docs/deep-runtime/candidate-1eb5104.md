@@ -59,4 +59,32 @@ Serve、Worker 和 libkrun 的最高 glibc 符号版本均为 2.30。Debian 盘�
 
 用 `authorized_services_kvm.py --case system-restore --use-installation` 只读绑定正式安装树。公开 Checkpoint `snap_899c9aba19cb73a375a7e3576b865b50` 派生了不同逻辑实例上的独立恢复。源机 Hibernate 后以 capture `point-f4ccc6335ff02e25660726d68a0b6ff0` 精确唤醒，在原逻辑实例上从 epoch 1 进入 epoch 2。两个执行都读回 `ram-c5e332549ff7005476523e23`。测试后的安装摘要再次验证通过。原始日志 `installed-public-system-statepoint.log` 的 SHA-256 为 `8427962a92328445985600ca1407ec08c34c36de62cb4324a2d46b3bc2690ffa`。
 
-[授权 System 夹具](../../tests/integration/authorized_services_kvm.py) · [f2df146 授权验证记录](candidate-f2df146-authorized.md) · [逐项验收台账](acceptance-ledger.md)
+### A11、A12 卷与块设备
+
+`volume_product_kvm.py` 以 `--use-installation --state-tmpfs` 从同一安装、平台和 System 原盘启动真实虚机。各组使用私有暂存和专属 Worker slice。
+
+| 用例 | 实测结果 | 原始日志与 SHA-256 |
+| --- | --- | --- |
+| A11 `deleted-checkpoint --verify-retired-head --machine-volumes` | 源两卷分别推进后转挂并读回新写入。删除源机后回收当前根盘写头，保存点根盘仍有引用。`exact` 返回 `VOLUME_GENERATION_MISMATCH` 且 effect 为 `none`。`clone_conflicts` 恢复原 RAM、两份原卷字节和新建的公开 RW 卷，共享同一不可变 RO 代际。重启平台后核对卷投影与写头。Hibernate 和 exact Wake 保留卷 ID 与后续写入。 | `installed-a11-volume-projection.log`，`0583f4245115a872eaca2d193e165d7f8edf1001916b6949ce501a2f0ef1468b` |
+| A12 `lifecycle --machine-volumes` | 在线挂接、解挂和扩容保留外层错误码并给出 `reason_code=REQUIRES_STOPPED`。Stop 后持久卷转挂成功，块设备从 16 扩至 32 MiB。一次 Guest 文件系统扩容因只读失败，随后正常扩容并读回原文件。删除源机回收私有根盘和此前解挂的 machine 写头，历史 ephemeral 卷仍可列出。两个自有 RO 消费者可继续挂载和读取同一不可变代际。 | `installed-a12-lifecycle.log`，`90f5ed7e0d5f6928eedd2416b067f5cf58b994a15aabde3d2f3549b445843536` |
+| A12 `machine-fork --machine-volumes` | 独立 Fork 给 machine 和 persistent 两个 RW 卷各创建新公开卷，并引用同一不可变共享代际。源机删除回收其私有写头。子机在 epoch 2 和 3 冷启动时保留原根盘写头和子机数据。子机删除回收其私有头，两份持久卷和共享代际仍可用。 | `installed-a12-machine-fork.log`，`5bb850aed65598ff9cfed6106981a1daeaf1371c2d37f58b1410be050f462bb2` |
+| A12 `native-roles` | 真实 System 从同一 capture 恢复 `root`、`storage`、`overlay`、`cache` 四个 RW 角色及 `data` RO 角色。读取各捕获标记和原 RAM。目标的四个写头均独立，RO 代际保持原标识。 | `installed-a12-native-roles.log`，`3506bb4fad29c48dac4b29baa7de318080a52c8d827a26b6d592c9364dcbe492` |
+| A12 `growth-fault` | 分盘后 objects ext4 剩余 0 字节，目录数据库盘仍有 3,886,411,776 字节且 Worker 就绪。ENOSPC 使创建和扩容在发布前中止，原 inode 15 和原 16 MiB 数据保留。原写头进入 `0400` 后的受控 fsync EIO 留下待调和状态。Worker 重启后通过公开 reconcile 复用后继 inode 19，实机以 32 MiB 设备读回原数据并写入新数据。 | `installed-a12-storage-isolated.log`，`25a5af2c356c0c4a8bf0736caec722fac9bb915a49735396077e46222c0277e0` |
+
+首次存储切点用了旧夹具的挂载顺序。catalog 的 bind 覆盖了预先挂上的对象盘，导致 objects 与 SQLite WAL 实际处于同一已填满的文件系统。两个原始复跑出现 `ApplyProductVolume: empty request packet`。只读观察对照中，Worker 先为 `ready`，随后退出码为 101，两个目录同时剩余 0 字节且无新操作记录。日志为 `installed-a12-storage-cut.log`、`installed-a12-storage-cut-v2.log` 和 `installed-a12-storage-observed.log`。夹具提交 `fccd03d2e407d17689b27f6b6ee7b3f02f84595e` 将真实 ext4 挂在 catalog bind 之后并断言设备独立。表中通过记录使用原正式安装及平台二进制和修正后的测试夹具。
+
+另一次目录空间对照将 Worker 日志写到独立文件系统，记录 SQLite 的 `database or disk is full`。Worker 保持 `ready`，公开操作留在 `recovery_required`。日志和 SQLite 共盘时，调用跟踪捕获 stderr 的 `ENOSPC`、Rust 标准库 `stdio.rs:1209:9` 的日志写入 panic 和退出 101。跟踪文件 `installed-a12-catalog-full-worker.strace` 的 SHA-256 为 `3fc8b94c6037b9ac73de59bbfe3adfad912cce0755e05e5c4f66527782a4347c`。
+
+Worker 修复 `bb9fb77b0cc942c71eb408aa99047e2b8e506d96` 保留 SQLite 的类型化错误，并将诊断日志写失败按尽力写入处理。独立小目录复测中，两个 Worker 都先登记真实安装 Bundle，再接收普通目录操作。原安装的 Worker 退出 101。修复后的开发 Worker 保持同一 PID 并返回 `E_CATALOG`，释放空间后同一操作 ID 正常受理。原件对照日志 `catalog-logging-frozen-control-registered.log` 的 SHA-256 为 `09f75ea6fe575f420fff2344f2e9305b887518e3e12efa5eb34b24589b941c78`，开发复测 `catalog-logging-repaired.log` 的 SHA-256 为 `6f2bf099e65fc716ddd0c02040bc41b751fa0ea92b0984add70e420113edc711`。
+
+### A17 OCI 管理 Agent 重启
+
+`oci_agent_restart_kvm.py` 只读绑定正式安装并启动官方 OCI 根文件系统。管理 Agent 被替换后，夹具核对原 crun 进程、启动时间、工作负载标记和持续计数。
+
+| 用例 | 实测结果 | 原始日志与 SHA-256 |
+| --- | --- | --- |
+| `--agent-signal TERM --end manual` | 新 Agent 接回 crun PID 487，stdout 计数继续至 36。显式 Stop 给原进程发送已登记的 SIGUSR1，原 VMM 退出。 | `installed-a17-oci-agent-term.log`，`e4d6b0a5f13fcc782cc9f0b86b20279141847e527016bdad24eafd92e0b4d06f` |
+| `--agent-signal KILL --end workload` | 新 Agent 接回 crun PID 488，stdout 计数继续至 32。原任务自行退出后，stop-on-exit 关闭同一 VMM。 | `installed-a17-oci-agent-kill.log`，`d98962a3223855d80a116d277f67a55c50d8d666e854f4255fde8dc95d5dc462` |
+| `--agent-signal KILL --end branch` | 独立 OCI 分支及其替换的 Agent 都读取同一 tmpfs 工作负载登记，并接回原 crun PID 481。 | `installed-a17-oci-agent-branch.log`，`15e36731b781e646812c955eb0780a661ea76500fcbcc01ea54b4d4cbcee8b32` |
+
+[授权 System 夹具](../../tests/integration/authorized_services_kvm.py) · [实际卷夹具](../../tests/integration/volume_product_kvm.py) · [OCI Agent 夹具](../../tests/integration/oci_agent_restart_kvm.py) · [f2df146 授权验证记录](candidate-f2df146-authorized.md) · [逐项验收台账](acceptance-ledger.md)
