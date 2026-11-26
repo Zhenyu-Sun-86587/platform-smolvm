@@ -38,12 +38,17 @@ export function metricAvailability(sample?: MetricObservation, machine?: Machine
   const availability = sample?.availability
   const execution = sample?.execution
   if (!availability) return "unknown"
-  if ((availability === "available" || availability === "partial") && machine && execution) {
+  if ((availability === "available" || availability === "partial") && machine) {
     const binding = machine.binding
-    if (execution.binding_generation !== machine.binding_generation ||
+    const native = Boolean(binding?.runtime_bundle_id || binding?.runtime_instance_id)
+    if (sample?.scope !== "machine") return "unknown"
+    if (native && (!execution || !binding?.binding_id || !binding.incarnation_id || binding.execution_epoch === undefined)) {
+      return "unknown"
+    }
+    if (execution && (execution.binding_generation !== machine.binding_generation ||
         (binding?.binding_id && execution.binding_id !== binding.binding_id) ||
         (binding?.incarnation_id && execution.incarnation_id !== binding.incarnation_id) ||
-        (binding?.execution_epoch !== undefined && execution.execution_epoch !== binding.execution_epoch)) {
+        (binding?.execution_epoch !== undefined && execution.execution_epoch !== binding.execution_epoch))) {
       return "stale"
     }
   }

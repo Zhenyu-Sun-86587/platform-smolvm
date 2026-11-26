@@ -139,10 +139,10 @@ export function CommandPalette({ groups, onClose, restoreFocus, account, initial
           <Search size={17} aria-hidden="true" />
           <input ref={input} role="combobox" aria-label="Search workspace" aria-autocomplete="list" aria-expanded="true"
             aria-controls={listId} aria-activedescendant={selected >= 0 ? optionId(selected) : undefined}
-            placeholder="Find a machine, page, or action…" autoComplete="off" spellCheck={false} value={query}
+            placeholder="Search machines, snapshots, settings, actions…" autoComplete="off" spellCheck={false} value={query}
             onChange={event => { setQuery(event.target.value); setActive(0); if (list.current) list.current.scrollTop = 0 }}
             onKeyDown={navigate} />
-          <Dialog.Close asChild><IconButton aria-label="Close command palette"><X size={16} /></IconButton></Dialog.Close>
+          <Dialog.Close asChild><IconButton className="palette-dismiss" aria-label="Close command palette" data-dialog-close><kbd aria-hidden="true">esc</kbd><X size={16} aria-hidden="true" /></IconButton></Dialog.Close>
         </div>
         <div id={listId} role="listbox" aria-label="Commands" className="palette-results" ref={list}>
           {results.map(group => <div key={group.name} role="group" aria-label={group.name}>
@@ -158,11 +158,11 @@ export function CommandPalette({ groups, onClose, restoreFocus, account, initial
                   positions.includes(index) ? <mark key={index}>{char}</mark> : char) : command.name}</span>
               </div>
             })}
-            {group.matches.length > maxPerGroup && <p className="palette-more">Keep typing to see {group.matches.length - maxPerGroup} more</p>}
+            {group.matches.length > maxPerGroup && <p className="palette-more">+{group.matches.length - maxPerGroup} more, keep typing to narrow</p>}
           </div>)}
         </div>
         {results.length === 0 && <p className="palette-no-results" role="status">No results for “{query.trim()}”.</p>}
-        <footer className="palette-footer"><span><kbd>↑</kbd> <kbd>↓</kbd> Move</span><span><kbd>↵</kbd> Open</span><span><kbd>Esc</kbd> Close</span></footer>
+        <footer className="palette-footer"><span><kbd>↑↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>esc</kbd> Close</span></footer>
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>
