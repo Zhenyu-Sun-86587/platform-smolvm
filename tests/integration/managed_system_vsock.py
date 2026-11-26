@@ -142,8 +142,13 @@ class Platform:
         secret.touch(mode=0o600)
         secret.write_text(password + "\n")
         self.env["SANDBOX_OWNER_PASSWORD_FILE"] = str(secret)
+        catalog = root / "catalog"
+        catalog.mkdir(mode=0o700, exist_ok=True)
+        # Router nsfs pins outlive a Worker process, including a fixture's SIGKILL.
+        subprocess.run(["mount", "--bind", catalog, catalog], check=True)
+        self.stack.callback(subprocess.run, ["umount", "--lazy", catalog], check=True)
         self.broker = self.spawn([self.bundle / "smolvm-resourced", "serve", "--socket", self.worker,
-                                  "--state-dir", root / "catalog", "--socket-gid", str(grp.getgrnam("kvm").gr_gid)],
+                                  "--state-dir", catalog, "--socket-gid", str(grp.getgrnam("kvm").gr_gid)],
                                  "worker.log")
         wait_for(lambda: worker(self.worker, "Health")["state"] == "ready")
 
