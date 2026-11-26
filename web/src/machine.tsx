@@ -540,8 +540,29 @@ export function Snapshots({ machine, machines, actions, revision }: {machine?:Ma
 }
 
 type Lease = { semantics_version?: number; execution_epoch?: number; release_reason?: string; lease_id: string; state: string; reason?: string; expires_at?: string; revision?: number }
+
+function leaseDescription(lease: Lease) {
+  if (lease.state === "suspect") {
+    return lease.release_reason === "host boot changed"
+      ? "The host restarted. This lease still protects the machine."
+      : "Renewal is overdue. This lease still protects the machine."
+  }
+  if (lease.state === "released") {
+    return lease.release_reason === "expired" ? "The lease expired and its protection ended." : "Lease protection ended."
+  }
+  return lease.semantics_version === 2 ? "Protection ends at expiry." : "Protection continues until release."
+}
+
+function activityBlocker(blocker: string) {
+  const parts = blocker.split(":")
+  if (!parts.includes("unknown")) return blocker
+  const source = parts.filter(part => part !== "unknown").join(" / ").replaceAll("_", " ")
+  return `Automatic sleep is blocked while ${source || "activity"} status is unknown.`
+}
+
 function Activity({ machine, actions, revision }: Context) {
   const policy = machine.lifecycle_policy
+  const blockers = policy?.effective_blockers ?? policy?.worker?.blockers ?? machine.blocked_reasons
   const base = machinePath(machine.machine_id)
   const leases = useRemote<Page<Lease>>(base + "/leases", revision)
   const metrics = useRemote<Record<string, unknown>>(base + "/metrics", revision)
@@ -566,7 +587,7 @@ function Activity({ machine, actions, revision }: Context) {
       <Details value={{ source: policy.source, default_revision: policy.default_revision, desired_revision: policy.desired_revision,
         applied_revision: policy.applied_revision, effective_status: policy.effective_status, keep_running: policy.applied?.keep_running, standby_after_seconds: policy.applied?.standby_after_seconds,
         hibernate_after_seconds: policy.applied?.hibernate_after_seconds, idle_seconds: policy.worker?.idle_ms == null ? undefined : Math.floor(policy.worker.idle_ms / 1000),
-        overrides: policy.overrides, blockers: policy.effective_blockers ?? policy.worker?.blockers,
+        overrides: policy.overrides, blockers: blockers?.map(activityBlocker),
         next_action: policy.worker?.next_action?.kind, next_action_origin: policy.worker?.next_action?.origin,
         eligible_after_seconds: policy.worker?.next_action && Math.ceil(policy.worker.next_action.eligible_after_ms / 1000),
         last_decision: policy.worker?.last_decision, last_error: policy.last_error }} />
@@ -582,7 +603,7 @@ function Activity({ machine, actions, revision }: Context) {
       <p className="policy-note">Authenticated access wakes a hibernated machine and resumes its saved execution.</p>
       <FeatureStatus reason={capabilityReason(machine, "automatic_idle")} />
       <Details value={{ enabled: machine.idle_policy?.enabled, timeout_seconds: machine.idle_policy?.timeout_seconds, keep_running: machine.keep_running,
-        effective_status: policy?.effective_status, blockers: policy?.effective_blockers ?? machine.blocked_reasons, last_activity: time(machine.last_user_activity_at) }} />
+        effective_status: policy?.effective_status, blockers: blockers?.map(activityBlocker), last_activity: time(machine.last_user_activity_at) }} />
     </Section>}
     <Section title="Leases" actions={<button onClick={() => actions.dialog({
       title: "Acquire keep-running lease",
@@ -594,8 +615,8 @@ function Activity({ machine, actions, revision }: Context) {
       <Callout error={leases.error} />
       {newLease && <Details value={newLease} />}
       <div className="rows">{leases.data?.items.map(lease => <div className="row" key={lease.lease_id}>
-        <code>{lease.lease_id}</code><State value={lease.state} /><span>{lease.reason}</span><span>{time(lease.expires_at)}</span><small>{lease.semantics_version === 2 ? "Expires automatically" : "Protected until released"}{lease.release_reason && " · " + lease.release_reason}</small>
-        <button onClick={() => changeLease(lease, false)}>Renew</button><button onClick={() => changeLease(lease, true)}>Release</button>
+        <code>{lease.lease_id}</code><State value={lease.state === "released" && lease.release_reason === "expired" ? "expired" : lease.state} /><span>{lease.reason}</span><span>{time(lease.expires_at)}</span><small>{leaseDescription(lease)}</small>
+        <button disabled={lease.state === "released"} onClick={() => changeLease(lease, false)}>Renew</button><button disabled={lease.state === "released"} onClick={() => changeLease(lease, true)}>Release</button>
       </div>)}</div>
     </Section>
     <Section title="Resource metrics" actions={<button onClick={actions.refresh}>Refresh</button>}>
