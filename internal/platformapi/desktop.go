@@ -114,8 +114,8 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 				&binding.RuntimeInstanceID, &binding.RuntimeBundleID, &binding.RuntimeInstanceObjectID, &binding.IncarnationID, &binding.PowerState, &active); err != nil {
 			return registry.MutationResult{}, err
 		}
-		if desktopProfile != templates.DesktopSoftwareVNC || session.Epoch < 1 {
-			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "desktop sessions require the System software VNC profile and an execution"}
+		if desktopProfile != templates.DesktopSoftwareVNC {
+			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "desktop sessions require the System software VNC profile"}
 		}
 		if machineRev != rev {
 			return registry.MutationResult{}, registry.ErrRevision
@@ -131,9 +131,6 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
-		if managed && (binding.PowerState == registry.PowerHibernated || binding.PowerState == registry.PowerStopped) {
-			return registry.MutationResult{}, desktopExecutionRequired()
-		}
 		if err := tx.QueryRowContext(ctx, `SELECT revision FROM services WHERE id=? AND machine_id=? AND enabled=1
 			AND kind='vnc' AND public_host IS NULL AND public_port IS NULL`, request.ServiceID, mid).Scan(&session.serviceRev); err != nil {
 			return registry.MutationResult{}, err
@@ -144,20 +141,24 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 		if session.LeaseID, err = registry.NewID("lease_"); err != nil {
 			return registry.MutationResult{}, err
 		}
+		now := time.Now().UTC()
+		session.MachineID, session.ServiceID = mid, request.ServiceID
+		session.leaseOwner, session.credential = p.ID, p.CredentialID
+		session.State, session.Revision, session.Expires = "active", 1, now.Add(time.Duration(request.TTL)*time.Second)
+		if managed {
+			err := s.createDesktopIntent(ctx, tx, session, binding, controlEpoch, request.TTL, false)
+			return registry.MutationResult{Response: lifecycle.JSON(map[string]string{"desktop_session_id": session.ID})}, err
+		}
+		if session.Epoch < 1 {
+			return registry.MutationResult{}, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "the historical desktop contract requires an execution"}
+		}
 		secret, err := registry.NewID("desktop-lease-")
 		if err != nil {
 			return registry.MutationResult{}, err
 		}
-		now := time.Now().UTC()
-		session.MachineID, session.ServiceID = mid, request.ServiceID
-		session.State, session.Revision, session.Expires = "active", 1, now.Add(time.Duration(request.TTL)*time.Second)
-		semantics := 1
-		if managed {
-			session.State, semantics = "suspect", 2
-		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO leases(id,machine_id,binding_generation,principal_id,token_hash,reason,expires_at,state,semantics_version)
 			VALUES(?,?,?,?,?,'Desktop session',?,?,?)`, session.LeaseID, mid, session.Generation, p.ID,
-			fmt.Sprintf("%x", sha256.Sum256([]byte(secret))), session.Expires.UnixMilli(), session.State, semantics); err != nil {
+			fmt.Sprintf("%x", sha256.Sum256([]byte(secret))), session.Expires.UnixMilli(), session.State, 1); err != nil {
 			return registry.MutationResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO desktop_sessions VALUES (?,?,?,?,?,?,?,?,?)`, session.ID, session.LeaseID,
@@ -178,7 +179,7 @@ func (s *Server) createDesktopSession(w http.ResponseWriter, r *http.Request, p 
 	if err := json.Unmarshal(raw, &saved); err != nil {
 		return err
 	}
-	session, err := s.admitDesktop(r.Context(), saved.ID, p)
+	session, err := s.admitDesktopCreation(r.Context(), saved.ID, p)
 	if err != nil {
 		return err
 	}
@@ -259,7 +260,7 @@ func (s *Server) closeDesktopSession(w http.ResponseWriter, r *http.Request, p a
 	if err != nil {
 		return err
 	}
-	if err := s.releaseDesktopProtection(r.Context(), session); err != nil {
+	if err := s.releaseDesktopProtection(r.Context(), session.ID); err != nil {
 		return err
 	}
 	return write(w, http.StatusOK, raw)
