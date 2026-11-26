@@ -137,6 +137,7 @@ def child_state(db, operation, ordinal):
         JOIN operations o ON o.operation_id=c.operation_id
         LEFT JOIN executions e ON e.last_operation_id=c.operation_id AND e.instance_id=c.instance_id
         LEFT JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
+             AND a.instance_id=c.instance_id AND a.execution_epoch=e.execution_epoch
         WHERE c.batch_id=? AND c.ordinal=?
     """, (operation, ordinal)).fetchone()
 
@@ -389,8 +390,19 @@ def gate_case(platform, phase, with_container):
         """, key).fetchall()
         grants = db.execute("SELECT state FROM writer_grants WHERE incarnation_id=? AND execution_epoch=?", key).fetchall()
         reserved = db.execute("SELECT COUNT(*) FROM writer_reservations WHERE incarnation_id=? AND execution_epoch=?", key).fetchone()[0]
+    assert failed is not None, cut
+    expected_scope = {field: cut["before"][field] for field in
+                      ("operation_id", "instance_id", "incarnation_id", "execution_epoch")}
+    for row in (cut["after"], failed):
+        assert all(row[field] == value for field, value in expected_scope.items()), dict(row)
+    decisions = {"before_exit": cut["before"]["decision"], "after_exit": cut["after"]["decision"], "settled": failed["decision"]}
+    if phase in ("committing", "policy_armed"):
+        assert decisions["before_exit"] == "commit", decisions
+    if "commit" in decisions.values():
+        assert decisions["settled"] == "commit", decisions
+    expected_effect = "unknown" if decisions["settled"] == "commit" else "none"
     failed_child = finished["children"][TARGET_ORDINAL]
-    assert finished["state"] == "failed" and finished["effect"] == "none", finished
+    assert finished["state"] == "failed" and finished["effect"] == expected_effect, (finished, decisions)
     assert failed_child["state"] in ("failed", "quarantined") and failed["operation_phase"] == "ABORTED", finished
     assert failed["process_phase"] == "exited" and failed["phase"] != "released", dict(failed)
     assert leases and all(lease["state"] == "retired" and not lease["published"] for lease in leases), [dict(lease) for lease in leases]
@@ -402,7 +414,7 @@ def gate_case(platform, phase, with_container):
     print("Owned activation settled", json.dumps({
         "phase": phase, "operation_id": accepted["operation_id"], "target": dict(failed),
         "leases": [dict(lease) for lease in leases], "grants": [dict(grant) for grant in grants],
-        "source_disposition": finished["source_disposition"], "effect": finished["effect"],
+        "source_disposition": finished["source_disposition"], "effect": finished["effect"], "activation_decisions": decisions,
     }, sort_keys=True), flush=True)
 
     completed = platform.complete(fork_one("owned positive target", "owned-gate-positive"))
