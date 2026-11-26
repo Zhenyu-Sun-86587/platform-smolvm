@@ -21,7 +21,7 @@
 | A03 | 86dae32 冻结安装，分支隔离、精确恢复及末引用回收通过 | 根与左右兄弟并行读写 1024 个私有页和两个盘扇区，三代递归树逐个围栏根、左和中间祖先并清理运行路径。叶子独立 Hibernate/Restore 时右兄弟持续写入。恢复后的叶子保留 Guest PID 和三卷身份，从原保存点精确推进一个 tick。最后一支退出后，三份 volatile 资源和传输均回收，旧 backing 无 FD 或映射，逻辑谱系与 durable StatePoint 仍可查。[同树 KVM 验收](candidate-86dae32.md#a03-递归分支独立写入休眠和末引用回收) | — |
 | A04 | fb69434 安装件，三种 provider 场景通过 | 活源和活子分别给重启的 broker 交还原 sealed RAM。仅 broker 持有，以及 broker 与唯一源 VMM 同时退出时，恢复均报告 `lost`，保留 capture 引用，拒绝 GC，新 reader 的不可用回执携带零个 FD。开发平台另验证原 child 提供两块可写头后公开 Fork 继续原 PID。[资源身份和日志](#a04-broker-与最后一个-ram-provider)、`.build/wp23/tracked-provider-kvm.log` | — |
 | A05 | 开发实机、本地测试 | 同一 Debian 块代际同时受 checkpoint、休眠根、未决操作和备份导出保护。公开删除 checkpoint 后，导出仍持有原 inode，休眠仍可恢复原 RAM 和根盘数据。单独持有操作或块导出都阻止回收。最后引用释放后 Worker 在 unlink 前被终止，恢复围栏解除后重放原 tombstone，删掉磁盘文件并清除依赖边。 [实测与复现](managed-recovery.md#statepoint-引用与实物回收) | 用下一次冻结安装复跑。 |
-| A06 | 冻结测量、开发实机，部分 | 冻结 OCI 在 child 激活前失败，重试保留已成功 child 和原 capture。开发 Worker 记录 STOP_COMMIT 重启后的原执行退出，并拒绝错误 lineage、OFD 或 epoch。 `managed/oci-capture.log`、`.build/wp10/durable-statepoint.log`、`.build/wp10/parked-block.log` | 逐阶段断连、丢 ACK、Worker/进程崩溃与源并发变化的矩阵，逐案核对原 decision、导出身份与失败 held 归宿。 |
+| A06 | `fb69434` 冻结，调用方退出和原生失败状态通过 | 在 raw 与两代 managed 捕获中按阶段终止真实请求进程，重连核对原 decision、checkpoint、盘切换与密封 RAM FD。三次并发改变 held 源的请求均被拒。另在密封 RAM 重新打开处注入一次 EMFILE，三路 Guest 和盘计数保持停止，查询持续返回 `FAILED_HELD`。[请求进程与转移切点](#a06-捕获调用方退出与部分导出) | 扩展 Worker 或源 VMM 自身在未完成捕获、提交和导出阶段退出的组合。 |
 | A07 | fb69434 冻结安装，无后代与活后代两组通过 | 两组从捕获到旧 VMM 退出均保持控制台计数和四个盘头摘要。真实 chunk 路径错误后可在 STOP 前取消并回原 Standby，STOP 后 Worker 重启只收敛退出。持久根独立恢复原 PID 和卷，临时导出 pin 释放。无后代组释放 180,129,792 字节实分配 RAM；活后代组释放 30,875,648 字节并保留 163,090,432 字节共享 RAM，后代校验 96 MiB 冷数据。相同安装件另通过真实私网 SYN 停止切点。[切点、回收口径与原始记录](hibernate-cut-qualification.md) | — |
 | A08 | `fb69434` 冻结对照，修复后开发实机通过 | Raw 拒绝严格独立 Fork。Raw 和 managed Standby 均保持原 VMM 和资源图，managed 保留原 Gate。冻结件将暂停计入 Guest 时间，Fork 子机和 Hibernate 恢复时已触发定时器。修复后原机 Wake 原键重放、独立子机及新 epoch 恢复均按原 Guest 9 秒到期。独立虚拟 Worker 断电换 boot 后，另一个原 Guest 定时器在 18.069 秒到期。[跨 boot 时钟](managed-recovery.md#worker-主机换-boot-后的恢复)。[实机时钟与回执](#a08-长待机和保存点时钟) | 在包含修复的冻结安装上复跑。 |
 | A09 | fb69434 冻结安装，交错多盘切点通过 | 八次独立 Fork 覆盖已提交、准备、两种写入中和两种合法先盘。目标在原 PID 的 RAM 相位读回双盘计数，完整 WriterPivot 同时包含两盘。持久 exact Restore 保留未完成事务的两盘差异，再提交原事务。两个实际 capture 各取一盘的组合在两个源 RAM 绑定下均拒绝，目标无控制 socket 与 Guest 输出。[多盘状态、左右盘实测和反例](multidisk-phase-qualification.md) | — |
@@ -46,6 +46,14 @@
 | `a04-live-provider-fb69434-v1.log` | `b633f5fc91424918a941648f39010b96ba8963dbfdf43bb4145d3c7d538f3ff6` |
 | `a04-broker-only-fb69434-v2.log` | `5da3b69f5f77dce711fccb6a54364b4dc1e36f40ab06c666c582b064e47849b2` |
 | `a04-last-provider-fb69434-v2.log` | `9b3a1805864f5aeec95ec241d80da16b472c14f9c999cb30f4ca78a1c3913ec2` |
+
+### A06 捕获调用方退出与部分导出
+
+在运行中的 2 vCPU Guest 上，夹具在确认首字节已抵达 socket、调用方尚未处理应答时终止该请求进程。另四个请求进程分别在收到完整导出头、checkpoint、描述符和首个实际 RAM FD 后被终止。raw 模式分别测试继续和取消。同一 token 重新读取时，原 checkpoint、描述符、全部 backing inode 及其大小相同。三个并发的源状态修改均被拒绝。继续后原三路进程计数和盘写入恢复，取消后同一导出被拒绝。
+
+在两块可写盘的 managed 源和递归子机上，夹具又分别在 Guest 准备、park、进入 Standby、准备 capture、两盘 writer 切换及返回原 Standby 的应答处终止请求进程。原盘切换在 Worker 中只提交一次。相同的四个导出切点分别返回原来的 4 和 7 个密封 backing。两个 held 源的 Guest 计数保持，祖先退出后孙机从原 RAM 和两盘成功继续。
+
+失败注入只影响本次测试 VMM 打开一个已密封 RAM FD 的动作。EMFILE 后查询和相同 Prepare 均返回原 `FAILED_HELD`，导出及继续请求被拒绝，三路 Guest 计数和盘计数保持原值。夹具位于 smolvm `1452c64` 的 `tests/capture_transport_kvm.py` 与 `crates/smolvm-resourced/tests/kvm-parked-block.py --interrupt-capture`。原始记录分别为 `.build/wp23/a06-fb69434-capture-disconnect-v3.log`（SHA-256 `c6332e45b6c72163937a0d8503308eb43c27d4b459f1342e12dcd61dd5ef2928`）和 `.build/wp23/a06-fb69434-managed-disconnect-v1.log`（SHA-256 `5f8c9b9a9e63ec11c20a226b854c088622cbd9e25d1d94086e90a22088ac1759`）。
 
 ### A08 长待机和保存点时钟
 
