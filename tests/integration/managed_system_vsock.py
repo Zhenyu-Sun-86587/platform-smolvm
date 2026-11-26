@@ -1205,6 +1205,55 @@ def relay_case(platform, source, machine_id, ref, probe):
     print("The real Guest relay enforced measured peer identity, one exec use, and revocation.")
 
 
+def grant_rollback_case(platform, source, machine_id, ref, probe):
+    def grant(key):
+        return platform.change("guest-grants", key, {
+            "source_machine_id": machine_id, "target_machine_id": machine_id, "action": "machine.exec",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(), "maximum_uses": 2,
+        }, status=200)
+
+    def record(identifier):
+        return next(row for row in platform.app("guest-grants")["items"] if row["grant_id"] == identifier)
+
+    marker = os.urandom(12).hex()
+    platform.guest(ref, ["/bin/sh", "-ec", 'printf %s "$1" >/run/grant-rollback', "write", marker])
+    old_id = grant("grant-at-checkpoint")["grant_id"]
+    assert not record(old_id).get("revoked_at")
+    point = platform.complete(platform.change(source + "/snapshots", "before-revocation", {
+        "capture_mode": "vm", "label": "Owner grant enabled",
+    }, platform.app(source)))
+    assert point["result"]["statepoint"]["phase"] == "durable", point
+    snapshot = point["result"]["snapshot_id"]
+    platform.guest(ref, ["/bin/sh", "-ec", "echo changed > /run/grant-rollback"])
+    revoked = platform.app(f"guest-grants/{old_id}", "DELETE", {}, {
+        "If-Control-Epoch": platform.epoch, "Idempotency-Key": "owner-revoke-before-rollback", "If-Match": '"1"',
+    })
+    stored = record(old_id)
+    assert revoked["status"] == "revoked" and stored["revision"] == 2 and stored["revoked_at"]
+    rollback = platform.complete(platform.change(source + "/rollback", "restore-earlier-machine", {
+        "snapshot_id": snapshot, "volume_restore_policy": "clone_conflicts",
+    }, platform.app(source)))
+    _, active = platform.context(machine_id)
+    assert active["instance_id"] == ref["instance_id"] and active["execution_epoch"] > ref["execution_epoch"]
+    assert active["incarnation_id"] != ref["incarnation_id"] and record(old_id) == stored
+    assert wait_for(lambda: platform.guest(active, ["/bin/cat", "/run/grant-rollback"]) == marker.encode(),
+                    retry=(RuntimeError, OSError))
+    platform.restart()
+    assert record(old_id) == stored
+    fresh = grant("grant-on-restored-execution")["grant_id"]
+    token = platform.change(f"guest-grants/{fresh}/credential", "current-credential", {"ttl_seconds": 180}, status=200)["token"]
+    body = json.dumps({"command": ["/bin/echo", marker], "timeout_seconds": 10})
+    wire = (f"POST /v1/{source}/exec HTTP/1.1\r\nHost: guest-relay\r\nAuthorization: Bearer {token}\r\n"
+            f"Content-Type: application/json\r\nContent-Length: {len(body.encode())}\r\nConnection: close\r\n\r\n" + body)
+    status, result = parse_http(platform.guest(active, [probe], wire))
+    assert status == 200 and base64.b64decode(result["stdout"]).strip() == marker.encode()
+    assert record(fresh)["used_count"] == 1 and record(old_id) == stored
+    print(json.dumps({"bundle": platform.bundle_id, "snapshot": snapshot, "operation": rollback["operation_id"],
+                      "original_epoch": ref["execution_epoch"], "restored_epoch": active["execution_epoch"],
+                      "revoked_revision": stored["revision"], "new_grant_uses": 1, "workload_marker": marker}),
+          flush=True)
+
+
 def protected_fork_case(platform, source, ref, probe, seen_cids):
     status = platform.app(source + "/lifecycle")
     policy = {"auto_standby": False, "auto_hibernate": False, "keep_running": True}
@@ -1508,14 +1557,14 @@ def test(args, root, stack, case):
         os.environ["SMOLVM_WORKER_VCPU_BUDGET"] = "4"
     packet_case = case.startswith("packet-")
     networks = (dict(network_id="packet-net", route_domain_id="fixture-route", cidr="10.44.30.0/24"),) if packet_case or retirement else ()
-    platform = Platform(args, root, stack, networks, state_tmpfs=case == "saved-wake-failure",
-                        use_installation=case == "fork-lost-reply")
+    platform = Platform(args, root, stack, networks, state_tmpfs=case in ("saved-wake-failure", "grant-rollback"),
+                        use_installation=case in ("fork-lost-reply", "grant-rollback"))
     platform.start()
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
     )
-    if case in ("task-fork-cancel-retry", "fork-lost-reply"):
+    if case in ("task-fork-cancel-retry", "fork-lost-reply", "grant-rollback"):
         intent["resources"] = dict(cpu_count=1, memory_mib=512)
     if case == "live-resources-hot":
         intent.update(live_compute_growth=True, resources=dict(cpu_count=1, memory_mib=512))
@@ -1588,6 +1637,8 @@ def test(args, root, stack, case):
         policy_case(platform, source, machine_id, ref)
     elif case == "relay":
         relay_case(platform, source, machine_id, ref, probe)
+    elif case == "grant-rollback":
+        grant_rollback_case(platform, source, machine_id, ref, probe)
     elif case == "fork":
         fork_case(platform, source, ref, probe, seen)
     elif case == "gate-without-agent":
@@ -1609,7 +1660,7 @@ def main():
                         help="Debian ext4 fixture with smolvm-agent and the measured helper installed")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
     parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
-                        "policy", "protected-fork", "connection-recovery", "cpu-limit", "cpu-limit-historical",
+                        "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
                         "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure"), action="append")
     parser.add_argument("--cc", default="cc", help="Linux compiler and static C runtime for the probe")
@@ -1636,7 +1687,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
-        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply"):
+        if selection[0].startswith("packet-cut-") or selection[0] in ("packet-activity", "fork-lost-reply", "grant-rollback"):
             slice_name = f"smolvmcut{os.getpid()}_{os.urandom(4).hex()}.slice"
             subprocess.run(["busctl", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                             "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
