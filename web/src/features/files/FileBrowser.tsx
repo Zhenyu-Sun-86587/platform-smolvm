@@ -3,7 +3,7 @@ import { ArrowUp, Download, FileText, FolderClosed, Pencil, RefreshCw, Upload } 
 import type { GuestFileCapability, GuestFileEntry, Machine, Page } from "../../../../sdk/typescript/src/index"
 import { machine as machinePath, PlatformError } from "../../../../sdk/typescript/src/index"
 import { api } from "../../api"
-import { Callout, download, label, machinePowerState, str } from "../../common"
+import { bundleBound, Callout, download, label, machinePowerState, str } from "../../common"
 import type { Actions } from "../../main"
 import { Button, Modal } from "../../ui"
 import { fileDigest } from "./digest"
@@ -91,7 +91,8 @@ function Browser({ machine, actions, current, autoload }: {
   const previewLimit = fileLimit(machine, "files.preview")
   const editLimit = fileLimit(machine, "files.edit")
   const base = machinePath(machine.machine_id) + "/files"
-  const initialPath = machine.boot_mode === "system" ? "/" : "/workspace"
+  const native = capability?.constraints?.transport === "native_agent" || bundleBound(machine)
+  const initialPath = native ? "/" : "/workspace"
   const canAutoload = useRef(autoload && canList && machinePowerState(machine) === "running")
   const [path, setPath] = useState(initialPath)
   const [input, setInput] = useState(initialPath)

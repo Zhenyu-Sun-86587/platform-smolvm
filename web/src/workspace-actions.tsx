@@ -15,13 +15,13 @@ import {
   Trash2,
   Zap,
 } from "lucide-react"
-import type { Machine, Service, Page } from "../../sdk/typescript/src/index"
+import type { Machine, Service } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str, useRemote } from "./common"
+import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str } from "./common"
 import { Button } from "./daytona/button"
 import { Modal } from "./ui"
 import { desktopHref, machineHref, terminalHref } from "./routes"
-import { fixtureScene } from "./api"
+import { fixtureScene, useCollection } from "./api"
 import consoleStyles from "./features/console/console.module.css"
 import {
   DropdownMenu,
@@ -114,17 +114,17 @@ export function forkBatchDialog(m: Machine, actions: Actions) {
   })
 }
 function SSHInfo({ machine }: { machine: Machine }) {
-  const { data, error } = useRemote<Page<Service>>("machines/" + segment(machine.machine_id) + "/services", 0)
+  const { items, error } = useCollection<Service>("machines/" + segment(machine.machine_id) + "/services", machine.revision)
   const [copied, setCopied] = useState(false),
     [copyError, setError] = useState<unknown>()
-  const service = data?.items.find((item) => item.protocol === "ssh" && item.enabled !== false)
+  const service = items?.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
   const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
   const commands = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
   return <div className={consoleStyles.ssh}>
     <div className={consoleStyles.connectionLabel}><Cable size={15} /><h3>SSH with sandboxctl</h3></div>
     <Callout error={error || copyError} />
-    {!data && !error ? <p role="status">Checking published services…</p> : service ? <>
+    {!items && !error ? <p role="status">Checking published services…</p> : service ? <>
       <p>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>
       <div className={consoleStyles.commands}>
         <pre>{commands}</pre>
@@ -133,7 +133,7 @@ function SSHInfo({ machine }: { machine: Machine }) {
           {copied ? <Check /> : <Copy />}
         </Button>
       </div>
-    </> : data ? <p><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
+    </> : items ? <p><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
   </div>
 }
 
