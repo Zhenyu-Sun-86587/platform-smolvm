@@ -11,6 +11,7 @@ import (
 
 type previewSession struct {
 	Target, CredentialID, PrincipalID, Host string
+	Scope                                   auth.Scope
 	Expiry                                  time.Time
 }
 
@@ -50,7 +51,7 @@ func (s *Server) previewRoutes() {
 		if err != nil {
 			return err
 		}
-		s.tickets.Store(key, previewSession{Target: v.ID, CredentialID: p.CredentialID, PrincipalID: p.ID, Host: host, Expiry: time.Now().Add(30 * time.Second)})
+		s.tickets.Store(key, previewSession{Target: v.ID, CredentialID: p.CredentialID, PrincipalID: p.ID, Host: host, Scope: p.Scope, Expiry: time.Now().Add(30 * time.Second)})
 		time.AfterFunc(30*time.Second, func() { s.tickets.Delete(key) })
 		return write(w, 200, map[string]string{"ticket": key, "action": "https://" + host + "/.sandbox/session"})
 	})
@@ -94,12 +95,13 @@ func (s *Server) previewAuth(w http.ResponseWriter, r *http.Request, v service) 
 		if !ok || session.Target != v.ID || session.Host != requestHostname(r.Host) || !session.Expiry.After(time.Now()) {
 			return p, false, auth.ErrForbidden
 		}
-		var n int
-		err = s.DB.ReadDB().QueryRowContext(r.Context(), `SELECT count(*) FROM credentials c JOIN principals p ON c.principal_id=p.id WHERE p.id=? AND p.disabled=0 AND c.id=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)`, session.PrincipalID, session.CredentialID, time.Now().UnixMilli()).Scan(&n)
-		if err != nil || n != 1 {
-			return p, false, auth.ErrUnauthenticated
+		// The preview cookie is confined to the selected service and host above.
+		// AccessAt revalidates the underlying credential's exact original scope.
+		principal := auth.Principal{ID: session.PrincipalID, CredentialID: session.CredentialID, Scope: session.Scope}
+		if err := s.CheckAccessPrincipal(r.Context(), principal, v.MachineID); err != nil {
+			return p, false, err
 		}
-		return auth.Principal{ID: session.PrincipalID, CredentialID: session.CredentialID, Scope: auth.Scope{MachineID: v.MachineID, Access: "tunnel"}}, false, nil
+		return principal, false, principal.Authorize(auth.ActionTunnel, v.MachineID)
 	}
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		p, err := s.Auth.Authenticate(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))

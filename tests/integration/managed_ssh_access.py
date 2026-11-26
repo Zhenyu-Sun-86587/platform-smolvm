@@ -14,7 +14,7 @@ from managed_system_vsock import wait_for
 
 
 def check(platform, args, keys):
-    mid, view, ref = machine(platform, "ssh-first-use", "native")
+    mid, view, ref = machine(platform, "ssh-first-use", args.mode)
     path = "machines/" + mid
     credential = platform.change("tokens", "managed-ssh-token", {
         "label": "Disposable first login", "scope": {"access": "manage", "machine_id": mid},
@@ -96,7 +96,8 @@ def check(platform, args, keys):
                                  urlencode({"ticket": ticket["ticket"]}).encode())
         assert status == 303
         cookie = next(v.split(";")[0] for k, v in headers if k.lower() == "set-cookie")
-        assert web(authority, "POST", "/receipt/preview-cookie", {"Cookie": cookie})[:2] == (200, b"preview-cookie\n")
+        preview_status, payload, _ = web(authority, "POST", "/receipt/preview-cookie", {"Cookie": cookie})
+        assert (preview_status, payload) == (200, b"preview-cookie\n"), (preview_status, payload)
         assert web(original, "POST", "/receipt/wrong-origin", {"Cookie": cookie})[0] == 403
         receipts = platform.guest(ref, ["cat", "/run/authorized-service-receipts"]).splitlines()
         assert receipts == [b"editor-forward", b"machine-web", b"original-web", b"preview-cookie"], receipts
@@ -113,7 +114,7 @@ def check(platform, args, keys):
         restored = run(args.sandboxctl, "ssh", mid, "--", 'id -u; printf "%s" "$SSH_CONNECTION"').decode().split()
         assert restored[0] == "0" and restored[1] == router and restored[-1] == "2222", restored
         assert platform.context(mid)[1]["execution_epoch"] > ref["execution_epoch"]
-        print(json.dumps(dict(case="managed-ssh-and-web", machine_id=mid, ssh_source=connection[0],
+        print(json.dumps(dict(case="managed-ssh-and-web", mode=args.mode, machine_id=mid, ssh_source=connection[0],
                               guest_port=connection[-1], new_user_exit=23, agent=False, published_ssh=False,
                               sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
                               direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
