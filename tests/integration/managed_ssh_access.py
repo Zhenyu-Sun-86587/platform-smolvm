@@ -62,6 +62,8 @@ def check(platform, args, keys):
         alias = "ssh-first-use.sandbox"
         assert run("ssh", "-oBatchMode=yes", alias, "id -u; exit 23", code=23) == b"0\n"
         assert run(args.sandboxctl, "ssh", "ssh-first-use", "--", "id -u") == b"0\n"
+        assert run("ssh", "-tt", "-oBatchMode=yes", alias,
+                   "test -t 0 && test -t 1 && printf 'pty ready\\n'; exit 24", code=24) == b"pty ready\r\n"
         blob = os.urandom(36865)
         source, downloaded = directory / "source.bin", directory / "downloaded.bin"
         source.write_bytes(blob)
@@ -131,7 +133,7 @@ def check(platform, args, keys):
         print(json.dumps(dict(case="managed-ssh-and-web", mode=args.mode, machine_id=mid, transport="worker_guest_agent",
                               new_user_exit=23, agent=False, published_ssh=False,
                               revocation_ms=revoke_ms, sftp_bytes=len(blob), sftp_sha256=hashlib.sha256(blob).hexdigest(),
-                              direct_tcpip=True, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
+                              direct_tcpip=True, pty_exit=24, web_receipts=len(receipts), standby_wake=True, hibernate_wake=True)), flush=True)
 
 
 def check_networkless(platform, args, keys):
