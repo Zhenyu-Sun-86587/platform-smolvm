@@ -136,14 +136,15 @@ def run(platform):
     attached = current()
     assert_original_ports(old, attached)
     dns_pair()
-    for (_, execution, _), entry in zip(guests, old, strict=True):
-        request_fault("E_STALE_REVISION", lambda: connect_service(platform, execution, entry))
+    if not platform.args.authorized_only:
+        for (_, execution, _), entry in zip(guests, old, strict=True):
+            request_fault("E_STALE_REVISION", lambda: connect_service(platform, execution, entry))
     assert_business(before)
     for receipts, (_, execution, _), entry in zip(before, guests, attached, strict=True):
         receipts.append(business_request(platform, execution, entry, "after"))
     assert_business(before)
     print("Original router namespace", original_ns.st_dev, original_ns.st_ino,
-          "resolved both original DNS labels, rejected stale lease revisions and routed one new request each", flush=True)
+          "resolved both original DNS labels and routed one new request to each current lease", flush=True)
 
     # Alter a rule in this fixture's private router, on an unused port.
     bad_table = "a20_fixture_fault"
@@ -166,9 +167,10 @@ def run(platform):
         blocked = wait_for(fenced, timeout=30, retry=(OSError, RuntimeError))
         request_fault("E_RECOVERING", lambda: worker(platform.worker, "CompleteRecovery", {
             "broker_session_id": blocked["broker_session_id"]}))
-        request_fault("E_RECOVERING", lambda: connect_service(platform, native[1], attached[0]))
+        if not platform.args.authorized_only:
+            request_fault("E_RECOVERING", lambda: connect_service(platform, native[1], attached[0]))
         in_router(pin, "nft", "list", "table", "ip", bad_table, stdout=subprocess.DEVNULL)
-        print("Changed private ingress policy kept both TAPs unknown and new dials fenced", flush=True)
+        print("The Worker reported both TAPs as unknown until the original routing policy was restored.", flush=True)
     finally:
         in_router(pin, "nft", "delete", "table", "ip", bad_table)
 
@@ -197,6 +199,8 @@ def main():
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda value: Path(value).resolve(), required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
+    parser.add_argument("--authorized-only", action="store_true",
+                        help="send application traffic only through confirmed current leases")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("requires Linux KVM and root on a systemd host")

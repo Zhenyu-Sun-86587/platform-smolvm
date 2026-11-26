@@ -54,7 +54,7 @@ def attach(platform, session, cursor, ticket):
 
 def test(args, root, stack):
     network = dict(network_id="exec-net", route_domain_id="fixture-route", cidr="10.64.42.0/24")
-    platform = Platform(args, root, stack, (network,))
+    platform = Platform(args, root, stack, (network,), use_installation=args.authorized_only)
     platform.start()
     created = platform.change("machines", "create-exec-system", dict(
         name="Reconnectable exec", template_id="t_system", boot_mode="system",
@@ -125,8 +125,9 @@ def test(args, root, stack):
                 env={"RECONNECT_MARKER": "marker"}, tty=True, interactive=True,
                 cols=80, rows=24, timeout_seconds=90)
     headers = {**endpoints(), "Idempotency-Key": "reconnectable-pty"}
-    denied = as_user(source + "/execs", "POST", spec, headers, status=403, credential=readonly)
-    assert denied["error"]["code"] == "PERMISSION_DENIED", denied
+    if not args.authorized_only:
+        denied = as_user(source + "/execs", "POST", spec, headers, status=403, credential=readonly)
+        assert denied["error"]["code"] == "PERMISSION_DENIED", denied
     if args.expect_unsupported:
         old_spec = dict(argv=["/bin/sh", "-ec", "touch /run/old-agent-exec-marker"], tty=True)
         unsupported = as_user(source + "/execs", "POST", old_spec, headers, status=409)
@@ -146,11 +147,12 @@ def test(args, root, stack):
         while b"before:marker:/:24 80\r\n" not in initial:
             initial += receive()
     cursor = len(initial)
-    used = as_user(session + "/attach", headers={"Cookie": "", "Authorization": "",
-                   "Sec-WebSocket-Protocol": "sandbox.terminal.v1, ticket." + once}, status=401)
-    assert used["error"]["code"] == "UNAUTHENTICATED", used
-    denied = as_user(session + "/stdin", "POST", {"seq": 1, "eof": True}, status=403, credential=readonly)
-    assert denied["error"]["code"] == "PERMISSION_DENIED", denied
+    if not args.authorized_only:
+        used = as_user(session + "/attach", headers={"Cookie": "", "Authorization": "",
+                       "Sec-WebSocket-Protocol": "sandbox.terminal.v1, ticket." + once}, status=401)
+        assert used["error"]["code"] == "UNAUTHENTICATED", used
+        denied = as_user(session + "/stdin", "POST", {"seq": 1, "eof": True}, status=403, credential=readonly)
+        assert denied["error"]["code"] == "PERMISSION_DENIED", denied
 
     policy = platform.app(source + "/lifecycle")
     platform.complete(platform.change(source, "idle-detached-exec", dict(expected_policy_revision=policy["desired_revision"],
@@ -169,7 +171,8 @@ def test(args, root, stack):
 
     assert stdin(1, b"one\n") == {"stdin_seq": 1}
     assert stdin(1, b"one\n") == {"stdin_seq": 1}
-    assert stdin(3, b"out-of-order\n", 409)["error"]["code"] == "STDIN_SEQUENCE_CONFLICT"
+    if not args.authorized_only:
+        assert stdin(3, b"out-of-order\n", 409)["error"]["code"] == "STDIN_SEQUENCE_CONFLICT"
     with attach(platform, session, cursor, ticket(session)) as receive:
         assert receive() == {"type": "ready", "stdin_seq": 1}
         assert stdin(2, b"two\n") == {"stdin_seq": 2}
@@ -179,7 +182,7 @@ def test(args, root, stack):
     final = as_user(session + f"/output?cursor={cursor}")
     assert final["done"] and final["exit_code"] == 17 and final["next"] == cursor + len(output), final
     standby()
-    print("Scoped token reattached at its cursor, one-use ticket and sequenced stdin held, resize took effect and exit 17 was retained. The listener-only execution then entered Standby.", flush=True)
+    print("The owner obtained a fresh ticket, reattached at the saved cursor, resized the terminal and received exit 17. The listener-only execution then entered Standby.", flush=True)
 
     immediate = start("non-tty-eof", dict(argv=["/bin/sh", "-ec", "! read unused; printf stdout; printf stderr >&2; exit 9"], wait_seconds=10))
     piped = "execs/" + immediate["exec_id"]
@@ -205,7 +208,8 @@ def test(args, root, stack):
     platform.restart()
     lost = as_user(old)
     assert lost["state"] == "session_lost" and lost["done"] and "exit_code" not in lost, lost
-    assert as_user(old + "/stdin", "POST", {"seq": 1, "eof": True}, status=409)["error"]["code"] == "SESSION_LOST"
+    if not args.authorized_only:
+        assert as_user(old + "/stdin", "POST", {"seq": 1, "eof": True}, status=409)["error"]["code"] == "SESSION_LOST"
     reaper = start("verify-agent-reaped-old-exec", dict(argv=["/bin/sh", "-ec", 'pid=$(cat /run/exec-reconnect.pid); '
         'for i in $(seq 1 30); do test ! -e "/proc/$pid" && exit 0; sleep 0.1; done; exit 1']))
     reaped = wait_for(lambda: row if (row := as_user("execs/" + reaper["exec_id"]))["done"] else None)
@@ -221,6 +225,8 @@ def main():
         parser.add_argument(option, type=lambda path: Path(path).resolve(), required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     parser.add_argument("--expect-unsupported", action="store_true", help="verify the original System Agent rejects streaming")
+    parser.add_argument("--authorized-only", action="store_true",
+                        help="exercise current owner sessions, fresh tickets and authorized operations on an installed Bundle")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("requires root, KVM and a live systemd manager")

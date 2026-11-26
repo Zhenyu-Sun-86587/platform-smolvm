@@ -60,7 +60,7 @@ def reject_old_epoch(origin, session, csrf_token, epoch):
         assert failure.code == 409 and error["code"] == "CONTROL_EPOCH_CHANGED" and error["effect"] == "none", error
 
 
-def serve_once(binary, config, origin, password_file, stale_epoch=None):
+def serve_once(binary, config, origin, password_file, *, current_epoch=None, stale_epoch=None):
     env = {**os.environ, "SANDBOX_OWNER_USER": "owner", "SANDBOX_OWNER_PASSWORD_FILE": str(password_file)}
     body = json.dumps({"username": "owner", "password": password_file.read_text()}).encode()
     request = Request(origin + "/v1/auth/login", body, {"Content-Type": "application/json", "Origin": origin})
@@ -73,8 +73,12 @@ def serve_once(binary, config, origin, password_file, stale_epoch=None):
             try:
                 with urlopen(request, timeout=2) as response:
                     login = json.load(response)
+                    session = response.headers["Set-Cookie"].partition(";")[0]
+                    if current_epoch:
+                        control = Request(origin + "/v1/control", headers={"Cookie": session})
+                        with urlopen(control, timeout=3) as current:
+                            assert json.load(current)["control_epoch"] == current_epoch
                     if stale_epoch:
-                        session = response.headers["Set-Cookie"].partition(";")[0]
                         reject_old_epoch(origin, session, login["csrf_token"], stale_epoch)
                     return login["principal"]["principal_id"]
             except URLError as error:
@@ -186,7 +190,8 @@ def recover_old_release(args, root, archive, password, owner, installation, orig
     assert control["schema_version"] == 2 and control["installation_id"] == installation
     assert control["maintenance"] and control["control_epoch"] not in (new_epoch, original_epoch)
     admin(args.old_cli, config, "maintenance", "exit")
-    assert serve_once(args.old_platformd, config, origin, password, original_epoch) == owner
+    assert serve_once(args.old_platformd, config, origin, password, current_epoch=control["control_epoch"],
+                      stale_epoch=None if args.owner_readback else original_epoch) == owner
     with closing(sqlite3.connect(old_db.as_uri() + "?mode=ro", uri=True)) as db:
         assert db.execute("PRAGMA user_version").fetchone() == (2,)
         assert db.execute("SELECT name FROM machines WHERE id='machine'").fetchone() == ("legacy-machine",)
@@ -194,8 +199,8 @@ def recover_old_release(args, root, archive, password, owner, installation, orig
             "legacy-pause-id",)
         assert db.execute("SELECT count(*) FROM operations").fetchone() == (0,)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-    print("old release opened its own pre-upgrade backup in an independent directory, issued a new "
-          "control epoch, accepted the original owner, and rejected the stale public mutation (409)", flush=True)
+    print("old release opened its pre-upgrade backup in an independent directory. The owner logged in "
+          "and read its new control epoch", flush=True)
 
 
 def run(args, root):
@@ -244,13 +249,15 @@ def run(args, root):
     verify_current(rollback / "platform.db", args.schema, owner, installation, epoch)
     assert db_fingerprint(archive / "platform.db") == before
     admin(args.cli, config, "maintenance", "exit")
-    assert serve_once(args.platformd, config, origin, password, epoch) == owner
+    assert serve_once(args.platformd, config, origin, password, current_epoch=recovery["control_epoch"],
+                      stale_epoch=None if args.owner_readback else epoch) == owner
     assert os.path.samestat(database.stat(), identity)
-    print("release CLI restored the historical backup in place, rotated the control epoch, preserved the "
-          "owner and pause ID, verified the pre-restore backup, and rejected the stale public mutation (409)",
-          flush=True)
+    print("release CLI restored the historical backup in place and verified the pre-restore backup. "
+          "The owner and pause ID survived and the owner read the new control epoch.", flush=True)
     recover_old_release(args, root, archive, password, owner, installation, epoch, recovery["control_epoch"])
     verify_current(database, args.schema, owner, installation, recovery["control_epoch"])
+    if not args.owner_readback:
+        print("Both restored releases returned 409 for the prior control epoch.", flush=True)
 
 
 if __name__ == "__main__":
@@ -258,6 +265,8 @@ if __name__ == "__main__":
     for flag in ("old-platformd", "old-cli", "platformd", "cli", "wal-cut"):
         parser.add_argument("--" + flag, type=lambda path: Path(path).resolve(strict=True), required=True)
     parser.add_argument("--schema", type=int, required=True, help="schema_version in the new release manifest")
+    parser.add_argument("--owner-readback", action="store_true",
+                        help="verify each restored control epoch using only a fresh owner session and current reads")
     parser.add_argument("--work-dir", type=Path, help="parent directory for a new disposable installation")
     arguments = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="registry-cut-", dir=arguments.work_dir) as work:
