@@ -105,7 +105,7 @@ Mac 真机、Developer ID 与公证凭据未就绪时，可以验证内部包，
 
 ### Agent Session 接续
 
-Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。源机继续当前轮，子机保留会话并等待下一条指令。我们此前的真实模型测试在登录或认证阶段失败，尚无进行中的模型流在子机延续的实测证据。
+Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。源机继续当前轮，子机保留会话并等待下一条指令。此前对 Boxd 的真实模型体验停在登录或认证阶段，源轮续跑仍待实测。本平台的 `fb69434` 已在 KVM 跑过单子机和批量 Fork 的 HTTPS/SSE 夹具。父子进程保留首个事件和内存状态，上游原请求只到达一次，原连接在父机和子机均未收到第二个事件。各分支用新的 execution 授权发起新请求后才收到响应。该策略已验证连接围栏和防重放，源轮无缝继续仍待单独实现和验证。[Guest 流式 Fork 实测](guest-delegation.md#active-model-streams-during-fork)
 
 把平台托管的 Codex / Claude Code 接续列为独立后续项，可先复用现有 Native Live Fork、Guest gate 和运行租约。第一版原型需要在持久化的轮次边界复制已完成对话，子会话从 `idle` 开始。子机放行前隔离继承的旧执行与队列，避免重发模型请求或工具写入。工作区仍来自原 VM 捕获点，可能包含源机本轮已经写入的文件。手动启动的任意 Guest Agent 仍遵循普通 VM Fork，待产品测试验证其各自的重连行为。
 
@@ -113,10 +113,69 @@ Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。�
 
 [Boxd Sessions 文档](https://docs.boxd.sh/guides/agents/sessions) · [Agent 实验记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/reference/experiments/boxd-supplement-2026-11-26/SUPPLEMENT_REPORT.md:51) · [后端范围](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/BACKEND_RESEARCH_AND_PLAN.md:93)
 
+## 7. Boxd 外围功能与集成差距
+
+以 Boxd 官方文档索引、应用目录、自托管文档及合作集成指南为外部基线，对照平台代码候选 `polish/integration@4e1ba47`。下表的“已有”表示在该候选中找到真实入口或可复用链路，生产就绪仍以本报告各验收项为准。“预览”表示界面样例，“缺”表示在当前候选未找到完整的受支持交付路径。Boxd 一栏记录其公开产品说明，第三方连接逐项调用、云端 SLA 和商用合同均未实测。核查时公开应用目录显示 133 项，官方索引另列 32 篇 OSS 适配指南。两者的交付形态不同，数字不相加。[官方文档索引](https://docs.boxd.sh/llms.txt) · [公开应用目录](https://boxd.sh/integrations/) · [OSS 适配指南](https://docs.boxd.sh/use-cases/oss-integrations) · [候选界面的预览门控](../../web/src/main.tsx)
+
+### 身份、协作、连接与密钥
+
+| 外围能力 | Boxd 公开能力 | 当前候选和差距 |
+|---|---|---|
+| 用户登录、自动化身份 | 浏览器登录后 CLI 关联账号。用户、机器和服务账号 API key 有不同用途和范围。自托管有 OIDC 配置，SAML 按商务对接。[CLI 认证](https://docs.boxd.sh/cli/authentication) · [自托管配置](https://github.com/boxd-sh/self-host/blob/main/docs/REFERENCE.md) · [FAQ](https://boxd.sh/faq/) | 已有 Web 会话、范围 token、CLI profile 和 Guest 绑定授权。缺 Web/CLI/Mac 浏览器 OAuth/OIDC 闭环和租户 IdP 管理。服务账号的租户所有权、轮转和撤销也需独立验收。按 §4 处理登录。 |
+| 组织、团队和机器协作 | 组织邀请、Owner/Admin/Member、团队与默认值、为同事建机、组织共享或取消共享。共享时清除个人 Agent 登录态，公开服务链接有独立语义。[组织与团队](https://docs.boxd.sh/guides/organizations) · [机器共享](https://docs.boxd.sh/guides/share-a-vm) | 已有账号权限、Guest scope、私有服务访问票据。组织相关界面含预览。缺组织/团队成员和默认值、机器共享时归属及凭据清理、共享撤销和相关审计的完整流程。[组织界面](../../web/src/features/settings/Previews.tsx) · [平台认证](../../internal/auth/auth.go) |
+| 第三方连接目录 | 在控制台或 Guest 授权 OAuth/API key，可用个人连接或命名的组织连接。组织共享机器使用组织连接。支持撤销、重新授权和工具调用。目录覆盖 AI、数据分析、通信、客服、设计、开发、文档协作、财务电商、营销、效率、项目管理及销售 CRM。[Connections](https://docs.boxd.sh/guides/integrations/connections) · [目录](https://boxd.sh/integrations/) | 已有执行绑定的宿主凭据代理，Integrations 页为预览。缺连接注册表、按用户/组织/机器隔离、OAuth 同意与刷新、调用与撤销审计、CLI/SDK 工具发现。需独立处理平台登录、第三方连接与 Agent 模型登录各自的凭据。 |
+| GitHub、Slack 及协作工具 | 个人 Git/gh、GitHub OAuth 工具和组织安装的 GitHub App 有不同授权范围；个人 Slack 与 Slack Bot 有不同身份。还覆盖 Linear、Notion、Figma、Gmail/Drive/Calendar、Stripe 等。[目录](https://boxd.sh/integrations/) · [Connections](https://docs.boxd.sh/guides/integrations/connections) | 模板可自行运行相应客户端，CLI 已有仓库类引导。缺跨机器授权复用、按仓库范围的安装或个人授权、团队机器人，以及这些连接的状态和移除。 |
+| 环境变量、密钥和外部代理 | 支持按组织、团队和机器注入变量或密钥，以及用宿主代理处理指定外部凭据。文档另有外部密钥工具与 broker 适配。[Env/Secrets](https://docs.boxd.sh/guides/env-secrets) · [Egress](https://docs.boxd.sh/guides/egress) · [seekrit](https://docs.boxd.sh/use-cases/oss-integrations/seekrit) · [varlock](https://docs.boxd.sh/use-cases/oss-integrations/varlock) | 已有任务环境保护和 Guest 授权的代理，Environment 页为预览。缺租户级密钥库、作用域覆盖和注入、轮转/撤销状态、Fork 和共享变更后的策略以及外部密钥提供方适配。[任务密钥](../../internal/platformapi/task_secrets.go) · [Guest 授权](guest-delegation.md) |
+| MCP、Guest 工具与技能安装 | 集成工具可通过 Guest 的 `run`、强类型 `@boxd/run` 和 MCP 工具供脚本或 Agent 使用。官方提供 CLI 和环境技能，可从本机或 Guest 驱动平台。[集成概览](https://docs.boxd.sh/guides/integrations/overview) · [run CLI](https://docs.boxd.sh/cli/run) · [Skills](https://docs.boxd.sh/reference/skills) | 已有 `sandboxctl mcp` stdio 服务面，提供机器、操作、Fork 和执行工具，以及受界定的 Guest 委派。缺第三方连接的 MCP/CLI 工具面、Agent 技能安装和模板内的受支持配置。[平台 MCP](../../cmd/sandboxctl/mcp.go) · [Guest 授权](guest-delegation.md) |
+
+### Agent、触发器与自动化
+
+| 外围能力 | Boxd 公开能力 | 当前候选和差距 |
+|---|---|---|
+| 编码 Agent 与会话管理 | 托管 Claude Code、Codex、Antigravity 会话，支持账号或 API key 认证、模型设置、轮次排队/中断、事件流、历史与关闭，定义睡眠和 Fork 语义。开发镜像的预装工具还包括 OpenCode。[Agents API](https://docs.boxd.sh/guides/agents) · [认证](https://docs.boxd.sh/guides/agents/sign-in) · [会话](https://docs.boxd.sh/guides/agents/sessions) · [历史](https://docs.boxd.sh/guides/agents/history) · [Coding Agents](https://docs.boxd.sh/use-cases/coding-agents) | 已有 Guest 执行、租约、凭据代理，Agents 页为预览。缺 Agent 会话 API、模型登录与续期、轮次和事件历史，以及 §6 的接续验收。 |
+| 外部托管 Agent 接入 | 官方给出 Anthropic Claude Managed Agents、OpenAI Agents API、Google Gemini Managed Agents 的用例，由外部服务运行 Agent 循环，Boxd 承接工具执行。[Anthropic 方案](https://docs.boxd.sh/use-cases/claude-managed-agents) · [OpenAI 方案](https://docs.boxd.sh/use-cases/openai-agents-api) · [Gemini 方案](https://docs.boxd.sh/use-cases/gemini-managed-agents) | 可用 SDK 和 Guest 执行拼装。缺维护的适配器、事件和工具响应映射，以及外部取消、租约、重连和重放保护的端到端证据。 |
+| 自动化脚本、定时与事件 | 强类型 TypeScript 脚本，支持 cron、第三方 webhook/事件、持久 KV、权限范围、连接待就绪、退避重试及历史。目标机器休眠时可唤醒并缓冲事件；Fork 或从 Snapshot 创建时继承的作业默认暂停，隔离模式无继承。[脚本](https://docs.boxd.sh/guides/automations/scripts) · [作业](https://docs.boxd.sh/guides/automations/jobs) · [机器 SDK](https://docs.boxd.sh/guides/automations/managing-machines) | 机器 Automations 页已接持久任务及真实服务，已有 operation、任务恢复和访问唤醒。缺 cron/webhook 调度、事件去重与缓冲、作业历史/KV、连接依赖和父子继承策略。开启前需验相同事件只产生一次外部效果。[现有任务界面](../../web/src/catalog.tsx) · [任务 API](../../internal/platformapi/tasks.go) |
+| 到期与任务完成后清理 | 支持绝对时间、相对时间和 cron 到期删除，睡眠时也生效；Guest 可经明确确认请求自身删除。[到期删除](https://docs.boxd.sh/guides/delete-after) · [Guest 自删除](https://docs.boxd.sh/guides/self-delete) | 已有空闲休眠、运行租约和显式所有者删除。缺持久到期删除与 Guest 自删除授权，批量预览/CI 目前需要外部控制器做资源对账和清理。[Guest 委派范围](guest-delegation.md) |
+
+### 客户端、桌面与浏览器
+
+| 外围能力 | Boxd 公开能力 | 当前候选和差距 |
+|---|---|---|
+| CLI 分发、macOS 菜单与 IDE | macOS、Linux、Windows 安装路径。CLI 可设置 SSH 配置供本地别名及 VS Code、JetBrains 使用，菜单栏连接本地常驻组件。[CLI 安装](https://docs.boxd.sh/cli/installation) · [CLI 功能](https://boxd.sh/features/cli) · [菜单栏](https://docs.boxd.sh/guides/menu-bar) | 已有 Linux 和 Darwin 构建、引导、REPL、菜单源码、托管 SSH 与 SSH 配置能力。缺部署站点上的受支持下载、升级与干净机验证，Mac 仍需签名/公证和真机。Windows、菜单常驻体验与 IDE 联测也待覆盖。详见 §3。[CLI 工作流](cli-workflows.md) · [Mac 构建](../../packaging/macos/README.md) |
+| 手机接入与二维码交接 | 手机网页或扫码交接，登录后按次签发限时 SSH 凭据并打开 iOS/Android 的 SSH 客户端。[Mobile](https://docs.boxd.sh/guides/mobile) | 已有 Web 终端和桌面 CLI 每次 SSH 会话授权。二维码组件是预览；缺手机认证回跳、限时凭据和客户端深链的真实流程。[二维码预览](../../web/src/features/console/PreviewQR.tsx) |
+| 本机工具桥 | 用户选择启用笔记本客户端。机器能使用指定设备的文本/图像剪贴板、受限的只读本地文件，以及独立 Chrome profile、CDP/Playwright 和本地网络。[Client Utilities](https://docs.boxd.sh/guides/client-utilities) · [浏览器](https://docs.boxd.sh/guides/launch-a-browser) | 已有机器文件访问、终端复制、菜单。缺受信设备注册、逐设备同意和撤销、本机文件/剪贴板桥、Chrome profile 及设备选择。 |
+| 文件在本机、Guest 和工具间流转 | CLI/控制台提供文件和目录传输，有授权的 Guest CLI 可直传其他机器。SDK 提供流式大文件及文件系统管理、类型化错误。[File Operations](https://docs.boxd.sh/guides/file-operations) · [Filesystem API](https://docs.boxd.sh/guides/machine-filesystem) | 已有 SSH/SFTP 和授权绑定的列表、下载及有界上传。未找到原生 Guest 到 Guest 的同类命令、同等目录管理 SDK 或对外承诺的通用流式大文件写入。当前使用 64 MiB 上传合同或现有 SSH 工具，并保留不确定写入语义。[CLI 工作流](cli-workflows.md) · [文件 API](../../internal/platformapi/files.go) |
+| Guest 桌面、浏览器和 Computer Use | 浏览器可见桌面及人工接管、拖文件。Guest 浏览器支持有头/无头及 Playwright/CDP。Agent 能通过 API/SDK 截图、点击和输入；自动化可选 Guest 或本机浏览器。[桌面](https://docs.boxd.sh/guides/desktop) · [Computer Use](https://docs.boxd.sh/guides/computer-use) · [自动化浏览器](https://docs.boxd.sh/guides/automations/browser) | 已有 System Guest 的授权 VNC/noVNC、票据和活动保护。缺对外支持的截图/坐标输入工具协议、浏览器编排、图像/文件拖放工作流和提供方适配器。[桌面鉴权](../../internal/platformapi/desktop.go) · [Web 桌面](../../web/src/Desktop.tsx) |
+
+### 网络、服务发布与区域
+
+| 外围能力 | Boxd 公开能力 | 当前候选和差距 |
+|---|---|---|
+| 开箱 HTTPS、多服务和自有域名 | 默认机器 HTTPS URL，可加端口子域。支持单机自定义域名、组织通配域、DNS/TLS 交付。[HTTPS](https://docs.boxd.sh/guides/https) · [Proxies](https://docs.boxd.sh/guides/proxies) · [Custom Domains](https://docs.boxd.sh/guides/custom-domains) | 已有配置型 apps 域、`web_url`、服务发布、真实就绪和鉴权票据。缺自助域名归属校验、证书签发续期、域名冲突和撤销流程。Domains 为预览，现有域名从外网仍需 §2 验收。[服务 API](../../internal/platformapi/services.go) |
+| 公网 TCP/UDP 与防爬虫 | 原始公网 TCP/UDP 端口有独立入口。防机器人可按配置在休眠唤醒时或所有访客请求上挑战。[Port Forwarding](https://docs.boxd.sh/guides/port-forwarding) · [Bot Protection](https://docs.boxd.sh/guides/bot-protection) | 已有 HTTP/HTTPS、SSH 和 TCP mTLS 等受控服务路径、访问租约及不重放机制。缺面向用户的原始公网 TCP/UDP 发布和公网防机器人唤醒策略。 |
+| 私网、VPN 和出口策略 | 虚拟机互访、Tailscale/NetBird 私有域名和入口，以及域名或地址范围的出站规则。[VM 互访](https://docs.boxd.sh/guides/vm-to-vm) · [Tailscale](https://docs.boxd.sh/guides/tailscale) · [NetBird](https://docs.boxd.sh/guides/netbird) · [Egress Allowlist](https://docs.boxd.sh/guides/egress-allowlist) | 已有运维配置的私网、IP/DNS、附件隔离及部分网络恢复实测，亦有指定宿主凭据代理。缺自助团体网络/VPN 联接及域名、CIDR 出站策略的租户入口。真实跨 Worker 访问仍待双机验证。[网络 API](../../internal/platformapi/networks_linux.go) · [私网实测](private-network-a13.md) |
+| 区域与数据驻留 | 公开 Frankfurt/New York，按机选区，同组织使用统一身份和密钥。[Regions](https://docs.boxd.sh/guides/regions) | 独立多节点候选已具备登记、固定归属和放置，本机证据见 §5。缺真实双物理机的覆盖、区域选择/默认区、数据驻留和跨区域凭据边界。 |
+
+### 开发工作流、生态和运维
+
+| 外围能力 | Boxd 公开能力 | 当前候选和差距 |
+|---|---|---|
+| 开发镜像与可复现环境 | 默认镜像含 Docker Engine、Compose/Buildx 和常用 Agent；Machine Spec 定义来源、资源、网络、变量、连接与首次启动命令，并支持版本和更新。[Docker](https://docs.boxd.sh/guides/run-docker) · [Machine Specs](https://docs.boxd.sh/guides/machine-specs) · [开发工作区](https://docs.boxd.sh/use-cases/development-workspaces) | 已有模板、配置调整、注册/准入与 Docker Compose/K3s 实测。缺面向用户的配套开发镜像、模板升级路径，以及完整跨资源 Spec 事务和冲突预演。后者继续按原计划后置。[Guest 运行时实测](guest-runtime-a17.md) |
+| PR 环境与 CI | GitHub webhook/Actions、按 PR 建机并发布稳定 URL，更新评论及关闭清理。可从最近成功的主干保存环境并行构建，回传状态和制品；另有自托管 Actions Runner 方案。[PR Preview](https://docs.boxd.sh/use-cases/preview-environments) · [CI Runners](https://docs.boxd.sh/use-cases/ci-runners) · [自托管 Runner](https://boxd.sh/blog/self-hosted-actions-runner/) · [保存应用环境](https://docs.boxd.sh/guides/snapshot-your-app) | 已有 SDK/CLI、模板、保存点、Fork、服务 URL 和任务。缺交付可安装的 GitHub App/Action 或 Runner 指南、PR/commit 幂等映射、状态和制品回传、关闭后自动清理。 |
+| 合作生态与接口 | Python/TypeScript SDK、自助 gRPC/proto，以及编码代理、会话工作区、评测、SaaS、RL、编排、个人助手等用例。OSS 目录单列外部工具的适配指南。[gRPC](https://docs.boxd.sh/reference/grpc-api) · [Proto](https://docs.boxd.sh/reference/grpc-proto) · [OSS 目录](https://docs.boxd.sh/use-cases/oss-integrations) · [Agentic SaaS](https://docs.boxd.sh/use-cases/agentic-saas) · [RL](https://docs.boxd.sh/use-cases/reproducible-rl-environments) · [个人助手](https://docs.boxd.sh/use-cases/personal-assistants) | 有 HTTP API、Python 与 TypeScript SDK 和平台 MCP。缺公开 gRPC 服务及已维护的合作适配。协议和框架支持应按真实调用链确认，所列用例可先用现有 SDK 形成参考实现。 |
+| 灾备与机器存储交付 | 支持按机定时或按需备份磁盘到对象存储、原地恢复，恢复范围为磁盘。[Disaster Recovery](https://docs.boxd.sh/guides/disaster-recovery) | 有备份策略、留存、闭包校验和独立 Worker 恢复证据。现有配置以运维管理的存储目录为主。缺租户自助的按机磁盘灾备、对象存储凭据/保留管理和恢复界面。[备份合同](BACKUPS.md) |
+| 自托管、支持与访问审计 | 文档覆盖 GCP/GKE、AWS 和既有 KVM 服务器，公布安装/校验流程；网站提供 BYOC、企业支持和状态页。第三方连接后端可在自托管方案中另配。[Self-hosting](https://boxd.sh/self-hosting/) · [安装文档](https://github.com/boxd-sh/self-host/blob/main/docs/INSTALL.md) · [状态页](https://status-boxd.com) | 已有 KVM/PVE 安装、回退、真实 metrics、事件及审计记录。缺经过验证的云端安装模板、外部状态/事故通知和租户级审计交付。企业 SLA、合规与支持按实际合同另行确认。[安装说明](../../packaging/install/README.md) · [验收与运维](ACCEPTANCE_AND_OPERATIONS.md) |
+| 用量、计费和付款 | 公布 CPU/RAM/磁盘计费、生命周期价格、额度、充值与企业方案。[资源限制](https://docs.boxd.sh/guides/resources) · [Pricing](https://boxd.sh/pricing/) · [FAQ](https://boxd.sh/faq/) | 有指标、资源预算、准入和配额。缺租户级可对账用量、费率/额度、自动充值、付款和账单。商业化保持后置。 |
+
+OSS 核对清单含 TanStack AI、Flue、Bindu、Harbor、Crabbox、Zuse、Omnara、Convex、herdr、Scale AI AgentEnv、Paperclip、Pydantic AI、rakazo、Agent Swarm、Sheprd、Tardigrade、Bast、AG2、seekrit、varlock、LangChain、Dify、Nod、Pi、Inspect AI、Sixb、Bespoke Labs Sandbox、Agent Foundation (a13n)、Argon、AgentRun、Mirage、DeerFlow。适配指南的存在只证明有公开集成路径，各项目版本兼容和实际运行结果需按选定样本核实。[OSS 目录](https://docs.boxd.sh/use-cases/oss-integrations)
+
+明天先验已有的下载与登录、SSH/IDE、私有 HTTPS、已发布服务就绪、SDK/CLI 文件和操作、备份恢复。按 §3–§5 单列需要真机、生产权限和独立 Worker 的验证。最贴近现有底座的后续集成是浏览器登录、可安装的客户端，以及一条 GitHub PR 预览链路。后者可先用现有 API/SDK 串起创建、就绪、评论和关闭清理，再评估 GitHub App、凭据代理、cron/webhook 与 Agent 会话。全应用目录、完整 Machine Spec、客户端设备桥、公网和多区域产品化及商业功能继续独立排期。外围对照不改变 J01–J11 与生产候选范围。
+
 ## 当日结束留档
 
 - 生产候选 Git 提交、版本、制品及校验结果，环境和回退基线。
 - J01–J11 证据编号；Mac 下载、签名、公证、真机验收和 UI 截图。
 - OAuth/OIDC 的 provider 与完成边界，双 Worker 拓扑与 N01–N18 实机证据，高并发各档结果。
 - Fork 各阶段计时和负载说明，实验 CoW 的 Bundle 与授权边界，以及托管 Agent 接续的模型或测试替身证据。
+- Boxd 外围功能按已有、预览、缺口和待实机验证登记；既有入口附验收结果，扩展项附当前缺失环节。
 - 每个未通过项的重现条件、负责人、是否阻塞生产和验证后需要收尾的分支。
