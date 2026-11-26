@@ -32,6 +32,7 @@ const (
 	maxEntries     = 4096
 	frameTimeout   = 30 * time.Second
 	sessionTimeout = 5 * time.Minute
+	authorizeEvery = time.Second
 )
 
 type Entry struct {
@@ -41,11 +42,12 @@ type Entry struct {
 }
 
 type Session struct {
-	conn        net.Conn
-	ctx         context.Context
-	cancel      context.CancelFunc
-	stop        func() bool
-	reauthorize func(context.Context) error
+	conn         net.Conn
+	ctx          context.Context
+	cancel       context.CancelFunc
+	stop         func() bool
+	reauthorize  func(context.Context) error
+	authorizedAt time.Time
 }
 
 type vmTarget struct {
@@ -126,7 +128,21 @@ func (s *Session) authorize() error {
 	if err := s.ctx.Err(); err != nil {
 		return err
 	}
-	return s.reauthorize(s.ctx)
+	if err := s.reauthorize(s.ctx); err != nil {
+		return err
+	}
+	s.authorizedAt = time.Now()
+	return nil
+}
+
+func (s *Session) recheck() error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	if time.Since(s.authorizedAt) >= authorizeEvery {
+		return s.authorize()
+	}
+	return nil
 }
 
 func (s *Session) List(target string) ([]Entry, error) {
@@ -139,6 +155,9 @@ func (s *Session) List(target string) ([]Entry, error) {
 		return nil, err
 	}
 	if err := reply.expect("ok"); err != nil {
+		return nil, err
+	}
+	if err := s.recheck(); err != nil {
 		return nil, err
 	}
 	var listing struct {
@@ -190,6 +209,9 @@ func (s *Session) Download(target string, dst io.Writer) error {
 		if err := reply.expect("data_chunk"); err != nil {
 			return err
 		}
+		if err := s.recheck(); err != nil {
+			return err
+		}
 		var data []byte
 		if err := json.Unmarshal(reply.Data, &data); err != nil || data == nil ||
 			reply.Done == nil || len(data) > chunkSize || (len(data) == 0 && !*reply.Done) {
@@ -234,7 +256,7 @@ func (s *Session) Upload(target string, source io.Reader, size int64) error {
 	commit := false
 	buf := make([]byte, min(size, chunkSize))
 	for remaining := size; remaining > 0; remaining -= int64(len(buf)) {
-		if err := s.ctx.Err(); err != nil {
+		if err := s.recheck(); err != nil {
 			return err
 		}
 		buf = buf[:min(remaining, chunkSize)]
