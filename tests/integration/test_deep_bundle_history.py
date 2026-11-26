@@ -91,11 +91,17 @@ class BundleHistoryTests(unittest.TestCase):
         self.assertTrue(self.installation.exists())
 
     def test_current_worker_keeps_reader_for_retained_backup(self):
+        with sqlite3.connect(self.registry) as db:
+            db.execute("PRAGMA user_version=1019")
+            db.execute("UPDATE meta SET schema_version=1019")
         with sqlite3.connect(self.catalog) as db:
-            db.execute("PRAGMA user_version=22")
             db.execute("CREATE TABLE native_backup_exports(bundle_digest,phase)")
             db.execute("INSERT INTO native_backup_exports VALUES (?,'pinned')", (BUNDLE,))
-        self.assertEqual(self.references()["worker"]["pinned_backup_exports"], 1)
+        for version in (22, 25, 26, 27, 28, 29):
+            with self.subTest(worker_schema=version):
+                with sqlite3.connect(self.catalog) as db:
+                    db.execute(f"PRAGMA user_version={version}")
+                self.assertEqual(self.references()["worker"]["pinned_backup_exports"], 1)
         with self.assertRaisesRegex(BundleError, "still referenced"):
             self.retire()
         with sqlite3.connect(self.catalog) as db:
