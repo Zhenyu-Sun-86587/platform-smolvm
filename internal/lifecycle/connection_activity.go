@@ -66,7 +66,26 @@ func (a connectionActivity) end(ctx context.Context, client workerclient.Lifecyc
 
 func (e *Engine) closeConnection(ctx context.Context, a connectionActivity, client workerclient.LifecycleControl) {
 	_, err := e.DB.DB().ExecContext(ctx, "UPDATE connection_activity SET closing=1,last_attempt=? WHERE id=?", time.Now().UnixMilli(), a.id)
-	if err == nil && a.end(ctx, client) == nil {
+	if err != nil {
+		return
+	}
+	// Recover the durable WakeDemand linkage before the protection is closed.
+	// A failed query leaves its resource hold Unknown.
+	known, err := e.DB.HasAccessWakeDemand(ctx, a.id)
+	if err != nil {
+		return
+	}
+	if known {
+		var proof protectionReceipt
+		args := map[string]any{"protection_id": a.id, "principal": a.principal}
+		if err := client.Lifecycle(ctx, "QueryProtection", "", a.execution, args, &proof); err == nil &&
+			proof.ID == a.id && proof.Wake != "" {
+			if err := e.DB.ObserveAccessWakeDecision(ctx, a.id, proof.Wake); err != nil {
+				return
+			}
+		}
+	}
+	if a.end(ctx, client) == nil {
 		_, _ = e.DB.DB().ExecContext(ctx, "DELETE FROM connection_activity WHERE id=? AND closing=1", a.id)
 	}
 }

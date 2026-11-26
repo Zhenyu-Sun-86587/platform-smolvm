@@ -115,6 +115,10 @@ func (s *Store) RecordWorkerSample(ctx context.Context, sample placement.Sample,
 		if count, err := result.RowsAffected(); err != nil || count != 1 {
 			return fmt.Errorf("%w: retired Worker budget session", ErrStaleObservation)
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE worker_access_wake_holds SET phase='unknown',covered_sequence=NULL
+			WHERE worker_id=? AND phase='covered'`, sample.WorkerID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE placement_reservations SET phase='unknown', covered_sequence=NULL,
 			admitted_generation=NULL, admitted_host_boot_id=NULL, admitted_broker_session_id=NULL,
 			admitted_node_session_id=NULL, admitted_through_sequence=NULL, admitted_receipt_id=NULL, updated_at=?

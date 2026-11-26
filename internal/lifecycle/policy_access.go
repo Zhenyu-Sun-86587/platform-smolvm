@@ -112,6 +112,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	scope := WorkerExecution(b)
 	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
+	var wakeHeld bool
 	reauthorize := func() error {
 		if err := e.checkAccessPrincipal(ctx, p, b.MachineID, entry.ServiceID); err != nil {
 			return err
@@ -183,6 +184,16 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 					args["first_launch"] = plan
 				}
 			}
+			if st.Power == "HIBERNATED" || st.Power == "STOPPED" {
+				kind := rt.VMRestore
+				if st.Power == "STOPPED" {
+					kind = "launch"
+				}
+				wakeHeld, err = e.DB.BeginAccessWake(ctx, id, b, st.Epoch, kind)
+				if err != nil {
+					return none, nil, err
+				}
+			}
 			// A stable wake demand also covers an observed Running source that may
 			// cross a hibernate decision between status and admission.
 			if release == nil {
@@ -204,6 +215,11 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		ack, err = read(ctx)
 		if err != nil {
 			return none, nil, err
+		}
+		if wakeHeld && ack.ID == id && ack.Wake != "" {
+			if err := e.DB.ObserveAccessWakeDecision(ctx, id, ack.Wake); err != nil {
+				return none, nil, err
+			}
 		}
 		if ack.State == "released" {
 			if ack.Reason == "statepoint_restore_failed" {

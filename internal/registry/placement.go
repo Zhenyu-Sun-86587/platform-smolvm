@@ -132,7 +132,8 @@ func placementAvailability(ctx context.Context, tx *sql.Tx, worker string, sampl
 	available.MemoryMiB = min(available.MemoryMiB, sample.Pressure.AvailableMemoryMiB)
 	available.StorageBytes = min(available.StorageBytes, sample.Pressure.DiskFreeBytes)
 	rows, err := tx.QueryContext(ctx, `SELECT vcpus,memory_mib,storage_bytes,heavy_slots
-		FROM placement_reservations WHERE worker_id=? AND phase IN ('reserved_not_sent','dispatch_started','unknown','admitted')`, worker)
+		FROM placement_reservations WHERE worker_id=? AND phase IN ('reserved_not_sent','dispatch_started','unknown','admitted')
+		UNION ALL SELECT vcpus,memory_mib,0,0 FROM worker_access_wake_holds WHERE worker_id=? AND phase='unknown'`, worker, worker)
 	if err != nil {
 		return available, "", err
 	}
@@ -284,13 +285,9 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 	if prior.CurrentBinding == nil || (r.Kind == "start" && prior.CurrentBinding.PowerState == PowerRunning) {
 		return nil, nil
 	}
-	var enrolledOrSampled bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
-		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&enrolledOrSampled); err != nil {
+	managed, err := placementWorkerManaged(ctx, tx, worker)
+	if err != nil || !managed {
 		return nil, err
-	}
-	if !enrolledOrSampled {
-		return nil, nil
 	}
 	count := int64(1)
 	capability := rt.SystemBootCapability
@@ -300,7 +297,16 @@ func operationPlacementRequest(ctx context.Context, tx *sql.Tx, r AcceptRequest,
 	} else if r.Kind == rt.Wake {
 		capability = rt.NativePowerCapability(r.Kind)
 	}
-	return ownerPlacement(prior.Spec, route, worker, capability, count, r.Heavy)
+	req, err := ownerPlacement(prior.Spec, route, worker, capability, count, r.Heavy)
+	if err != nil {
+		return nil, err
+	}
+	if r.Kind == rt.Wake {
+		// Explicit standby wake retains the same resident execution. The
+		// access path reserves separately for hibernate Restore and launch.
+		req.Resources = placement.Resources{HeavySlots: req.Resources.HeavySlots}
+	}
+	return req, nil
 }
 
 func ownerPlacement(spec json.RawMessage, route rt.BundleRoute, worker, capability string, count int64, heavy bool) (*placement.Request, error) {
@@ -386,4 +392,11 @@ func reserveForkRetry(ctx context.Context, tx *sql.Tx, op Operation) error {
 		return err
 	}
 	return insertPlacementReservation(ctx, tx, op, route, *req, last.Attempt+1)
+}
+
+func placementWorkerManaged(ctx context.Context, q queryer, worker string) (bool, error) {
+	var managed bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_samples WHERE worker_id=?)
+		OR EXISTS(SELECT 1 FROM worker_enrollments WHERE worker_id=?)`, worker, worker).Scan(&managed)
+	return managed, err
 }

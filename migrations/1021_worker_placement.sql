@@ -88,3 +88,45 @@ CREATE TABLE worker_authority_recovery (
     evidence_json TEXT CHECK (evidence_json IS NULL OR json_valid(evidence_json)),
     PRIMARY KEY (worker_id, control_epoch)
 );
+
+CREATE TABLE worker_access_wake_holds (
+    id TEXT NOT NULL PRIMARY KEY,
+    binding_id TEXT NOT NULL REFERENCES runtime_bindings(id),
+    worker_id TEXT NOT NULL REFERENCES workers(id),
+    runtime_instance_id TEXT NOT NULL REFERENCES runtime_instances(id),
+    bundle_id TEXT NOT NULL REFERENCES runtime_bundles(id),
+    control_epoch TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    execution_epoch INTEGER NOT NULL CHECK(execution_epoch >= 0),
+    capture_id TEXT NOT NULL,
+    native_kind TEXT NOT NULL CHECK(native_kind IN ('launch','vm_restore')),
+    vcpus INTEGER NOT NULL CHECK(vcpus >= 0),
+    memory_mib INTEGER NOT NULL CHECK(memory_mib >= 0),
+    phase TEXT NOT NULL CHECK(phase IN ('unknown','covered')),
+    native_operation_id TEXT,
+    native_digest TEXT,
+    covered_sequence INTEGER
+);
+CREATE UNIQUE INDEX worker_wake_active_execution ON worker_access_wake_holds(binding_id,execution_epoch,native_kind,capture_id);
+CREATE INDEX worker_wake_active_worker ON worker_access_wake_holds(worker_id,phase);
+
+CREATE TABLE worker_access_wake_demands (
+    demand_id TEXT NOT NULL PRIMARY KEY,
+    hold_id TEXT NOT NULL REFERENCES worker_access_wake_holds(id)
+);
+
+CREATE TABLE worker_access_wake_candidates (
+    demand_id TEXT NOT NULL REFERENCES worker_access_wake_demands(demand_id),
+    native_operation_id TEXT NOT NULL,
+    PRIMARY KEY (demand_id,native_operation_id)
+);
+
+CREATE TABLE worker_managed_packet_rules (
+    binding_id TEXT NOT NULL REFERENCES runtime_bindings(id),
+    worker_id TEXT NOT NULL REFERENCES workers(id),
+    source_attachment_id TEXT NOT NULL,
+    target_attachment_id TEXT NOT NULL,
+    transport TEXT NOT NULL CHECK(transport IN ('tcp','udp')),
+    guest_port INTEGER NOT NULL CHECK(guest_port BETWEEN 1 AND 65535),
+    PRIMARY KEY (binding_id,source_attachment_id,target_attachment_id,transport,guest_port)
+);

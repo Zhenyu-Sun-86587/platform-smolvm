@@ -139,10 +139,11 @@ func workerMaintenanceBlockers(ctx context.Context, q queryer, state WorkerMaint
 	var operations, volatile bool
 	err = q.QueryRowContext(ctx, `SELECT
 		EXISTS(SELECT 1 FROM operations WHERE worker_id=? AND state IN ('queued','dispatching','observing','recovery_required'))
-		  OR EXISTS(SELECT 1 FROM placement_reservations WHERE worker_id=? AND phase IN ('dispatch_started','unknown','admitted')),
+		  OR EXISTS(SELECT 1 FROM placement_reservations WHERE worker_id=? AND phase IN ('dispatch_started','unknown','admitted'))
+		  OR EXISTS(SELECT 1 FROM worker_access_wake_holds WHERE worker_id=? AND phase='unknown'),
 		EXISTS(SELECT 1 FROM runtime_bindings b JOIN machines m ON m.current_binding_id=b.id
 			WHERE b.worker_id=? AND m.deleted_at IS NULL AND b.power_state IN ('running','standby','unknown'))`,
-		state.WorkerID, state.WorkerID, state.WorkerID).Scan(&operations, &volatile)
+		state.WorkerID, state.WorkerID, state.WorkerID, state.WorkerID).Scan(&operations, &volatile)
 	if err != nil {
 		return nil, err
 	}
@@ -155,35 +156,51 @@ func workerMaintenanceBlockers(ctx context.Context, q queryer, state WorkerMaint
 	return out, nil
 }
 
-func (s *Store) GetWorkerMaintenance(ctx context.Context, worker string) (WorkerMaintenance, error) {
-	tx, err := s.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return WorkerMaintenance{}, err
-	}
-	defer tx.Rollback()
-	state, _, err := readWorkerMaintenance(ctx, tx, worker)
+func getWorkerMaintenance(ctx context.Context, q queryer, worker string) (WorkerMaintenance, error) {
+	state, _, err := readWorkerMaintenance(ctx, q, worker)
 	if err != nil {
 		return state, err
 	}
-	state.Blockers, err = workerMaintenanceBlockers(ctx, tx, state)
+	state.Blockers, err = workerMaintenanceBlockers(ctx, q, state)
 	if err != nil {
 		return state, err
 	}
 	if state.Mode == "draining" && len(state.Blockers) != 0 {
 		state.Phase = "draining_blocked"
 	}
+	return state, nil
+}
+
+func (s *Store) GetWorkerMaintenance(ctx context.Context, worker string) (WorkerMaintenance, error) {
+	tx, err := s.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return WorkerMaintenance{}, err
+	}
+	defer tx.Rollback()
+	state, err := getWorkerMaintenance(ctx, tx, worker)
+	if err != nil {
+		return state, err
+	}
 	return state, tx.Commit()
 }
 
 func (s *Store) SetWorkerMaintenance(ctx context.Context, worker string, expectedRevision int64, mode, reason string) (WorkerMaintenance, error) {
-	if expectedRevision < 1 || strings.TrimSpace(reason) == "" || !oneOf(mode, "active", "cordoned", "draining", "drained", "decommissioned") {
-		return WorkerMaintenance{}, ErrInvalid
-	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return WorkerMaintenance{}, err
 	}
 	defer tx.Rollback()
+	state, err := s.SetWorkerMaintenanceTx(ctx, tx, worker, expectedRevision, mode, reason)
+	if err != nil {
+		return state, err
+	}
+	return state, tx.Commit()
+}
+
+func (s *Store) SetWorkerMaintenanceTx(ctx context.Context, tx *sql.Tx, worker string, expectedRevision int64, mode, reason string) (WorkerMaintenance, error) {
+	if expectedRevision < 1 || strings.TrimSpace(reason) == "" || !oneOf(mode, "active", "cordoned", "draining", "drained", "decommissioned") {
+		return WorkerMaintenance{}, ErrInvalid
+	}
 	if err := checkWritable(ctx, tx); err != nil {
 		return WorkerMaintenance{}, err
 	}
@@ -195,7 +212,7 @@ func (s *Store) SetWorkerMaintenance(ctx context.Context, worker string, expecte
 		return state, ErrRevision
 	}
 	if state.Mode == mode {
-		return state, nil
+		return getWorkerMaintenance(ctx, tx, worker)
 	}
 	phase := mode
 	switch {
@@ -255,15 +272,12 @@ func (s *Store) SetWorkerMaintenance(ctx context.Context, worker string, expecte
 		worker, expectedRevision+1, phase, reason, clearing, evidence); err != nil {
 		return state, err
 	}
-	if err := AppendEvent(ctx, tx, "worker_maintenance", "", "", map[string]any{
-		"worker_id": worker, "mode": mode, "phase": phase, "revision": expectedRevision + 1, "reason": reason,
+	if err := AppendEvent(ctx, tx, "maintenance", "", "", map[string]any{
+		"action": "worker_mode", "worker_id": worker, "mode": mode, "phase": phase, "revision": expectedRevision + 1, "reason": reason,
 	}, true); err != nil {
 		return state, err
 	}
-	if err := tx.Commit(); err != nil {
-		return state, err
-	}
-	return s.GetWorkerMaintenance(ctx, worker)
+	return getWorkerMaintenance(ctx, tx, worker)
 }
 
 func (s *Store) RecordWorkerMaintenanceEvidence(ctx context.Context, worker string, expectedRevision int64, proof WorkerMaintenanceEvidence) (WorkerMaintenance, error) {

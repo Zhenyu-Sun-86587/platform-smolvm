@@ -151,7 +151,7 @@ func (s *Store) RecordPlacementAdmission(ctx context.Context, proof placement.Ad
 		return err
 	}
 	want := placement.AdmissionOperation
-	if kind == rt.Wake {
+	if kind == rt.Wake && (r.Resources.VCPUs != 0 || r.Resources.MemoryMiB != 0 || r.Resources.StorageBytes != 0) {
 		want = placement.AdmissionRestore
 	}
 	if proof.Kind != want {
@@ -270,6 +270,11 @@ func transitionPlacement(ctx context.Context, tx *sql.Tx, op Operation, change T
 			// result. A timeout and lookup miss stay recovery_required.
 			return setReservationPhase(ctx, tx, r, placement.Rejected)
 		case r.Phase == placement.Reserved && r.Resources == (placement.Resources{}):
+			return setReservationPhase(ctx, tx, r, placement.Released)
+		case op.Kind == rt.Wake && r.Resources.VCPUs == 0 && r.Resources.MemoryMiB == 0 && r.Resources.StorageBytes == 0 &&
+			op.Effect == EffectApplied:
+			// Confirmed standby wake preserves the existing execution and
+			// has no extra admission resources to correlate after completion.
 			return setReservationPhase(ctx, tx, r, placement.Released)
 		case r.Phase == placement.DispatchStarted:
 			return setReservationPhase(ctx, tx, r, placement.Unknown)

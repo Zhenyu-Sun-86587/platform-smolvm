@@ -42,6 +42,9 @@ func beginWorkerAuthorityRecovery(ctx context.Context, tx *sql.Tx, epoch string)
 		WHERE id IN (SELECT worker_id FROM worker_authority_recovery WHERE control_epoch=?)`, epoch); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE worker_access_wake_holds SET phase='unknown',covered_sequence=NULL WHERE phase='covered'`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE placement_reservations SET phase='unknown',covered_sequence=NULL,
 		admitted_generation=NULL,admitted_host_boot_id=NULL,admitted_broker_session_id=NULL,admitted_node_session_id=NULL,
 		admitted_through_sequence=NULL,admitted_receipt_id=NULL,updated_at=?
@@ -117,8 +120,8 @@ func (s *Store) ConfirmWorkerAuthority(ctx context.Context, proof WorkerAuthorit
 		WHERE worker_id=? AND control_epoch=?`, generation, string(raw), proof.WorkerID, control.ControlEpoch); err != nil {
 		return err
 	}
-	if err := AppendEvent(ctx, tx, "worker_authority_rebound", "", "",
-		map[string]any{"worker_id": proof.WorkerID, "generation": generation, "coverage": proof.Coverage}, true); err != nil {
+	if err := AppendEvent(ctx, tx, "maintenance", "", "",
+		map[string]any{"action": "worker_authority_rebound", "worker_id": proof.WorkerID, "generation": generation, "coverage": proof.Coverage}, true); err != nil {
 		return err
 	}
 	return tx.Commit()
