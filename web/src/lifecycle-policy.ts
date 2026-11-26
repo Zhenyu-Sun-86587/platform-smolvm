@@ -32,3 +32,12 @@ export function policyInput(form: FormData): LifecyclePolicyPatch {
       private_network_packet: form.has("private_network_packet"), allow_cold_start: form.has("allow_cold_start") },
   }
 }
+
+export function policyOverrides(form: FormData, current: LifecyclePolicy): LifecyclePolicyPatch {
+  const { wake_conditions, ...settings } = policyInput(form)
+  const overrides = Object.fromEntries(Object.entries(settings).filter(([key, value]) =>
+    value !== current[key as keyof LifecyclePolicy]))
+  const wake = Object.fromEntries(Object.entries(wake_conditions ?? {}).filter(([key, value]) =>
+    value !== current.wake_conditions[key as keyof LifecyclePolicy["wake_conditions"]]))
+  return Object.keys(wake).length ? { ...overrides, wake_conditions: wake } : overrides
+}

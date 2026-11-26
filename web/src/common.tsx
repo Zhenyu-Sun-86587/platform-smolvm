@@ -1,9 +1,9 @@
-import { ReactNode, useEffect, useState } from "react"
+import { ReactNode, useEffect, useRef, useState } from "react"
 import { PlatformError } from "../../sdk/typescript/src/index"
 import type { Machine, NetworkMode } from "../../sdk/typescript/src/index"
 
 import { api } from "./api"
-import { Dialog as Root, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter } from "./daytona/dialog"
+import { Dialog as Root, DialogContent, DialogTitle, DialogDescription, DialogHeader, DialogFooter, DialogOverlay } from "./daytona/dialog"
 import { Button } from "./daytona/button"
 import { AlertCircle } from "lucide-react"
 export { api, segment } from "./api"
@@ -59,6 +59,8 @@ export function Callout({ error }: { error: unknown }) {
   const detail = error instanceof PlatformError ? error.detail : undefined
   return <div className="callout" role="alert">
     <AlertCircle size={16} /><strong>{detail?.code ?? "Request failed"}</strong><span>{message}</span>
+    {detail?.stage && <span>Stage {label(detail.stage)}</span>}
+    {detail?.scope && <span>Scope {label(detail.scope)}</span>}
     {detail?.operation_id && <span>Operation {detail.operation_id}</span>}
     {detail?.effect && <span>Effect {detail.effect}</span>}
     {detail?.retry && <span>Retry {label(detail.retry)}</span>}
@@ -68,9 +70,10 @@ export function Callout({ error }: { error: unknown }) {
 export function State({ value }: { value?: string | null }) {
   if (!value) return <span className="muted">—</span>
   const tone = ["running", "ready", "succeeded", "active", "enabled"].includes(value) ? "good"
-    : ["failed", "recovery_required", "unknown", "degraded", "interrupted"].includes(value) ? "bad"
-      : ["paused", "queued", "observing", "dispatching", "starting", "suspect", "not_ready", "cancelling", "verification_pending"].includes(value) ? "pending" : "neutral"
-  return <span className={`state ${tone}`}><i />{value==="paused"?"Hibernated":label(value)}</span>
+    : ["failed", "recovery_required", "degraded", "interrupted"].includes(value) ? "bad"
+      : ["queued", "observing", "dispatching", "suspect", "not_ready", "cancelling", "verification_pending", "partial", "stale"].includes(value) ? "pending"
+        : value === "standby" || value === "starting" ? "info" : "neutral"
+  return <span className={`state ${tone}`} data-state-value={value}><i aria-hidden="true" />{value === "paused" ? "Hibernated" : label(value)}</span>
 }
 
 export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
@@ -131,15 +134,25 @@ export function Dialog({ config, close }: { config: DialogConfig; close: () => v
   const [error, setError] = useState<unknown>()
   const [busy, setBusy] = useState(false)
   const [values, setValues] = useState<FormData>()
+  const previousFocus = useRef<HTMLElement | null>(null)
   const dynamic = typeof config.fields === "function"
   const fields = typeof config.fields === "function" ? config.fields(values) : config.fields
   return <Root open onOpenChange={open => { if (!open && !busy) close() }}>
-    <DialogContent placement={config.sheet?"right":"center"} animate={!config.sheet} className={config.sheet ? "form-sheet" : "form-dialog"} onEscapeKeyDown={event => { if (busy) event.preventDefault() }} onInteractOutside={event => { if (busy) event.preventDefault() }} showCloseButton={!busy} {...(config.description ? {} : {"aria-describedby":undefined})}>
+    <DialogContent placement={config.sheet ? "right" : "center"} animate={!config.sheet}
+      className={config.sheet ? "form-sheet" : "form-dialog"} overlay={<DialogOverlay className="console-overlay legacy-form-overlay" />}
+      onOpenAutoFocus={() => { previousFocus.current = document.activeElement as HTMLElement | null }}
+      onCloseAutoFocus={event => {
+        event.preventDefault()
+        if (previousFocus.current?.isConnected) previousFocus.current.focus({ preventScroll: true })
+      }}
+      onEscapeKeyDown={event => { if (busy) event.preventDefault() }} onInteractOutside={event => { if (busy) event.preventDefault() }}
+      showCloseButton={!busy} {...(config.description ? {} : { "aria-describedby": undefined })}>
       <DialogHeader><DialogTitle>{config.title}</DialogTitle>
       {config.description && <DialogDescription>{config.description}</DialogDescription>}</DialogHeader>
       {config.content}
       <form onChange={dynamic ? event => setValues(new FormData(event.currentTarget)) : undefined} onSubmit={event => {
         event.preventDefault()
+        if (busy) return
         const form = new FormData(event.currentTarget)
         setBusy(true)
         setError(undefined)
@@ -152,7 +165,7 @@ export function Dialog({ config, close }: { config: DialogConfig; close: () => v
           </select>
             : field.type === "textarea" ? <textarea name={field.name} defaultValue={String(field.value ?? "")} required={field.required} rows={4} />
               : field.type === "checkbox" ? <input type="checkbox" name={field.name} defaultChecked={Boolean(field.value)} />
-                : <input type={field.type ?? "text"} name={field.name} defaultValue={field.type === "file" ? undefined : String(field.value ?? "")} min={field.min} required={field.required} />}
+                : <input type={field.type ?? "text"} name={field.name} defaultValue={field.type === "file" ? undefined : String(field.value ?? "")} min={field.min} max={field.max} required={field.required} />}
           {field.note && <small>{field.note}</small>}
         </label>)}
         <Callout error={error} />

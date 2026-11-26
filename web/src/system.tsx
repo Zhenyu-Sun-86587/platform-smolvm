@@ -1,39 +1,63 @@
-import { PageIntro } from "./daytona/page"
-import { RefreshCw } from "lucide-react"
-import { Button } from "./daytona/button"
-import { useState } from "react"
-import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile } from "../../sdk/typescript/src/index"
+import { Archive, Building2, FileClock, RefreshCw, Settings2, Stethoscope, Layers3 } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Button, PageHeader } from "./ui"
+import { ApiKeys } from "./features/settings/ApiKeys"
+import { OrganizationPreview, PreviewPage } from "./features/settings/Previews"
+import styles from "./features/settings/settings.module.css"
+import catalog from "./features/catalog/catalog.module.css"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile, SystemMetrics } from "../../sdk/typescript/src/index"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
-import { useCollection } from "./api"
+import { fixtureScene, metricAvailability, metricNumber, useCollection } from "./api"
 import type { Actions } from "./main"
 
-export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups"
-type Props = { tab: SystemTab; id?: string; actions: Actions; revision: number; operationIds: string[] }
+export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups" | "api-keys"
+  | "agents" | "integrations" | "domains" | "environment"
+type Props = { tab: SystemTab; id?: string; actions: Actions; revision: number; operationIds: string[]; create?: boolean }
+
+const systemPages = {
+  operations: { title: "Operations", Icon: FileClock, description: "Inspect platform operations, results, and recovery." },
+  settings: { title: "Settings", Icon: Settings2, description: "Manage credentials and defaults for this deployment." },
+  diagnostics: { title: "Diagnostics", Icon: Stethoscope, description: "Inspect control status, runtime profiles, and observations." },
+  templates: { title: "Templates", Icon: Layers3, description: "Manage the template versions available for new machines." },
+  backups: { title: "Backups", Icon: Archive, description: "Review backup policy schedules and recent backup runs." },
+}
+const settingsSections = [["settings", "General"], ["templates", "Templates"], ["backups", "Backups"], ["diagnostics", "Diagnostics"], ["api-keys", "API keys"]]
 
 export function System({ tab, ...props }: Props) {
-  return <><PageIntro title={tab==="operations"?"Operations":"Settings"} desc={tab==="operations"?"Inspect lifecycle progress, results, and recovery.":"Manage credentials, templates, and your local platform."} actions={<Button variant="outline" onClick={props.actions.refresh}><RefreshCw/>Refresh</Button>}/>
-    {tab!=="operations"&&<nav className="tabs" aria-label="Settings sections">{[["settings","Credentials"],["templates","Templates"],["backups","Backups"],["diagnostics","Diagnostics"]].map(([key,title])=><a key={key} className={tab===key?"active":""} href={"#/"+key}>{title}</a>)}</nav>}
+  if (tab === "api-keys") return <ApiKeys actions={props.actions} revision={props.revision} create={props.create} />
+  if (tab === "agents" || tab === "integrations" || tab === "domains" || tab === "environment") return <PreviewPage key={tab} page={tab} />
+  if (tab === "settings" && (fixtureScene === "13" || fixtureScene === "18")) return <OrganizationPreview tab={props.id} />
+  const { title, Icon, description } = systemPages[tab]
+  return <>
+    <PageHeader title={title} icon={tab === "settings" ? <Building2 /> : <Icon />} description={description}
+      actions={<Button variant="secondary" onClick={props.actions.refresh}><RefreshCw size={14} /> Refresh</Button>} />
+    {tab !== "operations" && <nav className={styles.tabs} aria-label="Settings sections">
+      {settingsSections.map(([key, title]) => <a key={key} aria-current={tab === key ? "page" : undefined} href={"#/" + key}>{title}</a>)}
+    </nav>}
     {tab === "operations" ? <Operations {...props} /> : tab === "templates" ? <Templates {...props} />
-      : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : tab === "backups" ? <Backups {...props} /> : <Settings {...props} />}</>
+      : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : tab === "backups" ? <Backups {...props} /> : <Settings {...props} />}
+  </>
 }
 
 function Backups({ actions, revision }: Omit<Props,"tab">) {
-  const policies = useRemote<Page<BackupPolicy>>("backups/policies",revision)
-  const runs = useRemote<Page<BackupRun>>("backups?limit=50",revision)
+  const policies = useCollection<BackupPolicy>("backups/policies", revision)
+  const runs = useCollection<BackupRun>("backups", revision)
   return <>
     <Section title="Backup policies"><Callout error={policies.error} />
-      {policies.data?.items.length === 0 && <p className="empty">Configure a backup policy in platformd to schedule backups.</p>}
-      <div className="rows">{policies.data?.items.map(policy => <div className="row" key={policy.policy_id}>
+      {!policies.items && !policies.error && <p role="status">Loading backup policies…</p>}
+      {policies.items?.length === 0 && <p className="empty">Configure a backup policy in platformd to schedule backups.</p>}
+      <div className="rows">{policies.items?.map(policy => <div className="row" key={policy.policy_id}>
         <strong>{policy.policy_id}</strong><span>{label(policy.scope)}</span><span>Every {policy.interval_seconds} seconds</span><span>Keep {policy.retain}</span>
-        <Button variant="outline" disabled={runs.data?.items.some(run => run.policy_id === policy.policy_id && run.state === "running")}
+        <Button variant="secondary" disabled={!runs.items || runs.items.some(run => run.policy_id === policy.policy_id && run.state === "running")}
           onClick={() => actions.dialog({title:"Run backup",act:() => actions.mutate("backups/policies/" + segment(policy.policy_id) + "/runs")})}>Run now</Button>
       </div>)}</div>
     </Section>
     <Section title="Backup history"><Callout error={runs.error} />
-      {runs.data?.items.length === 0 && <p className="empty">No backups yet.</p>}
-      <div className="rows">{runs.data?.items.map(run => <div className="row" key={run.backup_id}>
+      {!runs.items && !runs.error && <p role="status">Loading backup runs…</p>}
+      {runs.items?.length === 0 && <p className="empty">No backups yet.</p>}
+      <div className="rows">{runs.items?.map(run => <div className="row" key={run.backup_id}>
         <strong>{run.policy_id}</strong><State value={run.state}/><span>{time(run.started_at)}</span><code>{run.backup_id}</code>
         {run.failure_code && <span>{label(run.failure_code)}</span>}
       </div>)}</div>
@@ -43,25 +67,28 @@ function Backups({ actions, revision }: Omit<Props,"tab">) {
 
 function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">) {
   const [lookup, setLookup] = useState(id ?? "")
+  useEffect(() => setLookup(id ?? ""), [id])
   const [restores, setRestores] = useState(false)
   const op = useRemote<Operation>(id ? operation(id) : "", revision)
-  const all = useRemote<Page<Operation>>((restores ? "restores" : "operations") + "?limit=60", revision)
+  const all = useCollection<Operation>(restores ? "restores" : "operations", revision)
   return <>
     <Section title="Operation lookup"><form className="inline-form" onSubmit={event => {
       event.preventDefault()
       location.hash = "/operations/" + segment(lookup.trim())
     }}><label htmlFor="operation-id">Operation ID</label><input id="operation-id" value={lookup} onChange={event => setLookup(event.target.value)} required /><button>Find</button></form>
       <Callout error={op.error} />
+      {id && !op.data && !op.error && <p role="status">Loading operation…</p>}
       {op.data && <OperationDetail item={op.data} actions={actions} />}
     </Section>
     <Section title="Operation history" actions={<select aria-label="Operation history filter" value={restores ? "restores" : "all"} onChange={event => setRestores(event.target.value === "restores")}>
       <option value="all">All operations</option><option value="restores">Restores</option>
     </select>}>
       <Callout error={all.error} />
-      <div className="rows">{all.data ? all.data.items.map(item => <div key={item.operation_id} className="row">
+      {!all.items && !all.error && <p role="status">Loading operations…</p>}
+      <div className="rows">{all.items ? all.items.map(item => <div key={item.operation_id} className="row">
         <a href={"#/operations/" + segment(item.operation_id)}>{item.operation_id}</a><strong>{label(item.kind)}</strong><State value={item.state} /><span>{item.stage}</span>
       </div>) : !restores && operationIds.map(item => <div key={item} className="row"><a href={"#/operations/" + segment(item)}>{item}</a></div>)}</div>
-      {all.data && !all.data.items.length && <p className="empty">{restores ? "No restores returned." : "No recent operations returned."}</p>}
+      {all.items && !all.items.length && <p className="empty">{restores ? "No restores returned." : "No recent operations returned."}</p>}
     </Section>
   </>
 }
@@ -105,8 +132,10 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
 
 function Diagnostics({ revision }: { revision: number }) {
   const status = useRemote<Record<string, unknown>>("control", revision)
-  const profiles = useRemote<Page<RuntimeProfile>>("runtime-profiles", revision)
-  const metrics = useRemote<Record<string, unknown>>("system/metrics", revision)
+  const profiles = useCollection<RuntimeProfile>("runtime-profiles", revision)
+  const metrics = useRemote<SystemMetrics>("system/metrics", revision)
+  const availability = metricAvailability(metrics.data)
+  const measured = (value?: number) => availability !== "unknown" && availability !== "unavailable" ? metricNumber(value) : undefined
   const diagnostic = useRemote<Record<string, unknown>>("system/diagnostics", revision)
   const [machineId, setMachineId] = useState("")
   const [operationId, setOperationId] = useState("")
@@ -117,8 +146,8 @@ function Diagnostics({ revision }: { revision: number }) {
     <Section title="Control status"><Callout error={status.error} />{status.data && <Details value={details} />}</Section>
     <Section title="Registered runtime profiles">
       <Callout error={profiles.error} />
-      {profiles.data?.items.length === 0 && <p className="empty">No deep runtime profiles registered.</p>}
-      {profiles.data?.items.map(profile => <details className="disclosure" key={profile.runtime_instance_id}>
+      {profiles.items?.length === 0 && <p className="empty">No deep runtime profiles registered.</p>}
+      {profiles.items?.map(profile => <details className="disclosure" key={profile.runtime_instance_id}>
         <summary>{profile.runtime_instance_id} · {profile.boot_profiles.join(", ") || label(profile.status)}</summary>
         <Details value={{
           bundle: profile.runtime_bundle_id, state_reader: profile.state_reader_id,
@@ -129,7 +158,21 @@ function Diagnostics({ revision }: { revision: number }) {
         }} />
       </details>)}
     </Section>
-    <Section title="Node metrics"><Callout error={metrics.error} />{metrics.data && <Details value={metrics.data} />}</Section>
+    <Section title="Runtime metrics">
+      <Callout error={metrics.error} />
+      {metrics.data ? <Details value={{
+        availability: label(availability),
+        scope: metrics.data.scope,
+        source: metrics.data.source,
+        observed: time(metrics.data.observed_at),
+        cpu_allocation: measured(metrics.data.allocated_cpus),
+        memory_allocation_mb: measured(metrics.data.allocated_memory_mb),
+        cpu_used: measured(metrics.data.used_cpus),
+        memory_used_mb: measured(metrics.data.used_memory_mb),
+        disk_used_gb: measured(metrics.data.used_disk_gb),
+        issues: metrics.data.issues,
+      }} /> : !metrics.error && <p role="status">Loading runtime metrics…</p>}
+    </Section>
     <Section title="Diagnostics">
       <form className="inline-form" onSubmit={event => {
         event.preventDefault()
@@ -148,7 +191,7 @@ function Diagnostics({ revision }: { revision: number }) {
 
 type Template = { id?: string; template_id?: string; name: string; version: number; image_digest: string; guest_release?: string; [key: string]: unknown }
 function Templates({ actions, revision }: Omit<Props, "tab">) {
-  const list = useRemote<Page<Template>>("templates?limit=100", revision)
+  const list = useCollection<Template>("templates", revision)
   return <Section title="Template versions" actions={<button className="primary" onClick={() => actions.dialog({
     title: "Register template",
     fields: [
@@ -162,8 +205,9 @@ function Templates({ actions, revision }: Omit<Props, "tab">) {
     })
   })}>Register template</button>}>
     <Callout error={list.error} />
-    {!list.data?.items.length && <p className="empty">No templates returned.</p>}
-    <div className="rows">{list.data?.items.map(item => <div key={item.template_id ?? item.id} className="service-row">
+    {!list.items && !list.error && <p role="status">Loading templates…</p>}
+    {list.items?.length === 0 && <p className="empty">No templates returned.</p>}
+    <div className="rows">{list.items?.map(item => <div key={item.template_id ?? item.id} className="service-row">
       <div className="row"><strong>{item.name}</strong><span>Version {item.version}</span><code>{item.template_id ?? item.id}</code></div><Details value={item} />
     </div>)}</div>
   </Section>
@@ -228,15 +272,14 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
   const settings = useRemote<Record<string, unknown> & NetworkDefaults & { default_lifecycle_policy?: LifecyclePolicy }>("system/settings", revision)
   const networks = useCollection<PrivateNetwork>("networks", revision)
   const networkIDs = Array.from(new Set((networks.items ?? []).map(network => network.network_id)))
-  const tokens = useRemote<Page<Credential>>("tokens", revision)
-  const keys = useRemote<Page<Credential>>("ssh-keys", revision)
-  const certificates = useRemote<Page<Credential>>("client-certificates", revision)
+  const keys = useCollection<Credential>("ssh-keys", revision)
+  const certificates = useCollection<Credential>("client-certificates", revision)
   const [secret, setSecret] = useState<unknown>()
   const credentialRows = (items: Credential[] | undefined, path: string) => items?.map(item => {
     const id = item.id ?? item.credential_id ?? item.token_id ?? item.ssh_key_id
     return <div key={id} className="row"><strong>{item.label ?? id}</strong><code>{id}</code><span>{item.scope ? JSON.stringify(item.scope) : ""}</span>
       {id && !item.revoked_at && <button className="quiet-danger" onClick={() => actions.dialog({
-        title: path === "tokens" ? "Revoke token" : path === "ssh-keys" ? "Remove SSH key" : "Revoke certificate", destructive: true,
+        title: path === "ssh-keys" ? "Remove SSH key" : "Revoke certificate", destructive: true,
         act: () => actions.mutate(path + "/" + segment(id), {}, { method: "DELETE", revision: item.revision })
       })}>{path === "ssh-keys" ? "Remove" : "Revoke"}</button>}
     </div>
@@ -253,8 +296,12 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
         method: "PATCH", revision: typeof settings.data?.revision === "number" ? settings.data.revision : undefined
       })
     })}>Update</button>}>
-      <Callout error={settings.error} />{settings.data && <Details value={settings.data} />}
+      <Callout error={settings.error} />
+      {!settings.data && !settings.error && <div className={catalog.skeleton} role="status" aria-label="Loading settings" />}
+      {settings.data && <Details value={{ revision: settings.data.revision, default_boot_mode: settings.data.default_boot_mode,
+        default_idle_timeout_seconds: settings.data.default_idle_seconds }} />}
     </Section>
+    <Callout error={networks.error} />
     {settings.data && networkIDs.length > 0 && <Section title="Private network defaults" actions={<button onClick={() => actions.dialog({
       title: "Edit private network defaults", submit: "Save",
       fields: [
@@ -280,28 +327,15 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
       <Details value={{ ...settings.data.default_lifecycle_policy }} />
       <ApplyDefaults actions={actions} revision={revision} defaultRevision={Number(settings.data.default_lifecycle_revision)} />
     </Section>}
-    <Section title="API tokens" actions={<button onClick={() => actions.dialog({
-      title: "Create API token",
-      fields: [
-        { name: "label", label: "Label", required: true },
-        { name: "mode", label: "Scope", options: [{ value: "read" }, { value: "manage" }, { value: "tunnel" }] },
-        { name: "machine_id", label: "Machine ID for tunnel scope" },
-        { name: "expires_at", label: "Expiry (RFC 3339, optional)" }
-      ],
-      act: async form => setSecret(await actions.mutate("tokens", {
-        label: str(form, "label"), scope: {
-          access: str(form, "mode"), ...(str(form, "machine_id") ? { machine_id: str(form, "machine_id") } : {})
-        }, ...(str(form, "expires_at") ? { expires_at: str(form, "expires_at") } : {})
-      }))
-    })}>Create token</button>}>
-      <Callout error={tokens.error} /><div className="rows">{credentialRows(tokens.data?.items, "tokens")}</div>
-    </Section>
     <Section title="SSH public keys" actions={<button onClick={() => actions.dialog({
       title: "Add SSH public key",
       fields: [{ name: "label", label: "Label", required: true }, { name: "public_key", label: "OpenSSH public key", type: "textarea", required: true }],
       act: form => actions.mutate("ssh-keys", { label: str(form, "label"), public_key: str(form, "public_key") })
     })}>Add key</button>}>
-      <Callout error={keys.error} /><div className="rows">{credentialRows(keys.data?.items, "ssh-keys")}</div>
+      <Callout error={keys.error} />
+      {keys.items?.length === 0 && <p className="empty">No SSH public keys yet.</p>}
+      {!keys.items && !keys.error && <p role="status">Loading SSH public keys…</p>}
+      <div className="rows">{credentialRows(keys.items, "ssh-keys")}</div>
     </Section>
     <Section title="TCP client certificates" actions={<button onClick={() => actions.dialog({
       title: "Issue client certificate",
@@ -314,7 +348,10 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
         csr: str(form, "csr"), scope: { service_ids: [str(form, "service_id")] }, ttl_seconds: Number(str(form, "ttl_seconds"))
       }))
     })}>Issue certificate</button>}>
-      <Callout error={certificates.error} /><div className="rows">{credentialRows(certificates.data?.items, "client-certificates")}</div>
+      <Callout error={certificates.error} />
+      {certificates.items?.length === 0 && <p className="empty">No client certificates yet.</p>}
+      {!certificates.items && !certificates.error && <p role="status">Loading client certificates…</p>}
+      <div className="rows">{credentialRows(certificates.items, "client-certificates")}</div>
     </Section>
   </>
 }

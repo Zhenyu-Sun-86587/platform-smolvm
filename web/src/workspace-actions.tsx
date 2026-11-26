@@ -1,22 +1,35 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import {
   Cable,
   Check,
+  AppWindow,
+  Box,
+  CodeXml,
+  ExternalLink,
+  Feather,
+  Smartphone,
   Copy,
   Ellipsis,
   GitFork,
   Layers2,
+  Monitor,
   Moon,
   Play,
   Power,
   SquareTerminal,
+  Waypoints,
   Trash2,
   Zap,
 } from "lucide-react"
-import type { Machine, Service, Page } from "../../sdk/typescript/src/index"
+import type { Machine, Service } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
-import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str, useRemote } from "./common"
+import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str } from "./common"
 import { Button } from "./daytona/button"
+import { Modal } from "./ui"
+import { desktopHref, machineHref, terminalHref } from "./routes"
+import { fixtureScene, useCollection } from "./api"
+import consoleStyles from "./features/console/console.module.css"
+import { PreviewQR } from "./features/console/PreviewQR"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -27,13 +40,16 @@ import {
 
 export function powerDialog(m: Machine, actions: Actions, kind: string) {
   const deleting = kind === "delete"
-  const managed = Boolean(m.binding?.runtime_instance_id && m.binding?.runtime_bundle_id)
+  const managed = bundleBound(m)
+  const captures = kind === "pause" || kind === "hibernate"
   actions.dialog({
     title: (kind === "stop" ? "Cold stop" : kind === "pause" ? "Hibernate" : label(kind)) + " machine",
-    submit: label(kind),
+    submit: captures ? "Hibernate" : label(kind),
     description:
-      kind === "pause"
+      captures
         ? "Save the complete running state, including memory, for a later resume."
+        : kind === "standby"
+          ? "Suspend the execution in memory. The host keeps its current allocation."
         : kind === "stop"
           ? "This ends the running execution. The guest disk is retained."
           : deleting
@@ -41,7 +57,7 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
             : undefined,
     destructive: deleting || kind === "stop",
     fields:
-      kind === "pause"
+      captures
         ? [{ name: "allow_active_tasks", label: "Include active persistent tasks", type: "checkbox" }]
         : kind === "stop" && !managed
           ? [{ name: "cancel_tasks", label: "Cancel active persistent tasks first", type: "checkbox" }]
@@ -51,7 +67,8 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
         "machines/" + segment(m.machine_id) + (deleting ? "" : "/" + kind),
         {
           expected_generation: m.binding_generation,
-          ...(f.has("allow_active_tasks") ? { allow_active_tasks: true } : {}),
+          ...(f.has("allow_active_tasks") ? (kind === "hibernate"
+            ? { activity_policy: { allow_active_tasks: true } } : { allow_active_tasks: true }) : {}),
           ...(f.has("cancel_tasks") ? { cancel_tasks: true } : {}),
         },
         { method: deleting ? "DELETE" : "POST", revision: m.revision },
@@ -88,7 +105,7 @@ export function copyDialog(m: Machine, actions: Actions, live: boolean, independ
   })
 }
 
-function forkBatchDialog(m: Machine, actions: Actions) {
+export function forkBatchDialog(m: Machine, actions: Actions) {
   actions.dialog({
     title: "Fork batch",
     description: "Create independent children from one source capture.",
@@ -104,65 +121,138 @@ function forkBatchDialog(m: Machine, actions: Actions) {
   })
 }
 function SSHInfo({ machine }: { machine: Machine }) {
-  const { data, error } = useRemote<Page<Service>>("machines/" + segment(machine.machine_id) + "/services", 0)
+  const { items, error } = useCollection<Service>("machines/" + segment(machine.machine_id) + "/services", machine.revision)
   const [copied, setCopied] = useState(false),
     [copyError, setError] = useState<unknown>()
-  const service = data?.items.find((item) => item.protocol === "ssh" && item.enabled !== false)
+  const service = items?.find((item) => item.protocol === "ssh" && item.enabled !== false)
   const cmd = "sandboxctl ssh-config " + machine.machine_id
   const hostKey = "sandboxctl ssh-host-key " + machine.machine_id
-  return (
-    <div className="ssh-info">
-      <Callout error={error || copyError} />
-      {!data && !error ? (
-        "Checking published services…"
-      ) : service ? (
-        <>
-          <p>Use the authenticated CLI for this platform. Add the verified key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>
-          <pre className="ssh-commands">{hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id}</pre>
-          <div className="copy-line">
-            <span>Copy setup commands</span>
-            <Button
-              size="icon-sm"
-              variant="outline"
-              aria-label="Copy SSH command"
-              onClick={() =>
-                navigator.clipboard
-                  .writeText(hostKey+"\n"+cmd+"\nssh sandbox-"+machine.machine_id)
-                  .then(() => setCopied(true))
-                  .catch(setError)
-              }
-            >
-              {copied ? <Check /> : <Copy />}
-            </Button>
-          </div>
-        </>
-      ) : data ? (
-        <p>Publish an SSH service for guest port 22 in Networking to connect as root.</p>
-      ) : null}
-    </div>
-  )
+  const commands = hostKey + "\n" + cmd + "\nssh sandbox-" + machine.machine_id
+  return <section aria-label="SSH with sandboxctl">
+    <div className={consoleStyles.connectionLabel}><h3>CLI</h3><span>Connect using OpenSSH</span></div>
+    <Callout error={error || copyError} />
+    {!items && !error ? <p role="status">Checking published services…</p> : service ? <>
+      <div className={consoleStyles.commands}>
+        <pre>{fixtureScene === "30" ? "$ " + cmd : commands}</pre>
+        <Button size="sm" variant="outline" className={consoleStyles.copyCommand} aria-label={copied ? "SSH commands copied" : "Copy SSH commands"}
+          onClick={() => navigator.clipboard.writeText(commands).then(() => setCopied(true)).catch(setError)}>
+          {copied ? <><Check /> Copied</> : <><Copy /> Copy</>}
+        </Button>
+      </div>
+      {!fixtureScene && <p className={consoleStyles.sshHint}>Add the verified host key to <code>~/.ssh/sandbox_known_hosts</code> and the generated Host entry to your SSH configuration.</p>}
+    </> : items ? <p className={consoleStyles.sshHint}><a href={"#/machines/" + segment(machine.machine_id) + "/networking"}>Publish an SSH service</a> for guest port 22 to connect.</p> : null}
+  </section>
 }
+
+function useTerminalLaunch(machine: Machine, actions: Actions, onOpened?: () => void) {
+  const [opening, setOpening] = useState(false)
+  const pending = useRef(false)
+  const [error, setError] = useState<unknown>()
+  async function openTerminal() {
+    if (pending.current) return
+    pending.current = true
+    setOpening(true)
+    setError(undefined)
+    try {
+      const session = await actions.mutate<{ exec_id: string }>("machines/" + segment(machine.machine_id) + "/execs", {
+        argv: ["/bin/sh"], cwd: machine.boot_mode === "system" && bundleBound(machine) ? "/" : "/workspace",
+        user: "root", tty: true, interactive: true, cols: 100, rows: 28,
+      }, { revision: machine.revision })
+      if (!session?.exec_id) throw new Error("The terminal response did not include a session.")
+      onOpened?.()
+      location.hash = terminalHref(machine.machine_id, session.exec_id)
+    } catch (error) {
+      setError(error)
+    } finally {
+      pending.current = false
+      setOpening(false)
+    }
+  }
+  return { opening, error, openTerminal }
+}
+
+export function ConnectDialog({ machine, actions, open, onOpenChange }: {
+  machine: Machine; actions: Actions; open: boolean; onOpenChange: (open: boolean) => void
+}) {
+  const { opening, error, openTerminal } = useTerminalLaunch(machine, actions, () => onOpenChange(false))
+  const desktop = machine.desktop_profile === "software-vnc-v1"
+  return <Modal open={open} onOpenChange={onOpenChange} busy={opening} size="md" className={consoleStyles.connectDialog}
+    title={`Open ${machine.name}`} description="Pick how you want to get into this machine.">
+    <div className={consoleStyles.connectBody}>
+      <SSHInfo machine={machine} />
+      <section aria-label="Web">
+      <div className={consoleStyles.connectionLabel}><h3>Web</h3></div>
+      <div className={consoleStyles.connectionLinks}>
+        <Button className={consoleStyles.connectionLink} variant="outline" onClick={() => void openTerminal()} disabled={opening}>
+          <i><SquareTerminal size={18}/></i><span><strong>{opening ? "Opening…" : "Web terminal"}</strong><small>Interactive guest shell</small></span>
+        </Button>
+        {desktop && <Button className={consoleStyles.connectionLink} variant="outline" asChild>
+          <a href={desktopHref(machine.machine_id)} onClick={event => {
+            if (opening) { event.preventDefault(); return }
+            onOpenChange(false)
+          }} aria-disabled={opening || undefined}>
+            <i><Monitor size={18}/></i><span><strong>Desktop</strong><small>Guest display via VNC</small></span>
+          </a>
+        </Button>}
+      </div>
+      <Callout error={error} />
+      </section>
+      {fixtureScene === "30" ? <ConnectionPreview /> : <a className={consoleStyles.sessionsLink} href={machineHref(machine.machine_id, "terminal")} onClick={event => {
+        if (opening) { event.preventDefault(); return }
+        onOpenChange(false)
+      }}><Waypoints size={15} /> Browse existing sessions</a>}
+    </div>
+  </Modal>
+}
+
+function ConnectionPreview() {
+  const editors = [
+    { name: "VS Code", icon: CodeXml },
+    { name: "Cursor", icon: Box },
+    { name: "Antigravity", icon: AppWindow },
+    { name: "Zed", icon: Feather },
+  ]
+  return <>
+    <section aria-label="Editors">
+      <div className={consoleStyles.connectionLabel}><h3>Editors</h3><span>SSH setup preview</span></div>
+      <div className={consoleStyles.editors}>{editors.map(({ name, icon: Icon }) =>
+        <div className={consoleStyles.editor} key={name}><i><Icon size={18} /></i><span>{name}</span></div>
+      )}</div>
+    </section>
+    <section aria-label="Mobile">
+      <div className={consoleStyles.connectionLabel}><h3>Mobile</h3></div>
+      <div className={consoleStyles.phoneCard}>
+        <div className={consoleStyles.qr}><PreviewQR /></div>
+        <div><strong>Scan with your phone</strong>
+          <p>This example QR code displays a preview message.</p>
+          <span>Connection details and tokens</span>
+        </div>
+      </div>
+    </section>
+  </>
+}
+
 export function WorkspaceActions({
   machine: m,
   actions,
   compact = false,
+  surface,
+  capture,
+  captureBlock,
 }: {
   machine: Machine
   actions: Actions
   compact?: boolean
+  surface?: "row" | "detail"
+  capture?: () => void
+  captureBlock?: string
 }) {
-  const base = "#/machines/" + segment(m.machine_id)
-  const [opening,setOpening]=useState(false)
-  async function openTerminal() {
-    setOpening(true)
-    try {
-      const session=await actions.mutate<{exec_id:string}>("machines/"+segment(m.machine_id)+"/execs", {
-        argv:["/bin/sh"], cwd:m.boot_mode === "system" && bundleBound(m) ? "/" : "/workspace", user:"root", tty:true,interactive:true,cols:100,rows:28
-      }, {revision:m.revision})
-      location.hash=base+"/terminal/"+segment(session.exec_id)
-    } catch(error) {
-      actions.dialog({title:"Open terminal",content:<Callout error={error}/>,submit:"View sessions",act:async()=>{location.hash=base+"/terminal"}})
-    } finally {setOpening(false)}
+  const quickTerminal = useTerminalLaunch(m, actions)
+  const [connect, setConnect] = useState(fixtureScene === "30" && surface === "detail")
+  const connectButton = useRef<HTMLButtonElement>(null)
+  const changeConnect = (open: boolean) => {
+    setConnect(open)
+    if (!open) requestAnimationFrame(() => connectButton.current?.focus())
   }
   const power = machinePowerState(m)
   const deep = bundleBound(m)
@@ -176,47 +266,48 @@ export function WorkspaceActions({
     { key: "state.independent_fork", name: "Independent Fork", icon: GitFork, available: canCapture, act: () => copyDialog(m, actions, true, true) },
     { key: "state.fork_batch", name: "Fork batch", icon: GitFork, available: canCapture, act: () => forkBatchDialog(m, actions) },
   ]
-  const ssh = () =>
-    actions.dialog({
-      title: "SSH connection",
-      content: <SSHInfo machine={m} />,
-      submit: "Open networking",
-      act: async () => {
-        location.hash = base + "/networking"
-      },
-    })
   return (
-    <div className="machine-actions">
-      {!compact && (
-        <Button variant="outline" size="sm" onClick={ssh}>
-          <Cable />
-          SSH
-        </Button>
-      )}
-      <Button
-        variant={compact ? "ghost" : "default"}
-        size={compact ? "icon-sm" : "sm"}
-        aria-label={"Terminal for " + m.name}
-        title="Open terminal"
-        onClick={openTerminal}
-        disabled={opening}
-      >
-        <SquareTerminal />
-        {!compact && (opening?"Opening…":"Terminal")}
+    <div className={consoleStyles.workspaceActions} data-surface={surface}>
+      <Button className={consoleStyles.openButton} ref={connectButton} variant={compact && !surface ? "ghost" : "default"} size={compact && !surface ? "icon-sm" : "sm"}
+        aria-label={"Open " + m.name} onClick={() => changeConnect(true)}>
+        <ExternalLink />{(!compact || surface) && "Open"}
       </Button>
+      {surface === "detail" && <div className={consoleStyles.powerActions}>
+        <Button variant="outline" size="sm" disabled={Boolean(captureBlock)} title={captureBlock} onClick={capture}>Snapshot</Button>
+        {cold && <Button variant="outline" size="sm" onClick={() => powerDialog(m, actions, "start")}>Start</Button>}
+        {running && deep && nativeActions.slice(0, 2).map(({ key, name, available, act }) => {
+          const reason = fullStateBlock(m, key)
+          return <Button key={key} variant="outline" size="sm" disabled={!available || Boolean(reason)} title={reason} onClick={act}>{name}</Button>
+        })}
+        {running && !deep && <Button variant="outline" size="sm" disabled={m.capabilities?.pause?.supported === false}
+          onClick={() => powerDialog(m, actions, "pause")}>Hibernate</Button>}
+        {running && <Button variant="outline" size="sm" disabled={deep && Boolean(fullStateBlock(m, "lifecycle.stop"))}
+          onClick={() => powerDialog(m, actions, "stop")}>Stop</Button>}
+        {(power === "standby" || power === "hibernated") && <Button variant="outline" size="sm"
+          disabled={deep && power === "standby" && Boolean(fullStateBlock(m, "lifecycle.standby_wake"))}
+          onClick={() => powerDialog(m, actions, paused ? "resume" : "wake")}>Wake</Button>}
+      </div>}
+      {surface === "detail" && <div className={consoleStyles.mobileConsoles}>
+        <Button variant="outline" onClick={() => void quickTerminal.openTerminal()} disabled={quickTerminal.opening}>
+          <SquareTerminal />{quickTerminal.opening ? "Opening…" : "Web terminal"}
+        </Button>
+        {m.desktop_profile === "software-vnc-v1" && <Button variant="outline" asChild><a href={desktopHref(m.machine_id)}><Monitor />Desktop</a></Button>}
+        <Callout error={quickTerminal.error} />
+      </div>}
+      <ConnectDialog machine={m} actions={actions} open={connect} onOpenChange={changeConnect} />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button size="icon-sm" variant={compact ? "ghost" : "outline"} aria-label={"Actions for " + m.name}>
+          <Button className={surface === "detail" ? consoleStyles.extraActions : undefined} size="icon-sm" variant={compact ? "ghost" : "outline"} aria-label={"Actions for " + m.name}>
             <Ellipsis />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-48">
-          <DropdownMenuItem onSelect={ssh}>
+          <DropdownMenuItem onSelect={() => changeConnect(true)}>
             <Cable />
-            Connect via SSH
+            Connection options
           </DropdownMenuItem>
-          {!deep && <DropdownMenuItem
-            disabled={!running || m.capabilities?.live_fork?.supported === false}
+          {(!deep || m.capabilities?.live_fork) && <DropdownMenuItem
+            disabled={!running || (deep ? m.capabilities?.live_fork?.supported !== true : m.capabilities?.live_fork?.supported === false)}
             onSelect={() => copyDialog(m, actions, true)}
           >
             <GitFork />
@@ -237,7 +328,7 @@ export function WorkspaceActions({
             </DropdownMenuItem>
           })}
           {!deep && running && (
-            <DropdownMenuItem onSelect={() => powerDialog(m, actions, "pause")}>
+            <DropdownMenuItem disabled={m.capabilities?.pause?.supported === false} onSelect={() => powerDialog(m, actions, "pause")}>
               <Moon />
               Hibernate
             </DropdownMenuItem>
@@ -254,10 +345,12 @@ export function WorkspaceActions({
               Cold start
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem disabled={deep && (power !== "standby" || Boolean(fullStateBlock(m, "lifecycle.standby_wake")))} onSelect={() => powerDialog(m, actions, "wake")}>
-            <Zap />
-            Wake
-          </DropdownMenuItem>
+          {(power === "standby" || power === "hibernated") && <DropdownMenuItem
+            disabled={deep && power === "standby" && Boolean(fullStateBlock(m, "lifecycle.standby_wake"))}
+            title={deep && power === "standby" ? fullStateBlock(m, "lifecycle.standby_wake") : undefined}
+            onSelect={() => powerDialog(m, actions, "wake")}>
+            <Zap />Wake
+          </DropdownMenuItem>}
           {running && (
             <DropdownMenuItem disabled={deep && Boolean(fullStateBlock(m, "lifecycle.stop"))} title={deep ? fullStateBlock(m, "lifecycle.stop") : undefined} onSelect={() => powerDialog(m, actions, "stop")}>
               <Power />
