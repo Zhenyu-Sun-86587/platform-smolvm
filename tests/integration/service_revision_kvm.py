@@ -3,7 +3,7 @@
 
 import argparse
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from http.client import IncompleteRead
 import os
 from pathlib import Path
@@ -45,6 +45,26 @@ while (my $client = $listener->accept()) {
     close $listener;
     $client->autoflush(1);
     my $first = <$client> // '';
+    if ($protocol eq 'http' && $first =~ m{^POST /dropped/([a-z0-9-]+) HTTP/1\.[01]\r?\n$}) {
+        my $id = $1;
+        my $size;
+        while (my $line = <$client>) {
+            last if $line =~ /^\r?\n$/;
+            $size = $1 if $line =~ /^Content-Length:\s*(\d+)\r?\n$/i;
+        }
+        die "invalid test body" unless defined $size && $size > 0 && $size <= 1024;
+        my $body = '';
+        while (length($body) < $size) {
+            read($client, my $chunk, $size - length($body)) or die "incomplete body";
+            $body .= $chunk;
+        }
+        sysopen(my $out, '/run/service-dropped-posts', O_WRONLY | O_CREAT | O_APPEND, 0600) or die $!;
+        my $receipt = "$id " . unpack('H*', $body) . "\n";
+        syswrite($out, $receipt) == length($receipt) or die $!;
+        close $out;
+        close $client;
+        exit;  # The action completed. Drop the response before sending any HTTP headers.
+    }
     my $id;
     if ($protocol eq 'http') {
         $id = $1 if $first =~ /^GET \/timeline\/([a-z0-9-]{1,64}) HTTP\/1\.[01]\r?\n$/;
@@ -243,6 +263,20 @@ def revision_case(platform, keys, protocol, observe=False):
                 revisions=[before["revision"], after["revision"]], guest_ports=list(PORTS),
                 revision_close_ms=revision_close_ms, credential_close_ms=revoke_close_ms,
                 surviving_frames=[uninterrupted, unaffected.position], business_receipts=dict(observed))
+
+    if observe and protocol == "http":
+        request_id = "post-" + secrets.token_hex(8)
+        body = b"committed\x00\xff"
+        with closing(platform.api_connection(timeout=30)) as client:
+            client.request("POST", "/dropped/" + request_id, body, headers={
+                "Host": after["public_host"], "Authorization": "Bearer " + survivor,
+                "Content-Type": "application/octet-stream"})
+            with client.getresponse() as reply:
+                assert reply.status == 502 and reply.getheader("X-Sandbox-Forwarding") == "may_have_started", reply.headers
+                reply.read()
+        receipts = platform.guest(ref, ["cat", "/run/service-dropped-posts"]).decode().splitlines()
+        assert receipts == [request_id + " " + body.hex()], receipts
+        print("Applied HTTP POST lost its response; Guest receipt", receipts[0], flush=True)
 
 
 def ssh_case(platform, keys):
