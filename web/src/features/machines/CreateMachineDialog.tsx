@@ -16,12 +16,7 @@ type Template = {
   version: number
   spec?: { boot_mode?: BootMode }
 }
-const presets = [
-  { cpu: 1, memory: 4096 },
-  { cpu: 2, memory: 8192 },
-  { cpu: 4, memory: 16384 },
-  { cpu: 8, memory: 32768 },
-]
+const presetCPUs = [1, 2, 4, 8]
 const adjectives = ["amber", "bright", "calm", "clear", "quiet", "silver"]
 const nouns = ["cedar", "cloud", "field", "lake", "pine", "river"]
 const suggestName = () => {
@@ -47,6 +42,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
 }) {
   const reference = ["03", "36", "43"].includes(fixtureScene ?? "")
   const preview = reference || fixtureScene === "create-suggesting"
+  const presets = presetCPUs.map(cpu => ({ cpu, memory: cpu * (preview ? 4096 : 1024) }))
   const templates = useCollection<Template>("templates", revision)
   const choices = (templates.items ?? []).flatMap(template => {
     const id = template.template_id ?? template.id

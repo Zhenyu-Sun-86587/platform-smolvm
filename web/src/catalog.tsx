@@ -54,7 +54,8 @@ function SnapshotCatalog({ machines, actions, revision }: CatalogContext) {
         const file = form.get("archive")
         if (!(file instanceof File) || !file.size) throw new Error("Choose a snapshot archive.")
         const sha256 = await fileDigest(file)
-        return actions.tracked(intent => api.upload("snapshots/import", file, { method: "POST", sha256, intent }))
+        return actions.tracked(intent => api.upload("snapshots/import", file, { method: "POST", sha256, intent }),
+          { key: "snapshot-import:" + sha256 })
       },
     })
   }

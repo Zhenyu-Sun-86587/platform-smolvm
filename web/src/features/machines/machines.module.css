@@ -4,7 +4,7 @@
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin: 0 0 16px;
+  margin: 24px 0 16px;
 }
 
 .scopes, .filters {
@@ -48,7 +48,7 @@
   position: relative;
   min-width: 34px;
   min-height: 34px;
-  background: var(--input);
+  background: var(--popover);
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 0 9px;
@@ -73,7 +73,7 @@
   max-width: calc(100vw - 24px);
   max-height: var(--radix-dropdown-menu-content-available-height);
   overflow: auto;
-  background: var(--input);
+  background: var(--popover);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--foreground);
@@ -155,7 +155,7 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  min-height: 74px;
+  min-height: 72px;
   padding: 14px 16px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -490,7 +490,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     padding: 15px 16px;
     gap: 9px 12px;
-    min-height: 124px;
+    min-height: 140px;
   }
   .machineLink { grid-column: 1 / -1; }
   .machineTags { margin-left: 22px; }
@@ -512,16 +512,8 @@
   .skeleton, .spinning { animation: none; }
 }
 
-.pageHeading {
+.pageHeading:global(.page-heading) {
   padding-bottom: 32px;
-}
-
-.toolbar {
-  margin-top: 24px;
-}
-
-.machineCard {
-  min-height: 72px;
 }
 
 .machineActions :global(button[data-slot=button][data-variant=default]) {
@@ -533,10 +525,6 @@
 .machineActions :global(button[data-slot=button][data-variant=default]:hover) {
   background: color-mix(in srgb, var(--foreground) 8%, transparent);
   border-color: var(--primary);
-}
-
-.filterButton, .filterMenu {
-  background: var(--popover);
 }
 
 .nameField, .field textarea {
@@ -552,13 +540,10 @@
 }
 
 @media (max-width: 699.98px), (pointer: coarse) and (max-width: 1023.98px) {
-  .pageHeading {
+  .pageHeading:global(.page-heading) {
     padding-bottom: 20px;
   }
   .pageHeading :global(.page-heading-copy p) {
     max-width: 320px;
-  }
-  .machineCard {
-    min-height: 140px;
   }
 }
