@@ -13,6 +13,7 @@ import (
 
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/volumes"
 )
 
 type statePointRequest struct {
@@ -373,11 +374,26 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 		"statepoint": point, "volume_map": point.VolumeMap}
 	transition := registry.TransitionRequest{Observation: &observation, Effect: registry.EffectApplied, DesiredPower: "running",
 		PromoteBinding: j.Op.Kind == rt.VMRestore}
+	products, err := j.observeRestoredVolumes(ctx, inventory, *point)
+	if err != nil {
+		return err
+	}
 	if rescue != nil {
 		transition.SourceDisposition = registry.SourceExited
 		result["rescue_capture_id"] = rescue.RescueCaptureID
+	}
+	if rescue != nil || len(products) != 0 {
 		transition.Apply = func(ctx context.Context, tx *sql.Tx) error {
-			return j.recordStatePoint(ctx, tx, *rescue, rescue.RescueCaptureID, "rollback_rescue")
+			for _, product := range products {
+				if err := volumes.Apply(ctx, tx, product.VolumeRoute, product.Name, j.Op.MachineID, j.Binding.ID,
+					point.ProductAttachments[product.ID], "attach", product.VolumeObservation); err != nil {
+					return err
+				}
+			}
+			if rescue != nil {
+				return j.recordStatePoint(ctx, tx, *rescue, rescue.RescueCaptureID, "rollback_rescue")
+			}
+			return nil
 		}
 	}
 	transition.Result = JSON(result)

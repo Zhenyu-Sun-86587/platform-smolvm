@@ -43,6 +43,7 @@ type StatePointProgress struct {
 	OriginalSourceDisposition string            `json:"original_source_disposition,omitempty"`
 	SourceReleased            bool              `json:"source_released,omitempty"`
 	VolumeMap                 map[string]string `json:"volume_map,omitempty"`
+	ProductAttachments        map[string]string `json:"product_attachments,omitempty"`
 	ActivationDecision        string            `json:"activation_decision,omitempty"`
 	ErrorCode                 string            `json:"error_code,omitempty"`
 	Error                     string            `json:"error,omitempty"`
