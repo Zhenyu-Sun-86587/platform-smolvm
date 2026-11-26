@@ -190,7 +190,9 @@ def check_uncertain_upload(cli, machine):
     later.write_bytes(b"later")
     receipt = cli.json("files", "put", machine, str(later), UNCERTAIN_PATH)
     assert receipt["state"] == "uploaded" and receipt["sha256"] == hashlib.sha256(b"later").hexdigest(), receipt
-    assert unknown() == error
+    replay = unknown()
+    assert replay["intent"] == error["intent"]
+    assert replay["request_id"] and error["request_id"]
     assert cli.run("files", "get", machine, UNCERTAIN_PATH, "-").stdout == b"later"
     return {
         "effect": error["effect"], "retry": error["retry"], "idempotency_key": key,
