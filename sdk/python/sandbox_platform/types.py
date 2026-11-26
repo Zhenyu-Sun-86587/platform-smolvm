@@ -114,6 +114,25 @@ class Machine(TypedDict, total=False):
     revision: int
     binding_generation: int
     power_state: PowerState
+    observed_state: str
+    availability: str
+    desired_power: str
+    health: dict[str, object]
+    boot_mode: Literal["oci", "system"]
+    desktop_profile: str
+    resources: dict[str, int | None]
+    spec: dict[str, object]
+    network: dict[str, str]
+    runtime_name: str
+    runtime_identity: dict[str, object] | None
+    operation_id: str
+    observed_at: str
+    last_user_activity_at: str
+    guest_management_status: str
+    task_metadata_status: str
+    blocked_reasons: list[str]
+    keep_running: bool
+    binding: dict[str, object]
     capabilities: dict[str, Capability]
     lifecycle_policy: LifecycleStatus
 
@@ -224,6 +243,9 @@ class Service(TypedDict, total=False):
     public_host: str
     public_port: int
     enabled: bool
+    readiness: dict[str, object]
+    auth: dict[str, object]
+    ssh_host_key: str
     observation: ServiceObservation
 
 
@@ -262,6 +284,10 @@ class Snapshot(TypedDict, total=False):
     size_bytes: int
     sha256: str
     created_at: str
+    manifest: dict[str, object]
+    provenance: str
+    closure_verified_at: str
+    restore_verified_at: str
     capture_mode: Literal["vm", "managed_tasks"]
     capture_summary: CaptureSummary
     vm_provenance: dict[str, str]
