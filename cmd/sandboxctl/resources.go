@@ -24,6 +24,9 @@ func sub(use, short string, args cobra.PositionalArgs, run func(*cobra.Command, 
 
 func (c *client) showItem(resource string) *cobra.Command {
 	return sub("get ID", "Get resource details", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+		if resource == "machines" {
+			return c.showMachine(cmd, args[0], "")
+		}
 		return c.show(cmd, res(resource, args[0]))
 	})
 }
@@ -38,7 +41,11 @@ func (c *client) list(use, path string, machineScoped bool) *cobra.Command {
 	command := sub(use, "List resources", args, func(cmd *cobra.Command, args []string) error {
 		endpoint := path
 		if machineScoped {
-			endpoint = res("machines", args[0]) + "/" + path
+			var err error
+			endpoint, err = c.machinePath(cmd.Context(), args[0], "/"+path)
+			if err != nil {
+				return err
+			}
 		}
 		query := url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(limit)}}
 		return c.show(cmd, endpoint+"?"+query.Encode())
@@ -70,7 +77,14 @@ func (c *client) update(use, path, method string, scoped bool) *cobra.Command {
 		target := path
 		var rev int64
 		if scoped {
-			target = res(path, args[0])
+			if path == "machines" {
+				target, err = c.machinePath(cmd.Context(), args[0], "")
+				if err != nil {
+					return err
+				}
+			} else {
+				target = res(path, args[0])
+			}
 		}
 		if c.revision == 0 && (method == "PATCH" || method == "DELETE") {
 			var obj struct {
@@ -139,16 +153,16 @@ func (c *client) machines() *cobra.Command {
 	group := &cobra.Command{Use: "machines", Short: "Manage persistent workspaces"}
 	group.AddCommand(c.list("list", "machines", false), c.showItem("machines"), c.update("patch MACHINE", "machines", "PATCH", true))
 	group.AddCommand(sub("dependencies MACHINE", "List lineage and native dependencies", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/dependencies")
+		return c.showMachine(cmd, args[0], "/dependencies")
 	}))
 	group.AddCommand(sub("metrics MACHINE", "Read runtime resource metrics", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/metrics")
+		return c.showMachine(cmd, args[0], "/metrics")
 	}))
 	group.AddCommand(sub("resources MACHINE", "Read resource settings, capabilities and measured allocation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/resources")
+		return c.showMachine(cmd, args[0], "/resources")
 	}), c.machineResize())
 	group.AddCommand(sub("network MACHINE", "Read the current private network attachment", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/network")
+		return c.showMachine(cmd, args[0], "/network")
 	}))
 
 	var template, bootMode, runtimeInstance, networkID, networkMode string
@@ -572,7 +586,7 @@ func (c *client) upload(cmd *cobra.Command, source, method, path string, revisio
 	if size.Size() == 0 {
 		body = http.NoBody
 	}
-	return c.write(cmd, method, path, body, headers)
+	return c.write(cmd, method, path, body, headers, 0)
 }
 
 func (c *client) files() *cobra.Command {
@@ -585,7 +599,11 @@ func (c *client) files() *cobra.Command {
 			var m struct {
 				Capabilities map[string]json.RawMessage `json:"capabilities"`
 			}
-			if err := c.get(cmd.Context(), res("machines", args[0]), &m); err != nil {
+			target, err := c.machinePath(cmd.Context(), args[0], "")
+			if err != nil {
+				return err
+			}
+			if err := c.get(cmd.Context(), target, &m); err != nil {
 				return err
 			}
 			files := map[string]json.RawMessage{}
@@ -597,10 +615,18 @@ func (c *client) files() *cobra.Command {
 			return c.print(cmd, files)
 		}),
 		sub("list MACHINE GUEST_DIRECTORY", "List a Guest directory", cobra.ExactArgs(2), func(cmd *cobra.Command, args []string) error {
-			return c.show(cmd, path(args[0], args[1], "/list"))
+			id, err := c.machineID(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return c.show(cmd, path(id, args[1], "/list"))
 		}),
 		sub("get MACHINE GUEST_PATH OUTPUT", "Download a Guest file", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
-			return c.download(cmd, path(args[0], args[1], ""), args[2])
+			id, err := c.machineID(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return c.download(cmd, path(id, args[1], ""), args[2])
 		}),
 		sub("put MACHINE LOCAL_FILE GUEST_PATH", "Upload a local file to the Guest", cobra.ExactArgs(3), func(cmd *cobra.Command, args []string) error {
 			m, err := c.machine(cmd.Context(), args[0])
@@ -761,7 +787,7 @@ func (c *client) settings() *cobra.Command {
 func (c *client) lifecyclePolicy() *cobra.Command {
 	group := &cobra.Command{Use: "lifecycle", Short: "Manage Worker lifecycle policies"}
 	group.AddCommand(sub("status MACHINE", "Show effective policy, revisions and activity blockers", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
-		return c.show(cmd, res("machines", args[0])+"/lifecycle")
+		return c.showMachine(cmd, args[0], "/lifecycle")
 	}), c.update("apply-default", "lifecycle-policy-applications", http.MethodPost, false),
 		sub("application ID", "Show results for each selected machine", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			return c.show(cmd, res("lifecycle-policy-applications", args[0]))
@@ -857,14 +883,14 @@ func (c *client) exec() *cobra.Command {
 		if err != nil {
 			var api *apiError
 			if !errors.As(err, &api) || api.Status >= 500 || api.Detail.Code == "OUTCOME_UNKNOWN" {
-				c.printIntent(cmd, headers)
+				c.printIntent(cmd, headers, 0)
 			}
 			return err
 		}
 		defer resp.Body.Close()
 		var result json.RawMessage
 		if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			c.printIntent(cmd, headers)
+			c.printIntent(cmd, headers, 0)
 			return err
 		}
 		var output execOutput

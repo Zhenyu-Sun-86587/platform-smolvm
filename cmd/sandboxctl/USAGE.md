@@ -21,8 +21,8 @@ machine ID.
 
 A waited mutation writes its terminal operation to stdout. Exit status 0
 means success, including an accepted mutation when using `--no-wait`.
-Terminal failures, cancellation, recovery-required operations and API errors
-use exit status 1. The operation's stage, effect and child results are
+Terminal failures, cancellation, recovery-required operations, partial or
+unknown effects and API errors use exit status 1. The operation's stage, effect and child results are
 preserved in its output. A local operation wait timeout uses exit status
 124 and reports the original operation ID. Resume with
 `operations wait OPERATION`. When the server cannot confirm a mutation

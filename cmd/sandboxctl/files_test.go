@@ -30,7 +30,7 @@ func TestFileUploadUnknownPreservesOriginalIntent(t *testing.T) {
 	cmd.SetErr(&stderr)
 	err := api.write(cmd, http.MethodPut, "machines/m/files?path=/tmp/file", strings.NewReader("data"), http.Header{
 		"If-Control-Epoch": {"original-epoch"}, "Idempotency-Key": {"original-key"}, "If-Match": {`"2"`},
-	})
+	}, 0)
 	var failure *apiError
 	if !errors.As(err, &failure) || failure.Detail.Effect != "unknown" {
 		t.Fatalf("upload returned %v", err)
