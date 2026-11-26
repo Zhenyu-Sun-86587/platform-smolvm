@@ -32,14 +32,15 @@ import (
 
 type Server struct {
 	*lifecycle.Engine
-	Snapshots   *snapshots.Catalog
-	Auth        *auth.Service
-	Web         http.Handler
-	mux         *http.ServeMux
-	loginSlots  chan struct{}
-	tickets     sync.Map
-	execStreams sync.Map
-	uploadSlots chan struct{}
+	Snapshots       *snapshots.Catalog
+	Auth            *auth.Service
+	Web             http.Handler
+	mux             *http.ServeMux
+	loginSlots      chan struct{}
+	tickets         sync.Map
+	execStreams     sync.Map
+	leaseDeliveries sync.Map
+	uploadSlots     chan struct{}
 }
 
 func New(e *lifecycle.Engine, catalog *snapshots.Catalog, web http.Handler) *Server {

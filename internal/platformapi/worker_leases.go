@@ -146,6 +146,28 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request, p auth.Prin
 }
 
 func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
+	// HTTP replays and the recovery monitor share the durable intent. Only its
+	// owner acquires a temporary access hold. Each waiter then reads the receipt
+	// and applies its own one-time token disclosure rule.
+	for {
+		done := make(chan struct{})
+		current, busy := s.leaseDeliveries.LoadOrStore(id, done)
+		if !busy {
+			defer func() {
+				s.leaseDeliveries.Delete(id)
+				close(done)
+			}()
+			return s.driveWorkerLease(ctx, client, id, disclose)
+		}
+		select {
+		case <-current.(chan struct{}):
+		case <-ctx.Done():
+			return Lease{}, ctx.Err()
+		}
+	}
+}
+
+func (s *Server) driveWorkerLease(ctx context.Context, client workerclient.Client, id string, disclose bool) (Lease, error) {
 	var l Lease
 	var machine, bindingID, principal, credential, state, raw, scopeRaw string
 	var rejected *string
@@ -212,7 +234,7 @@ func (s *Server) deliverWorkerLease(ctx context.Context, client workerclient.Cli
 			if count, err := result.RowsAffected(); err != nil {
 				return l, err
 			} else if count == 0 {
-				return s.deliverWorkerLease(ctx, client, id, disclose)
+				return s.driveWorkerLease(ctx, client, id, disclose)
 			}
 			return l, leaseFault(fault)
 		}
