@@ -136,7 +136,16 @@ def check_passive_idle_epoch(platform, path, ref):
         assert observation["status"] == "stale" and observation["execution_epoch"] == ref["execution_epoch"], observation
         return True
 
-    wait_for(saved, timeout=80)
+    try:
+        wait_for(saved, timeout=80)
+    except TimeoutError:
+        public = platform.app(path)
+        current = ref if public["power_state"] in ("running", "standby") else {**ref, "incarnation_id": None}
+        print(json.dumps(dict(case="idle_deadline", samples=samples, public_power=public["power_state"],
+                              worker=worker_get(platform, "GetLifecycleStatus", current),
+                              events=worker_get(platform, "QueryLifecycleEvents", current, {"after": cursor}))),
+              flush=True)
+        raise
     assert samples["running"] >= 2 and samples["standby"] >= 2, samples
     for _ in range(5):
         assert saved(), samples
