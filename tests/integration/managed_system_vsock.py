@@ -126,7 +126,7 @@ class Platform:
         self.bundle = root / "bundle"
         if self.use_installation:
             self.bundle.mkdir()
-            subprocess.run(["mount", "--bind", self.args.bundle, self.bundle], check=True)
+            subprocess.run(["mount", "--rbind", self.args.bundle, self.bundle], check=True)
             self.stack.callback(subprocess.run, ["umount", "--lazy", self.bundle], check=True)
             subprocess.run(["mount", "-o", "remount,bind,ro", self.bundle], check=True)
         else:
