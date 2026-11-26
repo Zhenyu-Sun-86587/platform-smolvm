@@ -104,12 +104,19 @@ func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b regis
 	}
 	// The Worker retires a collector session when its execution changes.
 	// Keep the same ID for retries within this incarnation.
-	digest := sha256.Sum256([]byte(owner + "\x00" + scope.IncarnationID))
+	identity := scope.IncarnationID
+	if st.CollectorGeneration != "" {
+		identity += "\x00" + st.CollectorGeneration
+	}
+	digest := sha256.Sum256([]byte(owner + "\x00" + identity))
 	session := "collector-" + hex.EncodeToString(digest[:16])
 	publish := func(name string, counts map[string]any) {
 		previous := st.Collectors[name]
 		seq := previous.Seq + 1
 		params := map[string]any{"collector": name, "session": session, "seq": seq, "valid_for_ms": 20000, "counts": counts}
+		if st.CollectorGeneration != "" {
+			params["generation"] = st.CollectorGeneration
+		}
 		if previous.Session != "" && previous.Session != session {
 			params["supersedes"] = previous.Session
 			seq = 1

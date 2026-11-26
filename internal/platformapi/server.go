@@ -506,7 +506,7 @@ func (s *Server) machineRoutes() {
 		visible := make([]machineView, 0, len(ms))
 		for _, m := range ms {
 			if p.Allows("read", m.ID) {
-				v, err := s.viewMachine(r.Context(), m)
+				v, err := s.viewMachine(r.Context(), m, false)
 				if err != nil {
 					return err
 				}
@@ -524,7 +524,7 @@ func (s *Server) machineRoutes() {
 		if err != nil {
 			return err
 		}
-		v, err := s.viewMachine(r.Context(), m)
+		v, err := s.viewMachine(r.Context(), m, true)
 		if err != nil {
 			return err
 		}

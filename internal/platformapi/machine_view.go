@@ -40,7 +40,7 @@ type machineView struct {
 	Capabilities map[string]rt.Capability `json:"capabilities"`
 }
 
-func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineView, error) {
+func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPolicy bool) (machineView, error) {
 	v := machineView{Machine: m, PowerState: registry.PowerUnknown, Health: machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}, GuestStatus: "unknown", Blocked: []string{}, Capabilities: map[string]rt.Capability{}}
 	var spec struct {
 		Resources         json.RawMessage   `json:"resources"`
@@ -51,15 +51,11 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine) (machineVi
 		return v, err
 	}
 	if m.CurrentBinding != nil && m.CurrentBinding.RuntimeBundleID != "" {
-		policy, err := s.DB.LifecyclePolicy(ctx, m.ID)
+		policy, err := s.lifecycleView(ctx, m, refreshPolicy)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return v, err
 		}
 		if err == nil {
-			if a, routeErr := s.ForBinding(*m.CurrentBinding); routeErr == nil {
-				_, policy.Supported = lifecycle.PolicyClient(a, *m.CurrentBinding)
-			}
-			projectPolicyStatus(&policy, len(policy.Worker) > 0)
 			v.Lifecycle = &policy
 		}
 	}

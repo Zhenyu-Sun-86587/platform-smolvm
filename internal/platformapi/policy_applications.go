@@ -22,25 +22,9 @@ func (s *Server) policyApplicationRoutes() {
 		if err != nil {
 			return err
 		}
-		supported := false
-		managed := m.CurrentBinding != nil && m.CurrentBinding.RuntimeBundleID != ""
-		observed := false
-		if managed {
-			if a, err := s.ForBinding(*m.CurrentBinding); err == nil {
-				if c, ok := lifecycle.PolicyClient(a, *m.CurrentBinding); ok {
-					supported = true
-					_, err := s.Engine.ObservePolicy(r.Context(), *m.CurrentBinding, c)
-					observed = err == nil
-				}
-			}
-		}
-		v, err := s.DB.LifecyclePolicy(r.Context(), id)
+		v, err := s.lifecycleView(r.Context(), m, true)
 		if err != nil {
 			return err
-		}
-		v.Supported = supported
-		if managed {
-			projectPolicyStatus(&v, observed)
 		}
 		return write(w, 200, v)
 	})
@@ -133,7 +117,47 @@ func (s *Server) policyApplicationRoutes() {
 	})
 }
 
+func (s *Server) lifecycleView(ctx context.Context, m registry.Machine, refresh bool) (registry.LifecycleSettings, error) {
+	v, err := s.DB.LifecyclePolicy(ctx, m.ID)
+	b := m.CurrentBinding
+	if err != nil || b == nil || b.RuntimeBundleID == "" {
+		return v, err
+	}
+	a, err := s.ForBinding(*b)
+	if err != nil {
+		if refresh {
+			v.Worker = nil
+		}
+		projectPolicyStatus(&v, false)
+		return v, nil
+	}
+	client, supported := lifecycle.PolicyClient(a, *b)
+	observed := len(v.Worker) > 0
+	if refresh && supported && v.AppliedRevision == v.DesiredRevision {
+		probe, cancel := context.WithTimeout(ctx, 2*time.Second)
+		state, err := s.Engine.ObservePolicy(probe, *b, client)
+		cancel()
+		savedOrStopped := state.Incarnation == "" && (state.Power == "HIBERNATED" || state.Power == "STOPPED")
+		observed = err == nil && state.Epoch == b.ExecutionEpoch && state.Applied == v.AppliedRevision &&
+			(state.Incarnation == b.IncarnationID || savedOrStopped)
+		if observed {
+			v, err = s.DB.LifecyclePolicy(ctx, m.ID)
+			if err != nil {
+				return v, err
+			}
+			observed = v.BindingID == b.ID && state.Applied == v.AppliedRevision
+		}
+	}
+	if refresh && (!supported || !observed) {
+		v.Worker = nil
+	}
+	v.Supported = supported
+	projectPolicyStatus(&v, observed)
+	return v, nil
+}
+
 func projectPolicyStatus(policy *registry.LifecycleSettings, observed bool) {
+	policy.EffectiveBlockers = nil
 	switch {
 	case !policy.Supported:
 		policy.EffectiveStatus = "blocked"

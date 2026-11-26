@@ -56,7 +56,7 @@ func (s *Server) GuestRelay(workerSocket string, binding registry.Binding) *http
 			if machine.DeletedAt != nil {
 				return registry.ErrNotFound
 			}
-			view, err = s.viewMachine(r.Context(), machine)
+			view, err = s.viewMachine(r.Context(), machine, false)
 			return err
 		})
 		if err != nil {

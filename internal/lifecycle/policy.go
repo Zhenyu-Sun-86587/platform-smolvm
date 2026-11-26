@@ -15,6 +15,7 @@ import (
 type WorkerLifecycleStatus struct {
 	FirstLaunchSupported bool     `json:"first_launch_supported"`
 	StatePoint           string   `json:"statepoint"`
+	CollectorGeneration  string   `json:"collector_generation"`
 	Instance             string   `json:"instance_id"`
 	Incarnation          string   `json:"incarnation_id"`
 	Epoch                int64    `json:"execution_epoch"`

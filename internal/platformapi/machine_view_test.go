@@ -26,7 +26,7 @@ func TestMachineViewSeparatesPowerHealthAndCapabilityEvidence(t *testing.T) {
 	s := Server{Engine: &lifecycle.Engine{DB: db, Config: config.Defaults()}}
 	now := time.Now().UTC()
 	m := registry.Machine{TemplateID: "t1", Spec: json.RawMessage(`{}`), ObservedAt: &now, ObservedState: "paused", CurrentBinding: &registry.Binding{Observation: registry.Observation{GuestManagementStatus: "unknown"}}}
-	v, err := s.viewMachine(ctx, m)
+	v, err := s.viewMachine(ctx, m, false)
 	if err != nil || v.PowerState != "unknown" || v.Capabilities["live_fork"].Status != "supported" || v.Capabilities["state.hibernate"].Supported {
 		t.Fatal(v, err)
 	}
@@ -35,7 +35,7 @@ func TestMachineViewSeparatesPowerHealthAndCapabilityEvidence(t *testing.T) {
 	m.CurrentBinding.RuntimeInstanceID = "serve"
 	m.CurrentBinding.PowerState = "running"
 	m.CurrentBinding.Health = json.RawMessage(`{"vm":"running","guest_management":"unavailable","workload":"failed","workload_error":{"code":"WORKLOAD_START_FAILED","message":"entrypoint"}}`)
-	v, err = s.viewMachine(ctx, m)
+	v, err = s.viewMachine(ctx, m, false)
 	if err != nil || v.PowerState != "running" || v.Health.Workload != "failed" || v.Health.GuestManagement != "unavailable" ||
 		v.Capabilities["live_fork"].Supported || v.Capabilities["state.hibernate"].Status != "unknown" {
 		t.Fatal(v, err)
