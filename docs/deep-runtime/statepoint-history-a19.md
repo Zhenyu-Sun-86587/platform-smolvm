@@ -37,6 +37,12 @@ sudo python3 -B tests/integration/authorized_statepoint_backup_kvm.py \
   --sandboxctl "$sandboxctl" --system-image "$system_disk"
 ```
 
+### 冻结安装复测
+
+以只读挂载复跑正式安装 `1eb5104`、Bundle `sha256:b00c0f05bc54d69bbef854ea16c3cac42d36ddc9f8413a1cedd5e5e290434f97`，使用锁定平台 `c095c4f`。运行的 Worker 为 `sha256:f9a0812af46952abdd86cb99f596862e8f9f097c3e84dbebbe92cac50ad23448`。公开备份达到 `verified`，管理员核对安装件的原 reader `libkrun-portable-snapshot-v1:1eb5104630b01fe5e21494f979579f3fa9924427:0d0255383f4378aca5be7bf19629330c08fcaf8e` 与闭包 `sha256:8b1b29b077db4701eb855bb0fb2246fb8552dba2a4ea759752cfb0a73f6cf6d8`。
+
+同一安装件在空的独立 Worker catalog 从原 StatePoint manifest `sha256:d6342e495f1dccea3a0bcb9f179d8d585f326c4cc4797de2b8a91b66b38dcdea` 启动新的 epoch 1。目标 Guest 读回 RAM 和根盘标记 `a19-new-reader-78edc1f3c74bfda137ae6860`，原源执行保持原引用。`.build/a19-1eb5104-installed-public-backup-v1.log` 的 SHA-256 为 `08677470f3dccb5715530a911d9ed318a4ca229a419f78eccc4f915b7f803300`。
+
 ## 便携增量与恢复资源
 
 冻结 `fb69434` 的库、固件和 OCI 根文件系统配合 A17 的开发 CLI `2f39d93`、Guest Agent `b09a5c0`。公开 `machine checkpoint --store` 创建两代，第二次写入 7 MiB 并复用 127 MiB。`--export-from --history 1` 发行携带两代的普通归档 `sha256:ef4c4c39047dd21db1e8f0e9fedda342cad2183b7ebf8364275896c223bcbca4`。用 `--at '~1'` 和 `--at '~0'` 分别启动两个目标，读回各自 RAM 标记、原 crun PID 480 与启动时间 97，计数分别为 14 和 27。显式请求 2 vCPU 或 768 MiB 时，CLI 分别指出原值为 1 vCPU、384 MiB，并拒绝创建。`.build/a19-portable-history-v2.log` 的 SHA-256 为 `0e36d9492d7ca05bf2f1efb41313dd9eb4136162b66f314d742438a691874f83`。[OCI 夹具](../../tests/integration/oci_agent_restart_kvm.py)
