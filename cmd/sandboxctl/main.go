@@ -415,6 +415,7 @@ func (c *client) mutationError(cmd *cobra.Command, method, path string, headers 
 	}
 	if !c.jsonOutput {
 		c.printIntent(cmd, headers, generation)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Original mutation target %s %s\n", method, path)
 	}
 	return failure
 }
