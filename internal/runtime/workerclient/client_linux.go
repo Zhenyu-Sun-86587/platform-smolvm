@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -153,7 +154,10 @@ func readReply(raw syscall.RawConn, requestID string, expect *descriptor) (json.
 		}
 		descriptors = append(descriptors, fds...)
 	}
-	if n == 0 || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
+	if n == 0 {
+		return nil, nil, io.EOF
+	}
+	if flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 		return nil, nil, errors.New("incomplete Worker reply")
 	}
 	var reply struct {

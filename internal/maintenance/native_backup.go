@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"sandbox-platform/internal/config"
+	"sandbox-platform/internal/registry"
 	"sandbox-platform/internal/runtime/customsmolvm"
 	"sandbox-platform/internal/runtime/workerclient"
 )
@@ -34,6 +36,16 @@ type nativeSelection struct {
 	Captures    map[string]string
 	Generations []string
 }
+
+type pinnedNative struct {
+	archive  NativeArchive
+	route    customsmolvm.Route
+	id       string
+	raw      []byte
+	manifest closureManifest
+}
+
+var ErrNativeBackupRetry = errors.New("native backup is awaiting Worker reconciliation")
 
 type closureManifest struct {
 	Schema   string           `json:"schema"`
@@ -114,82 +126,225 @@ func nativePlans(ctx context.Context, db *sql.DB, cfg config.Config) ([]nativeSe
 	return result, nil
 }
 
-func exportNative(ctx context.Context, db *sql.DB, cfg config.Config, stage, runID string) ([]NativeArchive, []File, error) {
+func nativeEndpoints(plans []nativeSelection) []registry.NativeBackupRoute {
+	routes := make([]registry.NativeBackupRoute, 0, len(plans))
+	for _, plan := range plans {
+		route := plan.Route
+		routes = append(routes, registry.NativeBackupRoute{Instance: route.InstanceID, Bundle: route.Bundle,
+			Reader: route.Reader, Socket: route.WorkerSocket})
+	}
+	return routes
+}
+
+func sealNativeCatalog(ctx context.Context, cfg config.Config, plan *BackupPlan, stage string, copied bool,
+	copyCatalog, seal func() error) error {
+	stored, exists, err := plan.Registry.NativeBackupSelection(ctx, plan.ID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if !copied {
+			return fmt.Errorf("%w: sealed catalog is missing", ErrNativeClosure)
+		}
+		file, err := digestFile(stage, databaseName, "")
+		if err != nil || file.SHA256 != stored.CatalogSHA256 {
+			return errors.Join(ErrNativeClosure, errors.New("sealed catalog digest changed"), err)
+		}
+		return nil
+	}
+	run, err := plan.Registry.GetBackup(ctx, plan.ID)
+	if err != nil {
+		return err
+	}
+	err = plan.Registry.PinNativeBackupSelection(ctx, run, func() (registry.NativeBackupSelection, error) {
+		var result registry.NativeBackupSelection
+		// A previous platform can have pinned one or more Worker routes. Adopt
+		// its durable catalog without selecting resources again.
+		if !copied {
+			if err := copyCatalog(); err != nil {
+				return result, err
+			}
+		}
+		file, err := digestFile(stage, databaseName, "")
+		if err != nil {
+			return result, err
+		}
+		result.CatalogSHA256 = file.SHA256
+		db, err := openStandaloneDB(filepath.Join(stage, databaseName))
+		if err != nil {
+			return result, err
+		}
+		defer db.Close()
+		var allowed bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM backup_runs r JOIN meta m ON m.id=1
+			WHERE r.id=? AND r.scope=? AND r.state='running' AND r.control_epoch=? AND m.control_epoch=r.control_epoch)`,
+			run.ID, config.BackupNative, run.ControlEpoch).Scan(&allowed); err != nil {
+			return result, err
+		}
+		if !allowed {
+			return result, fmt.Errorf("%w: staged catalog belongs to a different backup run", ErrNativeClosure)
+		}
+		plans, err := nativePlans(ctx, db, cfg)
+		if err != nil {
+			return result, err
+		}
+		result.Routes = nativeEndpoints(plans)
+		result.Snapshots, err = selectBackupIDs(ctx, db, `SELECT id FROM snapshots WHERE state='ready' ORDER BY id`)
+		if err != nil {
+			return result, err
+		}
+		result.VolumeSnapshots, err = selectBackupIDs(ctx, db, `SELECT id FROM volume_snapshots WHERE state='available' ORDER BY id`)
+		if err != nil {
+			return result, err
+		}
+		if !copied {
+			err = seal()
+		}
+		return result, err
+	})
+	if errors.Is(err, registry.ErrNativeBackupBusy) {
+		return errors.Join(ErrNativeBackupRetry, err)
+	}
+	return err
+}
+
+func selectBackupIDs(ctx context.Context, db *sql.DB, query string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func nativeWorkerError(err error) error {
+	var worker *workerclient.Fault
+	var transport *net.OpError
+	if errors.As(err, &transport) || errors.Is(err, io.EOF) ||
+		(errors.As(err, &worker) && worker.Code == "E_RECOVERING") {
+		return errors.Join(ErrNativeBackupRetry, err)
+	}
+	return errors.Join(ErrNativeClosure, err)
+}
+
+func pinNative(ctx context.Context, db *sql.DB, cfg config.Config, backup *BackupPlan) ([]pinnedNative, error) {
 	plans, err := nativePlans(ctx, db, cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	stored, exists, err := backup.Registry.NativeBackupSelection(ctx, backup.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists || !slices.Equal(stored.Routes, nativeEndpoints(plans)) {
+		return nil, fmt.Errorf("%w: installed endpoints differ from the sealed selection", ErrNativeClosure)
+	}
+	var pinned []pinnedNative
+	for _, plan := range plans {
+		closure, err := pinNativeRoute(ctx, backup.ID, plan)
+		if err != nil {
+			return nil, err
+		}
+		pinned = append(pinned, closure)
+	}
+	if err := backup.Registry.ConfirmNativeBackupPins(ctx, backup.ID, stored.CatalogSHA256); err != nil {
+		// Worker pins may already be durable. Repeat confirmation under the
+		// same catalog and route identities on the next scheduler pass.
+		return nil, errors.Join(ErrNativeBackupRetry, err)
+	}
+	return pinned, nil
+}
+
+func exportNative(ctx context.Context, stage string, pinned []pinnedNative) ([]NativeArchive, []File, error) {
 	var archives []NativeArchive
 	var files []File
-	for _, plan := range plans {
-		archive, members, err := exportNativeRoute(ctx, stage, runID, plan)
+	for _, plan := range pinned {
+		members, err := exportNativeRoute(ctx, stage, plan)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w: %v", ErrNativeClosure, err)
+			return nil, nil, err
 		}
+		archive := plan.archive
 		archives = append(archives, archive)
 		files = append(files, members...)
 	}
 	return archives, files, nil
 }
 
-func exportNativeRoute(ctx context.Context, stage, runID string, plan nativeSelection) (NativeArchive, []File, error) {
+func pinNativeRoute(ctx context.Context, runID string, plan nativeSelection) (pinnedNative, error) {
 	suffix := routeSuffix(plan.Route)
 	root := filepath.Join("native", suffix)
-	archive := NativeArchive{RuntimeInstance: plan.Route.InstanceID, Bundle: plan.Route.Bundle, Reader: plan.Route.Reader, Directory: root}
+	pinned := pinnedNative{id: runID + "-" + suffix, route: plan.Route,
+		archive: NativeArchive{RuntimeInstance: plan.Route.InstanceID, Bundle: plan.Route.Bundle, Reader: plan.Route.Reader, Directory: root}}
 	captures := make([]string, 0, len(plan.Captures))
 	for id := range plan.Captures {
 		captures = append(captures, id)
 	}
 	slices.Sort(captures)
 	client := workerclient.Client{Socket: plan.Route.WorkerSocket, Bundle: plan.Route.Bundle}
-	backupID := runID + "-" + suffix
 	registeredBundle, err := plan.Route.LoadManifest()
 	if err != nil {
-		return archive, nil, err
+		return pinned, errors.Join(ErrNativeClosure, err)
 	}
 	file, expected, err := client.PrepareBackup(ctx, workerclient.BackupSelection{
-		ID: backupID, Reader: plan.Route.Reader, Captures: captures, Generations: plan.Generations, BundleManifest: registeredBundle,
+		ID: pinned.id, Reader: plan.Route.Reader, Captures: captures, Generations: plan.Generations, BundleManifest: registeredBundle,
 	})
 	if err != nil {
-		return archive, nil, err
+		return pinned, nativeWorkerError(err)
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, (16<<20)+1))
 	err = errors.Join(err, file.Close())
 	if err != nil || len(raw) > 16<<20 {
-		return archive, nil, errors.Join(errors.New("invalid Worker backup manifest length"), err)
+		return pinned, errors.Join(ErrNativeClosure, errors.New("invalid Worker backup manifest length"), err)
 	}
-	archive.Digest = fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
-	if archive.Digest != expected {
-		return archive, nil, errors.New("Worker backup manifest digest differs from its receipt")
+	pinned.archive.Digest = fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
+	if pinned.archive.Digest != expected {
+		return pinned, fmt.Errorf("%w: Worker backup manifest digest differs from its receipt", ErrNativeClosure)
 	}
-	var manifest closureManifest
-	if err := checkSelection(raw, backupID, plan, &manifest); err != nil {
-		return archive, nil, err
+	if err := checkSelection(raw, pinned.id, plan, &pinned.manifest); err != nil {
+		return pinned, errors.Join(ErrNativeClosure, err)
 	}
+	pinned.raw = raw
+	return pinned, nil
+}
+
+func exportNativeRoute(ctx context.Context, stage string, pinned pinnedNative) ([]File, error) {
+	root := pinned.archive.Directory
 	if err := os.MkdirAll(filepath.Join(stage, root), 0700); err != nil {
-		return archive, nil, err
+		return nil, err
 	}
 	manifestPath := filepath.Join(root, "closure.json")
-	if err := os.WriteFile(filepath.Join(stage, manifestPath), raw, 0600); err != nil {
-		return archive, nil, err
+	if err := os.WriteFile(filepath.Join(stage, manifestPath), pinned.raw, 0600); err != nil {
+		return nil, err
 	}
-	files := []File{{Path: manifestPath, SHA256: strings.TrimPrefix(expected, "sha256:"), Bytes: int64(len(raw))}}
-	for relative, bytes := range manifest.Members {
+	files := []File{{Path: manifestPath, SHA256: strings.TrimPrefix(pinned.archive.Digest, "sha256:"), Bytes: int64(len(pinned.raw))}}
+	client := workerclient.Client{Socket: pinned.route.WorkerSocket, Bundle: pinned.route.Bundle}
+	for relative, bytes := range pinned.manifest.Members {
 		if !validNativeMember(relative) || bytes < 0 {
-			return archive, nil, errors.New("invalid Worker backup member")
+			return nil, fmt.Errorf("%w: invalid Worker backup member", ErrNativeClosure)
 		}
-		file, _, err := client.OpenBackupMember(ctx, backupID, relative)
+		file, _, err := client.OpenBackupMember(ctx, pinned.id, relative)
 		if err != nil {
-			return archive, nil, err
+			return nil, nativeWorkerError(err)
 		}
 		entry, err := copyNativeMember(ctx, stage, filepath.Join(root, relative), file, bytes)
 		if err != nil {
-			return archive, nil, err
+			return nil, errors.Join(ErrNativeClosure, err)
 		}
 		files = append(files, entry)
 	}
-	bundle, err := copyNativeBundle(stage, root, plan.Route)
-	return archive, append(files, bundle...), err
+	bundle, err := copyNativeBundle(stage, root, pinned.route)
+	if err != nil {
+		return nil, errors.Join(ErrNativeClosure, err)
+	}
+	return append(files, bundle...), nil
 }
 
 func checkSelection(raw []byte, id string, plan nativeSelection, manifest *closureManifest) error {
@@ -405,17 +560,38 @@ func nativeReader(ctx context.Context, archive string, native NativeArchive, rou
 	return nil
 }
 
-func ReleaseNativeBackup(ctx context.Context, cfg config.Config, runID string) error {
-	for _, route := range cfg.Runtime.Custom {
-		if route.WorkerSocket == "" {
-			continue
+func ReleaseNativeBackup(ctx context.Context, cfg config.Config, store *registry.Store, runID string) error {
+	stored, exists, err := store.NativeBackupSelection(ctx, runID)
+	if err != nil {
+		return err
+	}
+	routes := stored.Routes
+	if !exists {
+		// An installation may be resuming a run accepted by an older platform.
+		for _, route := range cfg.Runtime.Custom {
+			if route.WorkerSocket != "" {
+				routes = append(routes, registry.NativeBackupRoute{Instance: route.InstanceID, Bundle: route.Bundle,
+					Reader: route.Reader, Socket: route.WorkerSocket})
+			}
 		}
-		client := workerclient.Client{Socket: route.WorkerSocket, Bundle: route.Bundle}
-		if err := client.ReleaseBackup(ctx, runID+"-"+routeSuffix(route)); err != nil {
+	}
+	for _, route := range routes {
+		client := workerclient.Client{Socket: route.Socket, Bundle: route.Bundle}
+		suffix := routeSuffix(customsmolvm.Route{InstanceID: route.Instance, Bundle: route.Bundle})
+		if err := client.ReleaseBackup(ctx, runID+"-"+suffix); err != nil {
 			var fault *workerclient.Fault
-			if !errors.As(err, &fault) || fault.Code != "E_NOT_FOUND" && fault.Code != "E_BUNDLE_UNAVAILABLE" && fault.Code != "E_CAPABILITY_UNSUPPORTED" {
+			if !errors.As(err, &fault) {
 				return err
 			}
+			switch fault.Code {
+			case "E_NOT_FOUND":
+				continue
+			case "E_BUNDLE_UNAVAILABLE", "E_CAPABILITY_UNSUPPORTED":
+				if !exists {
+					continue
+				}
+			}
+			return err
 		}
 	}
 	return nil

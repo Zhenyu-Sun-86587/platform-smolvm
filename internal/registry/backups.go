@@ -143,6 +143,9 @@ func (s *Store) FinishBackup(ctx context.Context, run BackupRun, state, code str
 	if _, err := tx.ExecContext(ctx, `DELETE FROM snapshot_pins WHERE owner_kind='backup' AND owner_id=?`, run.ID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_backup_selections WHERE backup_id=?`, run.ID); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	result, err := tx.ExecContext(ctx, `UPDATE backup_runs SET state=?,failure_code=?,finished_at=COALESCE(finished_at,?) WHERE id=? AND state=?`,
 		state, nullable(code), now.UnixMilli(), run.ID, run.State)

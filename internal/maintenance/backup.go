@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"sandbox-platform/internal/config"
+	"sandbox-platform/internal/registry"
 	"sandbox-platform/internal/snapshots"
 )
 
@@ -57,6 +58,7 @@ func CreateBackup(ctx context.Context, cfg config.Config, configPath, output str
 type BackupPlan struct {
 	ID, Scope, RecoveryKeyFile string
 	CopyCatalog                func(func() error) error
+	Registry                   *registry.Store
 }
 
 var ErrNativeClosure = errors.New("native backup closure is unavailable")
@@ -66,12 +68,11 @@ func CreatePlannedBackup(ctx context.Context, cfg config.Config, configPath, out
 	return createBackup(ctx, cfg, configPath, output, &plan)
 }
 
-func createBackup(ctx context.Context, cfg config.Config, configPath, output string, plan *BackupPlan) (Backup, error) {
-	var result Backup
+func createBackup(ctx context.Context, cfg config.Config, configPath, output string, plan *BackupPlan) (result Backup, err error) {
 	if output == "" {
 		return result, errors.New("backup output directory is required")
 	}
-	output, err := filepath.Abs(output)
+	output, err = filepath.Abs(output)
 	if err != nil {
 		return result, err
 	}
@@ -80,33 +81,45 @@ func createBackup(ctx context.Context, cfg config.Config, configPath, output str
 		return result, err
 	}
 	defer func() {
-		if plan == nil || ctx.Err() == nil {
+		if plan == nil || ctx.Err() == nil && !errors.Is(err, ErrNativeBackupRetry) {
 			cleanup()
 		}
 	}()
-	if !copied {
+	native := plan != nil && plan.Scope == config.BackupNative
+	copyCatalog := func() error {
 		source, err := openBackupDB(cfg.Database.Path)
 		if err != nil {
+			return err
+		}
+		return errors.Join(onlineCopy(ctx, filepath.Join(work, databaseName), source), source.Close())
+	}
+	sealCatalog := func() error {
+		if err := syncPath(filepath.Join(work, databaseName)); err != nil {
+			return err
+		}
+		if err := os.WriteFile(work+".catalog-ready", nil, 0600); err != nil {
+			return err
+		}
+		return syncPath(filepath.Dir(work))
+	}
+	if native {
+		if plan.Registry == nil {
+			return result, errors.New("native backup requires the durable run registry")
+		}
+		if err := sealNativeCatalog(ctx, cfg, plan, work, copied, copyCatalog, sealCatalog); err != nil {
 			return result, err
 		}
-		copyCatalog := func() error { return onlineCopy(ctx, filepath.Join(work, databaseName), source) }
+	} else if !copied {
 		if plan != nil && plan.CopyCatalog != nil {
 			err = plan.CopyCatalog(copyCatalog)
 		} else {
 			err = copyCatalog()
 		}
-		err = errors.Join(err, source.Close())
 		if err != nil {
 			return result, err
 		}
 		if plan != nil {
-			if err := syncPath(filepath.Join(work, databaseName)); err != nil {
-				return result, err
-			}
-			if err := os.WriteFile(work+".catalog-ready", nil, 0600); err != nil {
-				return result, err
-			}
-			if err := syncPath(filepath.Dir(work)); err != nil {
+			if err := sealCatalog(); err != nil {
 				return result, err
 			}
 		}
@@ -116,6 +129,13 @@ func createBackup(ctx context.Context, cfg config.Config, configPath, output str
 		return result, err
 	}
 	defer db.Close()
+	var pinned []pinnedNative
+	if native {
+		pinned, err = pinNative(ctx, db, cfg, plan)
+		if err != nil {
+			return result, err
+		}
+	}
 	result = Backup{Format: 1, CreatedAt: time.Now().UTC()}
 	if plan != nil {
 		result.Format, result.RunID, result.Scope = 2, plan.ID, plan.Scope
@@ -142,9 +162,9 @@ func createBackup(ctx context.Context, cfg config.Config, configPath, output str
 			return result, err
 		}
 		result.Files = append(result.Files, recovery...)
-		if result.Scope == config.BackupNative {
+		if native {
 			var files []File
-			result.Native, files, err = exportNative(ctx, db, cfg, work, plan.ID)
+			result.Native, files, err = exportNative(ctx, work, pinned)
 			if err != nil {
 				return result, err
 			}

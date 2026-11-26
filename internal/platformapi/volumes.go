@@ -427,7 +427,18 @@ func (s *Server) volumeJob(ctx context.Context, job *lifecycle.Job) error {
 		digest := sha256.Sum256(job.Op.Request)
 		job.Intent.Volume = &rt.VolumeMutation{OperationID: job.Op.ID, RequestDigest: fmt.Sprintf("sha256:%x", digest), VolumeID: intent.VolumeID,
 			OwnerID: job.Op.PrincipalID, ExpectedRevision: intent.ExpectedRevision, Command: payload}
-		if err := job.Stage(ctx, "volume_dispatch", intent.VolumeID); err != nil {
+		var err error
+		if command.Action == "drop_snapshot" {
+			err = job.StageApply(ctx, "volume_dispatch", intent.VolumeID, func(ctx context.Context, tx *sql.Tx) error {
+				return registry.CheckVolumeBackupPin(ctx, tx, command.SnapshotID)
+			})
+		} else {
+			err = job.Stage(ctx, "volume_dispatch", intent.VolumeID)
+		}
+		if errors.Is(err, registry.ErrNativeBackupBusy) {
+			return &lifecycle.Failure{Code: "DEPENDENCY_BLOCKED", Message: "a backup is securing this snapshot's immutable generation"}
+		}
+		if err != nil {
 			return err
 		}
 	}

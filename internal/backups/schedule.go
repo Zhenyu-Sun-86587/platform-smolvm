@@ -59,6 +59,11 @@ func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, confi
 		return err
 	}
 	if run.ControlEpoch != control.ControlEpoch || run.Scope != policy.Scope {
+		if run.Scope == config.BackupNative {
+			if err := maintenance.ReleaseNativeBackup(ctx, cfg, db, run.ID); err != nil {
+				return err
+			}
+		}
 		return db.FinishBackup(ctx, run, "failed", "BACKUP_SCOPE_CHANGED")
 	}
 	// The installation lock makes each run single-writer across daemon restarts.
@@ -70,6 +75,7 @@ func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, confi
 		}
 		_, err = maintenance.CreatePlannedBackup(ctx, cfg, configPath, output, maintenance.BackupPlan{
 			ID: run.ID, Scope: run.Scope, RecoveryKeyFile: policy.RecoveryKeyFile,
+			Registry:    db,
 			CopyCatalog: func(copyCatalog func() error) error { return db.PinBackupCopy(ctx, run, copyCatalog) },
 		})
 	} else if err == nil {
@@ -82,11 +88,11 @@ func runPolicy(ctx context.Context, db *registry.Store, cfg config.Config, confi
 			err = maintenance.CommitPublishedBackup(output)
 		}
 	}
-	if errors.Is(err, maintenance.ErrBackupPublicationPending) {
+	if errors.Is(err, maintenance.ErrBackupPublicationPending) || errors.Is(err, maintenance.ErrNativeBackupRetry) {
 		return err
 	}
 	if ctx.Err() == nil && run.Scope == config.BackupNative {
-		if releaseErr := maintenance.ReleaseNativeBackup(ctx, cfg, run.ID); releaseErr != nil {
+		if releaseErr := maintenance.ReleaseNativeBackup(ctx, cfg, db, run.ID); releaseErr != nil {
 			return releaseErr
 		}
 	}
