@@ -81,6 +81,8 @@ func (s *Server) registerStreams(mux *http.ServeMux) {
 			}
 			return route.Worker.OpenGuestAgent(ctx, workerExecution(expected))
 		})
+	stream(s, mux, nodeproto.GuestRelayStreamPath,
+		func(in rt.GuestRelayScope) rt.ExecutionRef { return in.Execution }, s.openGuestRelay)
 }
 
 func stream[In any](s *Server, mux *http.ServeMux, path string, execution func(In) rt.ExecutionRef,
@@ -90,11 +92,15 @@ func stream[In any](s *Server, mux *http.ServeMux, path string, execution func(I
 			writeFailure(w, nodeproto.CodeInvalid)
 			return
 		}
-		if !takeSlot(s.streams) {
+		slots := s.streams
+		if path == nodeproto.GuestRelayStreamPath {
+			slots = s.relayStreams
+		}
+		if !takeSlot(slots) {
 			writeFailure(w, nodeproto.CodeBusy)
 			return
 		}
-		defer func() { <-s.streams }()
+		defer func() { <-slots }()
 		ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			Subprotocols: []string{nodeproto.StreamProtocol},
 		})
@@ -133,6 +139,9 @@ func stream[In any](s *Server, mux *http.ServeMux, path string, execution func(I
 			return
 		}
 		key := request.Route.RuntimeInstanceID + "/" + expected.InstanceID
+		if path == nodeproto.GuestRelayStreamPath {
+			key = "relay/" + key
+		}
 		if !s.takeExecutionStream(key) {
 			_ = reply(nodeproto.CodeBusy)
 			return
@@ -153,7 +162,13 @@ func stream[In any](s *Server, mux *http.ServeMux, path string, execution func(I
 			return
 		}
 		cancel()
-		relay(r.Context(), ws, local, half.CloseWrite)
+		relayCtx := r.Context()
+		if verified, ok := local.(*verifiedGuestRelay); ok {
+			var stop context.CancelFunc
+			relayCtx, stop = verified.scopedContext(relayCtx)
+			defer stop()
+		}
+		relay(relayCtx, ws, local, half.CloseWrite)
 	})
 }
 

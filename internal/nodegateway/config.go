@@ -104,7 +104,7 @@ func (c Config) RuntimeRoutes() (map[nodeproto.Route]Route, error) {
 			roots[id] = true
 		}
 		routes[scope] = Route{Adapter: a, Worker: workerclient.Client{Socket: spec.WorkerSocket, Bundle: spec.Bundle},
-			Reader: spec.Reader, LoadManifest: spec.LoadManifest, ResolveNetwork: spec.ResolvePrivateNetwork, RootGenerations: roots}
+			Reader: spec.Reader, LoadManifest: spec.LoadManifest, ResolveNetwork: spec.ResolvePrivateNetwork, RootGenerations: roots, GuestRelayDir: spec.GuestRelayDir}
 	}
 	return routes, nil
 }

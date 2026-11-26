@@ -113,6 +113,7 @@ type RouteInfo struct {
 	NativeStandby   bool     `json:"native_standby"`
 	ServiceDial     bool     `json:"service_dial"`
 	AdmittedActions []string `json:"admitted_actions,omitempty"`
+	GuestRelay      bool     `json:"guest_relay,omitempty"`
 }
 
 type Empty struct{}

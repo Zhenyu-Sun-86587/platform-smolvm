@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,32 +18,37 @@ import (
 	"sync"
 	"time"
 
+	"sandbox-platform/internal/guesttransport"
 	"sandbox-platform/internal/nodeproto"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
 type Route struct {
-	Reader          string
-	LoadManifest    func() (json.RawMessage, error)
-	Adapter         rt.Adapter
-	Worker          workerclient.Client
-	ResolveNetwork  func(*rt.LaunchNetwork) (*rt.LaunchNetwork, error)
-	RootGenerations map[string]bool
+	Reader               string
+	LoadManifest         func() (json.RawMessage, error)
+	Adapter              rt.Adapter
+	Worker               workerclient.Client
+	ResolveNetwork       func(*rt.LaunchNetwork) (*rt.LaunchNetwork, error)
+	RootGenerations      map[string]bool
+	GuestRelayDir        string
+	verifyGuestTransport func(context.Context, workerclient.Execution, *net.UnixConn) error
 }
 
 type Server struct {
-	authority nodeproto.Authority
-	routes    map[nodeproto.Route]Route
-	journal   *Journal
-	session   string
-	bootID    string
-	control   chan struct{}
-	guest     chan struct{}
-	storage   chan struct{}
-	streams   chan struct{}
-	streamMu  sync.Mutex
-	perVM     map[string]int
+	authority    nodeproto.Authority
+	routes       map[nodeproto.Route]Route
+	journal      *Journal
+	session      string
+	bootID       string
+	control      chan struct{}
+	guest        chan struct{}
+	streams      chan struct{}
+	storage      chan struct{}
+	relayStreams chan struct{}
+	relays       guestRelays
+	streamMu     sync.Mutex
+	perVM        map[string]int
 }
 
 func New(authority nodeproto.Authority, routes map[nodeproto.Route]Route, journal *Journal) (*Server, error) {
@@ -77,6 +83,14 @@ func New(authority nodeproto.Authority, routes map[nodeproto.Route]Route, journa
 			global[scope.RuntimeInstanceID] || local[key] {
 			return nil, errors.New("duplicate, incomplete or conflicting runtime route")
 		}
+		if route.GuestRelayDir != "" {
+			if !canonicalAbsolutePath(route.GuestRelayDir) || route.Worker.Socket == "" {
+				return nil, errors.New("Guest relay requires a Worker and a canonical directory")
+			}
+			if err := guesttransport.EnsureDirectory(route.GuestRelayDir); err != nil {
+				return nil, err
+			}
+		}
 		global[scope.RuntimeInstanceID], local[key] = true, true
 		copyRoutes[scope] = route
 	}
@@ -87,7 +101,7 @@ func New(authority nodeproto.Authority, routes map[nodeproto.Route]Route, journa
 	return &Server{
 		authority: authority, routes: copyRoutes, journal: journal, session: hex.EncodeToString(id[:]), bootID: bootID,
 		control: make(chan struct{}, nodeproto.ControlSlots), guest: make(chan struct{}, nodeproto.GuestSlots),
-		storage: make(chan struct{}, nodeproto.StorageSlots), streams: make(chan struct{}, nodeproto.StreamSlots), perVM: make(map[string]int),
+		storage: make(chan struct{}, nodeproto.StorageSlots), streams: make(chan struct{}, nodeproto.StreamSlots), relayStreams: make(chan struct{}, nodeproto.StreamSlots), perVM: make(map[string]int),
 	}, nil
 }
 
@@ -141,7 +155,7 @@ func (s *Server) Handler(controllerPin string) http.Handler {
 func (s *Server) handshake() nodeproto.Handshake {
 	routes := make([]nodeproto.RouteInfo, 0, len(s.routes))
 	for id, route := range s.routes {
-		info := nodeproto.RouteInfo{Route: id, ServiceDial: route.Worker.Socket != ""}
+		info := nodeproto.RouteInfo{Route: id, ServiceDial: route.Worker.Socket != "", GuestRelay: route.GuestRelayDir != ""}
 		if a, ok := route.Adapter.(interface{ NativeStopContract() bool }); ok {
 			info.NativeStop = a.NativeStopContract()
 		}

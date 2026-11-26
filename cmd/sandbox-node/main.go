@@ -64,6 +64,7 @@ func run(ctx context.Context, configPath, rebindFrom string) error {
 	if err != nil {
 		return err
 	}
+	go gateway.RunGuestRelays(ctx)
 	tlsConfig, err := gateway.TLSConfig(certificate, roots, c.TLS.ControllerSPKIPin)
 	if err != nil {
 		return err

@@ -34,6 +34,19 @@ func (s *Server) GuestRelay(workerSocket string, binding registry.Binding) *http
 		}
 		return secret, nil
 	}
+	return &http.Server{
+		Handler: s.guestRelayHandler(peer, verify), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+		MaxHeaderBytes: 32 * 1024,
+		ConnContext: func(ctx context.Context, connection net.Conn) context.Context {
+			if unix, ok := connection.(*net.UnixConn); ok {
+				return context.WithValue(ctx, guestTransportKey{}, unix)
+			}
+			return ctx
+		},
+	}
+}
+
+func (s *Server) guestRelayHandler(peer auth.AttestedGuestContext, verify guestVerifier) http.Handler {
 	mux := http.NewServeMux()
 	s.guestDelegationRoutes(mux, peer, verify)
 	mux.HandleFunc("/v1/credential-proxies/{proxy}/{route...}", guestHandler(verify, func(w http.ResponseWriter, r *http.Request, secret string) error {
@@ -75,16 +88,7 @@ func (s *Server) GuestRelay(workerSocket string, binding registry.Binding) *http
 			fail(w, r, err)
 		}
 	})
-	return &http.Server{
-		Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
-		MaxHeaderBytes: 32 * 1024,
-		ConnContext: func(ctx context.Context, connection net.Conn) context.Context {
-			if unix, ok := connection.(*net.UnixConn); ok {
-				return context.WithValue(ctx, guestTransportKey{}, unix)
-			}
-			return ctx
-		},
-	}
+	return mux
 }
 
 func (s *Server) guestRelayExec(w http.ResponseWriter, r *http.Request, peer auth.AttestedGuestContext, secret string, verify func(*http.Request) (string, error)) error {

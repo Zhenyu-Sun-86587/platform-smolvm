@@ -20,6 +20,9 @@ routes:
     state_reader_id: replace-with-installed-state-reader
     socket: /run/smolvm-deep/api.sock
     worker_socket: /run/smolvm-deep/worker.sock
+    # Optional inbound Guest delegation. Set SMOLVM_GUEST_RELAY_DIR to this
+    # same path in the Worker runtime environment before launching guests.
+    # guest_relay_dir: /run/sandbox-node/guest-relays
     manifest: /opt/sandbox-platform/runtime/deep/manifest.json
     # Worker-local root generation IDs provisioned outside NodeGateway.
     root_generations: [replace-with-worker-root-generation]
