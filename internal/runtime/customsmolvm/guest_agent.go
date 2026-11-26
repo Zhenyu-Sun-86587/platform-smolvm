@@ -14,8 +14,6 @@ import (
 
 var _ rt.NativeGuestControl = (*Adapter)(nil)
 
-const guestPayloadLimit = 512 << 10
-
 func (a *Adapter) guestRequest(ctx context.Context, ref rt.ExecutionRef, method string, request, result any, timeout time.Duration) error {
 	if !validExecution(ref) {
 		return fmt.Errorf("%w: Guest Agent requires an exact execution", rt.ErrInvalid)
@@ -50,23 +48,29 @@ func (a *Adapter) guestRequest(ctx context.Context, ref rt.ExecutionRef, method 
 }
 
 func (a *Adapter) GuestPing(ctx context.Context, ref rt.ExecutionRef) error {
+	_, err := a.GuestCapabilities(ctx, ref)
+	return err
+}
+
+func (a *Adapter) GuestCapabilities(ctx context.Context, ref rt.ExecutionRef) ([]string, error) {
 	var reply struct {
-		Protocol int `json:"protocol"`
+		Protocol     int      `json:"protocol"`
+		Capabilities []string `json:"capabilities"`
 	}
 	if err := a.guestRequest(ctx, ref, "ping", struct{}{}, &reply, 5*time.Second); err != nil {
-		return err
+		return nil, err
 	}
 	if reply.Protocol != 1 {
-		return fmt.Errorf("%w: incompatible Guest Agent protocol", rt.ErrUnsupported)
+		return nil, fmt.Errorf("%w: incompatible Guest Agent protocol", rt.ErrUnsupported)
 	}
-	return nil
+	return reply.Capabilities, nil
 }
 
 func (a *Adapter) GuestExec(ctx context.Context, ref rt.ExecutionRef, exec rt.ExecRequest) (rt.ExecResult, error) {
 	if exec.TimeoutSeconds == 0 {
 		exec.TimeoutSeconds = 30
 	}
-	if exec.Background || exec.User != "" || len(exec.Command) == 0 || exec.TimeoutSeconds > 120 || len(exec.Stdin) > guestPayloadLimit {
+	if exec.Background || exec.User != "" || len(exec.Command) == 0 || exec.TimeoutSeconds > 120 || len(exec.Stdin) > rt.PrivateGuestUploadLimit {
 		return rt.ExecResult{}, fmt.Errorf("%w: invalid foreground Guest Agent command options", rt.ErrInvalid)
 	}
 	request := struct {
@@ -82,14 +86,14 @@ func (a *Adapter) GuestExec(ctx context.Context, ref rt.ExecutionRef, exec rt.Ex
 }
 
 func (a *Adapter) GuestUpload(ctx context.Context, ref rt.ExecutionRef, path string, source io.Reader, options rt.FileOptions) error {
-	if options.UID != nil || options.GID != nil || options.Size > guestPayloadLimit || !strings.HasPrefix(path, "/") {
+	if options.UID != nil || options.GID != nil || options.Size > rt.PrivateGuestUploadLimit || !strings.HasPrefix(path, "/") {
 		return fmt.Errorf("%w: invalid Guest Agent file options", rt.ErrInvalid)
 	}
-	data, err := io.ReadAll(io.LimitReader(source, guestPayloadLimit+1))
+	data, err := io.ReadAll(io.LimitReader(source, rt.PrivateGuestUploadLimit+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > guestPayloadLimit || (options.Size >= 0 && int64(len(data)) != options.Size) {
+	if len(data) > rt.PrivateGuestUploadLimit || (options.Size >= 0 && int64(len(data)) != options.Size) {
 		return fmt.Errorf("%w: Guest Agent file size does not match the intended upload", rt.ErrInvalid)
 	}
 	request := struct {
