@@ -78,7 +78,7 @@
 
 真实 Worker 和源 VMM 分别在 `arming`、`parking`、`standby`、`holding`、`pivoting`、`exporting`、`source_return`、`waking`、`children` 九个持久化阶段经 pidfd 终止。源退出的前六组终止原操作并释放 writer，没有发布子机。后三组各恢复一个子机。九次冻结 Worker `0c6454b969bd304fb98668ff963b9dc4a2b3703acd4228ea9762b8cd326f7d9c` 退出后，开发 Worker `d81a5b2f5ad8d322bacc641a1a330b54db77085bd691d2bf317e0cac91c515cd` 接管同一源 VMM，核对两盘 writer、原操作和执行身份，分别完成一个子机。子机串口输出含自己的主机名和原任务 PID，计数继续增加。另一次独立试验在恢复期间留下另一项未完操作，确认 Worker 等待该项完成处理再开放。smolvm `4651074` 提供恢复逻辑和 `tests/managed_capture_crash_kvm.py`。逐项日志位于 `.build/wp23/a06-cut-matrix-v8.sha256`，清单 SHA-256 为 `e9dc957d0ddb75ada8a527f962cab1ee19646461334b39eca3de80e8b5285951`。
 
-冻结安装 `1eb5104` 的十八组中断使用同一个 Worker 二进制 `f9a0812af46952abdd86cb99f596862e8f9f097c3e84dbebbe92cac50ad23448`。源进程在返回前退出的六组均终止操作并发布零个子机；从 `source_return` 起的三组各发布一个子机。Worker 在任一阶段退出后，替换进程都从原批次完成一个子机。逐组日志记录了捕获 ID、writer 阶段、操作终态和 Guest PID。`.build/wp23/a06-cut-matrix-installed-1eb5104.sha256` 含全部十八份日志的摘要，清单 SHA-256 为 `04444ecdec2f572d61748e11244bb2459c02cf155bdc13b532a7e36105228021`。
+冻结安装 `1eb5104` 的十八组中断使用同一个 Worker 二进制 `f9a0812af46952abdd86cb99f596862e8f9f097c3e84dbebbe92cac50ad23448`。源进程在返回前退出的六组均终止操作并发布零个子机。从 `source_return` 起的三组各发布一个子机。Worker 在任一阶段退出后，替换进程都从原批次完成一个子机。逐组日志记录了捕获 ID、writer 阶段、操作终态和 Guest PID。`.build/wp23/a06-cut-matrix-installed-1eb5104.sha256` 含全部十八份日志的摘要，清单 SHA-256 为 `04444ecdec2f572d61748e11244bb2459c02cf155bdc13b532a7e36105228021`。
 
 ### A08 长待机和保存点时钟
 
@@ -133,14 +133,14 @@
 | ID | 范围 | 已核实结果 | 待验 |
 | --- | --- | --- | --- |
 | A19 | 冻结历史点、CPU 合同及正式安装公开备份通过 | `fdd620e` 和 `d8cc5d5` 交叉恢复返回 `E_BUNDLE_UNAVAILABLE`，目标维持 epoch 0。共享 Worker 重启后原 reader 恢复 Guest PID、计数与两盘标记。`d8cc5d5` 与 `fb69434` 同 Worker 的公开 CLI 复测中，旧 reader 缺失返回 `CAPABILITY_UNKNOWN`、`effect=none`，无新增执行，两个持久点仍阻止退役。恢复旧 reader 后，两代 FixedInternal 点继续原任务 PID、RAM 和根盘标记。开发 Worker 校验完整归档和缺块、截断副本。`1eb5104` 正式安装公开备份达到 `verified`，独立 Worker 从原 manifest 启动并读回 RAM 和根盘标记。便携归档复用增量块并恢复两代，拒绝不匹配的 CPU 数、RAM 大小及真实 KVM Guest CPU 合同。代表语料索引包含原生 OCI、System Native、附加盘、CPU 槽、RAM growth 能力边界与长 Standby。[双 Bundle 安装复测](candidate-d8cc5d5.md#两个冻结-bundle-共用-worker)、[历史与正式安装记录](statepoint-history-a19.md) | — |
-| A20 | 冻结基线与开发修复，组件重启和虚拟主机换 boot 已验证 | platformd、Serve、broker 分别退出，systemd 接管前后分别中断。修复后的 Worker 重认原有 TCP 会话、TAP 和 writer，同一块盘录得九轮应答。独立虚拟 Worker 正常关机和断电后，两份旧写授权自动释放，原易失代际标记丢失，同一持久点恢复原 RAM 和盘数据。[组件及整机实测](managed-recovery.md#worker-主机换-boot-后的恢复)、[网络与 DNS](A20_LIVE_NETWORK_RECOVERY.md) | 在含两项恢复修复的完整冻结包复跑。 |
+| A20 | 1eb5104 冻结安装，组件、网络和两种整机重启通过 | platformd、Serve、broker 分别退出，systemd 接管前后分别中断。修复后的 Worker 重认原有 TCP 会话、TAP 和 writer，同一块盘录得九轮应答。独立虚拟 Worker 正常关机和断电后，两份旧写授权自动释放，原易失代际标记丢失，同一持久点恢复原 RAM 和盘数据。[组件及整机实测](managed-recovery.md#worker-主机换-boot-后的恢复)、[网络与 DNS](A20_LIVE_NETWORK_RECOVERY.md) 正式安装分别完成两个 scope 移交切点、平台／Serve／Worker 重启、两条合法租约的 DNS 与连接恢复，以及两次整机换 boot。[最终整机记录](managed-recovery.md#正式安装的整机复测) | 已失效租约及未就绪期间的业务连接按要求跳过。 |
 | A21 | 冻结测量、开发实机，部分 | 两个授权 wake demand 共用一次 exact 恢复，仅重新授权通过的请求获新执行 hold。真实 Native/FixedInternal 私网 TCP 可唤醒，授权的短 UDP 首包跨持久唤醒交付，超界数据丢弃；CLI SSH 经 Worker Gateway 可用。 `managed/lifecycle.log`、`.build/packet-udp-full-kvm.log`、`.build/platform-system-gateway-v3.log` | HTTP、TCP-mTLS、SSH 和直接 TCP/UDP 在同一候选上的并发首请求及不重放可能已送达的业务数据。 |
 | A22 | 冻结桌面与开发网关，服务修订和活流验收通过 | 桌面单次票据交付真实 framebuffer，Worker 确认原生租约后 API 返回会话。延迟和丢失确认、授权撤回、到期、平台重启均已测，休眠后新授权请求接回原 Xvfb。Guest grant 撤销关闭在途 SSE。f2df146 正向测量组合的 HTTPS SSE 和 mTLS 在 revision 1→2 后切换实际端口，旧流关闭。撤销已建立流的令牌或证书只关闭该流，独立合法流继续。OpenSSH 修订关闭旧流，pidfd 确认旧 VMM 退出，合法新连接唤醒原保存点，从 epoch 1 转至 2 并校验 host key 和 RAM 标记。[服务修订与关闭记录](service-revision-a22.md)、`.build/platform-desktop-worker-lease-a30.log`、`.build/platform-desktop-worker-lease-implicit.log`、`.build/wp23/transactional-proxy-kvm.log` | — |
 | A23 | `1eb5104` 正式安装，Native 和 FixedInternal 交接、独立恢复通过 | 两种网络模式均以原 run 跨 Worker 和 platformd 中断，保持原 checkpoint、休眠点与独立卷的选择。并发公开删除后 Worker 引用继续保护数据，暂存缺块和原 reader 缺失均保留已验证备份。退役旧源后，新 Worker 恢复原 RAM、根盘和独立卷。Native 使用新 `/32`，FixedInternal 保留内部地址并换到新 VIP。此前 1017 在途备份升级到 1018 后保持两路原选择，六组 ext4 发布和保留中断通过。[原生备份与双路记录](#a23-原生备份选择与中断恢复)、[正式安装双模式](#a23-正式安装的双模式备份交接)、[发布中断记录](#a23-备份发布与保留中断) | 旧夹具的非管理员权限尝试按本轮范围跳过，且不计通过。 |
 | A24 | 最终平台锁 `c095c4f`，迁移中断、升级和回退通过 | `0.1.6` 向 schema 1019 迁移写入未提交 WAL 时终止，19 张旧表及全部行保持一致。完成升级后旧二进制拒绝打开新 schema。两版本分别恢复备份，原 owner 新登录，继续读取原暂停记录及各自新的 control epoch。锁定平台包在 Ubuntu 24.04 KVM 中通过正式安装器升级，官方 Serve 在升级期间连续运行。跨 schema 回退被拒绝，整机断电后系统服务、原数据库、owner 和两份备份再次核验。[最终平台锁及实机](platform-upgrade-a24.md)、[此前发行件](#a24-历史发行件升级与回退) | 旧控制代次的写入子项按要求跳过，且不计通过。 |
 | A25 | 两个冻结安装、同一 Worker、两种 Serve 启动顺序 | 在同一 Worker 上交换 `fb69434` 与 `86dae32` 的启动顺序。两组均保留原 slice 限值和两台受保护 VM。并发启动、Fork、Restore 的六个请求受同一预算限流，逐 VMM 取得 PSS、私有与共享映射计数。[实测与日志](#a25-两个冻结-bundle-的共享预算) | — |
 | A26 | 冻结安装，官方与定制实机通过 | Chromium 创建默认 Native 的停机 System，并禁用状态 `unknown` 的 Fork batch。TS 挂卷后冷启动，CLI Standby/Wake 保持同一执行，TS 从完整 VM checkpoint 恢复原 RAM 标记与 `/dev/vdb` 字节，Python 批量创建两个独立 writer 和新 Native 地址。默认变更只影响新建机器，CLI 接受 Fixed 覆盖。官方 v1.37.1 的真实 OCI 保持 Pause/Resume 与 `managed_clean` clone 语义，实例间写入彼此独立。浏览器分开显示电源、Guest 管理、工作负载、网络与服务状态，并保留官方兼容动作。Python Standby 得到 `CAPABILITY_UNSUPPORTED`。 `.build/platform-a26-d8cc-installed-v2.log`、`.build/a26-d8cc-evidence/` | — |
-| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | 本地 96 次 rebase 与预取、24 次共享页缓存对照和 KVM/设备写并集已通过。网络存储和更高并发的块读通道仍待测量。 |
+| A27 | 冻结安装及开发实机，部分 | 本地 ext4/KVM 对照了冷启动、双分支和三层递归，有界 dirty、首次/重复 durable restore 与 16/4/0 读通道。另用 `fb69434` 进行 16 次受管 Fork，逐 vCPU 在内核记录退出与进入，双分支共同停顿 p50 为干净 5.071 s、写脏 5.081 s。首任务、PSS 和双盘正确性均保留实际观测。[WP-22 测量与原始样本路径](performance-wp22.md) | 本地 96 次 rebase 与预取、24 次共享页缓存对照、KVM/设备写并集和网络盘 24 次读取对照已通过。三子机的网络盘读通道与编译吞吐待验。 |
 
 ### A23 备份发布与保留中断
 
@@ -265,6 +265,8 @@ A26 由同一个 `platformd` 进程连接冻结 `d8cc5d5` 的私有 Worker Serve
 | Standby，保存完成后人为延迟本次 Worker 6.5 秒 | 跨越 5 秒 RPC 超时，HTTP 200。一次精确恢复，两个新 hold，两条业务各一次 | `a31-owner-control-timeout-stable-v3.log` · `c61b6b8f18640e163023e570edf0528c982f02fb561e84cd4bbc86fcda33b89d` |
 
 冻结平台 `c095c4f` 的二进制 `c7045e98f56f09805774ea0c785f7773a172831042e88bd13dca6168875659ba` 同样通过 6.5 秒延迟组。日志 `.build/wp23/a31-owned-final-platform-c095c4f.log` 的 SHA-256 为 `2483c770907a0b135b58fbeba8c8beb01a7a11d40dc010bcf18c6c3a68f38a0f`。[公开切点夹具](../../tests/integration/lifecycle_access_cut_kvm.py)
+
+冻结安装 `1eb5104` 上，STOP 提交前的并发 HTTP 和管理 API 让原执行在 epoch 1 继续。提交后即使 Worker 控制回复跨过一次超时，两笔业务仍各到达一次，只发生一次 exact 恢复。另组在 HTTP 请求已在途时撤销其授权，Guest 上只产生并行 API 请求的一条回执。三份 `.build/wp23/` 日志为 `a31-before-final-1eb5104-v1.log`（`ec791d6bcca587e7c425220a2c4d07ea359d1886845afa975ae8696864953fa0`）、`a31-after-final-1eb5104-v1.log`（`05f1bd5e894c7f06a6fd4b26eefd7194c963432ca7cbfd830bbd10e10ea642bc`）和 `a31-withdraw-final-1eb5104-v1.log`（`afd4477f957aa4150ef43b666696e008d138eba93606ddce76bedc5879f04a40`）。
 
 ### A33 实际 balloon 反馈与预算
 
