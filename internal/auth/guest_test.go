@@ -27,7 +27,8 @@ func TestGuestGrantRequiresAttestedCurrentExecution(t *testing.T) {
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO templates
 		(id,name,version,image_digest,spec_json,capabilities_json) VALUES ('t','base',1,'image','{}','{}');
 		INSERT INTO runtime_bundles VALUES ('bundle','manifest','{}','verified','ready',1);
-		INSERT INTO runtime_instances VALUES ('serve','deep','bundle','endpoint','ready',1);
+		INSERT INTO runtime_instances(id,lane,runtime_bundle_id,endpoint_key,status,revision,worker_id,local_instance_id,worker_endpoint_key)
+		VALUES ('serve','deep','bundle','worker/local-worker/runtime/serve','ready',1,'local-worker','serve','endpoint');
 		INSERT INTO machines (id,name,template_id,revision,binding_generation,desired_power,spec_json,idle_policy_json,keep_running)
 		VALUES ('m_source','source','t',1,1,'running','{}','{}',0), ('m_child','child','t',1,1,'running','{}','{}',0);
 		INSERT INTO runtime_bindings (id,machine_id,generation,runtime_name,status,task_namespace,spec_hash,
