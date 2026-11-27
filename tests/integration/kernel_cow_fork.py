@@ -6,6 +6,7 @@ import re
 import select
 import signal
 import sqlite3
+from contextlib import ExitStack
 from pathlib import Path
 import time
 
@@ -22,6 +23,11 @@ my $nonce = unpack('H*', $secret);
 my $memory = 'A' x (16 * 1024 * 1024);
 while (my $client = $listen->accept()) {
     my $op = <$client> // ''; chomp $op;
+    if ($op eq 'dirty-pages') {
+        for (my $i=0; $i<length($memory); $i+=4096) { substr($memory,$i,1) = 'D'; }
+        my $written = ($memory =~ tr/D/D/);
+        print {$client} "$written\n"; close $client; next;
+    }
     if ($op =~ /^set ([A-Z])$/) { substr($memory, -1, 1) = $1; }
     print {$client} join(' ', $$, $nonce, length($memory), substr($memory,-1)), "\n";
     close $client;
@@ -136,8 +142,8 @@ def run(platform, intent, case):
               bundle=platform.bundle_id, hibernate_operation=proof["hibernate_operation"], capture_id=proof["capture_id"],
               manifest_digest=proof["manifest_digest"], canary_boot_id=proof["boot_id"], stock_boot_id=boot_id)), flush=True)
         return
-    backend = {"cow-native": "native", "cow-legacy": "auto", "cow-auto": "auto"}.get(case, "kernel_cow")
-    expected = "native" if case in ("cow-native", "cow-legacy") else "kernel_cow"
+    backend = {"cow-native": "native", "cow-counts-native": "native", "cow-legacy": "auto", "cow-auto": "auto"}.get(case, "kernel_cow")
+    expected = "native" if case in ("cow-native", "cow-legacy", "cow-counts-native") else "kernel_cow"
     intent.update(start=False, resources=dict(cpu_count=1, memory_mib=512),
                   network=dict(network_id="cow-test", mode="native"),
                   lifecycle_policy=dict(keep_running=True, auto_standby=False, auto_hibernate=False))
@@ -204,6 +210,24 @@ def run(platform, intent, case):
         from polish_product import check_lease_and_fork
         check_lease_and_fork(platform, source, ref, memory_backend="kernel_cow")
         return
+    counters = None
+    if case.startswith("cow-counts-"):
+        from kernel_cow_counts import CaptureCounters
+        # Establish a first generation, then write a nonzero byte in every
+        # workload page so Native is a positive control for real delta copies.
+        warm = platform.complete(platform.change(source + "/forks", "counts-warmup",
+            dict(child_name="Warmup", require_independent=True, memory_fork_backend=backend), platform.app(source)))
+        assert warm["result"]["selected_memory_fork_backend"] == expected, warm
+        warm_child, = warm["children"]
+        assert warm_child["state"] == "ready" and warm_child["resource_independence"] == "verified", warm
+        warm_path = "machines/" + warm_child["machine_id"]
+        platform.complete(platform.change(warm_path + "/stop", "stop-warmup", {}, platform.app(warm_path)))
+        assert read_workload(platform, ref, "dirty-pages") == ["4096"]
+        view = platform.wait_capability(source, "state.independent_fork")
+        execution = platform.native(f"/instances/{ref['instance_id']}/inventory")["execution"]
+        assert all(execution[k] == v for k, v in ref.items()), (execution, ref)
+        counter_stack = platform.stack.enter_context(ExitStack())
+        counters = CaptureCounters(platform, execution, counter_stack)
     before = vmm_memory(platform, ref)
     body = dict(child_name="Memory child", require_independent=True, memory_fork_backend=backend)
     start = time.monotonic_ns()
@@ -232,6 +256,12 @@ def run(platform, intent, case):
     result = completed["result"]
     assert result["selected_memory_fork_backend"] == expected and result["requested_memory_fork_backend"] == backend, result
     assert completed["source_lock_released"] and completed["source_disposition"] == "RUNNING", completed
+    if counters is not None:
+        counts = counters.read(expected)
+        counter_stack.close()
+        print("COW_CAPTURE_COUNTS " + json.dumps(dict(bundle=platform.bundle_id, backend=expected,
+            kernel=Path("/proc/sys/kernel/osrelease").read_text().strip(),
+            operation=completed["operation_id"], capture=result["capture_id"], **counts)), flush=True)
     child, = completed["children"]
     assert child["state"] == "ready" and child["resource_independence"] == "verified", child
     path = "machines/" + child["machine_id"]
