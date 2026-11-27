@@ -326,10 +326,13 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
         held, = db.execute("SELECT count(*) FROM lifecycle_protections WHERE principal=? AND incarnation_id=? AND state='active'",
                            (grant, ref["incarnation_id"])).fetchone()
         assert held == 1
-    single = platform.args.case == "protected-stream-single"
+    single = platform.args.case.endswith("-single")
     names = ("first",) if single else ("first", "second")
     endpoint, capability, body = ("forks", "state.independent_fork", dict(child_name="First answer")) if single else (
         "fork-batches", "state.fork_batch", dict(children=[dict(name="Answer " + name) for name in names]))
+    backend = "kernel_cow" if platform.args.case.startswith("protected-stream-kernel-") else None
+    if backend is not None:
+        body["memory_fork_backend"] = backend
     accepted = platform.change(source + "/" + endpoint, "fork-waiting-for-model",
         {**body, "require_independent": True}, platform.wait_capability(source, capability))
     operation = accepted["operation_id"]
@@ -369,6 +372,8 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
                                                          for c in result["children"]), result
+    if backend is not None:
+        assert result["result"]["selected_memory_fork_backend"] == backend, result
     assert upstream.requests == [("/fork-stream", True, True)], upstream.requests
     assert upstream.model_posts == [upstream.model_request.encode()]
     with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
@@ -451,7 +456,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for field in ("bundle", "platformd", "system-image", "probe"):
         parser.add_argument("--" + field, type=lambda value: Path(value).resolve(strict=True), required=True)
-    parser.add_argument("--case", choices=("delegate", "proxy", "protected-stream-fork", "protected-stream-single"), required=True)
+    parser.add_argument("--case", choices=("delegate", "proxy", "protected-stream-fork", "protected-stream-single",
+                                           "protected-stream-kernel-fork", "protected-stream-kernel-single"), required=True)
     parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
     parser.add_argument("--local-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -485,8 +491,11 @@ def main():
                     "auto_standby": False, "auto_hibernate": False, "min_running_after_wake_seconds": 0,
                 }}, {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "fixture-lifecycle-defaults",
                      "If-Match": f'"{settings["revision"]}"'})
-            source = platform.change("machines", "source", dict(name="Guest authority source", template_id="t_system",
-                boot_mode="system", runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2,memory_mib=768)))
+            intent = dict(name="Guest authority source", template_id="t_system", boot_mode="system",
+                          runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768))
+            if args.case.startswith("protected-stream-kernel-"):
+                intent["memory_fork_profile"] = "kernel_cow_anon_v1"
+            source = platform.change("machines", "source", intent)
             platform.complete(source)
             machine = source["machine_id"]
             _, ref = platform.context(machine)
