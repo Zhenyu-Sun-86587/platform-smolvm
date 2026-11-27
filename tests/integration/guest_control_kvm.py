@@ -30,6 +30,8 @@ class Upstream:
         self.answers = {"/answer/" + name: os.urandom(12).hex() for name in ("source", "first", "second")} if fork_stream else {}
         self.fork_head = os.urandom(12).hex()
         self.fork_tail = os.urandom(12).hex()
+        self.model_request = json.dumps({"stream": True, "prompt": os.urandom(12).hex()})
+        self.model_posts = []
         secret = root / "provider-key"
         secret.touch(mode=0o600)
         secret.write_text(self.key + "\n")
@@ -44,6 +46,20 @@ class Upstream:
                 pass
 
             def do_GET(self):
+                self.serve_stream()
+
+            def do_POST(self):
+                if self.path != "/fork-stream":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 4096:
+                    self.send_error(400)
+                    return
+                upstream.model_posts.append(self.rfile.read(length))
+                self.serve_stream()
+
+            def serve_stream(self):
                 upstream.requests.append((self.path, self.headers.get("Authorization") == "Bearer " + upstream.key,
                                           self.headers.get("Proxy-Authorization") is None))
                 if self.path == "/redirect":
@@ -92,7 +108,8 @@ class Upstream:
         routes = ("/fork-stream", *self.answers) if fork_stream else ("/inspect", "/redirect", "/stream")
         self.policy = dict(id="model", upstream=f"https://127.0.0.1:{server.server_port}",
                            credential_file=str(secret), ca_file=str(cert), allow_private=True,
-                           timeout_seconds=100 if fork_stream else 35, routes=[dict(method="GET", path=path) for path in routes])
+                           timeout_seconds=100 if fork_stream else 35,
+                           routes=[dict(method="POST" if path == "/fork-stream" else "GET", path=path) for path in routes])
 
 
 def wire(platform, ref, probe, method, path, token, body=None, **more):
@@ -265,12 +282,14 @@ def protected_stream_fork(platform, upstream, machine, ref, probe):
     folder = "/run/protected-model"
     platform.guest(ref, ["mkdir", "-m", "700", folder])
 
-    def write_request(execution, filename, route, bearer):
-        message = (f"GET /v1/credential-proxies/model{route} HTTP/1.1\r\nHost: guest-relay\r\n"
-                   f"Authorization: Bearer {bearer}\r\nConnection: close\r\n\r\n")
+    def write_request(execution, filename, route, bearer, body=None):
+        method = "GET" if body is None else "POST"
+        entity = "" if body is None else f"Content-Type: application/json\r\nContent-Length: {len(body.encode())}\r\n"
+        message = (f"{method} /v1/credential-proxies/model{route} HTTP/1.1\r\nHost: guest-relay\r\n"
+                   f"Authorization: Bearer {bearer}\r\n{entity}Connection: close\r\n\r\n{body or ''}")
         platform.guest(execution, ["sh", "-ec", 'umask 077; cat > "$1"', "save", folder + "/" + filename], message)
 
-    write_request(ref, "first.req", "/fork-stream", token)
+    write_request(ref, "first.req", "/fork-stream", token, upstream.model_request)
     # The shell survives its original outbound call. Each descendant supplies a new,
     # execution-bound request to that same shell through its own copy of the FIFO.
     job = """set -eu
@@ -316,6 +335,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
                                                          for c in result["children"]), result
     assert upstream.requests == [("/fork-stream", True, True)], upstream.requests
+    assert upstream.model_posts == [upstream.model_request.encode()]
     upstream.release.set()
     branches = [("source", machine, ref)]
     for name, child in zip(names, result["children"], strict=True):
@@ -362,6 +382,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
               tail in old, "fresh answer from", path, flush=True)
     expected_paths = ["/fork-stream", *("/answer/" + name for name, _, _ in branches)]
     assert upstream.requests == [(p, True, True) for p in expected_paths], upstream.requests
+    assert upstream.model_posts == [upstream.model_request.encode()]
     with closing(sqlite3.connect(platform.root / "catalog/catalog.sqlite")) as db:
         def settled():
             return db.execute("SELECT incarnation_id,state FROM lifecycle_protections WHERE principal=?",
