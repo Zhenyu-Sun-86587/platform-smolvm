@@ -40,6 +40,7 @@ export interface DesktopSession {
   expires_at: string
 }
 export type MemoryForkBackend = "native" | "kernel_cow" | "auto"
+export type MemoryForkProfile = "kernel_cow_anon_v1"
 export interface MemoryForkObservation {
   profile: string
   kernel_cow_supported: boolean
@@ -74,6 +75,11 @@ export interface OperationChild {
   resource_independence?: "unknown" | "verified" | "failed"
   error_code?: string
 }
+export interface OperationResult extends Record<string, unknown> {
+  requested_memory_fork_backend?: MemoryForkBackend
+  selected_memory_fork_backend?: Exclude<MemoryForkBackend, "auto">
+  memory_fork_profile?: string
+}
 export interface Operation {
   operation_id: string
   control_epoch?: string
@@ -93,7 +99,7 @@ export interface Operation {
   children?: OperationChild[]
   binding_generation?: number
   error?: ErrorDetail | null
-  result?: Record<string, unknown> | null
+  result?: OperationResult | null
 }
 export interface Capability { memory_fork?: MemoryForkObservation; status?: "supported" | "unsupported" | "unknown"; contract_version?: number; constraints?: Record<string, unknown>; supported: boolean; reason_code?: string | null; message?: string; verified_profile?: string }
 export type GuestFileCapability = "files.list" | "files.read" | "files.write" | "files.preview" | "files.edit"
@@ -224,7 +230,7 @@ export interface MachineNetwork extends Required<NetworkSelection> {
 }
 export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
-  memory_fork_profile?: "kernel_cow_anon_v1"
+  memory_fork_profile?: MemoryForkProfile
   live_compute_growth?: boolean
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
@@ -332,7 +338,7 @@ export interface CaptureConfiguration {
   source?: string
   spec_digest?: string
   spec?: {
-    template_id?: string; boot_mode?: BootMode; resources?: ResourcePatch; live_compute_growth?: boolean; memory_fork_profile?: "kernel_cow_anon_v1"
+    template_id?: string; boot_mode?: BootMode; resources?: ResourcePatch; live_compute_growth?: boolean; memory_fork_profile?: MemoryForkProfile
     network?: NetworkSelection & { route_domain_id?: string; cidr?: string }
   }
   reason_code?: string
@@ -917,7 +923,8 @@ export class Client {
   clone(id: string, childName: string, options?: MachineWriteOptions) {
     return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options)
   }
-  fork(id: string, childName: string, { requireIndependent, memoryForkBackend, ...options }: MachineWriteOptions & { requireIndependent?: boolean; memoryForkBackend?: MemoryForkBackend } = {}) {
+  async fork(id: string, childName: string, { requireIndependent, memoryForkBackend, ...options }: MachineWriteOptions & { requireIndependent?: boolean; memoryForkBackend?: MemoryForkBackend } = {}) {
+    if (memoryForkBackend && !requireIndependent) throw new TypeError("memoryForkBackend requires requireIndependent: true")
     return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined, memory_fork_backend: memoryForkBackend }, options)
   }
   forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions) {

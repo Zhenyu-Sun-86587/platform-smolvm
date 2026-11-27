@@ -59,6 +59,7 @@ export function Callout({ error }: { error: unknown }) {
   const detail = error instanceof PlatformError ? error.detail : undefined
   return <div className="callout" role="alert">
     <AlertCircle size={16} /><strong>{detail?.code ?? "Request failed"}</strong><span>{message}</span>
+    {detail?.capability && detail.reason_code && <span>{detail.reason_code}</span>}
     {detail?.stage && <span>Stage {label(detail.stage)}</span>}
     {detail?.scope && <span>Scope {label(detail.scope)}</span>}
     {detail?.operation_id && <span>Operation {detail.operation_id}</span>}

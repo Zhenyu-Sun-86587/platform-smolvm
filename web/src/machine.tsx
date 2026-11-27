@@ -17,6 +17,7 @@ import { currentServiceObservation, fixtureScene, useCollection } from "./api"
 import { machineHref, terminalHref } from "./routes"
 import type { Field } from "./common"
 import { policyFields, policyOverrides } from "./lifecycle-policy"
+import { memoryForkProfileLabel } from "./memory-fork"
 import { hasManagedSSH, hasVerifiedSSHHostKey, powerDialog, WorkspaceActions } from "./workspace-actions"
 import { Branches } from "./branches"
 const Terminal = lazy(() => import("./Terminal"))
@@ -291,7 +292,8 @@ function MachineConfiguration({ machine, actions }: Context) {
         last_observed: time(machine.observed_at), last_activity: time(machine.last_user_activity_at),
         guest_management: machine.guest_management_status, vCPUs: resources?.cpu_count,
         memory_MiB: resources?.memory_mib, storage_GiB: resources?.storage_gib,
-        overlay_GiB: resources?.overlay_gib
+        overlay_GiB: resources?.overlay_gib,
+        ...(machine.memory_fork_profile ? { "Configured RAM profile": memoryForkProfileLabel(machine.memory_fork_profile) } : {}),
       }} />
       </details>
       {machine.operation_id && <div className="panel-footer"><a href={"#/operations/" + segment(machine.operation_id)}>Operation {machine.operation_id}</a></div>}

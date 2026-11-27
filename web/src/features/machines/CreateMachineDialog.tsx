@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import { CircleHelp, RefreshCw } from "lucide-react"
 import { operation, PlatformError } from "../../../../sdk/typescript/src/index"
-import type { BootMode, Control, CreateMachine, Machine, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
+import type { BootMode, Control, CreateMachine, Machine, MemoryForkProfile, Operation, PrivateNetwork, RuntimeProfile } from "../../../../sdk/typescript/src/index"
 import { api, fixtureScene, useCollection } from "../../api"
 import { Callout, label, machinePowerState, networkModes, segment, useRemote } from "../../common"
 import type { Actions } from "../../main"
+import { kernelCowProfile, memoryForkProfileLabel } from "../../memory-fork"
 import { Button, Modal, StatusBadge } from "../../ui"
 import styles from "./machines.module.css"
 
@@ -86,6 +87,13 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const [network, setNetwork] = useState("")
   const [networkMode, setNetworkMode] = useState("")
   const [growth, setGrowth] = useState(false)
+  const [memoryProfile, setMemoryProfile] = useState<MemoryForkProfile>()
+  const growthSupported = supports(runtime, "boot.live_compute_growth")
+  const launchCapability = runtime?.capabilities?.["boot.kernel_cow_ram"]
+  const kernelCowBlock = growth && growthSupported
+    ? "Turn off live CPU and RAM growth to use Kernel CoW."
+    : supports(runtime, "boot.kernel_cow_ram") ? undefined
+      : launchCapability?.message || launchCapability?.reason_code || "This Worker has not reported Kernel CoW launch support."
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
   const [retry, setRetry] = useState<CreateMachine>()
@@ -103,7 +111,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
   const nameIssue = nameError(name)
   const loading = (!templates.items && !templates.error) || (system && !networks.items && !networks.error)
   const valid = !nameIssue && !suggesting && !loading && Boolean(selected && (!system || runtime)) &&
-    positiveInteger(cpu) && positiveInteger(memory) &&
+    positiveInteger(cpu) && positiveInteger(memory) && (!system || !memoryProfile || !kernelCowBlock) &&
     (system || (positiveInteger(storage) && positiveInteger(overlay) && (idlePolicy !== "enabled" || idleTimeout >= 60)))
   const formId = "new-machine-form"
   const uncertain = Boolean(retry)
@@ -127,7 +135,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
       body.runtime_instance_id = runtime.runtime_instance_id
       const mode = networkModes.find(item => item.value === networkMode)?.value
       if (network || mode) body.network = { network_id: network || undefined, mode }
-      if (growth && supports(runtime, "boot.live_compute_growth")) body.live_compute_growth = true
+      if (growth && growthSupported) body.live_compute_growth = true
+      if (memoryProfile) body.memory_fork_profile = memoryProfile
     } else {
       body.resources = { cpu_count: cpu, memory_mib: memory, storage_gib: storage, overlay_gib: overlay }
       if (idlePolicy !== "default") body.idle_policy = { enabled: idlePolicy === "enabled", timeout_seconds: idleTimeout }
@@ -176,6 +185,7 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
           ? "Creation needs attention."
           : "Creation accepted. Waiting for the operation to finish."}</p>
       {current.effect !== "none" && current.effect !== "applied" && <p>Effect {label(current.effect)}</p>}
+      {machine.data?.memory_fork_profile && <p>Configured RAM profile · {memoryForkProfileLabel(machine.data.memory_fork_profile)}</p>}
       {current.error && <div role="alert"><p>{current.error.message ?? current.error.code}</p>{current.error.retry && <p>Retry {label(current.error.retry)}</p>}</div>}
       <Callout error={observation.error} /><Callout error={machine.error} />
       <div className={styles.createLinks}>
@@ -236,6 +246,14 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
           <summary>Advanced options</summary>
           <fieldset disabled={busy || uncertain} className={styles.advancedFields}>
             {system ? <>
+              <label className={styles.field}><span>RAM profile</span>
+                <select aria-label="RAM profile" aria-describedby={kernelCowBlock ? "kernel-cow-launch-reason" : undefined}
+                  value={memoryProfile ?? ""} onChange={event => setMemoryProfile(event.target.value === kernelCowProfile ? kernelCowProfile : undefined)}>
+                  <option value="">Use default</option>
+                  <option value={kernelCowProfile} disabled={Boolean(kernelCowBlock)}>{memoryForkProfileLabel(kernelCowProfile)}</option>
+                </select>
+                {kernelCowBlock && <small id="kernel-cow-launch-reason">{kernelCowBlock}</small>}
+              </label>
               {Boolean(availableNetworks.length) && <>
                 <label className={styles.field}><span>Private network</span><select aria-label="Private network" value={network} onChange={event => setNetwork(event.target.value)}>
                   <option value="">Use configured default</option>
@@ -246,8 +264,8 @@ export function CreateMachineDialog({ actions, defaultBoot = "oci", revision, cl
                   {networkModes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select></label>
               </>}
-              {supports(runtime, "boot.live_compute_growth") && <label className={styles.checkbox}><input type="checkbox" checked={growth} onChange={event => setGrowth(event.target.checked)} />
-                <span>Enable live CPU and RAM growth<small>This profile disables full VM snapshots, hibernation, and live fork.</small></span>
+              {growthSupported && <label className={styles.checkbox}><input type="checkbox" checked={growth} disabled={Boolean(memoryProfile)} onChange={event => setGrowth(event.target.checked)} />
+                <span>Enable live CPU and RAM growth<small>{memoryProfile ? "Choose the default RAM profile to enable live growth." : "This profile disables full VM snapshots, hibernation, and live fork."}</small></span>
               </label>}
             </> : <>
               <div className={styles.sizeOptions}>

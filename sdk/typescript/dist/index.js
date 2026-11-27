@@ -455,7 +455,9 @@ export class Client {
     clone(id, childName, options) {
         return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options);
     }
-    fork(id, childName, { requireIndependent, memoryForkBackend, ...options } = {}) {
+    async fork(id, childName, { requireIndependent, memoryForkBackend, ...options } = {}) {
+        if (memoryForkBackend && !requireIndependent)
+            throw new TypeError("memoryForkBackend requires requireIndependent: true");
         return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined, memory_fork_backend: memoryForkBackend }, options);
     }
     forkBatch(id, request, options) {

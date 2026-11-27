@@ -16,6 +16,7 @@ import { Catalog } from "./catalog"
 import { VolumeCatalog } from "./volumes"
 import { machineHref, readRoute } from "./routes"
 import type { Route } from "./routes"
+import { memoryForkBackendLabel } from "./memory-fork"
 import { DetailDrawer, EmptyState, Skeleton } from "./ui"
 import "./style.css"
 
@@ -295,6 +296,9 @@ function App() {
         {notice.effect === "partial" && <State value="partial" />}
         {notice.effect === "unknown" && <span>Effect unknown</span>}
         {notice.error?.message && <span>{notice.error.message}</span>}
+        {notice.result?.selected_memory_fork_backend && <span>
+          Memory backend · {memoryForkBackendLabel(notice.result.selected_memory_fork_backend)}
+        </span>}
         {notice.result?.status === "requires_restart" && <span>Resource changes require restart</span>}
         <button aria-label="Dismiss operation" onClick={() => { latestOperation.current = ""; setNotice(undefined) }}>×</button>
       </div>}

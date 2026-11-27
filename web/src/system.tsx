@@ -11,6 +11,7 @@ import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
 import { fixtureScene, metricAvailability, metricNumber, useCollection } from "./api"
 import type { Actions } from "./main"
+import { memoryForkBackendLabel, memoryForkProfileLabel } from "./memory-fork"
 
 export type SystemTab = "operations" | "settings" | "diagnostics" | "templates" | "backups" | "api-keys"
   | "agents" | "integrations" | "domains" | "environment"
@@ -94,13 +95,22 @@ function Operations({ actions, revision, id, operationIds }: Omit<Props, "tab">)
 }
 
 function OperationDetail({ item, actions }: { item: Operation; actions: Actions }) {
+  const { requested_memory_fork_backend: requested, selected_memory_fork_backend: selected,
+    memory_fork_profile: profile, ...otherResult } = item.result ?? {}
   const activeFork = (item.kind === "fork_batch" || item.kind === "independent_fork") &&
     (item.state === "dispatching" || item.state === "observing") && item.children?.some(child => child.state === "pending") &&
     !["fork_cancel_requested", "fork_retry", "worker_fork_retry"].includes(item.stage)
   return <>
-    <Details value={{ operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state, machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect, source_disposition: item.source_disposition, source_lock_released: item.source_lock_released }} />
+    <Details value={{
+      operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state,
+      machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect,
+      source_disposition: item.source_disposition, source_lock_released: item.source_lock_released,
+      ...(requested ? { requested_memory_fork_backend: memoryForkBackendLabel(requested) } : {}),
+      ...(selected ? { selected_memory_fork_backend: memoryForkBackendLabel(selected) } : {}),
+      ...(profile ? { memory_fork_profile: memoryForkProfileLabel(profile) } : {}),
+    }} />
     {item.error && <div className="callout" role="alert"><strong>{item.error.code}</strong><span>{item.error.message}</span><span>Effect {item.error.effect ?? item.effect}</span>{item.error.retry && <span>Retry {label(item.error.retry)}</span>}</div>}
-    {item.result != null && <Records value={item.result} />}
+    {item.result != null && (Object.keys(otherResult).length > 0 || !(requested || selected || profile)) && <Records value={otherResult} />}
     {Boolean(item.children?.length) && <div className="rows" aria-label="Forked machines">
       {item.children?.map(child => <div className="row" key={child.ordinal}>
         {child.state === "ready" ? <a href={"#/machines/" + segment(child.machine_id)}>{child.machine_id}</a> : <code>{child.machine_id}</code>}
