@@ -2,6 +2,8 @@
 
 独立候选分支为 `feat/kernel-cow-runtime`。11 月 27 日的候选把 CoW RAM 接入可选的 Worker 启动与 Fork 合同，并保留原有默认行为。下文的初始候选及历史验收均标明对应版本。本次新增的源码、启动包和实测范围在文末登记。
 
+本轮在 11 月 27 日晚暂停。最新的 KVM 结果、恢复修复候选及仍需排查的四项问题见[静态审查交接](kernel-cow-static-review-2026-11-27.md)。
+
 ## 跨 UID 启动候选
 
 Linux 测试配置 `f68cfa91e953` 构建了 `6.18.65-smolvm-cow-worker`，新增 seccomp 过滤。libkrun `c13c9c5e13a8` 提供 Worker 私有入口，在同一目标进程里用持有的源 pidfd 导入，关闭 pidfd、清除能力并永久切换 UID/GID，然后由正常 VMM 构建读取已导入的内存。源侧的私有控制出口只传绑定到当前暂停会话的区域列表与 checkpoint，源在导入确认前保持 held。smolvm `e2b6066ddf63` 固定这个 libkrun 候选。
