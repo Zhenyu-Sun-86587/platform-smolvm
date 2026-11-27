@@ -66,3 +66,15 @@ sandboxctl machines live-fork cow-source cow-child --memory-fork-backend kernel_
 ```
 
 现有的产品层分派仍分别提供独立全状态 Fork、任务分支和磁盘 Clone。内部 RAM 提供者只影响有资格的独立 Fork。`auto` 是用户主动选择的策略。平台拒绝把不同提供者的回执接到同一已受理捕获上。持久保存点和回退要分别检查兼容 reader、哈希和恢复出的真实工作负载。
+
+## 在隔离 Worker 上启动最终内核包
+
+Linux 补丁 `9cde269` 基于 stable `4700e3adf3b2`。测试包 `smolvm-worker-kernel-canary_6.18.65-1+canary.a991c2bd3d6a` 的两次打包摘要同为 `16df7e6d4dd4f9b3c74d01f42f906da779718cd2287e9c3716a9efccf6415996`。新内核在隔离 Worker 磁盘上完成 GRUB 单次启动，实测 IPv4 路由策略和 Landlock 已启用。第二次从同一块盘启动回到 Ubuntu 6.8.0-151-generic，boot ID 改变，KVM Guest 运行成功。两次内核 taint 均为 0。发布签名、Secure Boot、Intel KVM 与独立物理 Worker 部署另行验证。[包、引导及回退证据](https://github.com/Zhenyu-Sun-86587/deepfork-smolvm-archive/tree/a4f76364095f63712299dd65603130c83d17ec14/evidence/canary-2026-11-27-landlock)
+
+| 开发计划 | 在该内核上的实测 |
+| --- | --- |
+| C01–C04、C06 | 双 NUMA 的内存管理用例 23/23 通过。 |
+| C05 | AMD 嵌套 KVM 用例 6/6 通过。只读源退出后，两个子 Guest 首次访问该页时各自读到原值，随后各自写入并读回自己的值。 |
+| C09、C12 的底层部分 | libkrun `2ad57a8d` 的跨 UID 导入和两次新 Standby 捕获通过，覆盖降权后的状态和捕获请求去重。 |
+
+托管 System 使用块设备作为 Guest 根盘，启动时还会有内部空文件系统。libkrun `2ad57a8d` 修正了该内部设备与固定 CoW RAM 的启动冲突。smolvm `285ba944` 修正了 anchor 启动消息的长度限制，接收完整有界消息并要求恰好一个源 pidfd。`bdb60e9a` 让捕获失败时的原机继续完成同一次唤醒。后两处变更源自公开 Fork 请求的实际故障。[VMM 修复](https://github.com/Zhenyu-Sun-86587/libkrun/commit/2ad57a8ddfbaa963842724825c551cf1807003a7) · [Worker 修复](https://github.com/Zhenyu-Sun-86587/smolvm/commit/bdb60e9ab289e67d14208eafa365dabc383e0f16)
