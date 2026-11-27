@@ -78,7 +78,7 @@ def worker(endpoint, method, payload=None, fd=None, **scope):
     return response["result"]
 
 
-def wait_for(probe, timeout=90, retry=(OSError,)):
+def wait_for(probe, timeout=90, retry=(OSError,), *, interval=0.2):
     end = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < end:
@@ -87,7 +87,7 @@ def wait_for(probe, timeout=90, retry=(OSError,)):
                 return value
         except retry as error:
             last_error = error
-        time.sleep(0.2)
+        time.sleep(interval)
     raise TimeoutError(f"fixture command exceeded its deadline: {last_error}")
 
 

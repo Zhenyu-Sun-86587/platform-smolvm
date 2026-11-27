@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import select
 import signal
 import sqlite3
 from pathlib import Path
@@ -75,15 +76,16 @@ def check_early_anchor_loss(platform, op, mid, ref, original):
     with sqlite3.connect(uri, uri=True) as db:
         def unpublished():
             return db.execute("""SELECT a.capture_id, a.helper_pid, a.helper_start, a.host_boot_id
-                FROM kernel_mm_anchors a WHERE a.operation_id=? AND NOT EXISTS
-                (SELECT 1 FROM resources r WHERE r.resource_id=a.capture_id)""", (op_id,)).fetchone()
-        capture, pid, ticks, host = wait_for(unpublished, timeout=55)
+                FROM kernel_mm_anchors a
+                WHERE a.operation_id=? AND a.resource_id IS NULL AND a.failure IS NULL""", (op_id,)).fetchone()
+        capture, pid, ticks, host = wait_for(unpublished, timeout=55, interval=0.005)
         assert host == boot
         fd = os.pidfd_open(pid)
         try:
             assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == ticks
             assert unpublished() == (capture, pid, ticks, host)
             signal.pidfd_send_signal(fd, signal.SIGKILL)
+            assert select.select([fd], [], [], 5)[0], "unpublished anchor did not exit"
         finally:
             os.close(fd)
         def returned():
@@ -91,33 +93,48 @@ def check_early_anchor_loss(platform, op, mid, ref, original):
             return current if current["state"] == "failed" else None
         failure = wait_for(returned, timeout=90)
         row, = db.execute("SELECT capture_id,source_released,stage FROM managed_fork_batches WHERE operation_id=?", (op_id,))
+        anchor, = db.execute("SELECT resource_id,failure FROM kernel_mm_anchors WHERE capture_id=?", (capture,))
     assert row == (capture, 1, "aborted"), row
+    assert anchor == (None, "original anchor process exited"), anchor
+    assert (failure["effect"], failure["source_disposition"], failure["source_lock_released"]) == ("none", "RUNNING", True), failure
     assert not any(child["state"] == "ready" for child in failure["children"])
     _, current = platform.context(mid)
     assert current == ref and read_workload(platform, current) == original and read_disk(platform, current) == b"origorig"
     print("COW_EARLY_ANCHOR_LOSS " + json.dumps(dict(operation=op_id, capture=capture, source=ref,
-          public_state=failure["state"], public_effect=failure["effect"], source_released=True)), flush=True)
+          public_state=failure["state"], public_effect=failure["effect"], source_released=True,
+          anchor_published=False, anchor_failure=anchor[1])), flush=True)
 
 
 def run(platform, intent, case):
     if case == "cow-restore-reboot":
         proof = json.loads((platform.root / "reboot-proof.json").read_text())
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         assert not Path("/sys/kernel/smolvm_cow/abi").exists()
-        assert proof["boot_id"] != Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        assert proof["boot_id"] != boot_id
         assert platform.bundle_id == proof["bundle"]
         mid = proof["machine_id"]
         path = "machines/" + mid
         saved = platform.app(path)
         assert saved["power_state"] == "hibernated", saved
+        assert saved["binding"]["last_capture_id"] == proof["capture_id"], saved
+        uri = (platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True) as db:
+            durable, = db.execute("""SELECT p.phase,p.manifest_digest,b.selected_memory_fork_backend
+                FROM statepoints p JOIN managed_fork_batches b USING(operation_id)
+                WHERE p.capture_id=?""", (proof["capture_id"],))
+        assert durable == ("hibernated", proof["manifest_digest"], "kernel_cow"), durable
         platform.complete(platform.change(path + "/start", "stock-wake", {"expected_power_state": "hibernated"}, saved))
         view, ref = platform.context(mid)
-        assert ref["incarnation_id"] != proof["source"]["incarnation_id"]
+        original = proof["source"]
+        assert ref["instance_id"] == original["instance_id"] and ref["incarnation_id"] != original["incarnation_id"]
+        assert ref["execution_epoch"] == original["execution_epoch"] + 1
         assert wait_for(lambda: read_workload(platform, ref), retry=(RuntimeError, OSError)) == proof["response"]
         assert read_disk(platform, ref) == b"origorig"
         cap = platform.wait_capability(path, "state.independent_fork")["capabilities"]["state.independent_fork"]
         assert cap["memory_fork"]["native_supported"] and not cap["memory_fork"]["kernel_cow_supported"], cap
         print("COW_STOCK_RESTORE " + json.dumps(dict(before=proof["source"], after=ref, machine_id=mid,
-              bundle=platform.bundle_id, hibernate_operation=proof["hibernate_operation"])), flush=True)
+              bundle=platform.bundle_id, hibernate_operation=proof["hibernate_operation"], capture_id=proof["capture_id"],
+              manifest_digest=proof["manifest_digest"], canary_boot_id=proof["boot_id"], stock_boot_id=boot_id)), flush=True)
         return
     backend = {"cow-native": "native", "cow-legacy": "auto", "cow-auto": "auto"}.get(case, "kernel_cow")
     expected = "native" if case in ("cow-native", "cow-legacy") else "kernel_cow"
@@ -154,12 +171,21 @@ def run(platform, intent, case):
         assert refusal["error"]["code"] == "CAPABILITY_UNSUPPORTED", refusal
     if case == "cow-prepare-reboot":
         assert Path("/sys/kernel/smolvm_cow/abi").is_file()
-        op = platform.complete(platform.change(source + "/hibernate", "canary-hibernate", {}, platform.app(source)))
+        fd = os.pidfd_open(vmm_memory(platform, ref)["pid"])
+        try:
+            op = platform.complete(platform.change(source + "/hibernate", "canary-hibernate", {}, platform.app(source)))
+            assert select.select([fd], [], [], 5)[0], "hibernated source still alive"
+        finally:
+            os.close(fd)
+        point = op["result"]["statepoint"]
+        assert op["source_disposition"] == "EXITED" and point["phase"] == "hibernated" and point["source_released"], op
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", point["manifest_digest"]), point
         assert platform.app(source)["power_state"] == "hibernated"
         proof = dict(boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
-                     machine_id=mid, bundle=platform.bundle_id, response=original, source=ref, hibernate_operation=op["operation_id"])
+                     machine_id=mid, bundle=platform.bundle_id, response=original, source=ref,
+                     hibernate_operation=op["operation_id"], capture_id=point["capture_id"], manifest_digest=point["manifest_digest"])
         (platform.root / "reboot-proof.json").write_text(json.dumps(proof))
-        print("COW_REBOOT_PREPARED " + op["operation_id"], flush=True)
+        print("COW_REBOOT_PREPARED " + json.dumps({k: v for k, v in proof.items() if k != "response"}), flush=True)
         return
     if case == "cow-lifecycle":
         from polish_product import check_capture
