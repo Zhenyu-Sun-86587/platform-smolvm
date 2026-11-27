@@ -73,6 +73,8 @@ The two public Fork entry points are `POST /v1/machines/{id}/forks` and `POST /v
 
 The scope is an in-flight request through the managed credential proxy on a running source. A coding Agent's conversation history, tool ownership and child-session idle state require a separate session-level contract.
 
+The integrated Worker passed the two-child HTTPS/SSE case with Native RAM on the stock kernel and with Kernel CoW RAM on the canary kernel. The source received the second event on its original connection, both children received only the first event on their inherited connection, and the provider recorded one original POST. The separate revocation case also passed. [Bundle and test records](kernel-cow-closeout-2026-11-28.md)
+
 ### Earlier installed bundle
 
 The `protected-stream-single` and `protected-stream-fork` cases use a local HTTPS server that streams two SSE events on demand. The source Debian guest receives the first event and blocks on its original vsock connection. At capture the Worker has an active credential proxy hold for that execution, an owner running lease, and a policy with `keep_running=true` and `auto_hibernate=false`.

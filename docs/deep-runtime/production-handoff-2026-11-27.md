@@ -2,6 +2,8 @@
 
 交接时间为 2026-11-26。明天先锁定一个生产候选，在生产同配置的隔离环境完整跑通，再在授权窗口使用专用账号和临时资源从外网走一次生产验收。多节点故障演练和大并发压测使用独立环境。以下是待执行计划和已确认的本机证据，今天未部署生产。
 
+11 月 28 日已完成内核 CoW、父机模型流和恢复修复的集成验收。新的源码起点、实验 Bundle、日志和工作目录见[合入交接](kernel-cow-closeout-2026-11-28.md)。下面标注旧 SHA 的发布测试仍按各自版本追溯。
+
 ## 已确认的代码与分支
 
 | 交付线 | 已验证版本 | 明天的收尾 |
@@ -9,8 +11,8 @@
 | 平台、CLI 和控制台 | `polish/integration@4e1ba470ed66`，schema 1019。此提交通过 Go 全量、宿主原生 OpenSSH、Vite、Darwin arm64/amd64 CLI 构建。最后一轮真实 SSH/HTTPS KVM 验收绑定 `0f35c613d14d`。更早的 J01–J10 与 J11 各有记录，以其各自 SHA 为准。 | 以当前集成分支为起点，生成一套包含平台、CLI 和控制台的冻结制品。用最终候选补同版 J01–J11 核心链路。确认发布目标后合并，保留源提交、版本、构建和回退凭据。 |
 | Runtime / Guest | `polish/runtime-candidate@cb31d6c`，测量 Bundle `sha256:3de1c4f1a848edd37b8bc5c94b944e0dd5c18ab3d90874a1348ecc0529710a3c`。同期还留有 `polish/native-files@2b172e8`、`polish/runtime-glue@b724f99`。 | 按发布源和最终候选比较切片差异，核对实测文件权限、Agent 版本、Runtime 及 reader。确认成果和证据已被候选包含后再收源分支和工作树。 |
 | 多节点 | `feat/multi-node-v1@1c039e3791f1`，实际发布包源码 `53fefd0`，schema 1025。同一台主机真实跑过一个平台和两个回环 mTLS Node，N01–N18 的 41 个具名测试通过。 | 从两条稳定线建临时合并候选，解决 API、CLI、网关、机器视图和生成产物冲突后重建。逐项核对仍有历史提交的 `feat/multi-node-gateway`、`feat/multi-node-owner`、`feat/multi-node-placement`，按实际差异决定是否回收。先在独立部署验证 1019→1025、兼容性和回退，再考虑进入共同发布候选。 |
-| 内核 CoW | 独立候选 `feat/kernel-cow-runtime`，Linux `f68cfa9`、libkrun `c13c9c5`、smolvm `e2b6066`。跨 UID 导入、降权、seccomp 与新内核 KVM 套件 6/6 通过。 | 在隔离 Worker 补 resourced 授权和 managed Launch 接线，再验真实磁盘、网络和 anchor 生命周期。生产候选继续使用 Native Live Fork。 |
-| 已回收开发分支 | 已回收 31 个工作树，删除 10 个已合并本地分支，`archive/polish-closeout/` 保留 7 个开发切片或诊断引用。 | 按记录核对。已集成的切片无需重合；`polish/backend`、`polish/frontend` 可在发布提交与交接记录对齐后按需收尾。 |
+| 内核 CoW | 已合入平台和 Runtime 候选。libkrun `b59c9bc8`，smolvm `e80e2579`。已在隔离 Worker 验真实磁盘、网络、anchor 生命周期和跨启动恢复。[精确版本与证据](kernel-cow-closeout-2026-11-28.md) | 为专用 Worker 冻结发行制品，验安装、重启、实际能力和回退。已有脚本默认使用 Native Live Fork。 |
+| 已回收开发分支 | 11 月 26 日回收 31 个工作树并删除 10 个已合并本地分支，`archive/polish-closeout/` 保留 7 个开发切片或诊断引用。前后端已在集成提交中。 | 从 11 月 28 日交接指定的工作目录开始，旧证据按[合入记录](kernel-cow-closeout-2026-11-28.md)追溯。 |
 
 [平台验收记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/.git/polish-coordination/integration-status.md) · [SSH / HTTPS 实测清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/final-0f35c613d14d/managed-access-verification.json) · [分支归档清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/git-closeout/branches.tsv) · [多节点实现和验收](../../../multi-node/docs/deep-runtime/multi-node-v1.md) · [内核验证](/home/dev/workspace/deepfork-smolvm/kernel-cow-k1/linux-patches/evidence/anchor-exit-2026-11-26/README.md)
 
@@ -99,15 +101,15 @@ Mac 真机、Developer ID 与公证凭据未就绪时，可以验证内部包，
 
 ### Worker 内核候选
 
-隔离 KVM 用例验证普通目标 UID 被拒绝，授权启动阶段可以导入，随后关闭源 pidfd、永久降权、清空能力并由 seccomp 拦截后续 CoW syscall。子 VM 能恢复运行，源退出后仍能首次读冷页并保持各自写入隔离。下一步由 resourced 签发绑定捕获点、源执行和目标操作的一次性许可，交给 managed 启动路径在降权前消费，再验受管磁盘、服务网络、anchor 丢失与同点重试。
+隔离 KVM 用例验证普通目标 UID 被拒绝，授权启动阶段可以导入，随后关闭源 pidfd、永久降权、清空能力并由 seccomp 拦截后续 CoW syscall。子 VM 恢复运行，源退出后仍能首次读冷页并保持各自写入隔离。后续集成候选已接通 resourced 与 managed 启动，并通过受管磁盘、anchor 丢失、同点重试和跨 Worker 内核启动的本机验收。
 
 部署沿用 Boxd 自托管的顺序。校验固定 Kernel/Runtime 制品，给专用 KVM Worker 安装候选并保留旧启动项，在重启后验 KVM、CoW 和真实 Fork，再注册接流量。在 PVE 场景，启动的补丁内核位于运行 Worker 的那台 PVE VM，业务 Guest 继续使用自身内核。已有 Guest 启用新路径需要以匹配的 Runtime 内存配置启动或恢复。当前只有测试包和临时 Worker 引导证据，发行版内核包、签名、GRUB 安装和回退仍待专用 Worker 验收。
 
-[CoW 集成报告](/home/dev/workspace/deepfork-smolvm/worktrees/kernel-cow-platform/docs/deep-runtime/kernel-cow-runtime-integration.md) · [跨 UID KVM 日志](/home/dev/workspace/deepfork-smolvm/.build/kernel-cow-worker/kvm-worker-serial.log) · [Boxd 自托管安装](https://github.com/boxd-sh/self-host/blob/main/docs/INSTALL.md#install-on-bare-metal)
+[CoW 合入交接](kernel-cow-closeout-2026-11-28.md) · [跨 UID KVM 日志](/home/dev/workspace/deepfork-smolvm/.build/kernel-cow-worker/kvm-worker-serial.log) · [Boxd 自托管安装](https://github.com/boxd-sh/self-host/blob/main/docs/INSTALL.md#install-on-bare-metal)
 
 ### Agent Session 接续
 
-Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。源机继续当前轮，子机保留会话并等待下一条指令。此前对 Boxd 的真实模型体验停在登录或认证阶段，源轮续跑仍待实测。本平台的 `fb69434` 已在 KVM 跑过单子机和批量 Fork 的 HTTPS/SSE 夹具。父子进程保留首个事件和内存状态，上游原请求只到达一次，原连接在父机和子机均未收到第二个事件。各分支用新的 execution 授权发起新请求后才收到响应。该策略已验证连接围栏和防重放，源轮无缝继续仍待单独实现和验证。[Guest 流式 Fork 实测](guest-delegation.md#active-model-streams-during-fork)
+Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。源机继续当前轮，子机保留会话并等待下一条指令。此前对 Boxd 的真实模型体验停在登录或认证阶段，源轮续跑仍待实测。11 月 28 日的本平台候选已在隔离 KVM 上通过 Native 和 Kernel CoW 的双子 HTTPS/SSE 夹具。父机保留原连接并收到后段，两个子机只读到已继承的前段。上游只收到一次原请求，各分支使用各自的 execution 授权。[父机模型流验收](kernel-cow-closeout-2026-11-28.md)
 
 把平台托管的 Codex / Claude Code 接续列为独立后续项，可先复用现有 Native Live Fork、Guest gate 和运行租约。第一版原型需要在持久化的轮次边界复制已完成对话，子会话从 `idle` 开始。子机放行前隔离继承的旧执行与队列，避免重发模型请求或工具写入。工作区仍来自原 VM 捕获点，可能包含源机本轮已经写入的文件。手动启动的任意 Guest Agent 仍遵循普通 VM Fork，待产品测试验证其各自的重连行为。
 
