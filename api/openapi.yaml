@@ -679,6 +679,12 @@ paths:
                 child_name: {type: string, minLength: 1}
                 expected_generation: {type: integer, minimum: 1}
                 require_independent: {type: boolean, default: false}
+                memory_fork_backend: {$ref: '#/components/schemas/MemoryForkBackend'}
+              dependentSchemas:
+                memory_fork_backend:
+                  required: [require_independent]
+                  properties:
+                    require_independent: {const: true}
               required:
               - child_name
               if:
@@ -2884,6 +2890,11 @@ components:
           additionalProperties: false
           properties:
             allow_active_tasks: {type: boolean}
+    MemoryForkBackend:
+      type: string
+      enum: [native, kernel_cow, auto]
+      default: native
+      description: RAM provider for a full-state Fork. The Worker selects once before capture. An explicit unavailable provider fails admission.
     ForkBatchRequest:
       type: object
       required: [expected_generation, children]
@@ -2891,6 +2902,8 @@ components:
       properties:
         expected_generation: {type: integer, minimum: 1}
         require_independent: {type: boolean}
+        admission: {type: string, enum: [all_or_reject, best_effort]}
+        memory_fork_backend: {$ref: '#/components/schemas/MemoryForkBackend'}
         children:
           type: array
           minItems: 1
@@ -2952,6 +2965,15 @@ components:
     Capability:
       type: object
       properties:
+        memory_fork:
+          description: Passive observation of the bound execution in an independent Fork capability.
+          type: object
+          required: [profile, kernel_cow_supported, native_supported]
+          properties:
+            profile: {type: string}
+            kernel_cow_supported: {type: boolean}
+            native_supported: {type: boolean}
+            unavailable_reason: {type: string}
         status: {type: string, enum: [supported, unsupported, unknown]}
         contract_version: {type: integer}
         constraints: {type: object, additionalProperties: true}
@@ -3130,6 +3152,7 @@ components:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
         boot_mode: {$ref: '#/components/schemas/BootMode'}
+        memory_fork_profile: {type: string, enum: [kernel_cow_anon_v1], description: Requested RAM layout for a cold System launch.}
         live_compute_growth: {type: boolean, default: false, description: "Opt in to live CPU and RAM growth on a compatible System runtime. This profile disables full VM state capture."}
         network: {$ref: '#/components/schemas/MachineNetwork'}
         runtime_instance_id: {type: string, minLength: 1, description: Operator-registered Serve instance. System templates require a verified System runtime.}
@@ -3170,6 +3193,7 @@ components:
         name: {type: string, minLength: 1}
         template_id: {type: string, minLength: 1}
         boot_mode: {$ref: '#/components/schemas/BootMode'}
+        memory_fork_profile: {type: string, enum: [kernel_cow_anon_v1], description: Requested RAM layout for a cold System launch.}
         live_compute_growth: {type: boolean}
         desktop_profile: {const: software-vnc-v1}
         task_metadata_status: {type: string, enum: [complete, unavailable, stale]}

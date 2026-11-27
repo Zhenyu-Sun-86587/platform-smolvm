@@ -17,7 +17,8 @@ type ExecutionRef struct {
 }
 
 type NativeInventory struct {
-	Capabilities map[string]Capability `json:"-"`
+	MemoryFork   *MemoryForkObservation `json:"memory_fork,omitempty"`
+	Capabilities map[string]Capability  `json:"-"`
 	Execution    struct {
 		ExecutionRef
 		RouteID         string `json:"route_id"`

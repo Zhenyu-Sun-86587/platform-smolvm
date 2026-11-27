@@ -70,6 +70,7 @@ func FullStateCapabilities(official bool) map[string]Capability {
 		LiveComputeGrowthCapability: c,
 		NativePowerCapability(Wake): c,
 		SystemBootCapability:        c,
+		KernelCowLaunchCapability:   c,
 		"state.live_fork":           c,
 		"state.clone_ready":         c,
 		"storage.multidisk_capture": c,

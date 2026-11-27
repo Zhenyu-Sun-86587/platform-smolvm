@@ -227,6 +227,7 @@ type Lock struct {
 }
 
 type AcceptRequest struct {
+	MemoryForkBackend     string
 	PrincipalID           string
 	CredentialID          string
 	PrincipalScope        json.RawMessage

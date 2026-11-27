@@ -70,6 +70,7 @@ type Create struct {
 	TemplateID        string            `json:"template_id"`
 	RuntimeInstanceID string            `json:"runtime_instance_id,omitempty"`
 	BootMode          rt.BootMode       `json:"boot_mode,omitempty"`
+	MemoryForkProfile string            `json:"memory_fork_profile,omitempty"`
 	LiveComputeGrowth bool              `json:"live_compute_growth,omitempty"`
 	Network           *rt.LaunchNetwork `json:"network,omitempty"`
 	Resources         struct {

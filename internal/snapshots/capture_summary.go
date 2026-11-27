@@ -61,6 +61,7 @@ type captureMetadata struct {
 type machineCaptureSpec struct {
 	TemplateID        string             `json:"template_id"`
 	BootMode          rt.BootMode        `json:"boot_mode,omitempty"`
+	MemoryForkProfile string             `json:"memory_fork_profile,omitempty"`
 	LiveComputeGrowth bool               `json:"live_compute_growth,omitempty"`
 	Network           *rt.LaunchNetwork  `json:"network,omitempty"`
 	Resources         *capturedResources `json:"resources,omitempty"`

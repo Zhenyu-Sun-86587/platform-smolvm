@@ -27,7 +27,8 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-INSTALLED_CASES = {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"}
+COW_CASES = {"cow-legacy", "cow-kernel", "cow-native", "cow-auto", "cow-lifecycle"}
+INSTALLED_CASES = COW_CASES | {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"}
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -1637,6 +1638,8 @@ def test(args, root, stack, case):
     epoch_check = case == "polish-metrics-epoch"
     if epoch_check:
         networks = (dict(network_id="idle-net", route_domain_id="idle-route", cidr="10.64.39.0/24"),)
+    if case in COW_CASES:
+        networks = (dict(network_id="cow-test", route_domain_id="cow-domain", cidr="10.64.83.0/24"),)
     platform = Platform(args, root, stack, networks, gateway={"apps_domain": "polish-idle.test"} if epoch_check else None,
                         state_tmpfs=case in ("saved-wake-failure", "saved-wake-exact", "grant-rollback"),
                         use_installation=case in INSTALLED_CASES)
@@ -1665,6 +1668,10 @@ def test(args, root, stack, case):
     if case in ("saved-wake-failure", "saved-wake-exact"):
         intent.update(resources=dict(cpu_count=1, memory_mib=512), lifecycle_policy=dict(keep_running=True,
             retry_backoff_seconds=2, wake_conditions=dict(allow_cold_start=True, api_access=True)))
+    if case in COW_CASES:
+        from kernel_cow_fork import run
+        run(platform, intent, case)
+        return
     created = platform.change("machines", "create", intent)
     platform.complete(created)
     machine_id = created["machine_id"]
@@ -1762,7 +1769,7 @@ def main():
     parser.add_argument("--previous-platformd", type=lambda p: Path(p).resolve(strict=True),
                         help="previous release used to create a genuine historical snapshot")
     cases = ("relay", "fork", "statepoint", "hibernate", "successive-captures")
-    parser.add_argument("--case", choices=(*cases, "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
+    parser.add_argument("--case", choices=(*cases, *sorted(COW_CASES), "packet-native", "packet-fixed", "packet-cut-native", "packet-cut-fixed", "packet-activity",
                         "policy", "protected-fork", "grant-rollback", "connection-recovery", "cpu-limit", "cpu-limit-historical",
                         "live-resources", "live-resources-hot", "gate-without-agent", "task-adoption", "task-adoption-delete",
                         "task-restore", "task-wake", "fork-cancel", "fork-lost-reply", "task-fork-cancel-retry", "saved-wake-failure", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"), action="append")

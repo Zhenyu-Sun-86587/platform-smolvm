@@ -455,8 +455,8 @@ export class Client {
     clone(id, childName, options) {
         return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options);
     }
-    fork(id, childName, { requireIndependent, ...options } = {}) {
-        return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined }, options);
+    fork(id, childName, { requireIndependent, memoryForkBackend, ...options } = {}) {
+        return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined, memory_fork_backend: memoryForkBackend }, options);
     }
     forkBatch(id, request, options) {
         return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options);

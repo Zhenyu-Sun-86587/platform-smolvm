@@ -27,6 +27,7 @@ type machineView struct {
 	PowerState        registry.PowerState         `json:"power_state"`
 	Health            machineHealth               `json:"health"`
 	BootMode          rt.BootMode                 `json:"boot_mode"`
+	MemoryForkProfile string                      `json:"memory_fork_profile,omitempty"`
 	LiveComputeGrowth bool                        `json:"live_compute_growth,omitempty"`
 	DesktopProfile    string                      `json:"desktop_profile,omitempty"`
 	Network           *rt.LaunchNetwork           `json:"network,omitempty"`
@@ -49,6 +50,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 	}
 	verifiedSSHKey := false
 	var spec struct {
+		MemoryForkProfile string            `json:"memory_fork_profile"`
 		Resources         json.RawMessage   `json:"resources"`
 		Network           *rt.LaunchNetwork `json:"network"`
 		LiveComputeGrowth bool              `json:"live_compute_growth"`
@@ -66,6 +68,7 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 		}
 	}
 	v.Resources = spec.Resources
+	v.MemoryForkProfile = spec.MemoryForkProfile
 	v.LiveComputeGrowth = spec.LiveComputeGrowth
 	if spec.Network != nil {
 		v.Network = &rt.LaunchNetwork{NetworkID: spec.Network.NetworkID, Mode: spec.Network.Mode}

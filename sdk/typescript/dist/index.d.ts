@@ -51,7 +51,15 @@ export interface DesktopSession {
     revision: number;
     expires_at: string;
 }
+export type MemoryForkBackend = "native" | "kernel_cow" | "auto";
+export interface MemoryForkObservation {
+    profile: string;
+    kernel_cow_supported: boolean;
+    native_supported: boolean;
+    unavailable_reason?: string;
+}
 export interface ForkBatch {
+    memory_fork_backend?: MemoryForkBackend;
     children: {
         name: string;
     }[];
@@ -104,6 +112,7 @@ export interface Operation {
     result?: Record<string, unknown> | null;
 }
 export interface Capability {
+    memory_fork?: MemoryForkObservation;
     status?: "supported" | "unsupported" | "unknown";
     contract_version?: number;
     constraints?: Record<string, unknown>;
@@ -396,6 +405,7 @@ export interface NetworkDefaults {
     default_network_id?: string;
 }
 export interface CreateMachine {
+    memory_fork_profile?: "kernel_cow_anon_v1";
     live_compute_growth?: boolean;
     lifecycle_policy?: LifecyclePolicyPatch;
     boot_mode?: BootMode;
@@ -522,6 +532,7 @@ export interface CaptureConfiguration {
         boot_mode?: BootMode;
         resources?: ResourcePatch;
         live_compute_growth?: boolean;
+        memory_fork_profile?: "kernel_cow_anon_v1";
         network?: NetworkSelection & {
             route_domain_id?: string;
             cidr?: string;
@@ -839,8 +850,9 @@ export declare class Client {
     }): Promise<Operation>;
     checkpoint(id: string, label?: string, options?: MachineWriteOptions): Promise<Operation>;
     clone(id: string, childName: string, options?: MachineWriteOptions): Promise<Operation>;
-    fork(id: string, childName: string, { requireIndependent, ...options }?: MachineWriteOptions & {
+    fork(id: string, childName: string, { requireIndependent, memoryForkBackend, ...options }?: MachineWriteOptions & {
         requireIndependent?: boolean;
+        memoryForkBackend?: MemoryForkBackend;
     }): Promise<Operation>;
     forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions): Promise<Operation>;
     restore(snapshotID: string, name: string, { volumeRestorePolicy, ...options }?: WriteOptions & {

@@ -101,7 +101,7 @@ func (s *Server) guestCreate(w http.ResponseWriter, r *http.Request, peer auth.A
 	if err := request.ValidateSystemCreate(); err != nil {
 		return err
 	}
-	admit, err := s.systemCreateAdmission(r.Context(), request.RuntimeInstanceID)
+	admit, err := s.systemCreateAdmission(r.Context(), request.RuntimeInstanceID, request.MemoryForkProfile)
 	if err != nil {
 		return err
 	}

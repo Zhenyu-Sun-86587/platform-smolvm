@@ -14,31 +14,29 @@ import (
 	"sandbox-platform/internal/volumes"
 )
 
-func (e *Engine) SystemBootCapability(ctx context.Context, route rt.BundleRoute) (rt.Capability, error) {
-	boot, _, err := e.SystemLaunchCapabilities(ctx, route)
-	return boot, err
-}
-
-func (e *Engine) SystemLaunchCapabilities(ctx context.Context, route rt.BundleRoute) (rt.Capability, rt.Capability, error) {
+func (e *Engine) SystemLaunchCapabilities(ctx context.Context, route rt.BundleRoute) (rt.SystemLaunchProfiles, error) {
 	unknown := rt.FullStateCapabilities(false)[rt.SystemBootCapability]
 	adapter, err := e.runtimes.ForBinding(rt.BindingRuntime{BundleRoute: route})
 	launcher, ok := adapter.(rt.NativeLauncher)
 	if err != nil || !ok {
-		return unknown, unknown, nil
+		return rt.SystemLaunchProfiles{Boot: unknown, Growth: unknown, KernelCow: unknown}, nil
 	}
 	if profiles, ok := adapter.(interface {
-		SystemLaunchCapabilities(context.Context) (rt.Capability, rt.Capability, error)
+		SystemLaunchCapabilities(context.Context) (rt.SystemLaunchProfiles, error)
 	}); ok {
 		return profiles.SystemLaunchCapabilities(ctx)
 	}
 	capability, err := launcher.SystemBoot(ctx)
 	if err != nil {
-		return unknown, unknown, err
+		return rt.SystemLaunchProfiles{Boot: unknown, Growth: unknown, KernelCow: unknown}, err
 	}
-	return capability, unknown, nil
+	return rt.SystemLaunchProfiles{Boot: capability, Growth: unknown, KernelCow: unknown}, nil
 }
 
 func (request Create) ValidateSystemCreate() error {
+	if request.MemoryForkProfile != "" && (request.MemoryForkProfile != rt.KernelCowProfile || request.LiveComputeGrowth) {
+		return fmt.Errorf("%w: kernel CoW requires fixed System memory", registry.ErrInvalid)
+	}
 	if request.LiveComputeGrowth && request.Resources.CPUs > 16 {
 		return fmt.Errorf("%w: live compute growth supports up to 16 vCPU slots", registry.ErrInvalid)
 	}
@@ -95,7 +93,7 @@ func (e *Engine) systemLaunchParameters(ctx context.Context, b registry.Binding,
 	return rt.LaunchParameters{
 		Name: b.RuntimeName, BootProfile: rt.SystemBootProfile, CPUs: request.Resources.CPUs,
 		MemoryMiB: request.Resources.Memory, Init: "/sbin/init", Args: []string{},
-		Network: request.Network, LiveComputeGrowth: request.LiveComputeGrowth, Disks: append(disks, attachments...),
+		MemoryForkProfile: request.MemoryForkProfile, Network: request.Network, LiveComputeGrowth: request.LiveComputeGrowth, Disks: append(disks, attachments...),
 	}, nil
 }
 

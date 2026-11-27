@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	rt "sandbox-platform/internal/runtime"
 )
 
 func sub(use, short string, args cobra.PositionalArgs, run func(*cobra.Command, []string) error) *cobra.Command {
@@ -172,7 +174,7 @@ func (c *client) machines() *cobra.Command {
 		return c.showMachine(cmd, args[0], "/network")
 	}))
 
-	var template, bootMode, runtimeInstance, networkID, networkMode, lifecycleJSON string
+	var template, bootMode, runtimeInstance, networkID, networkMode, lifecycleJSON, memoryProfile string
 	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -180,6 +182,12 @@ func (c *client) machines() *cobra.Command {
 		body := map[string]any{
 			"name": args[0], "template_id": template, "start": start,
 			"resources": resources,
+		}
+		if memoryProfile != "" {
+			if memoryProfile != rt.KernelCowProfile || (bootMode != "" && bootMode != "system") || liveGrowth {
+				return errors.New("--memory-fork-profile requires kernel_cow_anon_v1 on fixed-size System memory")
+			}
+			body["memory_fork_profile"] = memoryProfile
 		}
 		if bootMode != "" {
 			body["boot_mode"] = bootMode
@@ -200,10 +208,10 @@ func (c *client) machines() *cobra.Command {
 			}
 			body["network"] = network
 		}
-		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("storage-gib") {
+		if bootMode != "system" && !liveGrowth && memoryProfile == "" || cmd.Flags().Changed("storage-gib") {
 			resources["storage_gib"] = storage
 		}
-		if bootMode != "system" && !liveGrowth || cmd.Flags().Changed("overlay-gib") {
+		if bootMode != "system" && !liveGrowth && memoryProfile == "" || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
 		legacyIdle := cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds")
@@ -226,6 +234,7 @@ func (c *client) machines() *cobra.Command {
 	create.Flags().StringVar(&template, "template", "", "Registered template ID")
 	_ = create.MarkFlagRequired("template")
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
+	create.Flags().StringVar(&memoryProfile, "memory-fork-profile", "", "Use kernel_cow_anon_v1 for fixed anonymous RAM on a compatible System Worker")
 	create.Flags().BoolVar(&liveGrowth, "live-compute-growth", false, "Enable live CPU and RAM growth on a compatible System runtime and disable full VM state capture")
 	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
 	create.Flags().StringVar(&networkID, "network", "", "Registered Worker private network for System templates")
@@ -299,7 +308,7 @@ func (c *client) machines() *cobra.Command {
 	for _, name := range []string{"fork", "clone", "live-fork"} {
 		group.AddCommand(c.machineFork(name))
 	}
-	var admission, volumePolicy string
+	var admission, volumePolicy, memoryBackend string
 	batch := sub("fork-batch MACHINE CHILD_NAME [CHILD_NAME...]", "Create independent children from one source capture", cobra.MinimumNArgs(2), func(cmd *cobra.Command, args []string) error {
 		m, err := c.machine(cmd.Context(), args[0])
 		if err != nil {
@@ -311,6 +320,9 @@ func (c *client) machines() *cobra.Command {
 		}
 		body := map[string]any{
 			"children": children, "expected_generation": m.Generation, "require_independent": true,
+		}
+		if err := setMemoryForkBackend(body, memoryBackend); err != nil {
+			return err
 		}
 		if admission != "" {
 			if admission != "all_or_reject" && admission != "best_effort" {
@@ -326,13 +338,27 @@ func (c *client) machines() *cobra.Command {
 		}
 		return c.mutation(cmd, "POST", res("machines", m.ID)+"/fork-batches", body, m.Revision)
 	})
+	batch.Flags().StringVar(&memoryBackend, "memory-fork-backend", "", memoryForkHelp)
 	batch.Flags().StringVar(&admission, "admission", "", "Worker budget policy (all_or_reject by default, or best_effort)")
 	batch.Flags().StringVar(&volumePolicy, "volume-policy", "", "Explicit default volume policy (clone)")
 	group.AddCommand(batch)
 	return group
 }
 
+const memoryForkHelp = "RAM provider for a full-state fork: native (default), kernel_cow or auto; negotiated before capture"
+
+func setMemoryForkBackend(body map[string]any, backend string) error {
+	if !rt.ValidMemoryForkBackend(backend) {
+		return errors.New("--memory-fork-backend must be native, kernel_cow or auto")
+	}
+	if backend != "" {
+		body["memory_fork_backend"] = backend
+	}
+	return nil
+}
+
 func (c *client) machineFork(name string) *cobra.Command {
+	var memoryBackend string
 	independent := name == "live-fork"
 	suffix := "/forks"
 	if name == "clone" {
@@ -353,9 +379,17 @@ func (c *client) machineFork(name string) *cobra.Command {
 		}
 		if independent {
 			body["require_independent"] = true
+			if err := setMemoryForkBackend(body, memoryBackend); err != nil {
+				return err
+			}
+		} else if memoryBackend != "" {
+			return errors.New("--memory-fork-backend on fork requires --require-independent")
 		}
 		return c.mutation(cmd, "POST", res("machines", m.ID)+suffix, body, m.Revision)
 	})
+	if name != "clone" {
+		child.Flags().StringVar(&memoryBackend, "memory-fork-backend", "", memoryForkHelp)
+	}
 	if name == "fork" {
 		child.Flags().BoolVar(&independent, "require-independent", false, "Require verified runtime resource independence")
 	}

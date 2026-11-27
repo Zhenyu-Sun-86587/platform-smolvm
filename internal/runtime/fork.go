@@ -3,6 +3,44 @@ package runtime
 import "context"
 
 const NativeForkProfile = "managed-parked-v1"
+const KernelCowProfile = "kernel_cow_anon_v1"
+const KernelCowLaunchCapability = "boot.kernel_cow_ram"
+
+type MemoryForkObservation struct {
+	Profile            string `json:"profile"`
+	KernelCowSupported bool   `json:"kernel_cow_supported"`
+	NativeSupported    bool   `json:"native_supported"`
+	UnavailableReason  string `json:"unavailable_reason,omitempty"`
+}
+
+func ValidMemoryForkBackend(value string) bool {
+	return value == "" || value == "native" || value == "kernel_cow" || value == "auto"
+}
+
+// Select before requesting a capture. Older verified Workers have a single Native path.
+func (m *MemoryForkObservation) Select(request string) (string, error) {
+	if !ValidMemoryForkBackend(request) {
+		return "", ErrInvalid
+	}
+	if m == nil {
+		if request != "kernel_cow" {
+			return "native", nil
+		}
+	} else {
+		if (request == "kernel_cow" || request == "auto") && m.Profile == KernelCowProfile && m.KernelCowSupported {
+			return "kernel_cow", nil
+		}
+		if request != "kernel_cow" && m.Profile == "native" && m.NativeSupported {
+			return "native", nil
+		}
+	}
+	reason := "MEMORY_FORK_BACKEND_UNAVAILABLE"
+	if m != nil && m.UnavailableReason != "" {
+		reason = m.UnavailableReason
+	}
+	return "", &CapabilityError{Capability: "state.memory_fork", Status: Capability{Status: "unsupported", ReasonCode: reason}}
+}
+
 const MaxForkChildren = 32
 const ForkAllOrReject = "all_or_reject"
 const ForkBestEffort = "best_effort"
@@ -24,22 +62,26 @@ type ForkSubmission struct {
 	Expected      ExecutionRef `json:"expected"`
 	Kind          string       `json:"kind"`
 	Parameters    struct {
-		Children  []string `json:"children"`
-		Admission string   `json:"admission,omitempty"`
+		MemoryForkBackend string   `json:"memory_fork_backend,omitempty"`
+		Children          []string `json:"children"`
+		Admission         string   `json:"admission,omitempty"`
 	} `json:"parameters"`
 }
 
 type ForkProgress struct {
-	Stage                     string             `json:"stage"`
-	CaptureID                 string             `json:"capture_id"`
-	OriginalSourceDisposition string             `json:"original_source_disposition"`
-	SourceReleased            bool               `json:"source_released"`
-	Admission                 string             `json:"admission,omitempty"`
-	Children                  []ForkChildReceipt `json:"children"`
-	Outcome                   string             `json:"outcome"`
-	Error                     *string            `json:"error"`
-	VolumeMap                 map[string]string  `json:"volume_map,omitempty"`
-	ProductAttachments        map[string]string  `json:"product_attachments,omitempty"`
+	RequestedMemoryForkBackend string             `json:"requested_memory_fork_backend,omitempty"`
+	SelectedMemoryForkBackend  string             `json:"selected_memory_fork_backend,omitempty"`
+	MemoryForkProfile          string             `json:"memory_fork_profile,omitempty"`
+	Stage                      string             `json:"stage"`
+	CaptureID                  string             `json:"capture_id"`
+	OriginalSourceDisposition  string             `json:"original_source_disposition"`
+	SourceReleased             bool               `json:"source_released"`
+	Admission                  string             `json:"admission,omitempty"`
+	Children                   []ForkChildReceipt `json:"children"`
+	Outcome                    string             `json:"outcome"`
+	Error                      *string            `json:"error"`
+	VolumeMap                  map[string]string  `json:"volume_map,omitempty"`
+	ProductAttachments         map[string]string  `json:"product_attachments,omitempty"`
 }
 
 type ForkChildReceipt struct {

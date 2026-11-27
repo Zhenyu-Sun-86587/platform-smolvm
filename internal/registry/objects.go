@@ -437,6 +437,8 @@ func persistObservation(ctx context.Context, tx *sql.Tx, old Binding, o Observat
 			fields["guest_management"], _ = json.Marshal(o.GuestManagementStatus)
 			if native.ForkCapabilities != nil {
 				fields["native_fork_capabilities"], _ = json.Marshal(native.ForkCapabilities)
+			} else if old.ExecutionRef() != ref {
+				delete(fields, "native_fork_capabilities")
 			}
 			if native.StopBarrier != nil {
 				fields["native_stop_barrier"], _ = json.Marshal(*native.StopBarrier)

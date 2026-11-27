@@ -268,7 +268,9 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, p auth.Principal
 	}
 	req.AdmitNative = s.AdmitNativePower
 	if rt.IsNativeFork(req.Kind) {
-		req.AdmitNative = s.AdmitNativeFork
+		req.AdmitNative = func(b registry.Binding, kind string) error {
+			return s.AdmitNativeForkMemory(b, kind, req.MemoryForkBackend)
+		}
 	}
 	if req.Kind == "delete" {
 		req.AdmitNative = s.AdmitNativeDelete
@@ -434,9 +436,10 @@ func (s *Server) routes() {
 			return err
 		}
 		for _, profile := range profiles {
-			boot, growth, _ := s.SystemLaunchCapabilities(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
-			profile.Capabilities[rt.SystemBootCapability] = boot
-			profile.Capabilities[rt.LiveComputeGrowthCapability] = growth
+			supported, _ := s.SystemLaunchCapabilities(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
+			profile.Capabilities[rt.SystemBootCapability] = supported.Boot
+			profile.Capabilities[rt.LiveComputeGrowthCapability] = supported.Growth
+			profile.Capabilities[rt.KernelCowLaunchCapability] = supported.KernelCow
 		}
 		return list(w, r, profiles, func(profile registry.RuntimeProfile) string { return profile.RuntimeInstanceID })
 	})
@@ -587,7 +590,7 @@ func (s *Server) machineRoutes() {
 			if err := v.ValidateSystemCreate(); err != nil {
 				return err
 			}
-			admission, err := s.systemCreateAdmission(r.Context(), v.RuntimeInstanceID)
+			admission, err := s.systemCreateAdmission(r.Context(), v.RuntimeInstanceID, v.MemoryForkProfile)
 			if err != nil {
 				return err
 			}
@@ -597,6 +600,9 @@ func (s *Server) machineRoutes() {
 				req.DesiredPower = "running"
 			}
 		} else {
+			if v.MemoryForkProfile != "" {
+				return fmt.Errorf("%w: memory_fork_profile requires a System template", registry.ErrInvalid)
+			}
 			if v.LiveComputeGrowth {
 				return fmt.Errorf("%w: live compute growth requires a System template", registry.ErrInvalid)
 			}
@@ -643,9 +649,13 @@ func (s *Server) machineRoutes() {
 					ChildName          string          `json:"child_name"`
 					ExpectedGeneration int64           `json:"expected_generation"`
 					RequireIndependent bool            `json:"require_independent,omitempty"`
+					MemoryForkBackend  string          `json:"memory_fork_backend,omitempty"`
 				}
 				if err := decode(r, &v); err != nil {
 					return err
+				}
+				if !rt.ValidMemoryForkBackend(v.MemoryForkBackend) || (v.MemoryForkBackend != "" && !v.RequireIndependent) {
+					return registry.ErrInvalid
 				}
 				req.Name = v.ChildName
 				req.ExpectedGeneration = v.ExpectedGeneration
@@ -654,6 +664,7 @@ func (s *Server) machineRoutes() {
 						return registry.ErrInvalid
 					}
 					req.Kind = rt.IndependentFork
+					req.MemoryForkBackend = v.MemoryForkBackend
 					req.ForkChildren = []string{v.ChildName}
 				}
 				return s.accept(w, r, p, v, req)

@@ -20,6 +20,7 @@ type fullStateAction struct {
 }
 
 type forkBatchRequest struct {
+	MemoryForkBackend  string          `json:"memory_fork_backend,omitempty"`
 	LifecyclePolicy    json.RawMessage `json:"lifecycle_policy,omitempty"`
 	ExpectedGeneration int64           `json:"expected_generation"`
 	RequireIndependent bool            `json:"require_independent"`
@@ -72,7 +73,7 @@ func (s *Server) fullStateRoutes() {
 		if err := decode(r, &v); err != nil {
 			return err
 		}
-		if v.ExpectedGeneration < 1 || len(v.Children) == 0 || len(v.Children) > rt.MaxForkChildren ||
+		if !rt.ValidMemoryForkBackend(v.MemoryForkBackend) || v.ExpectedGeneration < 1 || len(v.Children) == 0 || len(v.Children) > rt.MaxForkChildren ||
 			(rt.ForkAdmission(v.Admission) != rt.ForkAllOrReject && v.Admission != rt.ForkBestEffort) ||
 			(v.VolumePolicy != nil && v.VolumePolicy.Default != "" && v.VolumePolicy.Default != "clone") {
 			return registry.ErrInvalid
@@ -87,7 +88,7 @@ func (s *Server) fullStateRoutes() {
 			children = append(children, child.Name)
 		}
 		return s.accept(w, r, p, v, registry.AcceptRequest{
-			Kind: rt.ForkBatch, MachineID: id, ExpectedGeneration: v.ExpectedGeneration, Heavy: true, ForkChildren: children,
+			MemoryForkBackend: v.MemoryForkBackend, Kind: rt.ForkBatch, MachineID: id, ExpectedGeneration: v.ExpectedGeneration, Heavy: true, ForkChildren: children,
 		})
 	})
 }

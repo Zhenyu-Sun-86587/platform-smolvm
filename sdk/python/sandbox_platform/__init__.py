@@ -537,15 +537,19 @@ class Client:
     def checkpoint(self, machine_id, label="", **options):
         return self._machine_mutation(machine_id, "snapshots", {"label": label, "capture_mode": "vm"}, **options)
 
-    def fork(self, machine_id, child_name, *, require_independent=False, **options):
+    def fork(self, machine_id, child_name, *, require_independent=False, memory_fork_backend=None, **options):
         body = {"child_name": child_name}
         if require_independent:
             body["require_independent"] = True
+        if memory_fork_backend is not None:
+            body["memory_fork_backend"] = memory_fork_backend
         return self._machine_mutation(machine_id, "forks", body, **options)
 
-    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, admission=None, **options):
+    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, admission=None, memory_fork_backend=None, **options):
         """Submit a single capture and keep the ordered child IDs through partial completion."""
         body = {"children": children, "require_independent": require_independent}
+        if memory_fork_backend is not None:
+            body["memory_fork_backend"] = memory_fork_backend
         if volume_policy is not None:
             body["volume_policy"] = volume_policy
         if admission is not None:

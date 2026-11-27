@@ -39,7 +39,15 @@ export interface DesktopSession {
   revision: number
   expires_at: string
 }
+export type MemoryForkBackend = "native" | "kernel_cow" | "auto"
+export interface MemoryForkObservation {
+  profile: string
+  kernel_cow_supported: boolean
+  native_supported: boolean
+  unavailable_reason?: string
+}
 export interface ForkBatch {
+  memory_fork_backend?: MemoryForkBackend
   children: { name: string }[]
   require_independent?: boolean
   admission?: "all_or_reject" | "best_effort"
@@ -87,7 +95,7 @@ export interface Operation {
   error?: ErrorDetail | null
   result?: Record<string, unknown> | null
 }
-export interface Capability { status?: "supported" | "unsupported" | "unknown"; contract_version?: number; constraints?: Record<string, unknown>; supported: boolean; reason_code?: string | null; message?: string; verified_profile?: string }
+export interface Capability { memory_fork?: MemoryForkObservation; status?: "supported" | "unsupported" | "unknown"; contract_version?: number; constraints?: Record<string, unknown>; supported: boolean; reason_code?: string | null; message?: string; verified_profile?: string }
 export type GuestFileCapability = "files.list" | "files.read" | "files.write" | "files.preview" | "files.edit"
 export interface GuestFileConstraints {
   max_bytes?: number
@@ -216,6 +224,7 @@ export interface MachineNetwork extends Required<NetworkSelection> {
 }
 export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
+  memory_fork_profile?: "kernel_cow_anon_v1"
   live_compute_growth?: boolean
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
@@ -323,7 +332,7 @@ export interface CaptureConfiguration {
   source?: string
   spec_digest?: string
   spec?: {
-    template_id?: string; boot_mode?: BootMode; resources?: ResourcePatch; live_compute_growth?: boolean
+    template_id?: string; boot_mode?: BootMode; resources?: ResourcePatch; live_compute_growth?: boolean; memory_fork_profile?: "kernel_cow_anon_v1"
     network?: NetworkSelection & { route_domain_id?: string; cidr?: string }
   }
   reason_code?: string
@@ -908,8 +917,8 @@ export class Client {
   clone(id: string, childName: string, options?: MachineWriteOptions) {
     return this.machineMutation(id, "clones", { child_name: childName, copy_policy: "managed_clean" }, options)
   }
-  fork(id: string, childName: string, { requireIndependent, ...options }: MachineWriteOptions & { requireIndependent?: boolean } = {}) {
-    return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined }, options)
+  fork(id: string, childName: string, { requireIndependent, memoryForkBackend, ...options }: MachineWriteOptions & { requireIndependent?: boolean; memoryForkBackend?: MemoryForkBackend } = {}) {
+    return this.machineMutation(id, "forks", { child_name: childName, require_independent: requireIndependent || undefined, memory_fork_backend: memoryForkBackend }, options)
   }
   forkBatch(id: string, request: ForkBatch, options?: MachineWriteOptions) {
     return this.machineMutation(id, "fork-batches", { require_independent: true, ...request }, options)

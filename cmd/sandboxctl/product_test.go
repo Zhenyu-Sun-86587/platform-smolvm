@@ -149,6 +149,8 @@ func TestGuardedCommandsUseExpectedPowerAndVMOnlyModes(t *testing.T) {
 		{[]string{"machines", "wake-full", "m_target", "--from", "hibernated"}, "/v1/machines/m_target/start", `{"expected_generation":7,"expected_power_state":"hibernated"}`},
 		{[]string{"machines", "cold-start", "m_target"}, "/v1/machines/m_target/start", `{"expected_generation":7,"expected_power_state":"stopped"}`},
 		{[]string{"machines", "live-fork", "m_target", "new"}, "/v1/machines/m_target/forks", `{"child_name":"new","expected_generation":7,"require_independent":true}`},
+		{[]string{"machines", "live-fork", "m_target", "new", "--memory-fork-backend", "kernel_cow"}, "/v1/machines/m_target/forks", `{"child_name":"new","expected_generation":7,"require_independent":true,"memory_fork_backend":"kernel_cow"}`},
+		{[]string{"machines", "fork-batch", "m_target", "one", "two", "--memory-fork-backend", "auto"}, "/v1/machines/m_target/fork-batches", `{"children":[{"name":"one"},{"name":"two"}],"expected_generation":7,"require_independent":true,"memory_fork_backend":"auto"}`},
 		{[]string{"machines", "fork", "m_target", "new"}, "/v1/machines/m_target/forks", `{"child_name":"new","expected_generation":7}`},
 		{[]string{"snapshots", "capture-vm", "m_target"}, "/v1/machines/m_target/snapshots", `{"capture_mode":"vm","expected_generation":7,"label":"","purpose":"recovery"}`},
 		{[]string{"snapshots", "capture", "m_target"}, "/v1/machines/m_target/snapshots", `{"expected_generation":7,"label":"","purpose":"clone"}`},

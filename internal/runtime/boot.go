@@ -39,6 +39,7 @@ type LaunchSubmission struct {
 type LaunchParameters struct {
 	Name              string         `json:"name"`
 	BootProfile       string         `json:"boot_profile"`
+	MemoryForkProfile string         `json:"memory_fork_profile,omitempty"`
 	LiveComputeGrowth bool           `json:"live_compute_growth,omitempty"`
 	CPUs              uint8          `json:"cpus"`
 	MemoryMiB         uint32         `json:"memory_mib"`
@@ -68,6 +69,10 @@ type LaunchDisk struct {
 	GenerationID string `json:"generation_id,omitempty"`
 	VolumeID     string `json:"volume_id,omitempty"`
 	ReadOnly     bool   `json:"read_only"`
+}
+
+type SystemLaunchProfiles struct {
+	Boot, Growth, KernelCow Capability
 }
 
 type NativeLauncher interface {

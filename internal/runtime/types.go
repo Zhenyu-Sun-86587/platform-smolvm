@@ -63,13 +63,14 @@ type Port struct {
 }
 
 type Capability struct {
-	Status          string          `json:"status,omitempty"`
-	ContractVersion int             `json:"contract_version,omitempty"`
-	Constraints     json.RawMessage `json:"constraints,omitempty"`
-	Supported       bool            `json:"supported"`
-	ReasonCode      string          `json:"reason_code,omitempty"`
-	Message         string          `json:"message,omitempty"`
-	VerifiedProfile string          `json:"verified_profile,omitempty"`
+	MemoryFork      *MemoryForkObservation `json:"memory_fork,omitempty"`
+	Status          string                 `json:"status,omitempty"`
+	ContractVersion int                    `json:"contract_version,omitempty"`
+	Constraints     json.RawMessage        `json:"constraints,omitempty"`
+	Supported       bool                   `json:"supported"`
+	ReasonCode      string                 `json:"reason_code,omitempty"`
+	Message         string                 `json:"message,omitempty"`
+	VerifiedProfile string                 `json:"verified_profile,omitempty"`
 }
 
 type Observation struct {

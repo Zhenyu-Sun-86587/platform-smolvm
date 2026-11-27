@@ -438,3 +438,43 @@ func TestNativeForkCancellationOwnsOnlyUncommittedTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryForkSelectionAndReceipt(t *testing.T) {
+	native := &rt.MemoryForkObservation{Profile: "native", NativeSupported: true}
+	cow := &rt.MemoryForkObservation{Profile: rt.KernelCowProfile, KernelCowSupported: true}
+	for _, tc := range []struct {
+		source        *rt.MemoryForkObservation
+		request, want string
+	}{
+		{nil, "", "native"}, {nil, "auto", "native"}, {nil, "kernel_cow", ""},
+		{native, "kernel_cow", ""}, {native, "auto", "native"},
+		{cow, "", ""}, {cow, "native", ""}, {cow, "kernel_cow", "kernel_cow"}, {cow, "auto", "kernel_cow"},
+		{&rt.MemoryForkObservation{Profile: rt.KernelCowProfile}, "auto", ""},
+		{&rt.MemoryForkObservation{Profile: "future", KernelCowSupported: true}, "auto", ""},
+	} {
+		got, err := tc.source.Select(tc.request)
+		if got != tc.want || (tc.want == "") != (err != nil) {
+			t.Errorf("source=%+v request=%q got %q, %v", tc.source, tc.request, got, err)
+		}
+	}
+	intent := nativeForkIntent{RequestedMemoryBackend: "auto", SelectedMemoryBackend: "kernel_cow", MemoryProfile: rt.KernelCowProfile}
+	good := rt.ForkProgress{RequestedMemoryForkBackend: "auto", SelectedMemoryForkBackend: "kernel_cow", MemoryForkProfile: rt.KernelCowProfile}
+	if !intent.memoryReceiptMatches(&good) {
+		t.Fatal("expected same cut")
+	}
+	for _, change := range []func(*rt.ForkProgress){
+		func(p *rt.ForkProgress) { p.RequestedMemoryForkBackend = "kernel_cow" },
+		func(p *rt.ForkProgress) { p.SelectedMemoryForkBackend = "native" },
+		func(p *rt.ForkProgress) { p.MemoryForkProfile = "" },
+	} {
+		p := good
+		change(&p)
+		if intent.memoryReceiptMatches(&p) {
+			t.Fatalf("accepted changed receipt %+v", p)
+		}
+	}
+	var old nativeForkIntent
+	if !old.memoryReceiptMatches(&rt.ForkProgress{}) || old.memoryReceiptMatches(&good) {
+		t.Fatal("legacy progress accepted a different backend")
+	}
+}

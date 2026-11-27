@@ -12,7 +12,7 @@ import (
 	"sandbox-platform/internal/templates"
 )
 
-func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (func(rt.BundleRoute, string) error, error) {
+func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string, memoryProfile string) (func(rt.BundleRoute, string) error, error) {
 	route, err := s.DB.GetRuntimeRoute(ctx, instanceID)
 	if errors.Is(err, rt.ErrUnsupported) {
 		return func(rt.BundleRoute, string) error { return rt.SystemBootUnavailable(false) }, nil
@@ -20,9 +20,12 @@ func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string) (
 	if err != nil {
 		return nil, err
 	}
-	capability, admission := s.SystemBootCapability(ctx, route)
-	if admission == nil && !capability.Supported {
-		admission = &rt.CapabilityError{Capability: rt.SystemBootCapability, Status: capability}
+	profiles, admission := s.SystemLaunchCapabilities(ctx, route)
+	if admission == nil && !profiles.Boot.Supported {
+		admission = &rt.CapabilityError{Capability: rt.SystemBootCapability, Status: profiles.Boot}
+	}
+	if admission == nil && memoryProfile != "" && !profiles.KernelCow.Supported {
+		admission = &rt.CapabilityError{Capability: rt.KernelCowLaunchCapability, Status: profiles.KernelCow}
 	}
 	// Check the exact accepted route without I/O inside the writer transaction.
 	// The registry returns a matching idempotent replay before consulting this preflight.

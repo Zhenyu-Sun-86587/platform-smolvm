@@ -16,14 +16,17 @@ import (
 )
 
 type nativeForkIntent struct {
-	Submission            rt.ForkSubmission          `json:"submission"`
-	SourceDisks           []rt.ForkDiskEvidence      `json:"source_disks"`
-	SourceDisposition     registry.SourceDisposition `json:"source_disposition"`
-	Receipt               *rt.OperationReceipt       `json:"receipt,omitempty"`
-	RetryRequested        bool                       `json:"retry_requested,omitempty"`
-	CancelRequested       bool                       `json:"cancel_requested,omitempty"`
-	RetryFrom             *rt.OperationReceipt       `json:"retry_from,omitempty"`
-	UnpublishedActivation bool                       `json:"unpublished_activation,omitempty"`
+	RequestedMemoryBackend string                     `json:"requested_memory_fork_backend,omitempty"`
+	SelectedMemoryBackend  string                     `json:"selected_memory_fork_backend,omitempty"`
+	MemoryProfile          string                     `json:"memory_fork_profile,omitempty"`
+	Submission             rt.ForkSubmission          `json:"submission"`
+	SourceDisks            []rt.ForkDiskEvidence      `json:"source_disks"`
+	SourceDisposition      registry.SourceDisposition `json:"source_disposition"`
+	Receipt                *rt.OperationReceipt       `json:"receipt,omitempty"`
+	RetryRequested         bool                       `json:"retry_requested,omitempty"`
+	CancelRequested        bool                       `json:"cancel_requested,omitempty"`
+	RetryFrom              *rt.OperationReceipt       `json:"retry_from,omitempty"`
+	UnpublishedActivation  bool                       `json:"unpublished_activation,omitempty"`
 }
 
 func (intent *nativeForkIntent) rememberAbortedActivation(receipt rt.OperationReceipt) {
@@ -48,7 +51,9 @@ func observedForkCapabilities(inventory rt.NativeInventory) map[string]rt.Capabi
 	for _, kind := range []string{rt.IndependentFork, rt.ForkBatch} {
 		if inventory.ForkEligible(kind) {
 			capability := rt.FullStateOperationCapability(kind)
-			result[capability] = inventory.Capabilities[capability]
+			c := inventory.Capabilities[capability]
+			c.MemoryFork = inventory.MemoryFork
+			result[capability] = c
 		}
 	}
 	return result
@@ -72,6 +77,10 @@ func (e *Engine) NativeForkCapability(b registry.Binding, kind string) rt.Capabi
 }
 
 func (e *Engine) AdmitNativeFork(b registry.Binding, kind string) error {
+	return e.AdmitNativeForkMemory(b, kind, "")
+}
+
+func (e *Engine) AdmitNativeForkMemory(b registry.Binding, kind, requested string) error {
 	capability := e.NativeForkCapability(b, kind)
 	if !capability.Supported {
 		return &rt.CapabilityError{Capability: rt.FullStateOperationCapability(kind), Status: capability}
@@ -79,7 +88,8 @@ func (e *Engine) AdmitNativeFork(b registry.Binding, kind string) error {
 	if b.PowerState != registry.PowerRunning && b.PowerState != registry.PowerStandby {
 		return &Failure{"STATE_CONFLICT", "native fork requires a running or managed standby source"}
 	}
-	return nil
+	_, err := capability.MemoryFork.Select(requested)
+	return err
 }
 
 func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
@@ -126,14 +136,28 @@ func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
 		return j.fail(ctx, rt.FullStateUnavailable(j.Op.Kind, false))
 	}
 	request := rt.ForkSubmission{OperationID: j.Op.ID, Expected: ref, Kind: j.Op.Kind}
-	if j.Op.Kind == rt.ForkBatch && len(j.Op.Request) != 0 {
-		var input struct {
-			Admission string `json:"admission"`
-		}
+	var input struct {
+		Admission         string `json:"admission"`
+		MemoryForkBackend string `json:"memory_fork_backend"`
+	}
+	if len(j.Op.Request) != 0 {
 		if err := json.Unmarshal(j.Op.Request, &input); err != nil {
 			return j.fail(ctx, registry.ErrInvalid)
 		}
 		request.Parameters.Admission = input.Admission
+	}
+	selected, err := inventory.MemoryFork.Select(input.MemoryForkBackend)
+	if err != nil {
+		return j.fail(ctx, err)
+	}
+	profile := ""
+	if inventory.MemoryFork != nil {
+		profile = inventory.MemoryFork.Profile
+		request.Parameters.MemoryForkBackend = input.MemoryForkBackend
+	}
+	requested := input.MemoryForkBackend
+	if requested == "" {
+		requested = "native"
 	}
 	for _, child := range j.Op.Children {
 		binding, err := j.DB.GetBinding(ctx, child.BindingID)
@@ -144,6 +168,7 @@ func (j *Job) driveNativeFork(ctx context.Context, routeError error) error {
 	}
 	request.RequestDigest = nativeForkDigest(request)
 	j.Intent.Fork = &nativeForkIntent{
+		RequestedMemoryBackend: requested, SelectedMemoryBackend: selected, MemoryProfile: profile,
 		Submission: request, SourceDisks: inventory.ForkDisks(), SourceDisposition: registry.SourceDisposition(inventory.Inventory.SourceDisposition),
 	}
 	j.Intent.SourceTaskBinding = GuestBinding(j.Binding)
@@ -228,6 +253,9 @@ func (j *Job) checkForkReceipt(receipt rt.OperationReceipt) error {
 		(j.Op.SourceLockReleased && !progress.SourceReleased) {
 		return &Failure{"RECOVERY_REQUIRED", "Worker fork receipt is outside the accepted source or cut"}
 	}
+	if !intent.memoryReceiptMatches(progress) {
+		return &Failure{"RECOVERY_REQUIRED", "Worker fork memory provider differs from the accepted source or cut"}
+	}
 	var old struct {
 		CaptureID string `json:"capture_id"`
 	}
@@ -235,6 +263,18 @@ func (j *Job) checkForkReceipt(receipt rt.OperationReceipt) error {
 		return &Failure{"RECOVERY_REQUIRED", "Worker fork capture changed after admission"}
 	}
 	return verifyForkReceiptChildren(request, progress.Children)
+}
+
+func (i *nativeForkIntent) memoryReceiptMatches(p *rt.ForkProgress) bool {
+	// Pre-upgrade intents and older Workers can only have used the Native provider.
+	if i.MemoryProfile == "" {
+		return (i.SelectedMemoryBackend == "" || i.SelectedMemoryBackend == "native") &&
+			(p.SelectedMemoryForkBackend == "" || p.SelectedMemoryForkBackend == "native") &&
+			(p.RequestedMemoryForkBackend == "" || p.RequestedMemoryForkBackend == "native") &&
+			(p.MemoryForkProfile == "" || p.MemoryForkProfile == "native")
+	}
+	return i.RequestedMemoryBackend == p.RequestedMemoryForkBackend &&
+		i.SelectedMemoryBackend == p.SelectedMemoryForkBackend && p.MemoryForkProfile == i.MemoryProfile
 }
 
 func (j *Job) checkForkAttempts(receipt rt.OperationReceipt) error {
@@ -274,6 +314,13 @@ func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkContro
 	}
 	result := map[string]any{"machine_id": j.Op.MachineID, "capture_id": progress.CaptureID,
 		"admission": rt.ForkAdmission(intent.Submission.Parameters.Admission), "admitted_child_ids": admitted}
+	if intent.SelectedMemoryBackend != "" {
+		result["requested_memory_fork_backend"] = intent.RequestedMemoryBackend
+		result["selected_memory_fork_backend"] = intent.SelectedMemoryBackend
+		if intent.MemoryProfile != "" {
+			result["memory_fork_profile"] = intent.MemoryProfile
+		}
+	}
 	intent.Receipt = &receipt
 	intent.rememberAbortedActivation(receipt)
 	step := registry.TransitionRequest{State: registry.Observing, Stage: progress.Stage, Effect: registry.EffectUnknown, Result: JSON(result), Dispatch: JSON(j.Intent)}
