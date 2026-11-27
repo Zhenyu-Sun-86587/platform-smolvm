@@ -69,6 +69,12 @@ go test ./internal/lifecycle -run TestRevokedGuestCreateNeverReachesNativeLaunch
 
 ## Active model streams during Fork
 
+The two public Fork entry points are `POST /v1/machines/{id}/forks` and `POST /v1/machines/{id}/fork-batches`. The source-stream regression uses an execution-bound grant and an active credential-proxy hold. The Guest submits one model POST to a local HTTPS provider, reads the first SSE event and waits. After the independent Fork completes, the provider releases the final event. The source must read that event exactly once on its original connection. Each child must see only the already-read prefix and wait for a separately authorized request. The provider checks the original request body and count. Grant revocation has a separate test that closes a live stream before the next event. These tests use a Debian Guest, the normal relay, and a local provider under test control.
+
+The scope is an in-flight request through the managed credential proxy on a running source. A coding Agent's conversation history, tool ownership and child-session idle state require a separate session-level contract.
+
+### Earlier installed bundle
+
 The `protected-stream-single` and `protected-stream-fork` cases use a local HTTPS server that streams two SSE events on demand. The source Debian guest receives the first event and blocks on its original vsock connection. At capture the Worker has an active credential proxy hold for that execution, an owner running lease, and a policy with `keep_running=true` and `auto_hibernate=false`.
 
 Both API entry points ran on the installed `fb69434` bundle, digest `sha256:a9b41917173a0eea2306aa41276b59fa314e1d54f9d52f45766bcf2ce7698c35`. The source and every child continued the original process with its in-memory nonce and first event. The upstream received the original request once. The second event was absent from every copy of the old stream. Each branch then received its own answer using a new grant bound to its current execution. The source retained its lease, its old proxy hold was released, and the children inherited the policy with an empty lease list. [Guest credential integration fixture](../../tests/integration/guest_control_kvm.py)
