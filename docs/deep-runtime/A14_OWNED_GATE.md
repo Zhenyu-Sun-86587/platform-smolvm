@@ -69,3 +69,5 @@ Serve 修复 `695dd571d45b0f3bb403775da8ac04c8298e6475` 在控制路径存在但
 | `policy_armed`，revision 6 | 三次均为 `commit`，公开终态 `failed`、`effect=unknown` | 接收器记录心跳 115、116。子机回环确认业务 132，本机持续发送至 152，外部未收到业务 132。 | `owned-cut-policy_armed-v2.log` · `f241ca60a6e04c823402d4da9a4ed8747f6ad0c1a9690f2af3bfdad071470f78` |
 
 `policy_armed` 首轮在 45 秒内没有命中，日志保存在 `owned-cut-policy_armed-v1.log`，表中一轮的阶段观测窗口为 90 秒。两次完整用例均在正常子机的外部业务回执处超时。后续验收另要求正常子机跨至少 12 秒完成三次不同的业务请求，并逐个同接收器的记录匹配。
+
+固定 libkrun TX 完成行为后的候选已通过两次顺序 Fork 和六个切点。每个切点后的正常子机均完成三笔自有 UDP 业务并与接收端逐条核对。[候选复验记录](a14-virtio-tx-qualification.md)
