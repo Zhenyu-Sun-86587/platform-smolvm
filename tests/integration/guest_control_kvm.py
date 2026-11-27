@@ -30,6 +30,8 @@ class Upstream:
         self.answers = {"/answer/" + name: os.urandom(12).hex() for name in ("source", "first", "second")} if fork_stream else {}
         self.fork_head = os.urandom(12).hex()
         self.fork_tail = os.urandom(12).hex()
+        self.model_request = json.dumps({"stream": True, "prompt": os.urandom(12).hex()})
+        self.model_posts = []
         secret = root / "provider-key"
         secret.touch(mode=0o600)
         secret.write_text(self.key + "\n")
@@ -44,6 +46,20 @@ class Upstream:
                 pass
 
             def do_GET(self):
+                self.serve_stream()
+
+            def do_POST(self):
+                if self.path != "/fork-stream":
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 4096:
+                    self.send_error(400)
+                    return
+                upstream.model_posts.append(self.rfile.read(length))
+                self.serve_stream()
+
+            def serve_stream(self):
                 upstream.requests.append((self.path, self.headers.get("Authorization") == "Bearer " + upstream.key,
                                           self.headers.get("Proxy-Authorization") is None))
                 if self.path == "/redirect":
@@ -92,7 +108,8 @@ class Upstream:
         routes = ("/fork-stream", *self.answers) if fork_stream else ("/inspect", "/redirect", "/stream")
         self.policy = dict(id="model", upstream=f"https://127.0.0.1:{server.server_port}",
                            credential_file=str(secret), ca_file=str(cert), allow_private=True,
-                           timeout_seconds=100 if fork_stream else 35, routes=[dict(method="GET", path=path) for path in routes])
+                           timeout_seconds=100 if fork_stream else 35,
+                           routes=[dict(method="POST" if path == "/fork-stream" else "GET", path=path) for path in routes])
 
 
 def wire(platform, ref, probe, method, path, token, body=None, **more):
@@ -265,12 +282,14 @@ def protected_stream_fork(platform, upstream, machine, ref, probe):
     folder = "/run/protected-model"
     platform.guest(ref, ["mkdir", "-m", "700", folder])
 
-    def write_request(execution, filename, route, bearer):
-        message = (f"GET /v1/credential-proxies/model{route} HTTP/1.1\r\nHost: guest-relay\r\n"
-                   f"Authorization: Bearer {bearer}\r\nConnection: close\r\n\r\n")
+    def write_request(execution, filename, route, bearer, body=None):
+        method = "GET" if body is None else "POST"
+        entity = "" if body is None else f"Content-Type: application/json\r\nContent-Length: {len(body.encode())}\r\n"
+        message = (f"{method} /v1/credential-proxies/model{route} HTTP/1.1\r\nHost: guest-relay\r\n"
+                   f"Authorization: Bearer {bearer}\r\n{entity}Connection: close\r\n\r\n{body or ''}")
         platform.guest(execution, ["sh", "-ec", 'umask 077; cat > "$1"', "save", folder + "/" + filename], message)
 
-    write_request(ref, "first.req", "/fork-stream", token)
+    write_request(ref, "first.req", "/fork-stream", token, upstream.model_request)
     # The shell survives its original outbound call. Each descendant supplies a new,
     # execution-bound request to that same shell through its own copy of the FIFO.
     job = """set -eu
@@ -280,7 +299,7 @@ mkfifo continue
 printf '%s %s\n' "$$" "$nonce" > identity
 exec 3< first.req
 rm first.req
-"$2" <&3 3<&- > first.http 2>first.err &
+"$2" --wait-model-stream <&3 3<&- > first.http 2>first.err &
 reader=$!
 exec 3<&-
 echo "$reader" > reader
@@ -295,6 +314,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     platform.guest(ref, ["sh", "-ec", 'sh -c "$1" job "$2" "$3" </dev/null >/dev/null 2>&1 &',
                          "launch", job, folder, probe])
     assert upstream.started.wait(20), "the source model request did not arrive"
+    started = time.monotonic()
     head, tail = (("data: " + value).encode() for value in (upstream.fork_head, upstream.fork_tail))
     wait_for(lambda: head in platform.guest(ref, ["cat", folder + "/first.http"]), timeout=12)
     identity = platform.guest(ref, ["cat", folder + "/identity"]).strip()
@@ -310,12 +330,64 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     names = ("first",) if single else ("first", "second")
     endpoint, capability, body = ("forks", "state.independent_fork", dict(child_name="First answer")) if single else (
         "fork-batches", "state.fork_batch", dict(children=[dict(name="Answer " + name) for name in names]))
-    result = platform.complete(platform.change(source + "/" + endpoint, "fork-waiting-for-model",
-        {**body, "require_independent": True}, platform.wait_capability(source, capability)))
+    accepted = platform.change(source + "/" + endpoint, "fork-waiting-for-model",
+        {**body, "require_independent": True}, platform.wait_capability(source, capability))
+    operation = accepted["operation_id"]
+    with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+        def finished():
+            public = platform.app("operations/" + operation)
+            if public["state"] == "succeeded":
+                return public
+            if public["state"] in ("failed", "cancelled", "recovery_required"):
+                raise RuntimeError((operation, public["state"], public["effect"]))
+            failed = db.execute(
+                """SELECT c.ordinal, a.revision FROM managed_fork_children c
+                   JOIN executions e ON e.last_operation_id=c.operation_id AND e.instance_id=c.instance_id
+                   JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
+                   WHERE c.batch_id=? AND a.phase='failed_held' LIMIT 1""", (operation,)
+            ).fetchone()
+            if failed is not None:
+                raise RuntimeError(("child activation failed_held", operation, *failed))
+            return None
+
+        try:
+            result = wait_for(finished, timeout=175)
+        except (RuntimeError, TimeoutError):
+            public = platform.app("operations/" + operation)
+            cut = db.execute("SELECT stage,source_released,credential_relay_hold,error FROM managed_fork_batches WHERE operation_id=?",
+                             (operation,)).fetchone()
+            children = db.execute(
+                """SELECT c.ordinal,o.phase,e.phase,a.phase,a.decision,a.revision
+                   FROM managed_fork_children c JOIN operations o ON o.operation_id=c.operation_id
+                   LEFT JOIN executions e ON e.last_operation_id=c.operation_id AND e.instance_id=c.instance_id
+                   LEFT JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
+                   WHERE c.batch_id=? ORDER BY c.ordinal""", (operation,)
+            ).fetchall()
+            print("STREAM_FORK_FAILURE " + json.dumps(dict(operation=operation, state=public["state"],
+                effect=public["effect"], cut=cut, children=children)), flush=True)
+            raise
     assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
                                                          for c in result["children"]), result
     assert upstream.requests == [("/fork-stream", True, True)], upstream.requests
+    assert upstream.model_posts == [upstream.model_request.encode()]
+    with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+        cut = db.execute(
+            """SELECT original,stage,source_released,credential_relay_hold FROM managed_fork_batches
+               WHERE operation_id=?""", (result["operation_id"],)
+        ).fetchone()
+        protection = db.execute(
+            "SELECT id,kind,state,reason FROM lifecycle_protections WHERE principal=? AND incarnation_id=?",
+            (grant, ref["incarnation_id"]),
+        ).fetchall()
+        print("STREAM_CUT " + json.dumps(dict(operation=result["operation_id"], cut=cut, protection=protection)), flush=True)
+    reader = platform.guest(ref, ["sh", "-ec",
+        'cd "$1"; if test -f first.done; then cat first.done first.err; else test -d "/proc/$(cat reader)" && echo waiting; fi',
+        "check", folder]).strip()
+    elapsed = time.monotonic() - started
+    print("STREAM_RELEASE " + json.dumps(dict(elapsed_seconds=round(elapsed, 3), source_reader=reader.decode())), flush=True)
+    assert reader == b"waiting", "source stream reader closed before the provider released its final event"
+    assert elapsed < 90, "the fixture exceeded its provider wait deadline"
     upstream.release.set()
     branches = [("source", machine, ref)]
     for name, child in zip(names, result["children"], strict=True):
@@ -332,7 +404,11 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
         platform.guest(execution, ["test", "-d", "/proc/" + identity.split()[0].decode()])
         wait_for(lambda: platform.guest(execution, ["cat", folder + "/first.done"]), timeout=35, retry=(OSError, RuntimeError))
         old = platform.guest(execution, ["cat", folder + "/first.http"])
-        assert head in old and (name == "source" or tail not in old)
+        print("STREAM_END " + json.dumps(dict(branch=name, head_count=old.count(head), tail_count=old.count(tail),
+            bytes_received=len(old), upstream_original_posts=len(upstream.model_posts))), flush=True)
+        assert old.count(head) == 1 and old.count(tail) == (1 if name == "source" else 0), name
+        assert platform.guest(execution, ["sh", "-ec",
+            'cd "$1" && test ! -e next.http && test ! -e result', "check", folder]) == b""
         next_grant, next_token = credential(platform, machine_id, "credential_proxy.use", "answer-" + name, proxy_id="model")
         wait_for((platform.relay_dir / (execution["incarnation_id"] + ".sock")).is_socket)
         def current_relay():
@@ -360,6 +436,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
               tail in old, "fresh answer from", path, flush=True)
     expected_paths = ["/fork-stream", *("/answer/" + name for name, _, _ in branches)]
     assert upstream.requests == [(p, True, True) for p in expected_paths], upstream.requests
+    assert upstream.model_posts == [upstream.model_request.encode()]
     with closing(sqlite3.connect(platform.root / "catalog/catalog.sqlite")) as db:
         def settled():
             return db.execute("SELECT incarnation_id,state FROM lifecycle_protections WHERE principal=?",
@@ -424,6 +501,11 @@ def main():
         except BaseException:
             for log in root.glob("*.log"):
                 print(log.name, log.read_text(errors="replace")[-2400:], file=sys.stderr)
+            for log in (root / "state/managed").glob("vmm-*.log"):
+                lines = log.read_text(errors="replace").splitlines()
+                gate = [line for line in lines if "gate" in line.lower() or "activation" in line.lower()]
+                if gate:
+                    print(log.name, *gate[-12:], sep="\n", file=sys.stderr)
             raise
 
 

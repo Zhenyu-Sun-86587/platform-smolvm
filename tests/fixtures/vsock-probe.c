@@ -10,6 +10,15 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 
+static ssize_t read_retry(int fd, void *buf, size_t length)
+{
+    ssize_t n;
+    do {
+        n = read(fd, buf, length);
+    } while (n < 0 && errno == EINTR);
+    return n;
+}
+
 static int write_all(int fd, const char *buf, size_t length)
 {
     while (length) {
@@ -116,18 +125,23 @@ int main(int argc, char **argv)
     }
     int conn = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (conn < 0) { perror("socket"); return 1; }
-    struct timeval timeout = {20, 0};
-    setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    /* The Fork fixture withholds its final event until child activation. */
+    struct timeval read_timeout = {argc == 2 && strcmp(argv[1], "--wait-model-stream") == 0 ? 120 : 20, 0};
+    struct timeval write_timeout = {20, 0};
+    if (setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &read_timeout, sizeof(read_timeout)) ||
+        setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &write_timeout, sizeof(write_timeout))) {
+        perror("vsock timeout");
+        return 1;
+    }
     struct sockaddr_vm host = { .svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = 6001 };
     if (connect(conn, (struct sockaddr *)&host, sizeof(host))) { perror("connect"); return 1; }
     char buf[4096];
     ssize_t size;
-    while ((size = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+    while ((size = read_retry(STDIN_FILENO, buf, sizeof(buf))) > 0) {
         if (write_all(conn, buf, (size_t)size)) { perror("write request"); return 1; }
     }
     if (size < 0) { perror("read request"); return 1; }
-    while ((size = read(conn, buf, sizeof(buf))) > 0) {
+    while ((size = read_retry(conn, buf, sizeof(buf))) > 0) {
         if (write_all(STDOUT_FILENO, buf, (size_t)size)) return 1;
     }
     if (size < 0) { perror("read response"); return 1; }
