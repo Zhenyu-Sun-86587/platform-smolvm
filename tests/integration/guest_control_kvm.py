@@ -367,7 +367,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
                    WHERE c.batch_id=? ORDER BY c.ordinal""", (operation,)
             ).fetchall()
             print("STREAM_FORK_FAILURE " + json.dumps(dict(operation=operation, state=public["state"],
-                effect=public["effect"], cut=cut, children=children)), flush=True)
+                effect=public["effect"], error=public.get("error"), cut=cut, children=children)), flush=True)
             raise
     assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
@@ -458,7 +458,7 @@ def main():
         parser.add_argument("--" + field, type=lambda value: Path(value).resolve(strict=True), required=True)
     parser.add_argument("--case", choices=("delegate", "proxy", "protected-stream-fork", "protected-stream-single",
                                            "protected-stream-kernel-fork", "protected-stream-kernel-single"), required=True)
-    parser.add_argument("--work-dir", type=Path, default=Path("/var/tmp"))
+    parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--local-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.geteuid() != 0 or not Path("/dev/kvm").exists():
@@ -468,7 +468,9 @@ def main():
                         __file__, *sys.argv[1:], "--local-child"], check=True)
         return
     fork_stream = args.case.startswith("protected-stream-")
-    with tempfile.TemporaryDirectory(prefix="gcred-kvm-", dir=args.work_dir) as tmp, ExitStack() as stack:
+    # The Worker verifies every ancestor of an installed Kernel CoW bundle.
+    work_dir = args.work_dir or Path("/run" if fork_stream else "/var/tmp")
+    with tempfile.TemporaryDirectory(prefix="gcred-kvm-", dir=work_dir) as tmp, ExitStack() as stack:
         root = Path(tmp)
         root.chmod(0o755)
         if fork_stream:
@@ -491,8 +493,10 @@ def main():
                     "auto_standby": False, "auto_hibernate": False, "min_running_after_wake_seconds": 0,
                 }}, {"If-Control-Epoch": platform.epoch, "Idempotency-Key": "fixture-lifecycle-defaults",
                      "If-Match": f'"{settings["revision"]}"'})
+            # A four-vCPU L1 must admit the source and two children together.
             intent = dict(name="Guest authority source", template_id="t_system", boot_mode="system",
-                          runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768))
+                          runtime_instance_id=platform.serve_id, start=True,
+                          resources=dict(cpu_count=1 if fork_stream else 2, memory_mib=768))
             if args.case.startswith("protected-stream-kernel-"):
                 intent["memory_fork_profile"] = "kernel_cow_anon_v1"
             source = platform.change("machines", "source", intent)
