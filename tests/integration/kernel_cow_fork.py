@@ -1,6 +1,7 @@
 """Public System Fork qualification using a live process, two disks and a private network."""
 
 import json
+import re
 from pathlib import Path
 import time
 
@@ -79,8 +80,13 @@ def run(platform, intent, case):
     attach_for_retirement(platform, source, volume, "cow")
     _, ref = platform.context(mid)
     wait_for(lambda: platform.guest(ref, ["cat", "/proc/1/comm"]) == b"systemd\n", retry=(RuntimeError, OSError))
-    platform.guest(ref, ["systemd-run", "--unit=cow-ram", "perl", "-e", SERVER])
-    original = wait_for(lambda: read_workload(platform, ref), retry=(RuntimeError, OSError))
+    platform.guest(ref, ["sh", "-ec", 'printf %s "$1" > /run/cow-ram.pl', "fixture", SERVER])
+    platform.guest(ref, ["systemd-run", "--unit=cow-ram", "/usr/bin/perl", "/run/cow-ram.pl"])
+    try:
+        original = wait_for(lambda: read_workload(platform, ref), timeout=15, retry=(RuntimeError, OSError))
+    except TimeoutError:
+        print(platform.guest(ref, ["journalctl", "-u", "cow-ram", "-n", "20", "--no-pager"]).decode(), flush=True)
+        raise
     assert len(original) == 4 and len(original[1]) == 48 and original[2:] == [str(16 << 20), "A"], original
     write_disk(platform, ref, "orig")
     view = platform.wait_capability(source, "state.independent_fork")
@@ -137,8 +143,16 @@ def run(platform, intent, case):
     assert read_workload(platform, ref, ip=addresses[1]["private_ipv4"]) == original[:3] + ["C"]
     assert read_workload(platform, target, ip=addresses[0]["private_ipv4"]) == original[:3] + ["P"]
     assert read_disk(platform, ref) == b"par1par1" and read_disk(platform, target) == b"kid1kid1"
+    phases = []
+    for line in (platform.root / "worker.log").read_text(errors="replace").splitlines():
+        if f"capture={result['capture_id']} " not in line:
+            continue
+        match = re.search(r"phase=(\w+) monotonic_us=(\d+) duration_us=(\d+)", line)
+        if match:
+            phase, ended, duration = match.groups()
+            phases.append({"phase": phase, "ended_us": int(ended), "duration_us": int(duration)})
     print("COW_WORKLOAD " + json.dumps(dict(kernel=Path("/proc/sys/kernel/osrelease").read_text().strip(),
         bundle=platform.bundle_id, operation=accepted["operation_id"], capture=result["capture_id"], backend=backend,
         selected=expected, source_before=before, source_after=vmm_memory(platform, ref), child=vmm_memory(platform,target),
         accept_ms=(accepted_at-start)/1e6, complete_ms=(completed_at-start)/1e6, first_workload_response_ms=(ready-start)/1e6,
-        network=addresses)), flush=True)
+        network=addresses, measured_worker_phases=phases)), flush=True)

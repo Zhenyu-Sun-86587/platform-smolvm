@@ -62,8 +62,13 @@ func (j *Job) reconcileForkRetry(ctx context.Context, query rt.NativeForkControl
 	}
 	refused := statePointRefusal(err)
 	var fault *rt.Error
-	if errors.As(err, &fault) && fault.NativeCode == "E_STALE_REVISION" {
-		refused = &Failure{"REVISION_CONFLICT", "Worker retry revision changed"}
+	if errors.As(err, &fault) {
+		switch fault.NativeCode {
+		case "E_STALE_REVISION":
+			refused = &Failure{"REVISION_CONFLICT", "Worker retry revision changed"}
+		case "E_CAPTURE_LOST":
+			refused = &Failure{"CAPTURE_LOST", fault.Message}
+		}
 	}
 	if refused == nil && !launchReceiptMissing(err) && !errors.Is(err, rt.ErrUnsupported) {
 		return j.fail(ctx, err)
@@ -162,8 +167,13 @@ func (j *Job) confirmForkRetry(ctx context.Context, receipt rt.OperationReceipt)
 func (j *Job) rejectForkRetry(ctx context.Context, reason error) error {
 	intent := j.Intent.Fork
 	intent.Receipt, intent.RetryRequested, intent.RetryFrom = intent.RetryFrom, false, nil
+	code := "NATIVE_FORK_RETRY_REFUSED"
+	var refusal *Failure
+	if errors.As(reason, &refusal) && refusal.Code == "CAPTURE_LOST" {
+		code = refusal.Code
+	}
 	step := registry.TransitionRequest{Effect: j.Op.Effect, Result: j.Op.Result, Dispatch: JSON(j.Intent),
-		Error: JSON(map[string]string{"code": "NATIVE_FORK_RETRY_REFUSED", "message": reason.Error()})}
+		Error: JSON(map[string]string{"code": code, "message": reason.Error()})}
 	state := registry.Failed
 	if j.Op.Effect == registry.EffectPartial {
 		state = registry.Succeeded

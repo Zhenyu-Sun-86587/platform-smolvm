@@ -13,11 +13,12 @@ import (
 
 type forkRuntime struct {
 	nativePowerRuntime
-	references  map[string]rt.ExecutionRef
-	forkReceipt rt.OperationReceipt
-	retries     int
-	cancels     int
-	retryAborts bool
+	references   map[string]rt.ExecutionRef
+	forkReceipt  rt.OperationReceipt
+	retries      int
+	cancels      int
+	retryAborts  bool
+	retryRefusal error
 }
 
 func (n *forkRuntime) DiscoverExecution(_ context.Context, name string) (rt.ExecutionRef, error) {
@@ -73,6 +74,9 @@ func (n *forkRuntime) RetryFork(_ context.Context, id string, control rt.ForkCon
 		control.Expected.InstanceID != n.forkReceipt.InstanceID || control.Expected.ExecutionEpoch != n.forkReceipt.ExpectedExecutionEpoch ||
 		control.ExpectedRevision != n.forkReceipt.Revision {
 		return rt.OperationReceipt{}, rt.ErrInvalid
+	}
+	if n.retryRefusal != nil {
+		return rt.OperationReceipt{}, n.retryRefusal
 	}
 	n.forkReceipt.Revision++
 	for i := range n.forkReceipt.Fork.Children {
@@ -144,6 +148,11 @@ func nativeForkFixture(t *testing.T, ctx context.Context) (*Engine, *forkRuntime
 }
 
 func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
+	t.Run("original_capture_available", func(t *testing.T) { testPartialAfterSourceRemoval(t, false) })
+	t.Run("original_capture_lost", func(t *testing.T) { testPartialAfterSourceRemoval(t, true) })
+}
+
+func testPartialAfterSourceRemoval(t *testing.T, captureLost bool) {
 	ctx := context.Background()
 	engine, worker, request := nativeForkFixture(t, ctx)
 	db, owner, epoch := engine.DB, request.PrincipalID, request.Epoch
@@ -209,6 +218,19 @@ func TestNativeForkKeepsPartialChildrenAfterSourceRemoval(t *testing.T) {
 	}
 	if _, replay, err := db.Mutate(ctx, envelope, apply); err != nil || replay {
 		t.Fatal(replay, err)
+	}
+	if captureLost {
+		worker.retryRefusal = &rt.Error{NativeCode: "E_CAPTURE_LOST", Message: "original anchor exited"}
+		drive(read())
+		op := read()
+		var refusal struct{ Code string }
+		if err := json.Unmarshal(op.Error, &refusal); err != nil || refusal.Code != "CAPTURE_LOST" ||
+			op.Effect != registry.EffectPartial || !op.SourceLockReleased || !op.Terminal() ||
+			op.Children[0].MachineID != previous.Children[0].MachineID || op.Children[0].State != "ready" ||
+			op.Children[1].Attempt != previous.Children[1].Attempt || worker.retries != 1 {
+			t.Fatal(op, worker.retries, err)
+		}
+		return
 	}
 	if err := engine.drive(ctx, read()); err != rt.ErrUnavailable || worker.retries != 1 {
 		t.Fatal(worker.retries, err)
