@@ -2,6 +2,7 @@
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 import time
 
@@ -149,7 +150,22 @@ def run(platform, intent, case):
     start = time.monotonic_ns()
     accepted = platform.change(source + "/forks", "cow-fork-once", body, view)
     accepted_at = time.monotonic_ns()
-    completed = platform.complete(accepted)
+    try:
+        completed = platform.complete(accepted)
+    except (RuntimeError, TimeoutError):
+        op_id = accepted["operation_id"]
+        print("COW_OPERATION " + json.dumps(platform.app("operations/" + op_id)), flush=True)
+        uri = (platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True) as db:
+            db.row_factory = sqlite3.Row
+            for table, columns in (
+                ("managed_fork_batches", "stage,original,source_released,error,kernel_export_deadline"),
+                ("kernel_mm_anchors", "capture_id,helper_pid,failure"),
+                ("operations", "phase,decision"),
+            ):
+                rows = db.execute(f"SELECT {columns} FROM {table} WHERE operation_id=?", (op_id,))
+                print("COW_CATALOG " + json.dumps([table, [dict(row) for row in rows]]), flush=True)
+        raise
     completed_at = time.monotonic_ns()
     result = completed["result"]
     assert result["selected_memory_fork_backend"] == expected and result["requested_memory_fork_backend"] == backend, result
