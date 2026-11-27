@@ -44,7 +44,7 @@ def vmm_memory(platform, ref):
         return int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19])
     assert start_ticks() == execution["pid_start_time"]
     result = {"pid": execution["pid"], "incarnation_id": ref["incarnation_id"]}
-    for file, names in (("status", {"VmPTE"}), ("smaps_rollup", {"Rss", "Pss"})):
+    for file, names in (("status", {"VmPTE"}), ("smaps_rollup", {"Rss", "Pss", "AnonHugePages", "Private_Dirty", "Shared_Dirty"})):
         for line in (proc / file).read_text().splitlines():
             key, _, value = line.partition(":")
             if key in names:
@@ -176,6 +176,7 @@ def run(platform, intent, case):
     assert read_workload(platform, target, ip=addresses[0]["private_ipv4"]) == original[:3] + ["P"]
     assert read_disk(platform, ref) == b"par1par1" and read_disk(platform, target) == b"kid1kid1"
     phases = []
+    anchor_import = None
     for line in (platform.root / "worker.log").read_text(errors="replace").splitlines():
         if f"capture={result['capture_id']} " not in line:
             continue
@@ -183,8 +184,12 @@ def run(platform, intent, case):
         if match:
             phase, ended, duration = match.groups()
             phases.append({"phase": phase, "ended_us": int(ended), "duration_us": int(duration)})
+        match = re.search(r"import_bootstrap_us=(\d+) ram_bytes=(\d+) status=0\b", line)
+        if match:
+            duration, size = match.groups()
+            anchor_import = {"duration_us": int(duration), "region_bytes": int(size)}
     print("COW_WORKLOAD " + json.dumps(dict(kernel=Path("/proc/sys/kernel/osrelease").read_text().strip(),
         bundle=platform.bundle_id, operation=accepted["operation_id"], capture=result["capture_id"], backend=backend,
         selected=expected, source_before=before, source_after=vmm_memory(platform, ref), child=vmm_memory(platform,target),
         accept_ms=(accepted_at-start)/1e6, complete_ms=(completed_at-start)/1e6, first_workload_response_ms=(ready-start)/1e6,
-        network=addresses, measured_worker_phases=phases)), flush=True)
+        network=addresses, measured_worker_phases=phases, anchor_import=anchor_import)), flush=True)
