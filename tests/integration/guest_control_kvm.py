@@ -330,8 +330,26 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     names = ("first",) if single else ("first", "second")
     endpoint, capability, body = ("forks", "state.independent_fork", dict(child_name="First answer")) if single else (
         "fork-batches", "state.fork_batch", dict(children=[dict(name="Answer " + name) for name in names]))
-    result = platform.complete(platform.change(source + "/" + endpoint, "fork-waiting-for-model",
-        {**body, "require_independent": True}, platform.wait_capability(source, capability)))
+    accepted = platform.change(source + "/" + endpoint, "fork-waiting-for-model",
+        {**body, "require_independent": True}, platform.wait_capability(source, capability))
+    try:
+        result = platform.complete(accepted)
+    except (RuntimeError, TimeoutError):
+        operation = accepted["operation_id"]
+        public = platform.app("operations/" + operation)
+        with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+            cut = db.execute("SELECT stage,source_released,credential_relay_hold,error FROM managed_fork_batches WHERE operation_id=?",
+                             (operation,)).fetchone()
+            children = db.execute(
+                """SELECT c.ordinal,o.phase,e.phase,a.phase,a.decision,a.revision
+                   FROM managed_fork_children c JOIN operations o ON o.operation_id=c.operation_id
+                   LEFT JOIN executions e ON e.last_operation_id=c.operation_id AND e.instance_id=c.instance_id
+                   LEFT JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
+                   WHERE c.batch_id=? ORDER BY c.ordinal""", (operation,)
+            ).fetchall()
+        print("STREAM_FORK_FAILURE " + json.dumps(dict(operation=operation, state=public["state"],
+            effect=public["effect"], cut=cut, children=children)), flush=True)
+        raise
     assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
                                                          for c in result["children"]), result
