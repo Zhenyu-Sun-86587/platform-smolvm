@@ -485,6 +485,11 @@ def main():
         except BaseException:
             for log in root.glob("*.log"):
                 print(log.name, log.read_text(errors="replace")[-2400:], file=sys.stderr)
+            for log in (root / "state/managed").glob("vmm-*.log"):
+                lines = log.read_text(errors="replace").splitlines()
+                gate = [line for line in lines if "gate" in line.lower() or "activation" in line.lower()]
+                if gate:
+                    print(log.name, *gate[-12:], sep="\n", file=sys.stderr)
             raise
 
 
