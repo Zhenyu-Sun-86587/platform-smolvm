@@ -299,7 +299,7 @@ mkfifo continue
 printf '%s %s\n' "$$" "$nonce" > identity
 exec 3< first.req
 rm first.req
-"$2" <&3 3<&- > first.http 2>first.err &
+"$2" --wait-model-stream <&3 3<&- > first.http 2>first.err &
 reader=$!
 exec 3<&-
 echo "$reader" > reader
@@ -314,6 +314,7 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
     platform.guest(ref, ["sh", "-ec", 'sh -c "$1" job "$2" "$3" </dev/null >/dev/null 2>&1 &',
                          "launch", job, folder, probe])
     assert upstream.started.wait(20), "the source model request did not arrive"
+    started = time.monotonic()
     head, tail = (("data: " + value).encode() for value in (upstream.fork_head, upstream.fork_tail))
     wait_for(lambda: head in platform.guest(ref, ["cat", folder + "/first.http"]), timeout=12)
     identity = platform.guest(ref, ["cat", folder + "/identity"]).strip()
@@ -346,6 +347,13 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
             (grant, ref["incarnation_id"]),
         ).fetchall()
         print("STREAM_CUT " + json.dumps(dict(operation=result["operation_id"], cut=cut, protection=protection)), flush=True)
+    reader = platform.guest(ref, ["sh", "-ec",
+        'cd "$1"; if test -f first.done; then cat first.done first.err; else test -d "/proc/$(cat reader)" && echo waiting; fi',
+        "check", folder]).strip()
+    elapsed = time.monotonic() - started
+    print("STREAM_RELEASE " + json.dumps(dict(elapsed_seconds=round(elapsed, 3), source_reader=reader.decode())), flush=True)
+    assert reader == b"waiting", "source stream reader closed before the provider released its final event"
+    assert elapsed < 90, "the fixture exceeded its provider wait deadline"
     upstream.release.set()
     branches = [("source", machine, ref)]
     for name, child in zip(names, result["children"], strict=True):

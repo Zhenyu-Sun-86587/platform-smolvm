@@ -116,9 +116,14 @@ int main(int argc, char **argv)
     }
     int conn = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (conn < 0) { perror("socket"); return 1; }
-    struct timeval timeout = {20, 0};
-    setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    /* The Fork fixture withholds its final event until child activation. */
+    struct timeval read_timeout = {argc == 2 && strcmp(argv[1], "--wait-model-stream") == 0 ? 120 : 20, 0};
+    struct timeval write_timeout = {20, 0};
+    if (setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &read_timeout, sizeof(read_timeout)) ||
+        setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &write_timeout, sizeof(write_timeout))) {
+        perror("vsock timeout");
+        return 1;
+    }
     struct sockaddr_vm host = { .svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = 6001 };
     if (connect(conn, (struct sockaddr *)&host, sizeof(host))) { perror("connect"); return 1; }
     char buf[4096];
