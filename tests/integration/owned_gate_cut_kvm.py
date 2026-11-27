@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an owned System target's activation interruption with real KVM I/O."""
+"""Verify owned System Fork continuity and activation cuts with real KVM I/O."""
 
 import argparse
 import base64
@@ -309,28 +309,24 @@ def guest_identity(platform, ref):
     return tuple(output)
 
 
-def gate_case(platform, phase, with_container, cut_timeout):
-    observer, _, observer_ref = machine(platform, "collector", "native")
-    collector = endpoint(platform, observer)["private_ipv4"]
-    run_program(platform, observer_ref, "owned-gate-collector", "collect")
-    source, _, ref = machine(platform, "source", "fixed_internal")
-    source_ip = endpoint(platform, source)["private_ipv4"]
-    path = f"machines/{source}"
-    run_program(platform, ref, "owned-gate-workload", "serve", collector)
-    old_identity = guest_identity(platform, ref)
+class Collector:
+    def __init__(self, platform, execution):
+        self.platform = platform
+        self.execution = execution
 
-    def rows():
-        raw = platform.guest(observer_ref, ["cat", RECEIPTS]).decode()
+    def rows(self):
+        raw = self.platform.guest(self.execution, ["cat", RECEIPTS]).decode()
         return [record.split("\t") for record in raw.splitlines() if record.count("\t") == 4]
 
-    def round_trip(target, ip, expected):
+    def round_trip(self, target, ip, expected):
+        platform = self.platform
         token = "owned-" + os.urandom(12).hex()
         response = platform.guest(target, ["/usr/bin/perl", PROGRAM, "request", token]).decode().strip().split("\t")
-        assert response[0] == token and tuple(response[2:]) == expected, response
+        assert len(response) == 4 and response[0] == token and tuple(response[2:]) == expected, response
         receipt = [ip, *response]
 
         def received():
-            matches = [entry for entry in rows() if entry[1] == token]
+            matches = [entry for entry in self.rows() if entry[1] == token]
             if matches:
                 assert matches == [receipt], (matches, receipt)
                 return matches[0]
@@ -344,7 +340,7 @@ def gate_case(platform, phase, with_container, cut_timeout):
                 except (OSError, RuntimeError) as error:
                     return str(error)
 
-            entries = rows()
+            entries = self.rows()
             print("Owned loopback completed without collector receipt", json.dumps({
                 "expected": receipt, "recent_from_sender": [entry for entry in entries if entry[0] == ip][-4:],
                 "last_submitted": observe(target, ["cat", "/run/owned-gate-last-send"]),
@@ -354,12 +350,25 @@ def gate_case(platform, phase, with_container, cut_timeout):
                 "sender_neighbors": observe(target, ["ip", "neigh"]),
                 "sender_link": observe(target, ["ip", "-s", "link", "show", "dev", "eth0"]),
                 "sender_queue": observe(target, ["tc", "-s", "qdisc", "show", "dev", "eth0"]),
-                "collector_unit": observe(observer_ref, ["systemctl", "show", "owned-gate-collector",
-                                                         "-p", "ActiveState", "-p", "ExecMainStatus"]),
-                "collector_bytes": observe(observer_ref, ["wc", "-c", RECEIPTS]),
-                "collector_tail": observe(observer_ref, ["tail", "-5", RECEIPTS]),
+                "collector_unit": observe(self.execution, ["systemctl", "show", "owned-gate-collector",
+                                                            "-p", "ActiveState", "-p", "ExecMainStatus"]),
+                "collector_bytes": observe(self.execution, ["wc", "-c", RECEIPTS]),
+                "collector_tail": observe(self.execution, ["tail", "-5", RECEIPTS]),
             }), flush=True)
             raise
+
+
+def gate_case(platform, phase, with_container, cut_timeout):
+    observer, _, observer_ref = machine(platform, "collector", "native")
+    collector = endpoint(platform, observer)["private_ipv4"]
+    run_program(platform, observer_ref, "owned-gate-collector", "collect")
+    source, _, ref = machine(platform, "source", "fixed_internal")
+    source_ip = endpoint(platform, source)["private_ipv4"]
+    path = f"machines/{source}"
+    run_program(platform, ref, "owned-gate-workload", "serve", collector)
+    old_identity = guest_identity(platform, ref)
+    observer_udp = Collector(platform, observer_ref)
+    rows, round_trip = observer_udp.rows, observer_udp.round_trip
 
     wait_for(lambda: any(row[0] == source_ip for row in rows()), retry=(RuntimeError, OSError))
     before = round_trip(ref, source_ip, old_identity)
@@ -479,11 +488,111 @@ def gate_case(platform, phase, with_container, cut_timeout):
     return True
 
 
+def sender(platform, machine_id, ref):
+    return {
+        "machine_id": machine_id,
+        "execution": identity(ref),
+        "address": endpoint(platform, machine_id)["private_ipv4"],
+        "guest_identity": guest_identity(platform, ref),
+    }
+
+
+def continuation_windows(collector, senders, previous):
+    started = time.monotonic()
+    windows = []
+    for window in range(3):
+        if window:
+            time.sleep(6)
+        samples = {}
+        for name, owner in senders.items():
+            receipt = collector.round_trip(owner["execution"], owner["address"], owner["guest_identity"])
+            assert int(receipt[2]) > int(previous[name][2]), (name, previous[name], receipt)
+            previous[name] = receipt
+            samples[name] = {"elapsed_seconds": round(time.monotonic() - started, 3), "receipt": receipt}
+        windows.append(samples)
+    for name in senders:
+        assert windows[-1][name]["elapsed_seconds"] - windows[0][name]["elapsed_seconds"] >= 12, windows
+    return windows
+
+
+def sequential_case(platform):
+    observer_id, _, observer_ref = machine(platform, "sequential-collector", "native")
+    observer = sender(platform, observer_id, observer_ref)
+    run_program(platform, observer_ref, "owned-gate-collector", "collect")
+    collector = Collector(platform, observer_ref)
+    source_id, _, source_ref = machine(platform, "sequential-source", "fixed_internal")
+    source = sender(platform, source_id, source_ref)
+    run_program(platform, source_ref, "owned-gate-workload", "serve", observer["address"])
+    wait_for(lambda: any(row[0] == source["address"] for row in collector.rows()),
+             retry=(RuntimeError, OSError))
+    senders = {"source": source}
+    previous = {}
+    forks = []
+    expected_receipts = []
+    source_path = f"machines/{source_id}"
+    for ordinal in (1, 2):
+        label = f"child{ordinal}"
+        before = collector.round_trip(source_ref, source["address"], source["guest_identity"])
+        if "source" in previous:
+            assert int(before[2]) > int(previous["source"][2]), (previous["source"], before)
+        previous["source"] = before
+        expected_receipts.append(before)
+        accepted = platform.change(source_path + "/fork-batches", f"owned-sequential-{ordinal}", {
+            "children": [{"name": f"sequential child {ordinal}"}], "require_independent": True,
+        }, platform.wait_capability(source_path, "state.fork_batch"))
+        done = platform.complete(accepted)
+        assert done["effect"] == "applied" and done["source_lock_released"] and done["source_disposition"] == "RUNNING", done
+        child, = done["children"]
+        assert child["state"] == "ready" and child["resource_independence"] == "verified", child
+        _, child_ref = platform.context(child["machine_id"])
+        current = sender(platform, child["machine_id"], child_ref)
+        for other in [observer, *senders.values()]:
+            assert current["machine_id"] != other["machine_id"], (current, other)
+            assert current["execution"]["incarnation_id"] != other["execution"]["incarnation_id"], (current, other)
+            assert current["address"] != other["address"], (current, other)
+            assert all(a != b for a, b in zip(current["guest_identity"], other["guest_identity"], strict=True)), (current, other)
+        senders[label] = current
+        first = wait_for(lambda: next((row for row in collector.rows() if row[0] == current["address"]), None), timeout=8)
+        assert tuple(first[3:]) == current["guest_identity"] and int(first[2]) > int(before[2]), (before, first)
+        previous[label] = first
+        windows = continuation_windows(collector, senders, previous)
+        expected_receipts.extend(sample["receipt"] for window in windows for sample in window.values())
+        forks.append({
+            "operation_id": accepted["operation_id"],
+            "capture_id": done["result"]["capture_id"],
+            "child": label,
+            "source_before": before,
+            "first_child_external": first,
+            "windows": windows,
+        })
+
+    for field in ("operation_id", "capture_id"):
+        assert all(fork[field] for fork in forks) and forks[0][field] != forks[1][field], forks
+    for owner in [observer, *senders.values()]:
+        _, current_ref = platform.context(owner["machine_id"])
+        assert owner == sender(platform, owner["machine_id"], current_ref), (owner, current_ref)
+    owners = {owner["address"]: owner["guest_identity"] for owner in senders.values()}
+    assert len(owners) == 3 and observer["address"] not in owners, (owners, observer)
+    actual_receipts = {}
+    for row in collector.rows():
+        assert tuple(row[3:]) == owners[row[0]], row
+        if row[1] != "pulse":
+            assert row[1] not in actual_receipts, row
+            actual_receipts[row[1]] = row
+    assert actual_receipts == {row[1]: row for row in expected_receipts}, actual_receipts
+    print("Owned sequential witness", json.dumps({
+        "schema": "A14SequentialFork/1", "bundle_digest": platform.bundle_id, "kernel": os.uname().release,
+        "collector": observer, "senders": senders, "forks": forks,
+        "unique_business_receipts": len(actual_receipts),
+    }, sort_keys=True), flush=True)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("bundle", "platformd", "system-image"):
         parser.add_argument("--" + name, type=lambda path: Path(path).resolve(), required=True)
-    parser.add_argument("--phase", choices=PHASES, required=True)
+    parser.add_argument("--phase", choices=(*PHASES, "sequential"), required=True)
     parser.add_argument("--cut-timeout", type=int, default=45, help="seconds to observe the selected cut (default: 45)")
     parser.add_argument("--use-installation", action="store_true")
     parser.add_argument("--container", action="store_true", help="run an owned OCI workload in the System Guest")
@@ -510,7 +619,10 @@ def main():
         platform = Platform(args, root, stack, (NETWORK,), use_installation=args.use_installation)
         try:
             platform.start()
-            succeeded = gate_case(platform, args.phase, args.container, args.cut_timeout)
+            if args.phase == "sequential":
+                succeeded = sequential_case(platform)
+            else:
+                succeeded = gate_case(platform, args.phase, args.container, args.cut_timeout)
             peak = Path("/sys/fs/cgroup") / slice_name / "memory.peak"
             if peak.is_file():
                 print("Owned fixture slice memory peak", peak.read_text().strip(), flush=True)
