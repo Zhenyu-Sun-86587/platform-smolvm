@@ -140,6 +140,10 @@ def run(platform, intent, case):
         assert read_disk(platform, resumed) == b"origorig"
         print("COW_LIFECYCLE " + json.dumps(dict(bundle=platform.bundle_id, before=ref, after=resumed)), flush=True)
         return
+    if case == "cow-lease":
+        from polish_product import check_lease_and_fork
+        check_lease_and_fork(platform, source, ref, memory_backend="kernel_cow")
+        return
     before = vmm_memory(platform, ref)
     body = dict(child_name="Memory child", require_independent=True, memory_fork_backend=backend)
     start = time.monotonic_ns()

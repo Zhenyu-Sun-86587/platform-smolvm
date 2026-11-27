@@ -144,7 +144,7 @@ def check_capture(platform, path, ref):
                           restored_cpu_limit=actual.get("cpu_limit"))), flush=True)
 
 
-def check_lease_and_fork(platform, path, ref):
+def check_lease_and_fork(platform, path, ref, *, memory_backend=None):
     import time
     from authorized_services_kvm import worker_get
 
@@ -196,9 +196,14 @@ waitpid $pid, 0;
         assert status["power"] == "RUNNING" and "lease:polish slow HTTP" in status["blockers"], status
         time.sleep(.25)
     view = platform.wait_capability(path, "state.fork_batch")
-    batch = platform.change(path + "/fork-batches", "polish-manual-fork", {
-        "children": [{"name": "polish protected child"}], "require_independent": True}, view)
-    child, = platform.complete(batch)["children"]
+    body = {"children": [{"name": "polish protected child"}], "require_independent": True}
+    if memory_backend:
+        body["memory_fork_backend"] = memory_backend
+    batch = platform.change(path + "/fork-batches", "polish-manual-fork", body, view)
+    completed = platform.complete(batch)
+    if memory_backend:
+        assert completed["result"]["selected_memory_fork_backend"] == memory_backend, completed
+    child, = completed["children"]
     assert child["state"] == "ready" and child["resource_independence"] == "verified", child
     platform.guest(ref, ["touch", "/run/polish-model-release"])
     wait_for(lambda: platform.guest(ref, ["cat", "/run/polish-model-result"]).endswith(b"\r\n\r\nOK"),
