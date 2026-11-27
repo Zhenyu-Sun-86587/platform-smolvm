@@ -17,7 +17,7 @@ from uuid import uuid4
 import httpx
 
 from .types import (
-    GuestFileEntry, GuestFileUpload, LifecycleStatus, Machine, MachineMetrics,
+    GuestFileEntry, GuestFileUpload, LifecycleStatus, Machine, MachineMetrics, MemoryForkBackend,
     Operation, RunningLease, Service, Snapshot, SystemMetrics,
 )
 
@@ -38,6 +38,8 @@ class PlatformError(Exception):
         self.operation_id = self.detail.get("operation_id")
         self.effect = self.detail.get("effect")
         self.retry = self.detail.get("retry")
+        self.capability = self.detail.get("capability")
+        self.reason_code = self.detail.get("reason_code")
         super().__init__(self.detail.get("message", str(self.detail)))
 
 
@@ -537,7 +539,9 @@ class Client:
     def checkpoint(self, machine_id, label="", **options):
         return self._machine_mutation(machine_id, "snapshots", {"label": label, "capture_mode": "vm"}, **options)
 
-    def fork(self, machine_id, child_name, *, require_independent=False, memory_fork_backend=None, **options):
+    def fork(self, machine_id, child_name, *, require_independent=False, memory_fork_backend: MemoryForkBackend | None = None, **options):
+        if memory_fork_backend and not require_independent:
+            raise ValueError("memory_fork_backend requires require_independent=True")
         body = {"child_name": child_name}
         if require_independent:
             body["require_independent"] = True
@@ -545,7 +549,7 @@ class Client:
             body["memory_fork_backend"] = memory_fork_backend
         return self._machine_mutation(machine_id, "forks", body, **options)
 
-    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, admission=None, memory_fork_backend=None, **options):
+    def fork_batch(self, machine_id, children, *, require_independent=True, volume_policy=None, admission=None, memory_fork_backend: MemoryForkBackend | None = None, **options):
         """Submit a single capture and keep the ordered child IDs through partial completion."""
         body = {"children": children, "require_independent": require_independent}
         if memory_fork_backend is not None:

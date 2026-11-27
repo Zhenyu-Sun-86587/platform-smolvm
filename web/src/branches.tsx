@@ -4,6 +4,7 @@ import type { Machine } from "../../sdk/typescript/src/index"
 import { api, segment, useCollection } from "./api"
 import { bundleBound, Callout, fullStateBlock, label, machinePowerState, Section, State } from "./common"
 import { WorkspaceGuide } from "./features/machine/WorkspaceGuide"
+import { forkMemorySupport } from "./memory-fork"
 import { machineHref } from "./routes"
 import { Button } from "./daytona/button"
 import { copyDialog, forkBatchDialog } from "./workspace-actions"
@@ -118,7 +119,9 @@ export function Branches({
     )
   }
   if (graph && graph.edges.length === 0 && graph.errors.length === 0) {
-    const forkCommand = native && independent === undefined ? "sandboxctl machines live-fork " + machine.machine_id + " child-name"
+    const memory = forkMemorySupport(machine.capabilities?.["state.independent_fork"])
+    const backend = memory.kernelCow ? " --memory-fork-backend kernel_cow" : ""
+    const forkCommand = native && independent === undefined ? "sandboxctl machines live-fork " + machine.machine_id + " child-name" + backend
       : "sandboxctl machines fork " + machine.machine_id + " child-name" + (native ? " --require-independent" : "")
     return <WorkspaceGuide label="No forks" title="Branch this machine"
       description="Create a machine from this execution. Parent and child can continue independently when the runtime supports that mode."

@@ -52,6 +52,9 @@ func (e *apiError) Error() string {
 	if e.Detail.Code != "" {
 		s = e.Detail.Code + ": " + s
 	}
+	if e.Detail.Capability != "" && e.Detail.ReasonCode != "" {
+		s += " (" + e.Detail.ReasonCode + ")"
+	}
 	if e.Detail.OperationID != "" {
 		s += " (operation " + e.Detail.OperationID + ")"
 	}

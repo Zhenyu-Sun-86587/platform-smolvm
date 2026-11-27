@@ -180,6 +180,79 @@ func TestGuardedCommandsUseExpectedPowerAndVMOnlyModes(t *testing.T) {
 	}
 }
 
+func TestKernelCowCreateSendsFixedSystemProfile(t *testing.T) {
+	want := map[string]any{
+		"name": "source", "template_id": "system", "boot_mode": "system", "runtime_instance_id": "worker",
+		"resources": map[string]any{"cpu_count": float64(2), "memory_mib": float64(2048)},
+		"start":     false, "memory_fork_profile": "kernel_cow_anon_v1",
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/machines" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("If-Control-Epoch") != "epoch" || r.Header.Get("Idempotency-Key") != "intent" {
+			t.Error("missing the supplied mutation intent")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !reflect.DeepEqual(body, want) {
+			t.Errorf("payload=%+v, want %+v (%v)", body, want, err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"operation_id":"op_create","state":"queued","effect":"none"}`)
+	})
+	args := []string{"--json", "--no-wait", "--control-epoch", "epoch", "--idempotency-key", "intent", "machines", "create", "source", "--template", "system",
+		"--boot-mode", "system", "--runtime-instance", "worker", "--start=false", "--memory-fork-profile", "kernel_cow_anon_v1"}
+	out, stderr, code := runCLI(t, handler, args, nil)
+	if code != 0 || stderr != "" || !strings.Contains(out, "op_create") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+}
+
+func TestMemoryForkResultAndCapabilityReason(t *testing.T) {
+	const forkResult = `{"operation_id":"op_fork","state":"succeeded","kind":"independent_fork","effect":"applied","result":{"requested_memory_fork_backend":"auto","selected_memory_fork_backend":"kernel_cow","memory_fork_profile":"kernel_cow_anon_v1"}}`
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /v1/runtime-profiles":
+			_, _ = io.WriteString(w, `{"items":[{"runtime_instance_id":"worker","capabilities":{"boot.kernel_cow_ram":{"status":"supported","supported":true,"contract_version":1,"verified_profile":"kernel_cow_anon_v1"}}}]}`)
+		case "GET /v1/machines/m_source":
+			_, _ = io.WriteString(w, `{"machine_id":"m_source","capabilities":{"state.independent_fork":{"status":"supported","supported":true,"memory_fork":{"profile":"kernel_cow_anon_v1","kernel_cow_supported":true,"native_supported":false}}}}`)
+		case "GET /v1/operations/op_fork":
+			_, _ = io.WriteString(w, forkResult)
+		case "POST /v1/machines/m_source/forks":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"error":{"code":"CAPABILITY_UNSUPPORTED","message":"state.memory_fork is unsupported for this runtime","capability":"state.memory_fork","reason_code":"MEMORY_FORK_BACKEND_UNAVAILABLE","effect":"none","retry":"after_precondition"}}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+	})
+	out, stderr, code := runCLI(t, handler, []string{"--json", "machines", "get", "m_source"}, nil)
+	if code != 0 || stderr != "" || !strings.Contains(out, `"kernel_cow_supported":true`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	out, stderr, code = runCLI(t, handler, []string{"--json", "runtime-profiles"}, nil)
+	if code != 0 || stderr != "" || !strings.Contains(out, `"boot.kernel_cow_ram":`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	out, stderr, code = runCLI(t, handler, []string{"--json", "operations", "wait", "op_fork"}, nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+	}
+	equalJSON(t, out, json.RawMessage(forkResult))
+
+	args := []string{"--control-epoch", "epoch", "--idempotency-key", "intent", "--revision", "1", "--generation", "2", "machines", "live-fork",
+		"m_source", "child", "--memory-fork-backend", "native"}
+	for _, jsonOutput := range []bool{false, true} {
+		command := args
+		if jsonOutput {
+			command = append([]string{"--json"}, args...)
+		}
+		out, stderr, code = runCLI(t, handler, command, nil)
+		if code == 0 || out != "" || !strings.Contains(stderr, "MEMORY_FORK_BACKEND_UNAVAILABLE") {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, stderr)
+		}
+	}
+}
+
 func TestExecFollowStreamsBytesAndGuestExit(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

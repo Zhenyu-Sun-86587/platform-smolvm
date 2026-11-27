@@ -21,9 +21,11 @@ import {
   Trash2,
   Zap,
 } from "lucide-react"
-import type { Machine, Service } from "../../sdk/typescript/src/index"
+import type { Capability, Machine, Service } from "../../sdk/typescript/src/index"
 import type { Actions } from "./main"
 import { bundleBound, Callout, fullStateBlock, label, machinePowerState, segment, str } from "./common"
+import type { Field } from "./common"
+import { forkMemorySupport, memoryForkBackendLabel } from "./memory-fork"
 import { Button } from "./daytona/button"
 import { Modal } from "./ui"
 import { desktopHref, machineHref, terminalHref } from "./routes"
@@ -76,6 +78,34 @@ export function powerDialog(m: Machine, actions: Actions, kind: string) {
       ),
   })
 }
+function forkMemoryField(capability?: Capability): Field {
+  const { available, observation, native, kernelCow } = forkMemorySupport(capability)
+  let note = capability?.message || capability?.reason_code || "Fork has not been verified for this source."
+  if (available) {
+    if (!observation) note = "The Worker has not reported Kernel CoW support. Auto can use Native for this execution."
+    else if (kernelCow) note = "Choose Kernel CoW or Auto to fork this execution."
+    else if (native) note = "Kernel CoW unavailable. " + (observation.unavailable_reason || "This execution uses the Native RAM profile.")
+    else note = observation.unavailable_reason || "This execution has not reported a supported RAM backend."
+  }
+  return {
+    name: "memory_fork_backend",
+    label: "Memory backend",
+    required: !native,
+    options: [
+      { value: "", label: native ? "Use default (Native)" : "Choose a backend", disabled: !native },
+      { value: "native", label: memoryForkBackendLabel("native"), disabled: !native },
+      { value: "kernel_cow", label: memoryForkBackendLabel("kernel_cow"), disabled: !kernelCow },
+      { value: "auto", label: memoryForkBackendLabel("auto"), disabled: !native && !kernelCow },
+    ],
+    note,
+  }
+}
+
+function forkMemoryRequest(form: FormData) {
+  const backend = str(form, "memory_fork_backend")
+  return backend ? { memory_fork_backend: backend } : {}
+}
+
 export function copyDialog(m: Machine, actions: Actions, live: boolean, independent = false) {
   actions.dialog({
     title: independent ? "Independent Fork" : live ? "Live Fork" : "Independent Clone",
@@ -91,6 +121,7 @@ export function copyDialog(m: Machine, actions: Actions, live: boolean, independ
         value: m.name + (live ? "-fork" : "-clone"),
         required: true,
       },
+      ...(independent ? [forkMemoryField(m.capabilities?.["state.independent_fork"])] : []),
     ],
     act: (f) =>
       actions.mutate(
@@ -99,7 +130,7 @@ export function copyDialog(m: Machine, actions: Actions, live: boolean, independ
           child_name: str(f, "child_name"),
           expected_generation: m.binding_generation,
           ...(live ? {} : { copy_policy: "managed_clean" }),
-          ...(independent ? { require_independent: true } : {}),
+          ...(independent ? { require_independent: true, ...forkMemoryRequest(f) } : {}),
         },
         { revision: m.revision },
       ),
@@ -112,10 +143,12 @@ export function forkBatchDialog(m: Machine, actions: Actions) {
     description: "Create independent children from one source capture.",
     submit: "Fork batch",
     fields: [{ name: "children", label: "Child names, one per line", type: "textarea", required: true },
+      forkMemoryField(m.capabilities?.["state.fork_batch"]),
       { name: "best_effort", label: "Create as many children as the Worker can admit", type: "checkbox" }],
     act: (f) => actions.mutate("machines/" + segment(m.machine_id) + "/fork-batches", {
       expected_generation: m.binding_generation,
       require_independent: true,
+      ...forkMemoryRequest(f),
       ...(f.has("best_effort") ? { admission: "best_effort" } : {}),
       children: str(f, "children").split("\n").map(name => name.trim()).filter(Boolean).map(name => ({name})),
     }, { revision: m.revision }),

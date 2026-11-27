@@ -52,6 +52,7 @@ export interface DesktopSession {
     expires_at: string;
 }
 export type MemoryForkBackend = "native" | "kernel_cow" | "auto";
+export type MemoryForkProfile = "kernel_cow_anon_v1";
 export interface MemoryForkObservation {
     profile: string;
     kernel_cow_supported: boolean;
@@ -90,6 +91,11 @@ export interface OperationChild {
     resource_independence?: "unknown" | "verified" | "failed";
     error_code?: string;
 }
+export interface OperationResult extends Record<string, unknown> {
+    requested_memory_fork_backend?: MemoryForkBackend;
+    selected_memory_fork_backend?: Exclude<MemoryForkBackend, "auto">;
+    memory_fork_profile?: string;
+}
 export interface Operation {
     operation_id: string;
     control_epoch?: string;
@@ -109,7 +115,7 @@ export interface Operation {
     children?: OperationChild[];
     binding_generation?: number;
     error?: ErrorDetail | null;
-    result?: Record<string, unknown> | null;
+    result?: OperationResult | null;
 }
 export interface Capability {
     memory_fork?: MemoryForkObservation;
@@ -405,7 +411,7 @@ export interface NetworkDefaults {
     default_network_id?: string;
 }
 export interface CreateMachine {
-    memory_fork_profile?: "kernel_cow_anon_v1";
+    memory_fork_profile?: MemoryForkProfile;
     live_compute_growth?: boolean;
     lifecycle_policy?: LifecyclePolicyPatch;
     boot_mode?: BootMode;
@@ -532,7 +538,7 @@ export interface CaptureConfiguration {
         boot_mode?: BootMode;
         resources?: ResourcePatch;
         live_compute_growth?: boolean;
-        memory_fork_profile?: "kernel_cow_anon_v1";
+        memory_fork_profile?: MemoryForkProfile;
         network?: NetworkSelection & {
             route_domain_id?: string;
             cidr?: string;

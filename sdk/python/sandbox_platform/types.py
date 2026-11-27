@@ -5,6 +5,15 @@ from typing import Literal, TypedDict
 Effect = Literal["none", "applied", "partial", "unknown"]
 OperationState = Literal["queued", "dispatching", "observing", "succeeded", "failed", "cancelled", "recovery_required"]
 PowerState = Literal["running", "standby", "hibernated", "stopped", "unknown"]
+MemoryForkBackend = Literal["native", "kernel_cow", "auto"]
+MemoryForkProfile = Literal["kernel_cow_anon_v1"]
+
+
+class MemoryForkObservation(TypedDict, total=False):
+    profile: str
+    kernel_cow_supported: bool
+    native_supported: bool
+    unavailable_reason: str
 
 
 class Capability(TypedDict, total=False):
@@ -15,6 +24,7 @@ class Capability(TypedDict, total=False):
     reason_code: str | None
     message: str
     verified_profile: str
+    memory_fork: MemoryForkObservation
 
 
 class OperationChild(TypedDict, total=False):
@@ -120,6 +130,7 @@ class Machine(TypedDict, total=False):
     desired_power: str
     health: dict[str, object]
     boot_mode: Literal["oci", "system"]
+    memory_fork_profile: MemoryForkProfile
     desktop_profile: str
     resources: dict[str, int | None]
     spec: dict[str, object]
