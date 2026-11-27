@@ -1,7 +1,9 @@
 """Public System Fork qualification using a live process, two disks and a private network."""
 
 import json
+import os
 import re
+import signal
 import sqlite3
 from pathlib import Path
 import time
@@ -64,6 +66,37 @@ def write_disk(platform, ref, marker):
 
 def read_disk(platform, ref):
     return platform.guest(ref, ["sh", "-ec", "cat /root/cow-value; dd if=/dev/vdb bs=1 count=4 status=none"])
+
+
+def check_early_anchor_loss(platform, op, mid, ref, original):
+    op_id = op["operation_id"]
+    uri = (platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro"
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    with sqlite3.connect(uri, uri=True) as db:
+        def unpublished():
+            return db.execute("""SELECT a.capture_id, a.helper_pid, a.helper_start, a.host_boot_id
+                FROM kernel_mm_anchors a WHERE a.operation_id=? AND NOT EXISTS
+                (SELECT 1 FROM resources r WHERE r.resource_id=a.capture_id)""", (op_id,)).fetchone()
+        capture, pid, ticks, host = wait_for(unpublished, timeout=55)
+        assert host == boot
+        fd = os.pidfd_open(pid)
+        try:
+            assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == ticks
+            assert unpublished() == (capture, pid, ticks, host)
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+        finally:
+            os.close(fd)
+        def returned():
+            current = platform.app("operations/" + op_id)
+            return current if current["state"] == "failed" else None
+        failure = wait_for(returned, timeout=90)
+        row, = db.execute("SELECT capture_id,source_released,stage FROM managed_fork_batches WHERE operation_id=?", (op_id,))
+    assert row == (capture, 1, "aborted"), row
+    assert not any(child["state"] == "ready" for child in failure["children"])
+    _, current = platform.context(mid)
+    assert current == ref and read_workload(platform, current) == original and read_disk(platform, current) == b"origorig"
+    print("COW_EARLY_ANCHOR_LOSS " + json.dumps(dict(operation=op_id, capture=capture, source=ref,
+          public_state=failure["state"], public_effect=failure["effect"], source_released=True)), flush=True)
 
 
 def run(platform, intent, case):
@@ -150,6 +183,9 @@ def run(platform, intent, case):
     start = time.monotonic_ns()
     accepted = platform.change(source + "/forks", "cow-fork-once", body, view)
     accepted_at = time.monotonic_ns()
+    if case == "cow-early-anchor-loss":
+        check_early_anchor_loss(platform, accepted, mid, ref, original)
+        return
     try:
         completed = platform.complete(accepted)
     except (RuntimeError, TimeoutError):

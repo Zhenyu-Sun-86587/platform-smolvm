@@ -28,7 +28,7 @@ import time
 
 EXT = "/api/v1/runtime-ext/v1"
 COW_BOOT_CASES = {"cow-prepare-reboot", "cow-restore-reboot"}
-COW_CASES = COW_BOOT_CASES | {"cow-legacy", "cow-kernel", "cow-native", "cow-auto", "cow-lifecycle", "cow-lease"}
+COW_CASES = COW_BOOT_CASES | {"cow-legacy", "cow-kernel", "cow-native", "cow-auto", "cow-lifecycle", "cow-lease", "cow-early-anchor-loss"}
 INSTALLED_CASES = COW_CASES | {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"}
 
 
