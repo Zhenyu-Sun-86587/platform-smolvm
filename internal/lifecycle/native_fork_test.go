@@ -339,9 +339,40 @@ func TestNativeForkValidatesOptionalActivationDecision(t *testing.T) {
 	} {
 		child := rt.ForkChildReceipt{Name: "child", InstanceID: "child-slot", OperationID: "attempt-1", Phase: "ABORTED",
 			ExecutionEpoch: 1, IncarnationID: tc.incarnation, ActivationDecision: tc.decision}
-		if err := verifyForkReceiptChildren(submission, []rt.ForkChildReceipt{child}); (err == nil) != tc.valid {
+		if err := verifyForkReceiptChildren(submission, &rt.ForkProgress{Children: []rt.ForkChildReceipt{child}}); (err == nil) != tc.valid {
 			t.Fatal(child, err)
 		}
+	}
+}
+
+func TestNativeForkAcceptsLossOfItsOriginalKernelCapture(t *testing.T) {
+	submission := rt.ForkSubmission{OperationID: "fork", Expected: rt.ExecutionRef{InstanceID: "parent"}}
+	submission.Parameters.Children = []string{"child"}
+	reserved := rt.ForkChildReceipt{Name: "child", InstanceID: "child-slot", OperationID: "child-attempt",
+		Phase: "RESERVED", ExecutionEpoch: 2, Attempt: 1}
+	lost := reserved
+	lost.Phase, lost.AdmissionError = "ABORTED", "E_CAPTURE_LOST"
+	progress := rt.ForkProgress{Stage: "complete", SelectedMemoryForkBackend: "kernel_cow",
+		SourceReleased: true, Children: []rt.ForkChildReceipt{lost}}
+	if err := verifyForkReceiptChildren(submission, &progress); err != nil || !sameForkAttempt(lost, reserved) {
+		t.Fatal("original unlaunched attempt did not settle", err)
+	}
+	for _, mutate := range []func(*rt.ForkProgress){
+		func(p *rt.ForkProgress) { p.SelectedMemoryForkBackend = "native" },
+		func(p *rt.ForkProgress) { p.SourceReleased = false },
+		func(p *rt.ForkProgress) { p.Children[0].IncarnationID = &reserved.OperationID },
+		func(p *rt.ForkProgress) { p.Children[0].Cancelled = true },
+	} {
+		invalid := progress
+		invalid.Children = []rt.ForkChildReceipt{lost}
+		mutate(&invalid)
+		if err := verifyForkReceiptChildren(submission, &invalid); err == nil {
+			t.Fatalf("accepted inconsistent lost capture %+v", invalid)
+		}
+	}
+	reserved.Phase = "NEW"
+	if sameForkAttempt(lost, reserved) {
+		t.Fatal("interpreted a launched target as an unlaunched capture loss")
 	}
 }
 

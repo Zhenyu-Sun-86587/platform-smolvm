@@ -262,7 +262,7 @@ func (j *Job) checkForkReceipt(receipt rt.OperationReceipt) error {
 	if len(j.Op.Result) != 0 && (json.Unmarshal(j.Op.Result, &old) != nil || old.CaptureID != progress.CaptureID) {
 		return &Failure{"RECOVERY_REQUIRED", "Worker fork capture changed after admission"}
 	}
-	return verifyForkReceiptChildren(request, progress.Children)
+	return verifyForkReceiptChildren(request, progress)
 }
 
 func (i *nativeForkIntent) memoryReceiptMatches(p *rt.ForkProgress) bool {
@@ -308,7 +308,7 @@ func (j *Job) confirmNativeFork(ctx context.Context, control rt.NativeForkContro
 	intent, progress := j.Intent.Fork, receipt.Fork
 	admitted := make([]string, 0, len(progress.Children))
 	for ordinal, child := range progress.Children {
-		if child.AdmissionError == "" {
+		if child.AdmissionError != "E_RESOURCE_LIMIT" {
 			admitted = append(admitted, j.Op.Children[ordinal].MachineID)
 		}
 	}
@@ -387,17 +387,23 @@ func (j *Job) confirmForkAbort(ctx context.Context, control rt.NativeForkControl
 	return j.finish(ctx, state, step)
 }
 
-func verifyForkReceiptChildren(request rt.ForkSubmission, children []rt.ForkChildReceipt) error {
+func verifyForkReceiptChildren(request rt.ForkSubmission, progress *rt.ForkProgress) error {
 	instances, operations := map[string]bool{}, map[string]bool{}
-	for ordinal, child := range children {
+	for ordinal, child := range progress.Children {
 		if child.Name != request.Parameters.Children[ordinal] || child.OperationID == "" || child.InstanceID == "" ||
 			child.OperationID == request.OperationID || child.InstanceID == request.Expected.InstanceID ||
 			instances[child.InstanceID] || operations[child.OperationID] || child.ExecutionEpoch < 1 || child.Attempt < 0 {
 			return &Failure{"RECOVERY_REQUIRED", "Worker fork child differs from the accepted ordered child set"}
 		}
-		if child.AdmissionError != "" && (request.Parameters.Admission != rt.ForkBestEffort || child.AdmissionError != "E_RESOURCE_LIMIT" ||
-			child.Phase != "ABORTED" || child.IncarnationID != nil || child.ExecutionEpoch != 1 || child.Attempt != 0 || child.Cancelled) {
-			return &Failure{"RECOVERY_REQUIRED", "Worker fork child reports an inconsistent budget refusal"}
+		if child.AdmissionError != "" {
+			unlaunched := child.Phase == "ABORTED" && child.IncarnationID == nil && !child.Cancelled && !child.HasProductVolumes
+			budgetRefusal := child.AdmissionError == "E_RESOURCE_LIMIT" && request.Parameters.Admission == rt.ForkBestEffort &&
+				child.ExecutionEpoch == 1 && child.Attempt == 0
+			lostCapture := child.AdmissionError == "E_CAPTURE_LOST" && progress.SelectedMemoryForkBackend == "kernel_cow" &&
+				progress.SourceReleased && (progress.Stage == "children" || progress.Stage == "complete")
+			if !unlaunched || (!budgetRefusal && !lostCapture) {
+				return &Failure{"RECOVERY_REQUIRED", "Worker fork child reports an inconsistent unlaunched failure"}
+			}
 		}
 		if child.ActivationDecision != "" && (!knownActivationDecision(child.ActivationDecision) ||
 			child.IncarnationID == nil || *child.IncarnationID == "" || *child.IncarnationID == request.Expected.IncarnationID ||
@@ -410,8 +416,9 @@ func verifyForkReceiptChildren(request rt.ForkSubmission, children []rt.ForkChil
 }
 
 func sameForkAttempt(a, b rt.ForkChildReceipt) bool {
+	captureLostBeforeLaunch := b.Phase == "RESERVED" && b.AdmissionError == "" && a.AdmissionError == "E_CAPTURE_LOST"
 	return a.Name == b.Name && a.InstanceID == b.InstanceID && a.OperationID == b.OperationID &&
-		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt && a.AdmissionError == b.AdmissionError &&
+		a.ExecutionEpoch == b.ExecutionEpoch && a.Attempt == b.Attempt && (a.AdmissionError == b.AdmissionError || captureLostBeforeLaunch) &&
 		(b.IncarnationID == nil || (a.IncarnationID != nil && *a.IncarnationID == *b.IncarnationID)) && (!b.Cancelled || a.Cancelled)
 }
 
@@ -424,7 +431,7 @@ func allAdmittedTargetsCancelled(children []rt.ForkChildReceipt) bool {
 	for _, child := range children {
 		if child.Cancelled {
 			cancelled = true
-		} else if child.AdmissionError == "" {
+		} else if child.AdmissionError != "E_RESOURCE_LIMIT" {
 			return false
 		}
 	}
@@ -465,7 +472,9 @@ func (j *Job) confirmForkChildren(ctx context.Context, control rt.NativeForkCont
 			}
 		case "ABORTED":
 			code := "NATIVE_CHILD_ABORTED"
-			if workerChild.AdmissionError != "" {
+			if workerChild.AdmissionError == "E_CAPTURE_LOST" {
+				code = "CAPTURE_LOST"
+			} else if workerChild.AdmissionError == "E_RESOURCE_LIMIT" {
 				code = "RESOURCE_LIMIT"
 			} else if workerChild.Cancelled {
 				code = "FORK_CHILD_CANCELLED"
