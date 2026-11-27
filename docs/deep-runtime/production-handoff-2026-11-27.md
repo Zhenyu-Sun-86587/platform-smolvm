@@ -111,7 +111,11 @@ Boxd 官方文档规定托管会话随 Fork 复制，子会话处于 `idle`。�
 
 把平台托管的 Codex / Claude Code 接续列为独立后续项，可先复用现有 Native Live Fork、Guest gate 和运行租约。第一版原型需要在持久化的轮次边界复制已完成对话，子会话从 `idle` 开始。子机放行前隔离继承的旧执行与队列，避免重发模型请求或工具写入。工作区仍来自原 VM 捕获点，可能包含源机本轮已经写入的文件。手动启动的任意 Guest Agent 仍遵循普通 VM Fork，待产品测试验证其各自的重连行为。
 
-验收用一段无外部副作用、可以故意延迟的流式模型请求。先完成若干轮，然后在下一轮流式响应或工具执行期间 Fork。核对父轮只执行一次、子会话空闲等待、子机接到新指令时能使用已完成的历史。复测断线、请求去重、未知效果和保持运行租约。Agent 接续和内核 CoW 可独立交付，均沿用已有生产验收版本边界。
+**托管会话的产品验收以 Fork 时最后一个完整轮次为准。** 例如前 5 轮已提交，第 6 轮正在收模型回复或等待工具结束，此时创建一个或多个子机。父机用原请求继续并完成第 6 轮。每个子会话只显示前 5 轮，从 `idle` 等待自己的下一条指令。第 6 轮尚未完成的用户消息、半段回复和待执行工具都不进入子机会话历史或执行队列。如果第 6 轮在 Fork 捕获前已经提交，则每个子会话都保留前 6 轮。会话边界不回滚工作区，捕获前已经落盘的文件仍按 VM Fork 语义继承。
+
+分别在提交第 6 轮前后触发 Fork，测试单子机和多子机。独立记录上游请求次数和工具执行次数，核对进行中的父轮只执行一次。随后分别给子会话发送新指令，从各自继承的完整历史继续。父机原模型连接的尾事件、子机初始 `idle` 和子机能独立开始下一轮，分别提供证据。复测断线、请求去重、未知效果和保持运行租约。完整托管会话另立任务，本轮先验父机原模型流续传。
+
+Boxd 的 Fork 指南说明运行中的源机经过短暂停顿后继续。Sessions 指南明确子机继承会话并进入 `idle`，避免重复运行。官方博客说明编码 Agent 把会话保存在机器的持久磁盘上。上述资料没有具体规定半轮消息如何展示，前述“最后一个完整轮次”是本产品明确采用的边界。[Boxd Fork 指南](https://docs.boxd.sh/guides/fork) · [Boxd Sessions 指南](https://docs.boxd.sh/guides/agents/sessions.md) · [Boxd 编码 Agent 博客](https://boxd.sh/blog/coding-agents)
 
 [Boxd Sessions 文档](https://docs.boxd.sh/guides/agents/sessions) · [Agent 实验记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/reference/experiments/boxd-supplement-2026-11-26/SUPPLEMENT_REPORT.md:51) · [后端范围](/home/dev/workspace/deepfork-smolvm/platform-smolvm/docs/smolvm-phase2-polish-2026-11-26/02_backend/BACKEND_RESEARCH_AND_PLAN.md:93)
 
