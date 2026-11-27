@@ -121,7 +121,7 @@ class Platform:
             return HTTPSConnection("127.0.0.1", self.port, context=self.tls[2], timeout=timeout)
         return HTTPConnection("127.0.0.1", self.port, timeout=timeout)
 
-    def start(self, *, owner_password=None, reopen=False):
+    def start(self, *, owner_password=None, reopen=False, keep_password_for_reboot=False):
         root = self.root
         for name in ("var-lib", "ipc", "runtime"):
             (root / name).mkdir(mode=0o755, exist_ok=reopen)
@@ -223,7 +223,8 @@ class Platform:
         self.platform_command = [self.args.platformd, "--config", config]
         self.platform = self.spawn(self.platform_command, "platform.log")
         self.login_owner(password)
-        secret.unlink()
+        if not keep_password_for_reboot:
+            secret.unlink()
 
     def login_owner(self, password):
         session, cookie = wait_for(lambda: request(
@@ -1651,7 +1652,7 @@ def test(args, root, stack, case):
     candidate = args.platformd
     if case == "polish-history":
         args.platformd = args.previous_platformd
-    platform.start(reopen=case == "cow-restore-reboot")
+    platform.start(reopen=case == "cow-restore-reboot", keep_password_for_reboot=case == "cow-prepare-reboot")
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
