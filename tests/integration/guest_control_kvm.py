@@ -336,6 +336,16 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
                                                          for c in result["children"]), result
     assert upstream.requests == [("/fork-stream", True, True)], upstream.requests
     assert upstream.model_posts == [upstream.model_request.encode()]
+    with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+        cut = db.execute(
+            """SELECT original,stage,source_released,credential_relay_hold FROM managed_fork_batches
+               WHERE operation_id=?""", (result["operation_id"],)
+        ).fetchone()
+        protection = db.execute(
+            "SELECT id,kind,state,reason FROM lifecycle_protections WHERE principal=? AND incarnation_id=?",
+            (grant, ref["incarnation_id"]),
+        ).fetchall()
+        print("STREAM_CUT " + json.dumps(dict(operation=result["operation_id"], cut=cut, protection=protection)), flush=True)
     upstream.release.set()
     branches = [("source", machine, ref)]
     for name, child in zip(names, result["children"], strict=True):
@@ -352,6 +362,8 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
         platform.guest(execution, ["test", "-d", "/proc/" + identity.split()[0].decode()])
         wait_for(lambda: platform.guest(execution, ["cat", folder + "/first.done"]), timeout=35, retry=(OSError, RuntimeError))
         old = platform.guest(execution, ["cat", folder + "/first.http"])
+        print("STREAM_END " + json.dumps(dict(branch=name, head_count=old.count(head), tail_count=old.count(tail),
+            bytes_received=len(old), upstream_original_posts=len(upstream.model_posts))), flush=True)
         assert old.count(head) == 1 and old.count(tail) == (1 if name == "source" else 0), name
         assert platform.guest(execution, ["sh", "-ec",
             'cd "$1" && test ! -e next.http && test ! -e result', "check", folder]) == b""
