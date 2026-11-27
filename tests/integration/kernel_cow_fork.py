@@ -66,6 +66,25 @@ def read_disk(platform, ref):
 
 
 def run(platform, intent, case):
+    if case == "cow-restore-reboot":
+        proof = json.loads((platform.root / "reboot-proof.json").read_text())
+        assert not Path("/sys/kernel/smolvm_cow/abi").exists()
+        assert proof["boot_id"] != Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        assert platform.bundle_id == proof["bundle"]
+        mid = proof["machine_id"]
+        path = "machines/" + mid
+        saved = platform.app(path)
+        assert saved["power_state"] == "hibernated", saved
+        platform.complete(platform.change(path + "/start", "stock-wake", {"expected_power_state": "hibernated"}, saved))
+        view, ref = platform.context(mid)
+        assert ref["incarnation_id"] != proof["source"]["incarnation_id"]
+        assert wait_for(lambda: read_workload(platform, ref), retry=(RuntimeError, OSError)) == proof["response"]
+        assert read_disk(platform, ref) == b"origorig"
+        cap = platform.wait_capability(path, "state.independent_fork")["capabilities"]["state.independent_fork"]
+        assert cap["memory_fork"]["native_supported"] and not cap["memory_fork"]["kernel_cow_supported"], cap
+        print("COW_STOCK_RESTORE " + json.dumps(dict(before=proof["source"], after=ref, machine_id=mid,
+              bundle=platform.bundle_id, hibernate_operation=proof["hibernate_operation"])), flush=True)
+        return
     backend = {"cow-native": "native", "cow-legacy": "auto", "cow-auto": "auto"}.get(case, "kernel_cow")
     expected = "native" if case in ("cow-native", "cow-legacy") else "kernel_cow"
     intent.update(start=False, resources=dict(cpu_count=1, memory_mib=512),
@@ -99,6 +118,15 @@ def run(platform, intent, case):
         refusal = platform.change(source + "/forks", "unavailable-kernel",
             dict(child_name="Denied", require_independent=True, memory_fork_backend="kernel_cow"), view, status=409)
         assert refusal["error"]["code"] == "CAPABILITY_UNSUPPORTED", refusal
+    if case == "cow-prepare-reboot":
+        assert Path("/sys/kernel/smolvm_cow/abi").is_file()
+        op = platform.complete(platform.change(source + "/hibernate", "canary-hibernate", {}, platform.app(source)))
+        assert platform.app(source)["power_state"] == "hibernated"
+        proof = dict(boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                     machine_id=mid, bundle=platform.bundle_id, response=original, source=ref, hibernate_operation=op["operation_id"])
+        (platform.root / "reboot-proof.json").write_text(json.dumps(proof))
+        print("COW_REBOOT_PREPARED " + op["operation_id"], flush=True)
+        return
     if case == "cow-lifecycle":
         from polish_product import check_capture
         check_capture(platform, source, ref)

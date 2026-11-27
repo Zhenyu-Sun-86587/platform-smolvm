@@ -5,7 +5,7 @@ import argparse
 import array
 import base64
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
 import grp
 import hashlib
@@ -27,7 +27,8 @@ import time
 
 
 EXT = "/api/v1/runtime-ext/v1"
-COW_CASES = {"cow-legacy", "cow-kernel", "cow-native", "cow-auto", "cow-lifecycle"}
+COW_BOOT_CASES = {"cow-prepare-reboot", "cow-restore-reboot"}
+COW_CASES = COW_BOOT_CASES | {"cow-legacy", "cow-kernel", "cow-native", "cow-auto", "cow-lifecycle"}
 INSTALLED_CASES = COW_CASES | {"fork-lost-reply", "task-fork-cancel-retry", "grant-rollback", "saved-wake-exact", "polish-files", "polish-capture", "polish-lease-fork", "polish-metrics", "polish-history", "polish-old-agent", "polish-metrics-epoch"}
 
 
@@ -120,10 +121,10 @@ class Platform:
             return HTTPSConnection("127.0.0.1", self.port, context=self.tls[2], timeout=timeout)
         return HTTPConnection("127.0.0.1", self.port, timeout=timeout)
 
-    def start(self, *, owner_password=None):
+    def start(self, *, owner_password=None, reopen=False):
         root = self.root
         for name in ("var-lib", "ipc", "runtime"):
-            (root / name).mkdir(mode=0o755)
+            (root / name).mkdir(mode=0o755, exist_ok=reopen)
         if self.state_tmpfs:
             state = root / "platform"
             state.mkdir(mode=0o700)
@@ -136,7 +137,7 @@ class Platform:
         subprocess.run(["mount", "--bind", root / "runtime", runtime], check=True)
         self.bundle = root / "bundle"
         if self.use_installation:
-            self.bundle.mkdir()
+            self.bundle.mkdir(exist_ok=reopen)
             subprocess.run(["mount", "--rbind", self.args.bundle, self.bundle], check=True)
             self.stack.callback(subprocess.run, ["umount", "--lazy", self.bundle], check=True)
             subprocess.run(["mount", "-o", "remount,bind,ro", self.bundle], check=True)
@@ -148,10 +149,13 @@ class Platform:
             "SMOLVM_LIB_DIR": str(self.bundle / "lib"),
             "SMOLVM_GUEST_RELAY_DIR": str(self.relay_dir),
         }
-        password = owner_password or os.urandom(24).hex()
         secret = root / "owner-password"
-        secret.touch(mode=0o600)
-        secret.write_text(password + "\n")
+        if reopen:
+            password = secret.read_text().strip()
+        else:
+            password = owner_password or os.urandom(24).hex()
+            secret.touch(mode=0o600)
+            secret.write_text(password + "\n")
         self.env["SANDBOX_OWNER_PASSWORD_FILE"] = str(secret)
         catalog = root / "catalog"
         catalog.mkdir(mode=0o700, exist_ok=True)
@@ -173,17 +177,18 @@ class Platform:
         self.native("/machines/import-template/binding")
         self.stack.callback(self.kill_vms)
         image_hash = digest(self.args.system_image)
-        import_scope = dict(route_id="deep", bundle_digest=self.bundle_id,
-                            operation_id="import-system-fixture", request_digest=image_hash,
-                            expected=dict(instance_id="template", incarnation_id=None, execution_epoch=0))
-        worker(self.worker, "BeginOperation", {"kind": "catalog"}, **import_scope)
-        with self.args.system_image.open("rb") as image:
-            worker(self.worker, "ImportImmutableBlock", {
-                "resource_id": "fixture-system-root",
-                "capacity_bytes": self.args.system_image.stat().st_size,
-                "content_sha256": image_hash,
-            }, fd=image.fileno(), **import_scope)
-        worker(self.worker, "FinishOperation", {"abort": False, "expected_revision": 1}, **import_scope)
+        if not reopen:
+            import_scope = dict(route_id="deep", bundle_digest=self.bundle_id,
+                                operation_id="import-system-fixture", request_digest=image_hash,
+                                expected=dict(instance_id="template", incarnation_id=None, execution_epoch=0))
+            worker(self.worker, "BeginOperation", {"kind": "catalog"}, **import_scope)
+            with self.args.system_image.open("rb") as image:
+                worker(self.worker, "ImportImmutableBlock", {
+                    "resource_id": "fixture-system-root",
+                    "capacity_bytes": self.args.system_image.stat().st_size,
+                    "content_sha256": image_hash,
+                }, fd=image.fileno(), **import_scope)
+            worker(self.worker, "FinishOperation", {"abort": False, "expected_revision": 1}, **import_scope)
         templates = root / "templates.json"
         templates.write_text(json.dumps([dict(
             template_id="t_system", name="Debian", version=1, image_digest=image_hash,
@@ -1646,7 +1651,7 @@ def test(args, root, stack, case):
     candidate = args.platformd
     if case == "polish-history":
         args.platformd = args.previous_platformd
-    platform.start()
+    platform.start(reopen=case == "cow-restore-reboot")
     intent = dict(
         name="System vsock fixture", template_id="t_system", boot_mode="system",
         runtime_instance_id=platform.serve_id, start=True, resources=dict(cpu_count=2, memory_mib=768),
@@ -1798,7 +1803,17 @@ def main():
         os.execvpe("unshare", ["unshare", "--mount", "--propagation", "private", "--net", "--",
                               sys.executable, __file__, *sys.argv[1:]],
                    {**os.environ, "MANAGED_SYSTEM_VSOCK_TEST_NAMESPACE": "1"})
-    with tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-") as directory, ExitStack() as stack:
+    case = selection[0]
+    if case in COW_BOOT_CASES:
+        directory = args.work_dir / "cow-reboot"
+        if case == "cow-prepare-reboot":
+            directory.mkdir(mode=0o755)
+        elif not (directory / "reboot-proof.json").is_file():
+            parser.error("stock restore requires the completed canary preparation in the same --work-dir")
+        location = nullcontext(directory)
+    else:
+        location = tempfile.TemporaryDirectory(dir=args.work_dir, prefix="msv-")
+    with location as directory, ExitStack() as stack:
         root = Path(directory)
         root.chmod(0o755)
         if selection[0].startswith("packet-cut-") or selection[0] == "packet-activity" or selection[0] in INSTALLED_CASES:
