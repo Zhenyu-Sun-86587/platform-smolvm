@@ -332,7 +332,9 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
         platform.guest(execution, ["test", "-d", "/proc/" + identity.split()[0].decode()])
         wait_for(lambda: platform.guest(execution, ["cat", folder + "/first.done"]), timeout=35, retry=(OSError, RuntimeError))
         old = platform.guest(execution, ["cat", folder + "/first.http"])
-        assert head in old and (name == "source" or tail not in old)
+        assert old.count(head) == 1 and old.count(tail) == (1 if name == "source" else 0), name
+        assert platform.guest(execution, ["sh", "-ec",
+            'cd "$1" && test ! -e next.http && test ! -e result', "check", folder]) == b""
         next_grant, next_token = credential(platform, machine_id, "credential_proxy.use", "answer-" + name, proxy_id="model")
         wait_for((platform.relay_dir / (execution["incarnation_id"] + ".sock")).is_socket)
         def current_relay():
