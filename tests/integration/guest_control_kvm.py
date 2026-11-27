@@ -332,12 +332,28 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
         "fork-batches", "state.fork_batch", dict(children=[dict(name="Answer " + name) for name in names]))
     accepted = platform.change(source + "/" + endpoint, "fork-waiting-for-model",
         {**body, "require_independent": True}, platform.wait_capability(source, capability))
-    try:
-        result = platform.complete(accepted)
-    except (RuntimeError, TimeoutError):
-        operation = accepted["operation_id"]
-        public = platform.app("operations/" + operation)
-        with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+    operation = accepted["operation_id"]
+    with closing(sqlite3.connect((platform.root / "catalog/catalog.sqlite").as_uri() + "?mode=ro", uri=True)) as db:
+        def finished():
+            public = platform.app("operations/" + operation)
+            if public["state"] == "succeeded":
+                return public
+            if public["state"] in ("failed", "cancelled", "recovery_required"):
+                raise RuntimeError((operation, public["state"], public["effect"]))
+            failed = db.execute(
+                """SELECT c.ordinal, a.revision FROM managed_fork_children c
+                   JOIN executions e ON e.last_operation_id=c.operation_id AND e.instance_id=c.instance_id
+                   JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
+                   WHERE c.batch_id=? AND a.phase='failed_held' LIMIT 1""", (operation,)
+            ).fetchone()
+            if failed is not None:
+                raise RuntimeError(("child activation failed_held", operation, *failed))
+            return None
+
+        try:
+            result = wait_for(finished, timeout=175)
+        except (RuntimeError, TimeoutError):
+            public = platform.app("operations/" + operation)
             cut = db.execute("SELECT stage,source_released,credential_relay_hold,error FROM managed_fork_batches WHERE operation_id=?",
                              (operation,)).fetchone()
             children = db.execute(
@@ -347,9 +363,9 @@ printf '%s %s %s\n' "$$" "$nonce" "$branch" > result
                    LEFT JOIN target_activations a ON a.operation_id=c.operation_id AND a.incarnation_id=e.incarnation_id
                    WHERE c.batch_id=? ORDER BY c.ordinal""", (operation,)
             ).fetchall()
-        print("STREAM_FORK_FAILURE " + json.dumps(dict(operation=operation, state=public["state"],
-            effect=public["effect"], cut=cut, children=children)), flush=True)
-        raise
+            print("STREAM_FORK_FAILURE " + json.dumps(dict(operation=operation, state=public["state"],
+                effect=public["effect"], cut=cut, children=children)), flush=True)
+            raise
     assert result["source_lock_released"] and result["source_disposition"] == "RUNNING", result
     assert len(result["children"]) == len(names) and all(c["state"] == "ready" and c["resource_independence"] == "verified"
                                                          for c in result["children"]), result
