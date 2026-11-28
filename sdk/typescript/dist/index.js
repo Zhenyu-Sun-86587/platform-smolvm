@@ -419,6 +419,15 @@ export class Client {
     detachVolume(id, volumeRevision, options) {
         return this.mutate("volume-attachments/" + segment(id), { expected_volume_revision: volumeRevision, expected_generation: options.generation }, { ...options, method: "DELETE" });
     }
+    listWorkers(signal) { return this.pages("workers", 100, signal); }
+    getWorker(id, signal) { return this.get("workers/" + encodeURIComponent(id), signal); }
+    getPlacement(operationId, signal) { return this.get(operation(operationId) + "/placement", signal); }
+    setWorkerMode(id, mode, reason, revision, options) {
+        return this.mutate("workers/" + encodeURIComponent(id) + "/maintenance", { mode, reason }, { ...options, method: "PATCH", revision });
+    }
+    revokeWorkerEnrollment(id, generation, reason, revision, options) {
+        return this.mutate("workers/" + encodeURIComponent(id) + "/enrollment/revoke", { enrollment_generation: generation, reason }, { ...options, revision });
+    }
     listRuntimeProfiles(signal) { return this.pages("runtime-profiles", 100, signal); }
     machineAction(id, action, generation, options) {
         return this.mutate(machine(id) + "/" + action, { expected_generation: generation }, options);

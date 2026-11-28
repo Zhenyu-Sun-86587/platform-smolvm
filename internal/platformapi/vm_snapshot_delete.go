@@ -14,16 +14,33 @@ import (
 	"sandbox-platform/internal/snapshots"
 )
 
-func (s *Server) vmSnapshotWorker(snapshot snapshots.Snapshot) (workerclient.Client, error) {
-	if snapshot.VM != nil && snapshot.VM.RuntimeCaptureID != "" && snapshot.Hash != "" {
-		for _, route := range s.Config.Runtime.Custom {
-			if route.InstanceID == snapshot.VM.RuntimeInstanceID && route.Bundle == snapshot.VM.RuntimeBundleID &&
-				route.Reader == snapshot.VM.StateReaderID && route.WorkerSocket != "" {
-				return workerclient.Client{Socket: route.WorkerSocket, Bundle: route.Bundle}, nil
-			}
-		}
+func (s *Server) vmSnapshotWorker(ctx context.Context, snapshot snapshots.Snapshot) (workerclient.BindingControl, error) {
+	vm := snapshot.VM
+	if vm == nil || vm.RuntimeCaptureID == "" || snapshot.Hash == "" {
+		return nil, rt.ErrUnsupported
 	}
-	return workerclient.Client{}, rt.ErrUnsupported
+	route, err := s.DB.GetRuntimeRoute(ctx, vm.RuntimeInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	if route.BundleID != vm.RuntimeBundleID {
+		return nil, rt.ErrUnsupported
+	}
+	var reader string
+	if err = s.DB.ReadDB().QueryRowContext(ctx, `SELECT coalesce(json_extract(manifest_json,'$.contracts.state_reader_id'),'') FROM runtime_bundles WHERE id=?`, route.BundleID).Scan(&reader); err != nil {
+		return nil, err
+	}
+	if reader != vm.StateReaderID || reader == "" {
+		return nil, rt.ErrUnsupported
+	}
+	a, err := s.ForBinding(registry.Binding{WorkerID: route.WorkerID, RuntimeInstanceID: route.InstanceID, RuntimeBundleID: route.BundleID})
+	if err != nil {
+		return nil, err
+	}
+	if worker := workerclient.ForAdapter(a, route.BundleID); worker != nil {
+		return worker, nil
+	}
+	return nil, rt.ErrUnsupported
 }
 
 func (s *Server) deleteVMSnapshot(ctx context.Context, j *lifecycle.Job) error {
@@ -38,7 +55,7 @@ func (s *Server) deleteVMSnapshot(ctx context.Context, j *lifecycle.Job) error {
 	if err != nil {
 		return err
 	}
-	worker, err := s.vmSnapshotWorker(snapshot)
+	worker, err := s.vmSnapshotWorker(ctx, snapshot)
 	if err != nil {
 		return err
 	}
@@ -99,7 +116,7 @@ func (s *Server) deleteVMSnapshot(ctx context.Context, j *lifecycle.Job) error {
 		}
 	}
 	j.Written = true
-	if err := worker.ReleaseStatePoint(ctx, snapshot.VM.RuntimeCaptureID, snapshot.Hash); err != nil {
+	if err := worker.ReleaseStatePoint(ctx, snapshot.VM.RuntimeCaptureID, snapshot.Hash, snapshot.VM.OperationID); err != nil {
 		var fault *workerclient.Fault
 		if errors.As(err, &fault) && (fault.Code == "E_RESOURCE_PINNED" || fresh && fault.Code == "E_CAPABILITY_UNSUPPORTED") {
 			code := "DEPENDENCY_BLOCKED"

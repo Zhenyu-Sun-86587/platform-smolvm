@@ -32,7 +32,7 @@ func validateForkChildren(r AcceptRequest) error {
 }
 
 func allocateForkChildren(ctx context.Context, tx *sql.Tx, op *Operation, source Machine, names []string, route rt.BundleRoute, locks map[string]Lock) error {
-	if source.CurrentBinding == nil || route == (rt.BundleRoute{}) || op.BindingID != source.CurrentBinding.ID {
+	if source.CurrentBinding == nil || route.Legacy() || op.BindingID != source.CurrentBinding.ID {
 		return ErrGeneration
 	}
 	var spec map[string]json.RawMessage
@@ -50,9 +50,9 @@ func allocateForkChildren(ctx context.Context, tx *sql.Tx, op *Operation, source
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO machines
-			(id, name, template_id, revision, binding_generation, desired_power, spec_json, idle_policy_json, keep_running, last_user_activity_at)
-			VALUES (?, ?, ?, 1, 0, 'stopped', ?, ?, ?, ?)`, mid, name, source.TemplateID, string(childSpec),
-			string(source.IdlePolicy), source.KeepRunning, time.Now().UnixMilli())
+			(id, name, template_id, revision, binding_generation, desired_power, spec_json, idle_policy_json, keep_running, last_user_activity_at, worker_id)
+			VALUES (?, ?, ?, 1, 0, 'stopped', ?, ?, ?, ?, ?)`, mid, name, source.TemplateID, string(childSpec),
+			string(source.IdlePolicy), source.KeepRunning, time.Now().UnixMilli(), op.WorkerID)
 		if err != nil {
 			return uniqueConflict(err)
 		}
@@ -65,7 +65,8 @@ func allocateForkChildren(ctx context.Context, tx *sql.Tx, op *Operation, source
 		if err != nil {
 			return err
 		}
-		op.Children = append(op.Children, OperationChild{Ordinal: ordinal, MachineID: mid, BindingID: child.BindingID, State: "pending", ResourceIndependence: "unknown"})
+		op.Children = append(op.Children, OperationChild{Ordinal: ordinal, MachineID: mid, WorkerID: op.WorkerID, BindingID: child.BindingID,
+			State: "pending", ResourceIndependence: "unknown"})
 		if err = SeedLifecycle(ctx, tx, mid, source.ID, op.Request, op.ID); err != nil {
 			return err
 		}
@@ -214,6 +215,9 @@ func (s *Store) BeginNativeForkRetryTx(ctx context.Context, tx *sql.Tx, id strin
 	}
 	if !retryable {
 		return Operation{}, ErrOperationState
+	}
+	if err := reserveForkRetry(ctx, tx, op); err != nil {
+		return Operation{}, err
 	}
 	op.State, op.Stage, op.Dispatch, op.Error = Observing, "fork_retry", dispatch, nil
 	op.Version++

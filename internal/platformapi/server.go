@@ -24,6 +24,7 @@ import (
 	"sandbox-platform/internal/buildinfo"
 	"sandbox-platform/internal/gateway"
 	"sandbox-platform/internal/lifecycle"
+	"sandbox-platform/internal/placement"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
 	"sandbox-platform/internal/servicehealth"
@@ -145,11 +146,17 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		if capability.Status.Status == "unsupported" {
 			code = "CAPABILITY_UNSUPPORTED"
 		}
+	case errors.Is(err, rt.ErrUncertain):
+		code, status = "OUTCOME_UNKNOWN", 409
+	case errors.Is(err, placement.ErrNoCandidate):
+		code, status = "NO_ELIGIBLE_WORKER", 409
+	case errors.Is(err, registry.ErrWorkerMaintenance):
+		code, status = "WORKER_MAINTENANCE", 409
 	case errors.Is(err, auth.ErrUnauthenticated), errors.Is(err, registry.ErrUnauthorized):
 		code, status = "UNAUTHENTICATED", 401
 	case errors.Is(err, auth.ErrForbidden):
 		code, status = "PERMISSION_DENIED", 403
-	case errors.Is(err, auth.ErrGuestQuota):
+	case errors.Is(err, auth.ErrGuestQuota), errors.Is(err, errEnrollmentBusy):
 		code, status = "RESOURCE_LIMIT", http.StatusTooManyRequests
 	case errors.As(err, &upstream) && upstream.Code == "UPSTREAM_UNAVAILABLE" && upstream.Status == http.StatusBadGateway:
 		code, status = upstream.Code, upstream.Status
@@ -195,6 +202,10 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	id, _ := registry.NewID("req_")
 	detail := map[string]any{"request_id": id, "code": code, "message": msg, "effect": "none", "retry": "after_precondition"}
+	var rejected *placement.Rejections
+	if errors.As(err, &rejected) {
+		detail["candidates"] = rejected.Candidates
+	}
 	if capability != nil {
 		detail["capability"] = capability.Capability
 		detail["reason_code"] = capability.Status.ReasonCode
@@ -355,6 +366,7 @@ func list[T any](w http.ResponseWriter, r *http.Request, items []T, id func(T) s
 	return write(w, 200, map[string]any{"items": items[pos:end], "next_cursor": next})
 }
 func (s *Server) routes() {
+	s.workerRoutes()
 	s.backupRoutes()
 	s.mux.HandleFunc("POST /v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && origin != s.Config.API.PublicOrigin {
@@ -420,7 +432,7 @@ func (s *Server) routes() {
 		}
 		h, healthErr := official.Health(r.Context())
 		ready := healthErr == nil && official.Ready(r.Context()) == nil
-		v := map[string]any{"control_epoch": c.ControlEpoch, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
+		v := map[string]any{"control_epoch": c.ControlEpoch, "installation_id": c.InstallationID, "build": buildinfo.Version, "runtime_version": h.Version, "runtime_ready": ready, "maintenance": c.Maintenance || !ready, "capabilities": rt.FullStateCapabilities(true), "principal": p}
 		v["default_boot_mode"] = defaults.BootMode
 		if _, secret, _ := s.authenticate(r); secret != "" {
 			v["csrf_token"] = csrf(secret)
@@ -436,7 +448,10 @@ func (s *Server) routes() {
 			return err
 		}
 		for _, profile := range profiles {
-			supported, _ := s.SystemLaunchCapabilities(r.Context(), rt.BundleRoute{InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID})
+			supported, _ := s.SystemLaunchCapabilities(r.Context(), rt.BundleRoute{
+				WorkerID: profile.WorkerID, LocalInstanceID: profile.LocalInstanceID,
+				InstanceID: profile.RuntimeInstanceID, BundleID: profile.RuntimeBundleID,
+			})
 			profile.Capabilities[rt.SystemBootCapability] = supported.Boot
 			profile.Capabilities[rt.LiveComputeGrowthCapability] = supported.Growth
 			profile.Capabilities[rt.KernelCowLaunchCapability] = supported.KernelCow
@@ -583,18 +598,13 @@ func (s *Server) machineRoutes() {
 		}
 		req := registry.AcceptRequest{Kind: "create", Name: v.Name, TemplateID: v.TemplateID, Heavy: true, RuntimeInstanceID: v.RuntimeInstanceID}
 		if boot.BootMode == rt.BootSystem {
-			if v.RuntimeInstanceID == "" {
-				return rt.SystemBootUnavailable(true)
+			if err = s.prepareSystemCreate(r.Context(), &v, &req, tpl.ImageDigest); err != nil {
+				return err
 			}
 			v.BootMode = rt.BootSystem
 			if err := v.ValidateSystemCreate(); err != nil {
 				return err
 			}
-			admission, err := s.systemCreateAdmission(r.Context(), v.RuntimeInstanceID, v.MemoryForkProfile)
-			if err != nil {
-				return err
-			}
-			req.AdmitRuntime = admission
 			req.DesiredPower = "stopped"
 			if v.Start {
 				req.DesiredPower = "running"
@@ -602,6 +612,9 @@ func (s *Server) machineRoutes() {
 		} else {
 			if v.MemoryForkProfile != "" {
 				return fmt.Errorf("%w: memory_fork_profile requires a System template", registry.ErrInvalid)
+			}
+			if v.Placement != nil || s.remoteRuntime(v.RuntimeInstanceID) {
+				return rt.ErrUnsupported
 			}
 			if v.LiveComputeGrowth {
 				return fmt.Errorf("%w: live compute growth requires a System template", registry.ErrInvalid)

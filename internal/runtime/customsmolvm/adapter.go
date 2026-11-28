@@ -26,7 +26,7 @@ type Route struct {
 }
 
 func (r Route) Key() rt.BundleRoute {
-	return rt.BundleRoute{InstanceID: r.InstanceID, BundleID: r.Bundle}
+	return rt.BundleRoute{WorkerID: rt.LocalWorkerID, InstanceID: r.InstanceID, BundleID: r.Bundle, LocalInstanceID: r.InstanceID}
 }
 
 func (r Route) Validate() error {
@@ -51,7 +51,7 @@ func (r Route) Validate() error {
 }
 
 type Adapter struct {
-	unimplemented
+	rt.UnsupportedOperations
 	route           Route
 	legacyLifecycle bool
 	scopedRelease   bool

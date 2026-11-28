@@ -136,8 +136,14 @@ func (s *Server) settingsRoutes() {
 				v.NetworkMode = *body.NetworkMode
 			}
 			if body.NetworkID != nil {
-				if *body.NetworkID != "" && !s.hasPrivateNetwork(*body.NetworkID) {
-					return registry.MutationResult{}, registry.ErrInvalid
+				if *body.NetworkID != "" {
+					found, err := s.hasPrivateNetwork(ctx, *body.NetworkID)
+					if err != nil {
+						return registry.MutationResult{}, err
+					}
+					if !found {
+						return registry.MutationResult{}, registry.ErrInvalid
+					}
 				}
 				v.NetworkID = *body.NetworkID
 			}
@@ -326,9 +332,9 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 			return err
 		}
 	}
-	socket := privateServiceWorker(j.Runtime)
-	if r != nil && socket != "" && (r.resizesMachine() || r.Balloon != nil) {
-		report, err := s.configureManagedResources(ctx, j, *r, limit, socket)
+	worker := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID)
+	if r != nil && worker != nil && (r.resizesMachine() || r.Balloon != nil) {
+		report, err := s.configureManagedResources(ctx, j, *r, limit, worker)
 		if err != nil || report == nil {
 			return managedSettingsError(ctx, j, err)
 		}
@@ -337,8 +343,8 @@ func (s *Server) configure(ctx context.Context, j *lifecycle.Job) error {
 		}
 	} else if r != nil && r.Balloon != nil {
 		return &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "the selected runtime does not support managed memory ballooning"}
-	} else if r != nil && len(r.Limit) != 0 && socket != "" {
-		receipt, err := managedCPULimit(ctx, j, limit)
+	} else if r != nil && len(r.Limit) != 0 && worker != nil {
+		receipt, err := managedCPULimit(ctx, j, limit, worker)
 		if err != nil {
 			return managedSettingsError(ctx, j, err)
 		}

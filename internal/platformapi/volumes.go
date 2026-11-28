@@ -109,7 +109,7 @@ func (s *Server) volumeRoutes() {
 		if v.State == "deleted" {
 			return registry.ErrNotFound
 		}
-		control, err := s.volumeControl(v.VolumeRoute)
+		control, err := s.volumeControl(r.Context(), v.VolumeRoute)
 		if err != nil {
 			return err
 		}
@@ -204,8 +204,16 @@ func (s *Server) volumeRoutes() {
 	s.volumeAttachmentRoutes()
 }
 
-func (s *Server) volumeControl(route rt.VolumeRoute) (rt.VolumeControl, error) {
-	adapter, err := s.ForBinding(registry.Binding{RuntimeInstanceID: route.RuntimeInstanceID, RuntimeBundleID: route.RuntimeBundleID})
+func (s *Server) volumeControl(ctx context.Context, route rt.VolumeRoute) (rt.VolumeControl, error) {
+	registered, err := s.DB.GetRuntimeRoute(ctx, route.RuntimeInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	if registered.BundleID != route.RuntimeBundleID {
+		return nil, registry.ErrConflict
+	}
+	adapter, err := s.ForBinding(registry.Binding{WorkerID: registered.WorkerID, LocalInstanceID: registered.LocalInstanceID,
+		RuntimeInstanceID: registered.InstanceID, RuntimeBundleID: registered.BundleID})
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +265,7 @@ func (s *Server) volumeAttachmentRoutes() {
 			if err != nil {
 				return err
 			}
-			control, err := s.volumeControl(volume.VolumeRoute)
+			control, err := s.volumeControl(r.Context(), volume.VolumeRoute)
 			if err != nil {
 				return err
 			}

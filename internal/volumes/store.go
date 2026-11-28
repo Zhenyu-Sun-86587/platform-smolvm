@@ -13,7 +13,8 @@ import (
 
 type Volume struct {
 	rt.VolumeRoute
-	Name string `json:"name"`
+	Name     string `json:"name"`
+	WorkerID string `json:"worker_id"`
 	rt.VolumeObservation
 }
 
@@ -31,14 +32,15 @@ type Snapshot struct {
 	rt.VolumeSnapshot
 }
 
-const selectVolume = `SELECT name,runtime_instance_id,runtime_bundle_id,worker_receipt_json FROM volumes`
+const selectVolume = `SELECT name,runtime_instance_id,runtime_bundle_id,worker_receipt_json,
+	(SELECT i.worker_id FROM runtime_instances i WHERE i.id=volumes.runtime_instance_id) FROM volumes`
 
 type scanner interface{ Scan(...any) error }
 
 func scanVolume(row scanner) (Volume, error) {
 	var v Volume
 	var receipt string
-	if err := row.Scan(&v.Name, &v.RuntimeInstanceID, &v.RuntimeBundleID, &receipt); err != nil {
+	if err := row.Scan(&v.Name, &v.RuntimeInstanceID, &v.RuntimeBundleID, &receipt, &v.WorkerID); err != nil {
 		return v, err
 	}
 	return v, json.Unmarshal([]byte(receipt), &v.VolumeObservation)

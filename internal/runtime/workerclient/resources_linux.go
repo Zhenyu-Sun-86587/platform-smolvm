@@ -61,16 +61,16 @@ func (c Client) SetManagedCPULimit(ctx context.Context, operation string, ref Ex
 		return receipt, err
 	}
 	if receipt, err = cpuLimitReadback(raw, ref); err != nil {
-		return receipt, err
+		return receipt, workerReplyError("SetManagedCPULimit", err)
 	}
 	if (millicpus == nil) != (receipt.RequestedMillicpus == nil) {
-		return receipt, errors.New("Worker reported a different requested CPU limit")
+		return receipt, workerReplyError("SetManagedCPULimit", errors.New("Worker reported a different requested CPU limit"))
 	}
 	if millicpus != nil {
 		numerator := uint64(*millicpus) * receipt.PeriodUsec
 		if *receipt.RequestedMillicpus != *millicpus || receipt.QuotaUsec == nil ||
 			numerator%1000 != 0 || *receipt.QuotaUsec != numerator/1000 {
-			return receipt, errors.New("kernel CPU quota differs from the requested millicpus")
+			return receipt, workerReplyError("SetManagedCPULimit", errors.New("kernel CPU quota differs from the requested millicpus"))
 		}
 	}
 	return receipt, nil

@@ -37,10 +37,16 @@ type WorkerLifecycleStatus struct {
 	} `json:"last_decision"`
 }
 
-func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.Client, bool) {
+func PolicyClient(adapter rt.Adapter, b registry.Binding) (workerclient.LifecycleControl, bool) {
+	if b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
+		return nil, false
+	}
+	if remote, ok := adapter.(workerclient.LifecycleControl); ok {
+		return remote, true
+	}
 	p, ok := adapter.(interface{ LifecycleWorkerSocket() string })
-	if !ok || p.LifecycleWorkerSocket() == "" || b.RuntimeInstanceObjectID == "" || bindingRuntime(b).Legacy() {
-		return workerclient.Client{}, false
+	if !ok || p.LifecycleWorkerSocket() == "" {
+		return nil, false
 	}
 	return workerclient.Client{Socket: p.LifecycleWorkerSocket(), Bundle: b.RuntimeBundleID}, true
 }
@@ -127,6 +133,13 @@ func (e *Engine) ApplyMachinePolicy(ctx context.Context, b registry.Binding, cli
 	}
 	if p.BindingID == "" || p.BindingID != b.ID {
 		return p, registry.ErrGeneration
+	}
+	overlay, managed, err := e.DB.WorkerPolicyPlan(ctx, b)
+	if err != nil {
+		return p, err
+	}
+	if managed {
+		return e.applyWorkerPolicyOverlay(ctx, b, client, overlay)
 	}
 	if p.AppliedRevision == p.DesiredRevision {
 		return p, nil
@@ -238,7 +251,9 @@ func (e *Engine) ObservePolicy(ctx context.Context, b registry.Binding, client p
 	if binding != b.ID {
 		return st, registry.ErrGeneration
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE machine_lifecycle_policies SET worker_status=? WHERE machine_id=? AND applied_revision=?", string(raw), b.MachineID, st.Applied); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE machine_lifecycle_policies SET worker_status=? WHERE machine_id=? AND
+		COALESCE((SELECT worker_revision FROM worker_policy_overlays WHERE binding_id=?),applied_revision)=?`,
+		string(raw), b.MachineID, b.ID, st.Applied); err != nil {
 		return st, err
 	}
 	var latest int64

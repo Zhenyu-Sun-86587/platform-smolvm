@@ -84,6 +84,30 @@ func (e *Engine) FirstSystemLaunch(ctx context.Context, m registry.Machine, b re
 }
 
 func (e *Engine) systemLaunchParameters(ctx context.Context, b registry.Binding, instance string, request Create, root string) (rt.LaunchParameters, error) {
+	if b.WorkerID != "" && b.WorkerID != registry.LocalWorkerID {
+		template, err := e.DB.GetTemplate(ctx, request.TemplateID)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		root, err = e.DB.TemplateGeneration(ctx, b, template.ImageDigest)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		adapter, err := e.ForBinding(b)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+		networks, ok := adapter.(interface {
+			ResolveLaunchNetwork(context.Context, *rt.LaunchNetwork) (*rt.LaunchNetwork, error)
+		})
+		if !ok {
+			return rt.LaunchParameters{}, rt.ErrUnsupported
+		}
+		request.Network, err = networks.ResolveLaunchNetwork(ctx, request.Network)
+		if err != nil {
+			return rt.LaunchParameters{}, err
+		}
+	}
 	route := rt.VolumeRoute{RuntimeInstanceID: b.RuntimeInstanceID, RuntimeBundleID: b.RuntimeBundleID}
 	attachments, err := volumes.LaunchDisks(ctx, e.DB.ReadDB(), b.MachineID, instance, route)
 	if err != nil {
@@ -283,6 +307,10 @@ func (j *Job) promoteSystemExecution(ctx context.Context, launcher rt.NativeLaun
 		profile = j.Binding.RuntimeBundleID + "/" + inventory.Inventory.Protocol
 	}
 	observation := nativeObservation(j.Binding, ref, registry.PowerRunning, profile)
+	if storage := inventory.ForkStorage(); storage != nil {
+		observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
+		observation.Native.ForkStorage = storage
+	}
 	observation.Native.VerifiedLaunch = true
 	observation.Native.StopBarrier = &inventory.Inventory.StopBarrier
 	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})

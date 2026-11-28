@@ -168,7 +168,8 @@ func (s *Server) systemMetricSample(ctx context.Context) (systemMetrics, error) 
 		source, scope = "worker", "worker"
 		var workerSocket string
 		for _, profile := range profiles {
-			resolved, err := s.ForBinding(registry.Binding{RuntimeInstanceID: profile.RuntimeInstanceID, RuntimeBundleID: profile.RuntimeBundleID})
+			resolved, err := s.ForBinding(registry.Binding{WorkerID: profile.WorkerID, LocalInstanceID: profile.LocalInstanceID,
+				RuntimeInstanceID: profile.RuntimeInstanceID, RuntimeBundleID: profile.RuntimeBundleID})
 			if err != nil || resolved == nil {
 				return systemMetrics{MetricObservation: missingMetric(source, scope, "RUNTIME_UNAVAILABLE", "Registered Worker metrics route is unavailable.")}, nil
 			}

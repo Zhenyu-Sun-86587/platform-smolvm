@@ -22,7 +22,7 @@ import (
 )
 
 type Engine struct {
-	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.Client)
+	ReconcileWorkerLeases func(context.Context, registry.Binding, workerclient.LifecycleControl)
 	ReleaseDesktopLeases  func(context.Context)
 	collectorSession      string
 	DB                    *registry.Store
@@ -46,7 +46,7 @@ func (e *Engine) OfficialRuntime() rt.Adapter { return e.runtimes.Official() }
 
 func bindingRuntime(b registry.Binding) rt.BindingRuntime {
 	return rt.BindingRuntime{
-		BundleRoute:   rt.BundleRoute{InstanceID: b.RuntimeInstanceID, BundleID: b.RuntimeBundleID},
+		BundleRoute:   b.BundleRoute(),
 		ObjectID:      b.RuntimeInstanceObjectID,
 		IncarnationID: b.IncarnationID,
 		Epoch:         b.ExecutionEpoch,
@@ -64,7 +64,13 @@ func (e *Engine) AdmitRuntime(route rt.BundleRoute, kind string) error {
 	return e.runtimes.Admit(route, kind)
 }
 
+type Placement struct {
+	Mode     string `json:"mode"`
+	WorkerID string `json:"worker_id,omitempty"`
+}
+
 type Create struct {
+	Placement         *Placement        `json:"placement,omitempty"`
 	LifecyclePolicy   json.RawMessage   `json:"lifecycle_policy,omitempty"`
 	Name              string            `json:"name"`
 	TemplateID        string            `json:"template_id"`
@@ -339,17 +345,14 @@ func (e *Engine) drive(parent context.Context, op registry.Operation) error {
 		if err != nil {
 			return err
 		}
-	}
-	if op.BindingID == "" && (op.Kind == rt.VolumeOperation || op.Kind == rt.VMSnapshotDelete) {
-		var route struct {
-			RuntimeInstanceID string `json:"runtime_instance_id"`
-			RuntimeBundleID   string `json:"runtime_bundle_id"`
+		if j.Binding.BundleRoute().Key() != op.BundleRoute().Key() {
+			return fmt.Errorf("%w: operation and binding Worker routes differ", registry.ErrConflict)
 		}
-		if err := json.Unmarshal(op.Request, &route); err != nil {
-			return err
-		}
-		j.Binding.RuntimeInstanceID = route.RuntimeInstanceID
-		j.Binding.RuntimeBundleID = route.RuntimeBundleID
+	} else {
+		j.Binding.WorkerID = op.WorkerID
+		j.Binding.RuntimeInstanceID = op.RuntimeInstanceID
+		j.Binding.RuntimeBundleID = op.RuntimeBundleID
+		j.Binding.LocalInstanceID = op.LocalInstanceID
 	}
 	if op.State != registry.Queued || len(op.Dispatch) > 0 && (op.Kind == "task_start" || op.Kind == "task_cancel") {
 		if err = json.Unmarshal(op.Dispatch, &j.Intent); err != nil {
@@ -482,8 +485,8 @@ func (j *Job) CheckSameRuntime(source registry.Binding) error {
 	if _, err := j.ForBinding(source); err != nil {
 		return err
 	}
-	if bindingRuntime(source).BundleRoute != bindingRuntime(j.Binding).BundleRoute {
-		return &rt.Error{Code: "NOT_SUPPORTED", Message: "source and target use different runtime instances or bundles"}
+	if source.BundleRoute().Key() != j.Binding.BundleRoute().Key() {
+		return &rt.Error{Code: "NOT_SUPPORTED", Message: "source and target use different Worker routes or bundles"}
 	}
 	return nil
 }

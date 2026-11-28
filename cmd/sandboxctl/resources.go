@@ -174,7 +174,8 @@ func (c *client) machines() *cobra.Command {
 		return c.showMachine(cmd, args[0], "/network")
 	}))
 
-	var template, bootMode, runtimeInstance, networkID, networkMode, lifecycleJSON, memoryProfile string
+	var template, bootMode, runtimeInstance, networkID, networkMode, workerID, lifecycleJSON, memoryProfile string
+	var autoPlacement bool
 	var start, idle, liveGrowth bool
 	var cpu, memory, storage, overlay, idleSeconds int
 	create := sub("create NAME", "Create a workspace", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
@@ -195,6 +196,14 @@ func (c *client) machines() *cobra.Command {
 		if liveGrowth {
 			body["live_compute_growth"] = true
 		}
+		if workerID != "" && autoPlacement {
+			return fmt.Errorf("--worker and --auto-placement are mutually exclusive")
+		}
+		if workerID != "" {
+			body["placement"] = map[string]string{"mode": "pinned", "worker_id": workerID}
+		} else if autoPlacement {
+			body["placement"] = map[string]string{"mode": "auto"}
+		}
 		if runtimeInstance != "" {
 			body["runtime_instance_id"] = runtimeInstance
 		}
@@ -208,10 +217,11 @@ func (c *client) machines() *cobra.Command {
 			}
 			body["network"] = network
 		}
-		if bootMode != "system" && !liveGrowth && memoryProfile == "" || cmd.Flags().Changed("storage-gib") {
+		legacyDiskDefaults := bootMode != "system" && !liveGrowth && memoryProfile == "" && !autoPlacement && workerID == ""
+		if legacyDiskDefaults || cmd.Flags().Changed("storage-gib") {
 			resources["storage_gib"] = storage
 		}
-		if bootMode != "system" && !liveGrowth && memoryProfile == "" || cmd.Flags().Changed("overlay-gib") {
+		if legacyDiskDefaults || cmd.Flags().Changed("overlay-gib") {
 			resources["overlay_gib"] = overlay
 		}
 		legacyIdle := cmd.Flags().Changed("idle") || cmd.Flags().Changed("idle-seconds")
@@ -236,6 +246,8 @@ func (c *client) machines() *cobra.Command {
 	create.Flags().StringVar(&bootMode, "boot-mode", "", "Template boot mode (oci or system)")
 	create.Flags().StringVar(&memoryProfile, "memory-fork-profile", "", "Use kernel_cow_anon_v1 for fixed anonymous RAM on a compatible System Worker")
 	create.Flags().BoolVar(&liveGrowth, "live-compute-growth", false, "Enable live CPU and RAM growth on a compatible System runtime and disable full VM state capture")
+	create.Flags().StringVar(&workerID, "worker", "", "Pin a System machine to an enrolled Worker")
+	create.Flags().BoolVar(&autoPlacement, "auto-placement", false, "Select an eligible Worker for a System machine")
 	create.Flags().StringVar(&runtimeInstance, "runtime-instance", "", "Registered Serve instance")
 	create.Flags().StringVar(&networkID, "network", "", "Registered Worker private network for System templates")
 	create.Flags().StringVar(&networkMode, "network-mode", "", "System network mode (native or fixed_internal), using the platform default when omitted")
@@ -505,6 +517,9 @@ func (c *client) taskLogs() *cobra.Command {
 func (c *client) operations() *cobra.Command {
 	group := &cobra.Command{Use: "operations", Short: "Observe and reconcile operations"}
 	group.AddCommand(c.list("list", "operations", false), c.showItem("operations"),
+		sub("placement OPERATION", "Read the fixed owner and resource reservation", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
+			return c.show(cmd, res("operations", args[0])+"/placement")
+		}),
 		sub("wait OPERATION", "Observe until the operation reaches a terminal state", cobra.ExactArgs(1), func(cmd *cobra.Command, args []string) error {
 			return c.wait(cmd, args[0])
 		}))

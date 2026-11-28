@@ -4,21 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
 
+type BackupCapture struct {
+	CaptureID      string `json:"capture_id"`
+	OperationID    string `json:"source_operation_id"`
+	ManifestDigest string `json:"manifest_digest"`
+}
+
 type BackupSelection struct {
 	ID             string          `json:"backup_id"`
 	Reader         string          `json:"state_reader_id"`
-	Captures       []string        `json:"capture_ids"`
+	Captures       []BackupCapture `json:"-"`
 	Generations    []string        `json:"generation_ids"`
 	BundleManifest json.RawMessage `json:"bundle_manifest"`
 }
 
 func (c Client) PrepareBackup(ctx context.Context, selected BackupSelection) (*os.File, string, error) {
-	result, file, err := c.call(ctx, request{Method: "PrepareBackupClosure", Payload: selected}, nil,
+	ids := make([]string, 0, len(selected.Captures))
+	for _, capture := range selected.Captures {
+		ids = append(ids, capture.CaptureID)
+	}
+	if selected.Generations == nil {
+		selected.Generations = []string{}
+	}
+	payload := struct {
+		BackupSelection
+		CaptureIDs []string `json:"capture_ids"`
+	}{BackupSelection: selected, CaptureIDs: ids}
+	result, file, err := c.call(ctx, request{Method: "PrepareBackupClosure", Payload: payload}, nil,
 		&descriptor{ResourceID: selected.ID, Role: "backup_manifest"})
 	if err != nil {
 		return nil, "", err
@@ -61,4 +79,17 @@ func readOnlyFile(file *os.File) bool {
 	flags, err := unix.FcntlInt(file.Fd(), unix.F_GETFL, 0)
 	info, statErr := file.Stat()
 	return err == nil && flags&unix.O_ACCMODE == unix.O_RDONLY && flags&unix.O_PATH == 0 && statErr == nil && info.Mode().IsRegular()
+}
+
+type BackupControl interface {
+	BackupManifest(context.Context, BackupSelection) (io.ReadCloser, string, error)
+	BackupMember(context.Context, string, string) (io.ReadCloser, int64, error)
+	ReleaseBackup(context.Context, string) error
+}
+
+func (c Client) BackupManifest(ctx context.Context, selection BackupSelection) (io.ReadCloser, string, error) {
+	return c.PrepareBackup(ctx, selection)
+}
+func (c Client) BackupMember(ctx context.Context, id, name string) (io.ReadCloser, int64, error) {
+	return c.OpenBackupMember(ctx, id, name)
 }

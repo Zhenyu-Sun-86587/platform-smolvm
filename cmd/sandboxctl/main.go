@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"sandbox-platform/internal/buildinfo"
+	"sandbox-platform/internal/placement"
 )
 
 type client struct {
@@ -57,6 +58,13 @@ func (e *apiError) Error() string {
 	}
 	if e.Detail.OperationID != "" {
 		s += " (operation " + e.Detail.OperationID + ")"
+	}
+	for _, candidate := range e.Detail.Candidates {
+		route := candidate.WorkerID
+		if candidate.RuntimeInstanceID != "" {
+			route += "/" + candidate.RuntimeInstanceID
+		}
+		s += "\n  " + route + ": " + candidate.Reason
 	}
 	return s
 }
@@ -154,7 +162,7 @@ func rootCommand() (*cobra.Command, *client) {
 	root.PersistentFlags().StringVar(&api.key, "idempotency-key", "", "Idempotency key for the mutation")
 	root.PersistentFlags().Int64Var(&api.revision, "revision", 0, "Original resource revision for a replay or explicit update")
 	root.PersistentFlags().Int64Var(&api.generation, "generation", 0, "Original machine generation for a replay")
-	root.AddCommand(api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
+	root.AddCommand(api.workers(), api.machines(), api.tasks(), api.operations(), api.snapshots(), api.volumes(), api.services(),
 		api.files(), api.leases(), api.desktops(), api.credentials(), api.templates(), api.settings(), api.lifecyclePolicy(), api.events(),
 		api.exec(), api.execs(), api.ssh(), api.sshConfig(), api.sshHostKey(), api.sshProxy(), api.portForward(),
 		api.login(), api.managedSSHProxy(), api.managedSSHHostKey(), missingSSHAlias())
@@ -284,18 +292,19 @@ func (c *client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 type apiErrorDetail = struct {
-	RequestID   string          `json:"request_id,omitempty"`
-	Code        string          `json:"code"`
-	Message     string          `json:"message"`
-	OperationID string          `json:"operation_id"`
-	ExecID      string          `json:"exec_id,omitempty"`
-	Effect      string          `json:"effect"`
-	Retry       string          `json:"retry"`
-	Capability  string          `json:"capability,omitempty"`
-	ReasonCode  string          `json:"reason_code,omitempty"`
-	Stage       string          `json:"stage,omitempty"`
-	Scope       string          `json:"scope,omitempty"`
-	Intent      *mutationIntent `json:"intent,omitempty"`
+	Candidates  []placement.Rejection `json:"candidates,omitempty"`
+	RequestID   string                `json:"request_id,omitempty"`
+	Code        string                `json:"code"`
+	Message     string                `json:"message"`
+	OperationID string                `json:"operation_id"`
+	ExecID      string                `json:"exec_id,omitempty"`
+	Effect      string                `json:"effect"`
+	Retry       string                `json:"retry"`
+	Capability  string                `json:"capability,omitempty"`
+	ReasonCode  string                `json:"reason_code,omitempty"`
+	Stage       string                `json:"stage,omitempty"`
+	Scope       string                `json:"scope,omitempty"`
+	Intent      *mutationIntent       `json:"intent,omitempty"`
 }
 
 type mutationIntent struct {

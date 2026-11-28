@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sandbox-platform/internal/runtime/workerclient"
 	"strconv"
 	"strings"
 	"time"
@@ -114,7 +115,7 @@ func (s *Server) serviceRoutes() {
 	s.Extra["service_delete"] = s.editService
 	for _, kind := range []string{"service_create", "service_update", "service_delete"} {
 		s.Recover[kind] = func(ctx context.Context, j *lifecycle.Job) error {
-			if privateServiceWorker(j.Runtime) == "" {
+			if workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID) == nil {
 				return errors.New("dispatched operation needs specific outcome evidence")
 			}
 			j.Written = false
@@ -471,7 +472,7 @@ func (s *Server) resolve(ctx context.Context, p auth.Principal, v service) (gate
 	}
 	var backend gateway.Backend
 	check := checkBinding
-	if worker := privateServiceWorker(adapter); worker != "" {
+	if worker := workerclient.ForAdapter(adapter, b.RuntimeBundleID); worker != nil {
 		backend, err = workerServiceBackend(ctx, worker, b, v)
 		if err != nil {
 			return fail(err, servicehealth.Unavailable(servicehealth.StageWorkerUpstream, "ATTACHMENT_UNAVAILABLE"))
@@ -663,7 +664,7 @@ func (s *Server) insertService(ctx context.Context, tx *sql.Tx, svc service, ena
 }
 
 func (s *Server) editService(ctx context.Context, j *lifecycle.Job) error {
-	if worker := privateServiceWorker(j.Runtime); worker != "" {
+	if worker := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID); worker != nil {
 		return s.editWorkerService(ctx, j, worker)
 	}
 	o, err := j.Runtime.Observe(ctx, j.Binding.RuntimeName)

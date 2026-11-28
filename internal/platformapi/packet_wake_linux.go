@@ -16,7 +16,10 @@ import (
 )
 
 type packetWakeContext struct {
-	client     workerclient.Client
+	client     workerclient.BindingControl
+	bindingID  string
+	workerID   string
+	routeID    string
 	execution  workerclient.Execution
 	endpoint   workerclient.PacketWakeEndpoint
 	revision   int64
@@ -40,8 +43,8 @@ func (s *Server) packetWakeEndpoint(ctx context.Context, machineID string) (pack
 	launcher, ok := adapter.(interface {
 		DiscoverLaunchBinding(context.Context, string) (rt.LaunchBinding, error)
 	})
-	socket := privateServiceWorker(adapter)
-	if !ok || socket == "" {
+	client := workerclient.ForAdapter(adapter, binding.RuntimeBundleID)
+	if !ok || client == nil {
 		return result, rt.ErrUnsupported
 	}
 	observed, err := launcher.DiscoverLaunchBinding(ctx, binding.RuntimeName)
@@ -51,7 +54,7 @@ func (s *Server) packetWakeEndpoint(ctx context.Context, machineID string) (pack
 	if observed.InstanceID != binding.RuntimeInstanceObjectID || observed.ExecutionEpoch < binding.ExecutionEpoch {
 		return result, registry.ErrGeneration
 	}
-	result.client = workerclient.Client{Socket: socket, Bundle: binding.RuntimeBundleID}
+	result.client, result.bindingID, result.workerID, result.routeID = client, binding.ID, binding.WorkerID, binding.RuntimeInstanceID
 	result.revision = machine.Revision
 	result.generation = machine.BindingGeneration
 	result.execution = workerclient.Execution{InstanceID: observed.InstanceID, Epoch: observed.ExecutionEpoch}
@@ -156,7 +159,7 @@ func (s *Server) privatePacketWakeRule(w http.ResponseWriter, r *http.Request, p
 	if err != nil {
 		return err
 	}
-	if source.client.Socket != target.client.Socket || source.endpoint.NetworkID != target.endpoint.NetworkID {
+	if source.workerID != target.workerID || source.routeID != target.routeID || source.endpoint.NetworkID != target.endpoint.NetworkID {
 		return auth.ErrForbidden
 	}
 	if r.Method == http.MethodPut {
@@ -171,6 +174,13 @@ func (s *Server) privatePacketWakeRule(w http.ResponseWriter, r *http.Request, p
 		Transport: transport, GuestPort: uint16(port), Enabled: change.Enabled, ExpectedRevision: change.ExpectedRevision}
 	if change.Enabled != nil && *change.Enabled {
 		rule.SourceExecution = &source.execution
+	}
+	if change.Enabled != nil {
+		pins := registry.WorkerPacketWakeRule{BindingID: target.bindingID, WorkerID: target.workerID, SourceBindingID: source.bindingID,
+			SourceAttachmentID: rule.SourceAttachmentID, TargetAttachmentID: rule.TargetAttachmentID, Transport: rule.Transport, Port: rule.GuestPort}
+		if err := s.DB.TrackWorkerPacketWakeRule(ctx, pins, *change.Enabled); err != nil {
+			return err
+		}
 	}
 	result, err := target.client.PacketWakeRule(ctx, target.execution, rule, operation, digest)
 	if err != nil {

@@ -311,10 +311,17 @@ func statePointDigestValid(value string) bool {
 }
 
 func (j *Job) recordStatePoint(ctx context.Context, tx *sql.Tx, p rt.StatePointProgress, capture, purpose string) error {
+	digest := p.ManifestDigest
+	if purpose == "rollback_rescue" && p.RescueCaptureID == capture && p.RescueManifestDigest != "" {
+		if !statePointDigestValid(p.RescueManifestDigest) {
+			return registry.ErrConflict
+		}
+		digest = p.RescueManifestDigest
+	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO managed_statepoint_receipts
 		VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runtime_instance_id,capture_id) DO NOTHING`,
 		j.Binding.RuntimeInstanceID, capture, p.RepresentationID, j.Binding.RuntimeBundleID, j.Binding.ID,
-		j.Op.ID, purpose, p.ManifestDigest, string(JSON(p)))
+		j.Op.ID, purpose, digest, string(JSON(p)))
 	if err != nil {
 		return err
 	}
@@ -374,12 +381,11 @@ func (j *Job) completeCheckpoint(ctx context.Context, point rt.StatePointProgres
 // The durable receipt authorizes publication even if this optional detailed
 // readback is unavailable (for example with a historical Worker).
 func (j *Job) observeCapturedScope(ctx context.Context, point rt.StatePointProgress) *snapshots.CapturedScope {
-	runtime, ok := j.Runtime.(interface{ WorkerSocket() string })
+	client := workerclient.ForAdapter(j.Runtime, j.Binding.RuntimeBundleID)
 	request := j.Intent.StatePoint
-	if !ok || runtime.WorkerSocket() == "" || request == nil || request.Expected.IncarnationID == nil {
+	if client == nil || request == nil || request.Expected.IncarnationID == nil {
 		return nil
 	}
-	client := workerclient.Client{Socket: runtime.WorkerSocket(), Bundle: j.Binding.RuntimeBundleID}
 	ref := workerclient.Execution{InstanceID: request.Expected.InstanceID, IncarnationID: *request.Expected.IncarnationID,
 		Epoch: request.Expected.ExecutionEpoch}
 	raw, err := client.StatePointCapture(ctx, ref, request.OperationID, request.RequestDigest, point.CaptureID)
@@ -451,6 +457,10 @@ func (j *Job) completeStatePointTarget(ctx context.Context, control rt.StatePoin
 	}
 	observation := nativeObservation(j.Binding, current, registry.PowerRunning, profile)
 	observation.Native.VerifiedRestore = true
+	if storage := inventory.ForkStorage(); storage != nil {
+		observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
+		observation.Native.ForkStorage = storage
+	}
 	observation.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 	result := map[string]any{"machine_id": j.Op.MachineID, "execution_epoch": current.ExecutionEpoch,
 		"statepoint": point, "volume_map": point.VolumeMap}

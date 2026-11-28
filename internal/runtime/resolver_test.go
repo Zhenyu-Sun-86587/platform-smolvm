@@ -10,8 +10,10 @@ type routeAdapter struct{ Adapter }
 func TestResolverRoutesOnlyExactBinding(t *testing.T) {
 	official := &routeAdapter{}
 	custom := &routeAdapter{}
+	remote := &routeAdapter{}
 	route := BundleRoute{InstanceID: "serve-a", BundleID: "bundle-v1"}
-	resolver := NewResolver(official, map[BundleRoute]Adapter{route: custom})
+	remoteRoute := BundleRoute{WorkerID: "remote-a", InstanceID: "global-a", LocalInstanceID: route.InstanceID, BundleID: route.BundleID}
+	resolver := NewResolver(official, map[BundleRoute]Adapter{route: custom, remoteRoute: remote})
 
 	for _, test := range []struct {
 		name    string
@@ -19,7 +21,12 @@ func TestResolverRoutesOnlyExactBinding(t *testing.T) {
 		want    Adapter
 	}{
 		{name: "legacy", want: official},
+		{name: "local owner preserves legacy", binding: BindingRuntime{BundleRoute: BundleRoute{WorkerID: LocalWorkerID}}, want: official},
+		{name: "remote owner cannot use legacy", binding: BindingRuntime{BundleRoute: BundleRoute{WorkerID: "remote-a"}}},
 		{name: "registered instance and bundle", binding: BindingRuntime{BundleRoute: route}, want: custom},
+		{name: "remote Worker with same Serve ID", binding: BindingRuntime{BundleRoute: remoteRoute}, want: remote},
+		{name: "wrong local identity", binding: BindingRuntime{BundleRoute: BundleRoute{WorkerID: "remote-a", InstanceID: "global-a", LocalInstanceID: "wrong", BundleID: route.BundleID}}},
+		{name: "wrong Worker", binding: BindingRuntime{BundleRoute: BundleRoute{WorkerID: "remote-a", InstanceID: route.InstanceID, BundleID: route.BundleID}}},
 		{name: "different instance", binding: BindingRuntime{BundleRoute: BundleRoute{InstanceID: "serve-b", BundleID: route.BundleID}}},
 		{name: "different bundle", binding: BindingRuntime{BundleRoute: BundleRoute{InstanceID: route.InstanceID, BundleID: "bundle-v2"}}},
 		{name: "missing bundle", binding: BindingRuntime{BundleRoute: BundleRoute{InstanceID: route.InstanceID}}},

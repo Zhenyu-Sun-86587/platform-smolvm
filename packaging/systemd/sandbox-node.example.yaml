@@ -1,0 +1,43 @@
+# Offline certificate rotation or authority recovery
+# Stage the next YAML and certificate/key separately and retain the prior YAML.
+# Issue the Node certificate with the next generation in its URI SAN.
+# Stop sandbox-node, then run this as the service account:
+#   /usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.next.yaml -rebind-from /etc/sandbox-node/config.previous.yaml
+# Activate the next YAML, align the platformd enrollment generation and Node
+# SPKI pin, then start sandbox-node. Retain the same state directory.
+# An unchanged controller/epoch advances one generation and preserves the gate.
+# A changed controller or control epoch requires a greater generation and enters Drain.
+# Keep journal.db and its durable identity across daemon restarts and rotation.
+# During the first journal-fencing upgrade for an existing Worker, read its
+# identity from the original stopped journal as the Node service account:
+#   /usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.yaml -print-journal-id
+# Set that value as journal_id on the matching platformd Worker entry.
+# A lost journal requires restoring the original journal or provisioning a new Worker ID.
+authority:
+  worker_id: worker-a
+  enrollment_generation: 1
+  controller_id: replace-with-platform-installation-id
+  control_epoch: replace-with-platform-control-epoch
+listen: "10.0.10.20:9443"
+state_dir: /var/lib/sandbox-node
+tls:
+  # The Worker certificate also needs an IP/DNS SAN for the endpoint.
+  # URI SAN spiffe://sandbox-platform/node/worker-a/1
+  certificate: /etc/sandbox-node/tls/node.pem
+  key: /etc/sandbox-node/tls/node-key.pem
+  client_ca: /etc/sandbox-node/tls/controller-ca.pem
+  # The pinned client cert must have URI SAN spiffe://sandbox-platform/controller/<controller_id>.
+  controller_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+routes:
+  - runtime_instance_id: worker-a-runtime
+    instance_id: smolvm-deep
+    bundle_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    state_reader_id: replace-with-installed-state-reader
+    socket: /run/smolvm-deep/api.sock
+    worker_socket: /run/smolvm-deep/worker.sock
+    # Optional inbound Guest delegation. Set SMOLVM_GUEST_RELAY_DIR to this
+    # same path in the Worker runtime environment before launching guests.
+    # guest_relay_dir: /run/sandbox-node/guest-relays
+    manifest: /opt/sandbox-platform/runtime/deep/manifest.json
+    # Worker-local root generation IDs provisioned outside NodeGateway.
+    root_generations: [replace-with-worker-root-generation]

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"sandbox-platform/internal/placement"
 	rt "sandbox-platform/internal/runtime"
 )
 
@@ -61,6 +62,7 @@ type Template struct {
 
 type Machine struct {
 	ID                 string          `json:"machine_id"`
+	WorkerID           string          `json:"worker_id"`
 	Name               string          `json:"name"`
 	TemplateID         string          `json:"template_id"`
 	Revision           int64           `json:"revision"`
@@ -89,6 +91,8 @@ const (
 )
 
 type Binding struct {
+	WorkerID                string          `json:"worker_id"`
+	LocalInstanceID         string          `json:"-"`
 	RuntimeInstanceID       string          `json:"runtime_instance_id,omitempty"`
 	RuntimeBundleID         string          `json:"runtime_bundle_id,omitempty"`
 	RuntimeInstanceObjectID string          `json:"runtime_instance_object_id,omitempty"`
@@ -108,6 +112,10 @@ type Binding struct {
 	Observation
 }
 
+func (b Binding) BundleRoute() rt.BundleRoute {
+	return rt.BundleRoute{WorkerID: b.WorkerID, InstanceID: b.RuntimeInstanceID, BundleID: b.RuntimeBundleID, LocalInstanceID: b.LocalInstanceID}
+}
+
 func (b Binding) ExecutionRef() rt.ExecutionRef {
 	return rt.ExecutionRef{InstanceID: b.RuntimeInstanceObjectID, IncarnationID: b.IncarnationID, ExecutionEpoch: b.ExecutionEpoch}
 }
@@ -118,6 +126,7 @@ type NativeObservation struct {
 	VerifiedStandbyProfile string
 	VerifiedLaunch         bool
 	ForkCapabilities       map[string]rt.Capability
+	ForkStorage            *rt.ForkStorageEvidence
 	VerifiedRestore        bool
 	VerifiedStop           bool
 	StopBarrier            *bool
@@ -170,6 +179,10 @@ const (
 
 type Operation struct {
 	ID                 string            `json:"operation_id"`
+	WorkerID           string            `json:"worker_id"`
+	RuntimeInstanceID  string            `json:"runtime_instance_id,omitempty"`
+	RuntimeBundleID    string            `json:"runtime_bundle_id,omitempty"`
+	LocalInstanceID    string            `json:"-"`
 	ControlEpoch       string            `json:"control_epoch"`
 	PrincipalID        string            `json:"-"`
 	MachineID          string            `json:"machine_id,omitempty"`
@@ -207,6 +220,7 @@ const (
 
 type OperationChild struct {
 	Ordinal              int                   `json:"ordinal"`
+	WorkerID             string                `json:"worker_id"`
 	MachineID            string                `json:"machine_id"`
 	BindingID            string                `json:"binding_id"`
 	State                string                `json:"state"`
@@ -214,6 +228,10 @@ type OperationChild struct {
 	ResourceIndependence string                `json:"resource_independence,omitempty"`
 	ErrorCode            string                `json:"error_code,omitempty"`
 	ResourceProof        []rt.ForkDiskEvidence `json:"-"`
+}
+
+func (o Operation) BundleRoute() rt.BundleRoute {
+	return rt.BundleRoute{WorkerID: o.WorkerID, InstanceID: o.RuntimeInstanceID, BundleID: o.RuntimeBundleID, LocalInstanceID: o.LocalInstanceID}
 }
 
 func (o Operation) Terminal() bool {
@@ -249,6 +267,7 @@ type AcceptRequest struct {
 	KeepRunning           bool
 	Heavy                 bool
 	AllocateBinding       bool
+	WorkerID              string
 	RuntimeInstanceID     string
 	ForkChildren          []string
 	Locks                 []Lock
@@ -262,6 +281,10 @@ type AcceptRequest struct {
 	// ResolveMachine resolves a machine-backed object in the acceptance transaction.
 	// On replay it receives the original machine ID for authorization even if the object is gone.
 	ResolveMachine func(context.Context, *sql.Tx, string) (string, error)
+	// Placement describes stable caller intent. ResolvePlacement derives any
+	// requirements that depend on the accepted defaults in this transaction.
+	Placement        *placement.Request
+	ResolvePlacement func(context.Context, *sql.Tx, json.RawMessage) (*placement.Request, error)
 }
 
 type TransitionRequest struct {
@@ -286,6 +309,9 @@ type TransitionRequest struct {
 	// FencedActivationFailure settles an unpublished native target whose Worker
 	// recorded commit before proving its exit. The guest-side effect is unknown.
 	FencedActivationFailure bool
+	// PlacementNotAdmitted attests that a retry's original native receipt
+	// still has the same settled revision after a definite refusal.
+	PlacementNotAdmitted bool
 }
 
 type ForkChildTransition struct {

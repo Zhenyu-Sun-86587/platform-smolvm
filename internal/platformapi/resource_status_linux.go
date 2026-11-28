@@ -75,9 +75,9 @@ func (s *Server) machineResourceRoutes() {
 			return err
 		}
 		ref := lifecycle.WorkerExecution(*b)
-		client := workerclient.Client{Socket: privateServiceWorker(adapter), Bundle: b.RuntimeBundleID}
+		client := workerclient.ForAdapter(adapter, b.RuntimeBundleID)
 		switch {
-		case client.Socket == "":
+		case client == nil:
 			issue := resourceIssue{"CAPABILITY_UNSUPPORTED", "this runtime does not expose Worker resource observations"}
 			issues["compute"], issues["cpu_limit"] = issue, issue
 		case ref.IncarnationID == "" || ref.Epoch < 1:

@@ -13,28 +13,16 @@ import (
 	"sandbox-platform/internal/runtime/workerclient"
 )
 
-func privateServiceWorker(adapter rt.Adapter) string {
-	if runtime, ok := adapter.(interface{ WorkerSocket() string }); ok {
-		return runtime.WorkerSocket()
-	}
-	return ""
-}
-
-func workerServiceAttachment(ctx context.Context, socket string, binding registry.Binding) (workerclient.Client, workerclient.NetworkAttachment, error) {
-	worker := workerclient.Client{Socket: socket, Bundle: binding.RuntimeBundleID}
-	execution := workerclient.Execution{
-		InstanceID: binding.RuntimeInstanceObjectID, IncarnationID: binding.IncarnationID,
-		Epoch: binding.ExecutionEpoch,
-	}
-	attachment, err := worker.LookupAttachment(ctx, execution)
+func workerServiceAttachment(ctx context.Context, worker workerclient.BindingControl, binding registry.Binding) (workerclient.NetworkAttachment, error) {
+	attachment, err := worker.LookupAttachment(ctx, lifecycle.WorkerExecution(binding))
 	if err != nil || attachment.Lease.State != "attached" || attachment.Lease.Gate != "open" {
-		return worker, attachment, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "Worker network attachment is not published"}
+		return attachment, &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "Worker network attachment is not published"}
 	}
-	return worker, attachment, nil
+	return attachment, nil
 }
 
-func workerServiceBackend(ctx context.Context, socket string, binding registry.Binding, service service) (gateway.Backend, error) {
-	worker, attachment, err := workerServiceAttachment(ctx, socket, binding)
+func workerServiceBackend(ctx context.Context, worker workerclient.BindingControl, binding registry.Binding, service service) (gateway.Backend, error) {
+	attachment, err := workerServiceAttachment(ctx, worker, binding)
 	if err != nil {
 		return gateway.Backend{}, err
 	}
@@ -46,7 +34,7 @@ func workerServiceBackend(ctx context.Context, socket string, binding registry.B
 	}, nil
 }
 
-func (s *Server) editWorkerService(ctx context.Context, j *lifecycle.Job, worker string) error {
+func (s *Server) editWorkerService(ctx context.Context, j *lifecycle.Job, worker workerclient.BindingControl) error {
 	if j.Op.Kind == "service_create" {
 		svc, err := s.requestedService(j)
 		if err != nil {
@@ -56,7 +44,7 @@ func (s *Server) editWorkerService(ctx context.Context, j *lifecycle.Job, worker
 			if err := s.admitOfflineDesktopService(ctx, j, svc); err != nil {
 				return err
 			}
-		} else if _, _, err := workerServiceAttachment(ctx, worker, j.Binding); err != nil {
+		} else if _, err := workerServiceAttachment(ctx, worker, j.Binding); err != nil {
 			return err
 		}
 		return j.Done(ctx, registry.TransitionRequest{

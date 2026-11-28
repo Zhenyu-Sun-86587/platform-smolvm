@@ -46,5 +46,8 @@ func (c Client) PacketWakeRule(ctx context.Context, execution Execution, rule Pa
 	}
 	result, _, err := c.call(ctx, request{Method: method, Expected: &execution, Payload: rule,
 		OperationID: operationID, RequestDigest: digest}, nil, nil)
+	if err == nil && (len(result) == 0 || result[0] != '{') {
+		err = workerReplyError(method, errors.New("Worker packet wake rule result is incomplete"))
+	}
 	return result, err
 }

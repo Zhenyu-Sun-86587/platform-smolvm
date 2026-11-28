@@ -60,6 +60,10 @@ export function Callout({ error }: { error: unknown }) {
   return <div className="callout" role="alert">
     <AlertCircle size={16} /><strong>{detail?.code ?? "Request failed"}</strong><span>{message}</span>
     {detail?.capability && detail.reason_code && <span>{detail.reason_code}</span>}
+    {!!detail?.candidates?.length && <ul>{detail.candidates.map(candidate =>
+      <li key={candidate.worker_id + "/" + (candidate.runtime_instance_id ?? "")}>
+        {[candidate.worker_id, candidate.runtime_instance_id].filter(Boolean).join(" · ")} — {label(candidate.reason)}
+      </li>)}</ul>}
     {detail?.stage && <span>Stage {label(detail.stage)}</span>}
     {detail?.scope && <span>Scope {label(detail.scope)}</span>}
     {detail?.operation_id && <span>Operation {detail.operation_id}</span>}

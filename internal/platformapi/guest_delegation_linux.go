@@ -101,13 +101,12 @@ func (s *Server) guestCreate(w http.ResponseWriter, r *http.Request, peer auth.A
 	if err := request.ValidateSystemCreate(); err != nil {
 		return err
 	}
-	admit, err := s.systemCreateAdmission(r.Context(), request.RuntimeInstanceID, request.MemoryForkProfile)
-	if err != nil {
+	accept := registry.AcceptRequest{Kind: "create", Name: request.Name, TemplateID: request.TemplateID,
+		RuntimeInstanceID: request.RuntimeInstanceID, Heavy: true, DesiredPower: "running"}
+	if err := s.prepareSystemCreate(r.Context(), &request, &accept, template.ImageDigest); err != nil {
 		return err
 	}
-	accept := registry.AcceptRequest{Kind: "create", Name: request.Name, TemplateID: request.TemplateID,
-		RuntimeInstanceID: request.RuntimeInstanceID, Heavy: true, DesiredPower: "running", AdmitRuntime: admit,
-		ResolveCreateDefaults: s.createDefaults(request, boot, false, true, false)}
+	accept.ResolveCreateDefaults = s.createDefaults(request, boot, false, true, false)
 	accept.AdmitGuest = s.guestOperationAdmission(peer, secret, caller, int64(profile.MemoryMiB))
 	return s.accept(w, r, auth.Principal{ID: caller.ID}, request, accept)
 }

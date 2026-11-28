@@ -96,6 +96,7 @@ func (e *Engine) observeNativePower(ctx context.Context, binding registry.Bindin
 	observation := nativeObservation(binding, ref, power, profile)
 	observation.Native.StopBarrier = &inventory.Inventory.StopBarrier
 	observation.Native.ForkCapabilities = observedForkCapabilities(inventory)
+	observation.Native.ForkStorage = inventory.ForkStorage()
 	digest := e.observeSystemGuest(ctx, binding, adapter, &observation)
 	if err := e.DB.ObserveMachine(ctx, binding.ID, observation); err != nil {
 		return false

@@ -1,12 +1,16 @@
 package platformapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"slices"
 
 	"sandbox-platform/internal/auth"
 	"sandbox-platform/internal/registry"
 	rt "sandbox-platform/internal/runtime"
+	"sandbox-platform/internal/runtime/workerclient"
 )
 
 type privateNetwork struct {
@@ -25,15 +29,33 @@ type privateEndpoint struct {
 	DNSName     string `json:"dns_name,omitempty"`
 }
 
-func (s *Server) hasPrivateNetwork(id string) bool {
+func (s *Server) privateNetworks(ctx context.Context) ([]privateNetwork, error) {
+	items := []privateNetwork{}
 	for _, route := range s.Config.Runtime.Custom {
 		for _, network := range route.PrivateNetworks {
-			if network.ID == id {
-				return true
+			items = append(items, privateNetwork{ID: network.ID, RuntimeInstanceID: route.InstanceID, CIDR: network.CIDR})
+		}
+	}
+	for _, n := range s.Config.Nodes {
+		sample, _, err := s.DB.GetWorkerSample(ctx, n.ID)
+		if errors.Is(err, registry.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, profile := range sample.Profiles {
+			for _, network := range profile.Networks {
+				items = append(items, privateNetwork{ID: network.ID, RuntimeInstanceID: profile.RuntimeInstanceID, CIDR: network.CIDR})
 			}
 		}
 	}
-	return false
+	return items, nil
+}
+
+func (s *Server) hasPrivateNetwork(ctx context.Context, id string) (bool, error) {
+	networks, err := s.privateNetworks(ctx)
+	return slices.ContainsFunc(networks, func(n privateNetwork) bool { return n.ID == id }), err
 }
 
 func (s *Server) networkRoutes() {
@@ -42,11 +64,9 @@ func (s *Server) networkRoutes() {
 		if err := p.Authorize(auth.ActionAdmin, ""); err != nil {
 			return err
 		}
-		items := []privateNetwork{}
-		for _, route := range s.Config.Runtime.Custom {
-			for _, network := range route.PrivateNetworks {
-				items = append(items, privateNetwork{ID: network.ID, RuntimeInstanceID: route.InstanceID, CIDR: network.CIDR})
-			}
+		items, err := s.privateNetworks(r.Context())
+		if err != nil {
+			return err
 		}
 		return list(w, r, items, func(n privateNetwork) string { return n.RuntimeInstanceID + "/" + n.ID })
 	})
@@ -72,8 +92,8 @@ func (s *Server) networkRoutes() {
 		endpoint := privateEndpoint{NetworkID: spec.Network.NetworkID, Mode: spec.Network.Mode, State: "unavailable"}
 		if binding := machine.CurrentBinding; binding != nil {
 			adapter, err := s.ForBinding(*binding)
-			if err == nil && privateServiceWorker(adapter) != "" {
-				_, attachment, err := workerServiceAttachment(ctx, privateServiceWorker(adapter), *binding)
+			if worker := workerclient.ForAdapter(adapter, binding.RuntimeBundleID); err == nil && worker != nil {
+				attachment, err := workerServiceAttachment(ctx, worker, *binding)
 				if err == nil && (attachment.NetworkID == "" || attachment.NetworkID == spec.Network.NetworkID) && attachment.Lease.Attachment.Mode == endpoint.Mode {
 					lease := attachment.Lease
 					endpoint.State = "published"

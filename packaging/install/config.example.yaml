@@ -10,3 +10,28 @@ runtime:
   executable: /opt/sandbox-platform/runtime/1.37.1/bin/smolvm
   data_dir: /var/lib/smolvm-platform-runtime
   local_image_dir: /var/lib/smolvm-platform-images
+
+# Enroll an external Node by adding it under nodes. The Node certificate must
+# match the HTTPS hostname, worker_id, enrollment_generation and Node SPKI pin.
+# See docs/deep-runtime/multi-node-v1.md for certificate and recovery details.
+# nodes:
+#   - worker_id: worker-a
+#     name: Worker A
+#     endpoint: https://worker-a.example.test:9443
+#     enrollment_generation: 1
+#     node_spki_pin: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+#     # Required for an established Worker upgrading to journal identity fencing.
+#     # journal_id: value from the original stopped Node's -print-journal-id command
+#     ca_file: /etc/sandbox-platform/tls/worker-ca.pem
+#     # Optional dedicated Worker CA key for enrollment tickets.
+#     # ca_signing_key_file: /etc/sandbox-platform/tls/worker-a-ca.key
+#     certificate_file: /etc/sandbox-platform/tls/controller.pem
+#     key_file: /etc/sandbox-platform/tls/controller-key.pem
+#     routes:
+#       - runtime_instance_id: worker-a-runtime
+#         local_instance_id: smolvm-deep
+#         bundle_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+#         state_reader_id: replace-with-installed-state-reader
+#         manifest: /opt/sandbox-platform/runtime/deep/manifest.json
+#         artifacts:
+#           "sha256:0000000000000000000000000000000000000000000000000000000000000000": replace-with-worker-root-generation

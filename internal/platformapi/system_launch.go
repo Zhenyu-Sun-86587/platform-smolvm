@@ -12,7 +12,24 @@ import (
 	"sandbox-platform/internal/templates"
 )
 
-func (s *Server) systemCreateAdmission(ctx context.Context, instanceID string, memoryProfile string) (func(rt.BundleRoute, string) error, error) {
+// Both management and delegated Guest creation use the same route checks
+// and reserve remote capacity inside the operation acceptance transaction.
+func (s *Server) prepareSystemCreate(ctx context.Context, input *lifecycle.Create, accept *registry.AcceptRequest, digest string) error {
+	if err := s.preparePlacement(input, accept, digest); err != nil {
+		return err
+	}
+	if accept.Placement != nil {
+		return nil
+	}
+	if input.RuntimeInstanceID == "" {
+		return rt.SystemBootUnavailable(true)
+	}
+	admission, err := s.systemCreateAdmission(ctx, input.RuntimeInstanceID, input.MemoryForkProfile)
+	accept.AdmitRuntime = admission
+	return err
+}
+
+func (s *Server) systemCreateAdmission(ctx context.Context, instanceID, memoryProfile string) (func(rt.BundleRoute, string) error, error) {
 	route, err := s.DB.GetRuntimeRoute(ctx, instanceID)
 	if errors.Is(err, rt.ErrUnsupported) {
 		return func(rt.BundleRoute, string) error { return rt.SystemBootUnavailable(false) }, nil
@@ -66,6 +83,21 @@ func (s *Server) createDefaults(input lifecycle.Create, boot templates.Spec, use
 }
 
 func (s *Server) systemNetwork(input lifecycle.Create, defaults settings) (*rt.LaunchNetwork, error) {
+	if input.Placement != nil || s.remoteRuntime(input.RuntimeInstanceID) {
+		if input.Network == nil && defaults.NetworkID == "" {
+			return nil, nil
+		}
+		network := rt.LaunchNetwork{NetworkID: defaults.NetworkID, Mode: defaults.NetworkMode}
+		if input.Network != nil {
+			if input.Network.NetworkID != "" {
+				network.NetworkID = input.Network.NetworkID
+			}
+			if input.Network.Mode != "" {
+				network.Mode = input.Network.Mode
+			}
+		}
+		return &network, nil
+	}
 	for _, route := range s.Config.Runtime.Custom {
 		if route.InstanceID != input.RuntimeInstanceID {
 			continue

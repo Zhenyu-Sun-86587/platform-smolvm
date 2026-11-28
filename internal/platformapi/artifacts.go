@@ -147,7 +147,7 @@ func (s *Server) artifactRoutes() {
 					return rt.ErrUnsupported
 				}
 				admitRuntime = func(rt.BundleRoute, string) error {
-					_, err := s.vmSnapshotWorker(snap)
+					_, err := s.vmSnapshotWorker(r.Context(), snap)
 					return err
 				}
 				kind = rt.VMSnapshotDelete

@@ -17,6 +17,11 @@ func (s *Store) SetMaintenance(ctx context.Context, enabled bool, reason string)
 		return Control{}, err
 	}
 	defer tx.Rollback()
+	if !enabled {
+		if err := checkWorkerAuthorityRecovery(ctx, tx); err != nil {
+			return Control{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE meta SET maintenance = ?, recovery_reason = ? WHERE id = 1", enabled, nullable(reason)); err != nil {
 		return Control{}, err
 	}

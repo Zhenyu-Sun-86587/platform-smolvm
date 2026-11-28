@@ -1,0 +1,27 @@
+[Unit]
+Description=Sandbox Worker NodeGateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=sandbox-platform
+Group=sandbox-platform
+SupplementaryGroups=sandbox-control kvm
+StateDirectory=sandbox-node
+StateDirectoryMode=0700
+RuntimeDirectory=sandbox-node
+RuntimeDirectoryMode=0751
+WorkingDirectory=/var/lib/sandbox-node
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ExecStart=/usr/local/libexec/sandbox-node -config /etc/sandbox-node/config.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=25s
+
+[Install]
+WantedBy=multi-user.target

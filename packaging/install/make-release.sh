@@ -27,13 +27,13 @@ work=$(mktemp -d "$(dirname -- "$output")/.sandbox-release.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 cd "$repo"
 mkdir "$work/bin" "$work/systemd"
-for executable in platformd sandboxctl; do
+for executable in platformd sandboxctl sandbox-node; do
     CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath \
         -ldflags "-X sandbox-platform/internal/buildinfo.Version=$version" \
         -o "$work/bin/$executable" "./cmd/$executable"
 done
 cp packaging/runtime-manifest.json "$work/runtime-manifest.json"
-cp packaging/systemd/{platformd.service,smolvm-serve.service,smolvm-status.socket,smolvm-status@.service,grant-runtime-socket,read-runtime-status} "$work/systemd/"
+cp packaging/systemd/{platformd.service,sandbox-node.service,sandbox-node.example.yaml,smolvm-serve.service,smolvm-status.socket,smolvm-status@.service,grant-runtime-socket,read-runtime-status} "$work/systemd/"
 cp packaging/install/install.sh "$work/install.sh"
 cp packaging/install/config.example.yaml "$work/config.example.yaml"
 cp "$template" "$work/managed-template.tar"
@@ -54,7 +54,7 @@ jq -n --arg digest "$template_hash" --arg runtime "$runtime_version" --slurpfile
           .[$name] = {supported:true, verified_profile:$gate.verified_profile}))
     } + (if $gate == null then {} else {guest_release:"Debian 12", verified_at:$gate.verified_at} end)]
 ' > templates.json
-members=(bin/platformd bin/sandboxctl runtime-manifest.json systemd/platformd.service
+members=(bin/platformd bin/sandboxctl bin/sandbox-node systemd/sandbox-node.service systemd/sandbox-node.example.yaml runtime-manifest.json systemd/platformd.service
     systemd/smolvm-serve.service systemd/smolvm-status.socket systemd/smolvm-status@.service
     systemd/grant-runtime-socket systemd/read-runtime-status install.sh config.example.yaml
     managed-template.tar templates.json)

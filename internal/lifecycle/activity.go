@@ -93,7 +93,7 @@ func (e *Engine) activitySession() string {
 	}
 	return e.collectorSession
 }
-func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b registry.Binding, adapter rt.Adapter, client workerclient.Client, st WorkerLifecycleStatus, manager *tasks.Hello) {
+func (e *Engine) reportActivity(ctx context.Context, m registry.Machine, b registry.Binding, adapter rt.Adapter, client workerclient.LifecycleControl, st WorkerLifecycleStatus, manager *tasks.Hello) {
 	scope := WorkerExecution(b)
 	if st.Execution() != scope || scope.IncarnationID == "" {
 		return

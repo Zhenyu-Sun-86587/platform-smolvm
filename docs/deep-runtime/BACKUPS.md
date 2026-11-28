@@ -18,6 +18,8 @@ Use `sandboxctl backups policies`, `sandboxctl backups list` and `sandboxctl bac
 
 A native run seals its registry snapshot and records the exact Worker routes. Each Worker durably pins the selected immutable roots before the platform begins copying backup members. The platform keeps the same run and registry snapshot during a temporary Worker outage or a platform restart. Once all Worker pins are confirmed, ordinary checkpoint and volume snapshot deletion can proceed while the backup retains their files. A missing immutable member or reader fails that run and preserves the previous verified archive.
 
+For a remote route, the Node checks each StatePoint against the original capture operation, Serve namespace and manifest digest in resourced. Two private Serve processes on one Worker may use the same Bundle. Their StatePoints retain their original Serve owner. An immutable block generation selected by the platform registry can be shared by routes on the same Worker and Bundle. The Node checks that an explicitly selected generation is available and was created under the pinned Bundle. The Worker validates and pins the complete block ancestry.
+
 ```sh
 sandboxctl admin backup verify --archive "$archive" --recovery-key-file "$key"
 sandboxctl admin backup recover-native --archive "$archive" --recovery-key-file "$key" --output "$new_directory"

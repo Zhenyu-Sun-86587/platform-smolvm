@@ -10,11 +10,11 @@
 |---|---|---|
 | 平台、CLI 和控制台 | `polish/integration@4e1ba470ed66`，schema 1019。此提交通过 Go 全量、宿主原生 OpenSSH、Vite、Darwin arm64/amd64 CLI 构建。最后一轮真实 SSH/HTTPS KVM 验收绑定 `0f35c613d14d`。更早的 J01–J10 与 J11 各有记录，以其各自 SHA 为准。 | 以当前集成分支为起点，生成一套包含平台、CLI 和控制台的冻结制品。用最终候选补同版 J01–J11 核心链路。确认发布目标后合并，保留源提交、版本、构建和回退凭据。 |
 | Runtime / Guest | `polish/runtime-candidate@cb31d6c`，测量 Bundle `sha256:3de1c4f1a848edd37b8bc5c94b944e0dd5c18ab3d90874a1348ecc0529710a3c`。同期还留有 `polish/native-files@2b172e8`、`polish/runtime-glue@b724f99`。 | 按发布源和最终候选比较切片差异，核对实测文件权限、Agent 版本、Runtime 及 reader。确认成果和证据已被候选包含后再收源分支和工作树。 |
-| 多节点 | `feat/multi-node-v1@1c039e3791f1`，实际发布包源码 `53fefd0`，schema 1025。同一台主机真实跑过一个平台和两个回环 mTLS Node，N01–N18 的 41 个具名测试通过。 | 从两条稳定线建临时合并候选，解决 API、CLI、网关、机器视图和生成产物冲突后重建。逐项核对仍有历史提交的 `feat/multi-node-gateway`、`feat/multi-node-owner`、`feat/multi-node-placement`，按实际差异决定是否回收。先在独立部署验证 1019→1025、兼容性和回退，再考虑进入共同发布候选。 |
+| 多节点 | `feat/multi-node-v1@1c039e3791f1` 已合入平台基线。早期发布包源码为 `53fefd0`，schema 1025。同一台主机真实跑过一个平台和两个回环 mTLS Node，N01–N18 的 41 个具名测试通过。 | 在独立双 Worker 部署验收 1019→1025、跨主机访问和兼容回退，然后验证规模化负载。 |
 | 内核 CoW | 已合入平台和 Runtime 候选。libkrun `b59c9bc8`，smolvm `e80e2579`。已在隔离 Worker 验真实磁盘、网络、anchor 生命周期和跨启动恢复。[精确版本与证据](kernel-cow-closeout-2026-11-28.md) | 为专用 Worker 冻结发行制品，验安装、重启、实际能力和回退。已有脚本默认使用 Native Live Fork。 |
 | 已回收开发分支 | 11 月 26 日回收 31 个工作树并删除 10 个已合并本地分支，`archive/polish-closeout/` 保留 7 个开发切片或诊断引用。前后端已在集成提交中。 | 从 11 月 28 日交接指定的工作目录开始，旧证据按[合入记录](kernel-cow-closeout-2026-11-28.md)追溯。 |
 
-[平台验收记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/.git/polish-coordination/integration-status.md) · [SSH / HTTPS 实测清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/final-0f35c613d14d/managed-access-verification.json) · [分支归档清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/git-closeout/branches.tsv) · [多节点实现和验收](../../../multi-node/docs/deep-runtime/multi-node-v1.md) · [内核验证](/home/dev/workspace/deepfork-smolvm/kernel-cow-k1/linux-patches/evidence/anchor-exit-2026-11-26/README.md)
+[平台验收记录](/home/dev/workspace/deepfork-smolvm/platform-smolvm/.git/polish-coordination/integration-status.md) · [SSH / HTTPS 实测清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/final-0f35c613d14d/managed-access-verification.json) · [分支归档清单](/home/dev/workspace/deepfork-smolvm/.build/polish-20261126/git-closeout/branches.tsv) · [多节点实现和验收](multi-node-v1.md) · [内核验证](/home/dev/workspace/deepfork-smolvm/kernel-cow-k1/linux-patches/evidence/anchor-exit-2026-11-26/README.md)
 
 ## 1. 上午先冻结候选和生产验证条件
 

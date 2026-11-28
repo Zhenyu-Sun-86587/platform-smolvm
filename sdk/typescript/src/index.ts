@@ -11,7 +11,60 @@ export interface BackupRun {
   state: "running" | "verified" | "failed" | "retiring" | "retired"
   started_at: string; finished_at?: string; failure_code?: string
 }
+export type WorkerPlacement = { mode: "auto" } | { mode: "pinned"; worker_id: string }
+export type WorkerMode = "active" | "cordoned" | "draining" | "drained" | "decommissioned"
+export interface WorkerMaintenance {
+  worker_id: string
+  mode: WorkerMode
+  revision: number
+  phase: string
+  coverage: string
+  reason?: string
+  blockers?: string[]
+}
+export interface WorkerResources {
+  vcpus: number
+  memory_mib: number
+  storage_bytes: number
+  heavy_slots: number
+}
+export interface WorkerSample {
+  sequence: number
+  source: string
+  session: { host_boot_id: string; broker_session_id: string; node_session_id: string }
+  budget: { capacity: WorkerResources; allocated: WorkerResources }
+  profiles: { runtime_instance_id: string; local_instance_id: string; ready: boolean }[]
+}
+export interface Worker {
+  worker_id: string
+  name: string
+  enrollment_generation?: number
+  enrollment_status?: "active" | "revoked"
+  desired_mode: WorkerMode
+  observed_status: string
+  revision: number
+  fresh_budget: boolean
+  sample?: WorkerSample
+  sampled_at?: string
+  maintenance: WorkerMaintenance
+}
+export interface PlacementReservation {
+  operation_id: string
+  worker_id: string
+  runtime_instance_id: string
+  bundle_id: string
+  phase: string
+  attempt: number
+  request_digest: string
+  native_digest?: string
+  control_epoch: string
+  resources: WorkerResources
+  native_attempt: number
+  updated_at: string
+}
 export interface RuntimeProfile {
+  worker_id?: string
+  local_instance_id?: string
   runtime_instance_id: string
   runtime_bundle_id: string
   state_reader_id: string
@@ -55,6 +108,7 @@ export interface ForkBatch {
   volume_policy?: { default?: "clone" }
 }
 export interface ErrorDetail {
+  candidates?: { worker_id: string; runtime_instance_id?: string; reason: string }[]
   code?: string
   message?: string
   effect?: Effect
@@ -81,6 +135,7 @@ export interface OperationResult extends Record<string, unknown> {
   memory_fork_profile?: string
 }
 export interface Operation {
+  worker_id?: string
   operation_id: string
   control_epoch?: string
   source_machine_id?: string
@@ -138,6 +193,7 @@ export interface SystemMetrics extends MetricObservation {
   used_disk_gb?: number; boot_id?: string; platform: PlatformMetrics
 }
 export interface Control {
+  installation_id?: string
   control_epoch: string
   default_boot_mode?: BootMode
   runtime_version?: string
@@ -231,6 +287,7 @@ export interface MachineNetwork extends Required<NetworkSelection> {
 export interface NetworkDefaults { default_network_mode?: NetworkMode; default_network_id?: string }
 export interface CreateMachine {
   memory_fork_profile?: MemoryForkProfile
+  placement?: WorkerPlacement
   live_compute_growth?: boolean
   lifecycle_policy?: LifecyclePolicyPatch
   boot_mode?: BootMode
@@ -248,10 +305,13 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
   resources?: Resources & ResourcePatch
   network?: Required<NetworkSelection>
   machine_id: string
+  worker_id?: string
   desktop_profile?: "software-vnc-v1"
   spec?: { resources?: Resources }
   revision: number
   binding_generation: number
+  owner_status?: string
+  last_confirmed_power_state?: PowerState
   power_state?: PowerState
   health?: {vm: string; guest_management: string; workload: string; workload_error?: {code: string; message: string}; network_identity: string; services: string}
   observed_state: string
@@ -269,6 +329,7 @@ export interface Machine extends Omit<CreateMachine, "lifecycle_policy" | "netwo
   state_reason?: unknown
   binding?: {
     binding_id?: string
+    worker_id?: string
     runtime_instance_id?: string
     runtime_bundle_id?: string
     execution_epoch?: number
@@ -387,6 +448,7 @@ export interface VolumeSpec {
   lifecycle?: "persistent" | "ephemeral" | "machine"
 }
 export interface Volume extends VolumeSpec {
+  worker_id?: string
   volume_id: string
   owner_id: string
   runtime_bundle_id: string
@@ -884,6 +946,15 @@ export class Client {
   detachVolume(id: string, volumeRevision: number, options: MachineWriteOptions & { generation: number; revision: number }) {
     return this.mutate("volume-attachments/" + segment(id),
       { expected_volume_revision: volumeRevision, expected_generation: options.generation }, { ...options, method: "DELETE" })
+  }
+  listWorkers(signal?: AbortSignal) { return this.pages<Worker>("workers", 100, signal) }
+  getWorker(id: string, signal?: AbortSignal) { return this.get<Worker>("workers/" + encodeURIComponent(id), signal) }
+  getPlacement(operationId: string, signal?: AbortSignal) { return this.get<PlacementReservation>(operation(operationId) + "/placement", signal) }
+  setWorkerMode(id: string, mode: WorkerMode, reason: string, revision: number, options?: WriteOptions) {
+    return this.mutate<WorkerMaintenance>("workers/" + encodeURIComponent(id) + "/maintenance", { mode, reason }, { ...options, method: "PATCH", revision })
+  }
+  revokeWorkerEnrollment(id: string, generation: number, reason: string, revision: number, options?: WriteOptions) {
+    return this.mutate<{ worker_id: string; revision: number; enrollment_generation: number; enrollment_status: "revoked" }>("workers/" + encodeURIComponent(id) + "/enrollment/revoke", { enrollment_generation: generation, reason }, { ...options, revision })
   }
   listRuntimeProfiles(signal?: AbortSignal) { return this.pages<RuntimeProfile>("runtime-profiles", 100, signal) }
   machineAction(id: string, action: "start" | "stop" | "pause" | "resume" | "wake", generation: number, options: WriteOptions) {

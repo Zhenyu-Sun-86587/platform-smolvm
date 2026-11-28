@@ -56,7 +56,7 @@ func (s *Server) dispatchGuestExec(ctx context.Context, p auth.Principal, x exec
 	if !ok || b.PowerState != registry.PowerRunning {
 		return rt.ErrUnsupported
 	}
-	conn, err := client.OpenGuestAgent(ctx, lifecycle.WorkerExecution(b))
+	conn, err := client.OpenScopedGuest(ctx, lifecycle.WorkerExecution(b))
 	if err != nil {
 		return guestExecError(err)
 	}

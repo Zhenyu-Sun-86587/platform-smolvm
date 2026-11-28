@@ -51,7 +51,7 @@ sandboxctl operations get "$OPERATION_ID" --json
 
 平台从 `worktrees/polish-integration` 开发。Worker/Serve 从 `worktrees/polish-runtime-candidate` 开发，libkrun 的合入源码在 `worktrees/kernel-cow-libkrun`。Git 源码提交和实验 Bundle 分开固定，生产构建及安装沿用发布流水线。
 
-前后端合入提交和 Mac CLI、菜单栏源码已经在平台集成分支。旧 B3 文件验证补丁和 Native 文件补丁的等价变更也已核对。多节点保留独立的 `worktrees/multi-node`，分支为 `feat/multi-node-v1@1c039e3791f1c3f0a83fa4d3356cabb376f694d3`。同机两 Node 的验收已记录，下一步是双物理 KVM Worker。
+前后端合入提交和 Mac CLI、菜单栏源码已经在平台集成分支。旧 B3 文件验证补丁和 Native 文件补丁的等价变更也已核对。多节点原交接为 `feat/multi-node-v1@1c039e3791f1c3f0a83fa4d3356cabb376f694d3`，后续已合入同一个平台基线。双物理 KVM Worker 仍在验收计划中。[多节点实现与同机验收](multi-node-v1.md)
 
 本轮的模型流验证使用本地受控 TLS 上游。托管 Agent 会话按已完成轮次截断，属于另行实现的产品合同。双物理 Worker、压力与长时寿命、生产下载与 OAuth、签名 Mac App 仍按[生产验收交接](production-handoff-2026-11-27.md)推进。
 

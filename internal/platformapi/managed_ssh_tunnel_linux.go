@@ -103,7 +103,7 @@ func (s *Server) managedSSHTunnel(w http.ResponseWriter, r *http.Request, mid st
 	if err := check(admission); err != nil {
 		return err
 	}
-	agent, err := worker.OpenGuestAgent(admission, lifecycle.WorkerExecution(b))
+	agent, err := worker.OpenScopedGuest(admission, lifecycle.WorkerExecution(b))
 	if err != nil {
 		return &lifecycle.Failure{Code: "SERVICE_NOT_READY", Message: "the Worker could not open the current Guest Agent"}
 	}
@@ -137,7 +137,7 @@ func (s *Server) currentManagedSSHBinding(ctx context.Context, before registry.B
 	}
 	b := m.CurrentBinding
 	if m.DeletedAt != nil || b == nil || b.ID != before.ID || b.Generation != before.Generation || b.Status != "current" ||
-		b.RuntimeInstanceID != before.RuntimeInstanceID || b.RuntimeBundleID != before.RuntimeBundleID ||
+		b.BundleRoute() != before.BundleRoute() ||
 		b.RuntimeInstanceObjectID != before.RuntimeInstanceObjectID {
 		return registry.Binding{}, registry.ErrGeneration
 	}

@@ -42,6 +42,7 @@ type StatePointProgress struct {
 	ManifestDigest            string            `json:"manifest_digest,omitempty"`
 	TargetOperationID         string            `json:"target_operation_id,omitempty"`
 	RescueCaptureID           string            `json:"rescue_capture_id,omitempty"`
+	RescueManifestDigest      string            `json:"rescue_manifest_digest,omitempty"`
 	OriginalSourceDisposition string            `json:"original_source_disposition,omitempty"`
 	SourceReleased            bool              `json:"source_released,omitempty"`
 	VolumeMap                 map[string]string `json:"volume_map,omitempty"`

@@ -23,15 +23,17 @@ type machineHealth struct {
 }
 
 type machineView struct {
-	WebURL            string                      `json:"web_url,omitempty"`
-	PowerState        registry.PowerState         `json:"power_state"`
-	Health            machineHealth               `json:"health"`
-	BootMode          rt.BootMode                 `json:"boot_mode"`
-	MemoryForkProfile string                      `json:"memory_fork_profile,omitempty"`
-	LiveComputeGrowth bool                        `json:"live_compute_growth,omitempty"`
-	DesktopProfile    string                      `json:"desktop_profile,omitempty"`
-	Network           *rt.LaunchNetwork           `json:"network,omitempty"`
-	Lifecycle         *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
+	WebURL             string                      `json:"web_url,omitempty"`
+	OwnerStatus        string                      `json:"owner_status,omitempty"`
+	LastConfirmedPower registry.PowerState         `json:"last_confirmed_power_state,omitempty"`
+	PowerState         registry.PowerState         `json:"power_state"`
+	Health             machineHealth               `json:"health"`
+	BootMode           rt.BootMode                 `json:"boot_mode"`
+	MemoryForkProfile  string                      `json:"memory_fork_profile,omitempty"`
+	LiveComputeGrowth  bool                        `json:"live_compute_growth,omitempty"`
+	DesktopProfile     string                      `json:"desktop_profile,omitempty"`
+	Network            *rt.LaunchNetwork           `json:"network,omitempty"`
+	Lifecycle          *registry.LifecycleSettings `json:"lifecycle_policy,omitempty"`
 	registry.Machine
 	Binding      *registry.Binding        `json:"binding,omitempty"`
 	RuntimeName  string                   `json:"runtime_name,omitempty"`
@@ -167,6 +169,22 @@ func (s *Server) viewMachine(ctx context.Context, m registry.Machine, refreshPol
 		v.PowerState = registry.PowerUnknown
 		v.Health.VM = "unknown"
 		v.Blocked = append(v.Blocked, "observation_stale")
+	}
+	if b := m.CurrentBinding; b != nil && b.WorkerID != "" && b.WorkerID != registry.LocalWorkerID {
+		owner, err := s.DB.GetWorker(ctx, b.WorkerID)
+		if err != nil {
+			return v, err
+		}
+		v.OwnerStatus = owner.ObservedStatus
+		if b.PowerState != registry.PowerUnknown {
+			v.LastConfirmedPower = b.PowerState
+		}
+		if owner.ObservedStatus != "ready" {
+			v.PowerState, v.Availability = registry.PowerUnknown, "unknown"
+			v.Health = machineHealth{VM: "unknown", GuestManagement: "unknown", Workload: "unknown", NetworkIdentity: "unknown", Services: "unknown"}
+			v.GuestStatus = "unknown"
+			v.Blocked = append(v.Blocked, "owner_"+owner.ObservedStatus)
+		}
 	}
 	if m.ActiveOperationID != "" {
 		v.Blocked = append(v.Blocked, "operation_in_progress")

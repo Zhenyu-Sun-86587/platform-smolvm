@@ -141,11 +141,10 @@ func (r machineResourcePatch) steps(compute workerclient.ComputeResources, limit
 
 // Each step advances with its public projection in one registry transaction.
 // A lost reply reuses the same Worker operation and the originating execution.
-func (s *Server) configureManagedResources(ctx context.Context, j *lifecycle.Job, patch machineResourcePatch, limit *uint32, socket string) (map[string]any, error) {
+func (s *Server) configureManagedResources(ctx context.Context, j *lifecycle.Job, patch machineResourcePatch, limit *uint32, client workerclient.BindingControl) (map[string]any, error) {
 	if patch.Storage != 0 || patch.Overlay != 0 {
 		return nil, &lifecycle.Failure{Code: "CAPABILITY_UNSUPPORTED", Message: "managed System disk capacity changes use the volume API"}
 	}
-	client := workerclient.Client{Socket: socket, Bundle: j.Binding.RuntimeBundleID}
 	plan := managedResourcePlan{Execution: lifecycle.WorkerExecution(j.Binding)}
 	if j.Intent.Stage == "managed_resources" {
 		if err := json.Unmarshal([]byte(j.Intent.Target), &plan); err != nil {
@@ -180,7 +179,7 @@ func (s *Server) configureManagedResources(ctx context.Context, j *lifecycle.Job
 		change := step.Change
 		progress := workerclient.ResourceProgress{Change: change, Stage: "unchanged", Observed: step.Unchanged}
 		if step.Unchanged == nil {
-			receipt, err := client.Resize(ctx, j.Op.ID+"-"+change.Kind, plan.Execution, change)
+			receipt, err := client.ResizeResources(ctx, j.Op.ID+"-"+change.Kind, plan.Execution, change)
 			if err != nil {
 				return nil, settleResourceError(ctx, j, plan, err, nil)
 			}

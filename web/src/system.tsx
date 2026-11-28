@@ -5,7 +5,7 @@ import { ApiKeys } from "./features/settings/ApiKeys"
 import { OrganizationPreview, PreviewPage } from "./features/settings/Previews"
 import styles from "./features/settings/settings.module.css"
 import catalog from "./features/catalog/catalog.module.css"
-import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile, SystemMetrics } from "../../sdk/typescript/src/index"
+import type { BackupPolicy, BackupRun, LifecyclePolicy, Machine, NetworkDefaults, Operation, Page, PolicyApplication, PrivateNetwork, RuntimeProfile, SystemMetrics, Worker } from "../../sdk/typescript/src/index"
 import { policyFields, policyInput } from "./lifecycle-policy"
 import { operation } from "../../sdk/typescript/src/index"
 import { api, Callout, Details, label, networkModes, num, Records, Section, segment, State, str, time, useRemote } from "./common"
@@ -40,6 +40,36 @@ export function System({ tab, ...props }: Props) {
     {tab === "operations" ? <Operations {...props} /> : tab === "templates" ? <Templates {...props} />
       : tab === "diagnostics" ? <Diagnostics revision={props.revision} /> : tab === "backups" ? <Backups {...props} /> : <Settings {...props} />}
   </>
+}
+
+function Workers({ actions, revision }: Pick<Props, "actions" | "revision">) {
+  const workers = useCollection<Worker>("workers", revision)
+  return <Section title="Workers">
+    <Callout error={workers.error} />
+    <div className="rows">{workers.items?.map(worker => <div key={worker.worker_id} className="row">
+      <strong>{worker.name}</strong><code>{worker.worker_id}</code>
+      <span>{label(worker.observed_status)}</span><span>{label(worker.maintenance.phase)}</span>
+      <span>{worker.fresh_budget ? "Fresh budget" : "No fresh budget"}</span>
+      {worker.sample && <details className="disclosure">
+        <summary>Worker allocation</summary>
+        <dl>
+          <dt>vCPU</dt><dd>{worker.sample.budget.allocated.vcpus} / {worker.sample.budget.capacity.vcpus}</dd>
+          <dt>Memory</dt><dd>{worker.sample.budget.allocated.memory_mib} / {worker.sample.budget.capacity.memory_mib} MiB</dd>
+          <dt>Storage</dt><dd>{(worker.sample.budget.allocated.storage_bytes / 2**30).toFixed(1)} / {(worker.sample.budget.capacity.storage_bytes / 2**30).toFixed(1)} GiB</dd>
+          <dt>Sample</dt><dd>{worker.sampled_at}</dd>
+        </dl>
+      </details>}
+      <span>{worker.maintenance.coverage === "known_only" ? "Inventory covers known objects" : label(worker.maintenance.coverage)}</span>
+      {!!worker.maintenance.blockers?.length && <span>{worker.maintenance.blockers.map(label).join(", ")}</span>}
+      {worker.worker_id === "local-worker" ? <span>In-process runtime</span> : <Button variant="secondary" onClick={() => actions.dialog({
+        title: "Worker maintenance", submit: "Apply", fields: [
+          {name: "mode", label: "Desired mode", value: worker.desired_mode, options: ["active", "cordoned", "draining"].map(value => ({value, label: label(value)}))},
+          {name: "reason", label: "Reason", required: true},
+        ], act: form => actions.mutate("workers/" + segment(worker.worker_id) + "/maintenance",
+          {mode: str(form, "mode"), reason: str(form, "reason")}, {method:"PATCH", revision:worker.revision}),
+      })}>Change mode</Button>}
+    </div>)}</div>
+  </Section>
 }
 
 function Backups({ actions, revision }: Omit<Props,"tab">) {
@@ -103,7 +133,7 @@ function OperationDetail({ item, actions }: { item: Operation; actions: Actions 
   return <>
     <Details value={{
       operation: item.operation_id, kind: item.kind, stage: item.stage, state: item.state,
-      machine_id: item.machine_id, generation: item.binding_generation, effect: item.effect,
+      machine_id: item.machine_id, generation: item.binding_generation, worker: item.worker_id, effect: item.effect,
       source_disposition: item.source_disposition, source_lock_released: item.source_lock_released,
       ...(requested ? { requested_memory_fork_backend: memoryForkBackendLabel(requested) } : {}),
       ...(selected ? { selected_memory_fork_backend: memoryForkBackendLabel(selected) } : {}),
@@ -295,6 +325,7 @@ function Settings({ actions, revision }: Omit<Props, "tab">) {
     </div>
   })
   return <>
+    <Workers actions={actions} revision={revision} />
     {secret != null && <Section title="Issued credential" actions={<button onClick={() => setSecret(undefined)}>Dismiss</button>}><Records value={secret} /></Section>}
     <Section title="Platform settings" actions={<button disabled={!settings.data} onClick={() => actions.dialog({
       title: "Update settings", submit: "Save",

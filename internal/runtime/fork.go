@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"math"
+)
 
 const NativeForkProfile = "managed-parked-v1"
 const KernelCowProfile = "kernel_cow_anon_v1"
@@ -118,7 +121,8 @@ type NativeForkControl interface {
 }
 
 type NativeBlock struct {
-	ReadOnly          bool `json:"read_only"`
+	CapacityBytes     uint64 `json:"capacity_bytes"`
+	ReadOnly          bool   `json:"read_only"`
 	ManagedAttachment *struct {
 		AttachmentID   string `json:"attachment_id"`
 		DeviceID       string `json:"device_id"`
@@ -161,6 +165,40 @@ func (i NativeInventory) ForkDisks() []ForkDiskEvidence {
 		disks = append(disks, ForkDiskEvidence{a.DeviceID, a.Role, a.VolumeID, a.WritableHeadID, block.ReadOnly})
 	}
 	return disks
+}
+
+// ForkStorageEvidence records the nominal writable device capacity of one
+// exact live managed execution. Read-only backing is shared by native Fork.
+type ForkStorageEvidence struct {
+	Execution     ExecutionRef `json:"execution"`
+	HostBootID    string       `json:"host_boot_id"`
+	WritableBytes int64        `json:"writable_bytes"`
+}
+
+func (i NativeInventory) ForkStorage() *ForkStorageEvidence {
+	if i.Execution.HostBootID == "" || len(i.ForkDisks()) == 0 {
+		return nil
+	}
+	var writable uint64
+	for _, dev := range i.Inventory.Devices {
+		if dev.VirtioType != 2 {
+			continue
+		}
+		block := dev.Block
+		if block.CapacityBytes == 0 {
+			return nil
+		}
+		if !block.ReadOnly {
+			if block.CapacityBytes > math.MaxInt64-writable {
+				return nil
+			}
+			writable += block.CapacityBytes
+		}
+	}
+	if writable == 0 {
+		return nil
+	}
+	return &ForkStorageEvidence{Execution: i.Execution.ExecutionRef, HostBootID: i.Execution.HostBootID, WritableBytes: int64(writable)}
 }
 
 func VerifiedForkProfile(c Capability) bool {

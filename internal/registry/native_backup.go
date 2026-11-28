@@ -13,10 +13,12 @@ import (
 var ErrNativeBackupBusy = errors.New("a selected volume snapshot is already being removed")
 
 type NativeBackupRoute struct {
-	Instance string `json:"runtime_instance_id"`
-	Bundle   string `json:"bundle_digest"`
-	Reader   string `json:"state_reader_id"`
-	Socket   string `json:"worker_socket"`
+	WorkerID        string `json:"worker_id,omitempty"`
+	LocalInstanceID string `json:"local_instance_id,omitempty"`
+	Instance        string `json:"runtime_instance_id"`
+	Bundle          string `json:"bundle_digest"`
+	Reader          string `json:"state_reader_id"`
+	Socket          string `json:"worker_socket"`
 }
 
 type NativeBackupSelection struct {

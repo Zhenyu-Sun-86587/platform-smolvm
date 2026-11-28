@@ -74,7 +74,7 @@ function MachineCard({ machine, actions, revision }: { machine: Machine; actions
   const state = machinePowerState(machine)
   const region = fixtureScene ? referenceRegion(machine) : undefined
   const health = machine.health?.guest_management ?? machine.guest_management_status
-  const runtime = machine.binding?.runtime_instance_id
+  const runtime = [machine.binding?.worker_id, machine.binding?.runtime_instance_id].filter(Boolean).join(" · ")
   const href = "#/machines/" + segment(machine.machine_id)
   const lineage = fixtureScene && machine.machine_id === "fixture-fork" ? "Forked from atlas-dev" : undefined
   return <article className={styles.machineCard} data-power={state} data-fixture={Boolean(fixtureScene)}>

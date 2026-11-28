@@ -99,7 +99,7 @@ func (w accessPolicyWorker) Lifecycle(ctx context.Context, method, key string, e
 	}
 }
 
-func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b registry.Binding, client workerclient.Client, entry AccessEndpoint) (registry.Binding, func(), error) {
+func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b registry.Binding, client workerclient.LifecycleControl, entry AccessEndpoint) (registry.Binding, func(), error) {
 	var none registry.Binding
 	ctx, cancel := context.WithTimeout(parent, time.Duration(e.Config.Gateway.WaitSeconds)*time.Second)
 	defer cancel()
@@ -112,6 +112,7 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 	scope := WorkerExecution(b)
 	enteredStopped := b.PowerState == registry.PowerStopped
 	assigned := false
+	var wakeHeld bool
 	reauthorize := func() error {
 		if err := e.checkAccessPrincipal(ctx, p, b.MachineID, entry.ServiceID); err != nil {
 			return err
@@ -192,6 +193,16 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 				}
 				release = e.connectionRelease(a, client)
 			}
+			if st.Power == "HIBERNATED" || st.Power == "STOPPED" {
+				kind := rt.VMRestore
+				if st.Power == "STOPPED" {
+					kind = "launch"
+				}
+				wakeHeld, err = e.DB.BeginAccessWake(ctx, id, b, st.Epoch, kind)
+				if err != nil {
+					return none, nil, err
+				}
+			}
 			err = request(ctx, "RequestWake", id+"-admit", args, &ack)
 			if err != nil {
 				var fault *workerclient.Fault
@@ -204,6 +215,11 @@ func (e *Engine) workerAccess(parent context.Context, p auth.Principal, b regist
 		ack, err = read(ctx)
 		if err != nil {
 			return none, nil, err
+		}
+		if wakeHeld && ack.ID == id && ack.Wake != "" {
+			if err := e.DB.ObserveAccessWakeDecision(ctx, id, ack.Wake); err != nil {
+				return none, nil, err
+			}
 		}
 		if ack.State == "released" {
 			if ack.Reason == "statepoint_restore_failed" {
@@ -323,6 +339,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 			x := nativeObservation(b, current, registry.PowerRunning, b.RuntimeBundleID+"/"+inv.Inventory.Protocol)
 			x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 			x.Native.ForkCapabilities = observedForkCapabilities(inv)
+			x.Native.ForkStorage = inv.ForkStorage()
 			return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 		}
 		// A concurrent access can journal a newer authorization decision.
@@ -351,6 +368,7 @@ func (e *Engine) projectAutoPower(ctx context.Context, b registry.Binding, adapt
 		x.Native.VerifiedRestore = !x.Native.VerifiedLaunch
 		x.Native.StopBarrier = &inv.Inventory.StopBarrier
 		x.Native.ForkCapabilities = observedForkCapabilities(inv)
+		x.Native.ForkStorage = inv.ForkStorage()
 		x.RuntimeIdentity = JSON(rt.Identity{BootID: JSON(vm.HostBootID), PID: JSON(vm.PID), StartTime: JSON(vm.PIDStartTime)})
 		return e.DB.ObserveOwnedMachine(ctx, b.ID, owner, x)
 	}
