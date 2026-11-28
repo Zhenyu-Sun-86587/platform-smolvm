@@ -33,7 +33,7 @@ For a networked StatePoint, register a target private network on the new Worker 
 
 Successful network recovery reports the source and target attachment IDs, route domains, private addresses and in-Guest addresses in `statepoint.network_recovery`. In Native mode the Guest receives its new private address. Fixed internal mode retains the Guest address while the new Worker allocates a private address in its own route domain.
 
-The handoff fixture uses Linux fanotify, KVM, systemd and private mounts to stop the daemon while a selected backup is staged. It resumes the original public run and restores the archive on a new Worker after retiring the old source. Select Native or FixedInternal with `--network-mode`. Pass `--previous-platformd` with a schema 1017 binary to exercise the in-flight two-Serve upgrade. [A23 evidence](acceptance-ledger.md#a23-原生备份选择与中断恢复)
+The handoff fixture uses Linux fanotify, KVM, systemd and private mounts to stop the daemon while a selected backup is staged. It resumes the original public run and restores the archive on a new Worker after retiring the old source. Select Native or FixedInternal with `--network-mode`. Pass `--previous-platformd` with a schema 1017 binary to exercise the in-flight two-Serve upgrade. [Backup restart fixture](../../tests/integration/native_backup_restart_kvm.py)
 
 ```sh
 sudo env PYTHONDONTWRITEBYTECODE=1 python3 -B tests/integration/native_backup_restart_kvm.py \

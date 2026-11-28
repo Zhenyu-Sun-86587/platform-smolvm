@@ -1,8 +1,8 @@
 # Worker Kernel CoW 合入交接
 
-2026-11-28，亚洲/上海。明天从平台 `polish/integration` 和 smolvm `polish/runtime-candidate` 继续。运行验收使用一台隔离的 L1 Worker 和 AMD 嵌套 KVM。补丁 Linux 加载在这个 L1，测试 Guest 使用各自的内核。
+集成验收使用一台隔离 L1 Worker 和 AMD 嵌套 KVM。补丁 Linux 由 Worker 启动，业务 Guest 使用各自的内核。开发源码从[原始仓库目录](checkout.md)继续。
 
-## 版本
+## 集成验收制品
 
 | 层 | 固定输入 |
 | --- | --- |
@@ -30,10 +30,14 @@
 | Native 和 Kernel CoW 模型流 | `streams-e80e2579-c0312af/{stock-protected-stream-fork,canary-protected-stream-kernel-fork}.serial`。两种路径下父机都在原连接收到 1 个前段、1 个后段，两个子机各读取 1 个前段和 0 个后段。原 POST 在受控上游只出现 1 次，每台子机另用各自授权访问。首次夹具配置碰到 CPU 准入和受信安装路径限制，修订夹具后使用同一份产品二进制通过。 |
 | 凭据代理回归 | `kvm-e80e2579-61dea32/stock-proxy-revocation.serial`。常规 Worker 的凭据代理撤销用例通过。 |
 | 后端兼容 | `kvm-e80e2579-61dea32/{canary-cow-native,canary-cow-auto}.serial`。同一 canary 可以沿用 Native，显式 `auto` 在符合条件时选择 Kernel CoW。回执报告实际选择。 |
-| A14 激活效果 | `a14-activation-e80e2579/stock-a14-authority_prepared.serial` 的公开终态为 `failed`，`effect=none`。`stock-a14-policy_armed.serial` 在持久决议为 `commit` 后返回 `failed` 和 `effect=unknown`。两轮均确认失败目标退出、写盘与 TAP 围栏收敛、父机仍可用、后续成功子机三笔 UDP 收据可对账。[早期候选六个切点](a14-virtio-tx-qualification.md) |
+| A14 激活效果 | `a14-activation-e80e2579/stock-a14-authority_prepared.serial` 的公开终态为 `failed`，`effect=none`。`stock-a14-policy_armed.serial` 在持久决议为 `commit` 后返回 `failed` 和 `effect=unknown`。两轮均确认失败目标退出、写盘与 TAP 围栏收敛、父机仍可用、后续成功子机三笔 UDP 收据可对账。[切点夹具](../../tests/integration/owned_gate_cut_kvm.py) |
 | A14 顺序 Fork | `kvm-e80e2579-61dea32/stock-a14-sequential.serial`。常规 Worker 上，同一父机连续两次 Fork。独立接收器共对账 17 个不同的 UDP 业务请求，父机和两子机来源地址及身份各不相同。 |
 | 静态与并发回归 | `runtime-e80e2579.log` 的 Worker 39 项通过、3 项需特权的测试忽略，Serve scope 18 项通过。VMM 179 项通过、7 项忽略。设备 306 项通过，一项环境受限的 socket buffer 断言单独登记，开发机上限低于断言预设。A10 进程间读写互斥和共享只读代验证见 `block-concurrency-final.log`。 |
 | 平台和客户端 | 全仓 Go 测试、CLI 构建、TypeScript 和 Python SDK 合同、Vite、Chromium 表单、CLI 启动命令复制以及 Fork 回执均通过。日志在 `kvm-e80e2579-61dea32/platform-go.log` 和 `client-verification-full.log`。浏览器使用实编译控制台与受控 API。 |
+
+## 后续源码与定向复验
+
+平台合并提交 `69a42f4` 包含多 Worker 控制面。Runtime `eace7d59` 固定 libkrun `6aef96de`。该依赖组合补做了 307 项设备套件和 20 轮并发 VMM 回归，每轮 179 项通过、7 项原有忽略。上表的隔离 Worker 全链路日志仍对应原 Bundle。[库回归原始结果](/home/dev/workspace/deepfork-smolvm/.build/worker-kernel-closeout/socket-lazy-regression-20261128/qualification.json)
 
 ## 使用
 
@@ -47,12 +51,4 @@ sandboxctl operations get "$OPERATION_ID" --json
 
 其他 CLI 命令、等待与退出码约定见[常用工作流和 boxd 语义对照](cli-workflows.md)。
 
-## 续做
-
-平台从 `worktrees/polish-integration` 开发。Worker/Serve 从 `worktrees/polish-runtime-candidate` 开发，libkrun 的合入源码在 `worktrees/kernel-cow-libkrun`。Git 源码提交和实验 Bundle 分开固定，生产构建及安装沿用发布流水线。
-
-前后端合入提交和 Mac CLI、菜单栏源码已经在平台集成分支。旧 B3 文件验证补丁和 Native 文件补丁的等价变更也已核对。多节点原交接为 `feat/multi-node-v1@1c039e3791f1c3f0a83fa4d3356cabb376f694d3`，后续已合入同一个平台基线。双物理 KVM Worker 仍在验收计划中。[多节点实现与同机验收](multi-node-v1.md)
-
-本轮的模型流验证使用本地受控 TLS 上游。托管 Agent 会话按已完成轮次截断，属于另行实现的产品合同。双物理 Worker、压力与长时寿命、生产下载与 OAuth、签名 Mac App 仍按[生产验收交接](production-handoff-2026-11-27.md)推进。
-
-工作树回收台账为 `.build/worker-kernel-closeout/closeout-final/worktrees-reclaimed.json`。保留命名分支和可恢复的 detached 提交引用，保留有未提交内容的原目录。
+双物理 Worker、压力与长时寿命、生产下载和 OAuth、签名 macOS App 按[生产候选验收](production-handoff-2026-11-27.md)推进。托管 Agent 的轮次截断与子会话 idle 属于会话产品合同，受控 HTTPS/SSE 结果覆盖的是父机原连接与子机授权边界。[Guest 委派](guest-delegation.md#active-model-streams-during-fork)

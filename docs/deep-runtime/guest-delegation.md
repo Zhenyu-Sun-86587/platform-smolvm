@@ -74,14 +74,3 @@ The two public Fork entry points are `POST /v1/machines/{id}/forks` and `POST /v
 The scope is an in-flight request through the managed credential proxy on a running source. A coding Agent's conversation history, tool ownership and child-session idle state require a separate session-level contract.
 
 The integrated Worker passed the two-child HTTPS/SSE case with Native RAM on the stock kernel and with Kernel CoW RAM on the canary kernel. The source received the second event on its original connection, both children received only the first event on their inherited connection, and the provider recorded one original POST. The separate revocation case also passed. [Bundle and test records](kernel-cow-closeout-2026-11-28.md)
-
-### Earlier installed bundle
-
-The `protected-stream-single` and `protected-stream-fork` cases use a local HTTPS server that streams two SSE events on demand. The source Debian guest receives the first event and blocks on its original vsock connection. At capture the Worker has an active credential proxy hold for that execution, an owner running lease, and a policy with `keep_running=true` and `auto_hibernate=false`.
-
-Both API entry points ran on the installed `fb69434` bundle, digest `sha256:a9b41917173a0eea2306aa41276b59fa314e1d54f9d52f45766bcf2ce7698c35`. The source and every child continued the original process with its in-memory nonce and first event. The upstream received the original request once. The second event was absent from every copy of the old stream. Each branch then received its own answer using a new grant bound to its current execution. The source retained its lease, its old proxy hold was released, and the children inherited the policy with an empty lease list. [Guest credential integration fixture](../../tests/integration/guest_control_kvm.py)
-
-| Public API | Guest PID in all branches | Requests received by the provider | Run log and SHA-256 |
-| --- | ---: | --- | --- |
-| Single Fork | 789 | One original and two fresh requests | `.build/wp23/a35-fb69434-protected-stream-single-v3.log` · `84cc23f47954b6043f9371b626fb5ab78baa8ad2488c2443861e7cb4537534b7` |
-| Two-child Fork Batch | 789 | One original and three fresh requests | `.build/wp23/a35-fb69434-protected-stream-fork-v3.log` · `6ef9e4b1625989d71f36f2a7b623f82e90d2312940a0049b93a47960555713f6` |

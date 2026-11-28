@@ -1,6 +1,6 @@
 # 多 Worker 控制面与验收记录
 
-2026-11-26。开发基线为 `98252da`，中央 schema 从 1019 迁移至 1025，本地集成分支为 `feat/multi-node-v1`。本轮在一台 Linux 开发机完成。测试使用临时 SQLite、真实 mTLS 回环连接、Unix socket 和可注入故障的 Worker 后端。两台独立 x86_64/KVM Worker 的上线验收仍待实机。
+多 Worker 已合入平台 `polish/integration@69a42f4`，平台 schema 为 1025。下文 N01–N18 的早期证据来自 `feat/multi-node-v1@1c039e3`，合并后补验了 schema、运行时能力和同机双 Node。测试使用临时 SQLite、真实 mTLS、Unix socket 和隔离夹具。两台独立 x86_64/KVM Worker 的上线验收仍待实机。[合并源码与目录](checkout.md)
 
 ## 运行方式
 

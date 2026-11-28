@@ -17,7 +17,7 @@ SANDBOX_MANAGED_TEMPLATE_DIR=/path/to/verified-artifacts \
   packaging/install/make-release.sh 0.1.0 ./release-0.1.0
 ```
 
-The explicit three-argument build also accepts other archives. The builder assigns verified capabilities only to exact digests recorded for the pinned runtime and architecture. A newly built archive with a different SHA-256 starts with an empty capability declaration. [Managed archive evidence registry](../managed-template-gates.json) [Local gate records](../../docs/phase1/LOCAL_GUEST_EVIDENCE.md)
+The explicit three-argument build also accepts other archives. The builder assigns verified capabilities only to exact digests recorded for the pinned runtime and architecture. A newly built archive with a different SHA-256 starts with an empty capability declaration. [Managed archive evidence registry](../managed-template-gates.json) · [Managed template verification](LOCAL_GUEST_EVIDENCE.md)
 
 Build a self-contained release archive and checksum from a committed source tree. The archive includes the pinned official runtime for offline installation and identifies the source commit in BUILD-INFO.json.
 

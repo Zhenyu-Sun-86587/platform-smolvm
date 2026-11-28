@@ -42,7 +42,11 @@ sed -e 's|\[guest/templates/managed\](../../guest/templates/managed)|guest/templ
     -e 's|../../docs/phase1/LOCAL_GUEST_EVIDENCE.md|LOCAL_GUEST_EVIDENCE.md|' \
     "$work/source/packaging/install/README.md" >"$release/MAINTENANCE.md"
 install -m 0644 "$work/source/packaging/managed-template-gates.json" "$release/managed-template-gates.json"
-install -m 0644 "$work/source/docs/phase1/LOCAL_GUEST_EVIDENCE.md" "$release/LOCAL_GUEST_EVIDENCE.md"
+evidence="$work/source/packaging/install/LOCAL_GUEST_EVIDENCE.md"
+if [[ ! -f $evidence ]]; then
+    evidence="$work/source/docs/phase1/LOCAL_GUEST_EVIDENCE.md"
+fi
+install -m 0644 "$evidence" "$release/LOCAL_GUEST_EVIDENCE.md"
 jq -n --arg version "$version" --arg commit "$commit" --arg source_date "$source_date" \
     --arg go "$(go env GOVERSION)" --arg asset "runtime/$asset" --arg digest "$actual" \
     '{version:$version,source_commit:$commit,source_date:$source_date,go_version:$go,runtime_archive:$asset,runtime_sha256:$digest}' \
